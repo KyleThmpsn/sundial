@@ -239,7 +239,14 @@ fn source_aim_providers_follow_the_authored_parent_through_staging() -> Result<(
                 .as_str()
                 .context("Native template")?,
         )?)?;
-        markers::author(&mut reader, source, &template, &graph_path, &mut graph)?;
+        markers::author(
+            &mut reader,
+            source,
+            &template,
+            &graph_path,
+            &mut graph,
+            parhelion_import::d2_mot::artwork::native_selector,
+        )?;
         fs::write(
             graph_path.join("asset-graph.json"),
             serde_json::to_vec_pretty(&graph)?,

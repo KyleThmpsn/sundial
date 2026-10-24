@@ -655,10 +655,11 @@ fn write_reserved_entry_rows(
 
 /// `replacements` laid out for Sunrise's merge when the build is for its mod loader. A table the
 /// merge recipes list keeps every stock byte where the game put it, with each array the build grew
-/// copied after the stock entry, so another mod's rows merge with the build's. Other runtimes load
-/// the entry as built, and so does an entry the relayout can't describe.
+/// copied after the stock entry, and its own copy of each stock object an added row points at, so
+/// another mod's rows merge with the build's. Other runtimes load the entry as built, and so does
+/// an entry the relayout can't describe.
 fn for_merge(source: &PackageD2PreBL, replacements: &[ReplacementSpec]) -> Vec<ReplacementSpec> {
-    use sundial::package_authoring::mod_content::merge::{recipes, relayout};
+    use sundial::package_authoring::mod_content::merge::{localize, recipes, relayout};
     if !crate::package_profile::host().is_standalone() {
         return replacements.to_vec();
     }
@@ -667,7 +668,12 @@ fn for_merge(source: &PackageD2PreBL, replacements: &[ReplacementSpec]) -> Vec<R
         .map(|spec| {
             let relaid = recipes::table(spec.tag.0).and_then(|recipe| {
                 let stock = source.read_entry(spec.tag.entry_index() as usize).ok()?;
-                let mut relaid = relayout::relayout(&stock, &spec.payload, recipe)?;
+                let relaid = relayout::relayout(&stock, &spec.payload, recipe);
+                let laid = relaid.as_deref().unwrap_or(&spec.payload);
+                let mut relaid = match localize::localize(stock.len(), laid, recipe) {
+                    Some(localized) => localized,
+                    None => relaid?,
+                };
                 // A relaid entry starts with its own length when the stock entry does.
                 let word = |bytes: &[u8]| {
                     bytes

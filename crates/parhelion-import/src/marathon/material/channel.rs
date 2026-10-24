@@ -8,6 +8,7 @@ pub(super) struct Declaration {
     pub constants: Vec<[u8; 16]>,
     pub inputs: Vec<u64>,
     pub initial: [u8; 16],
+    pub providers: Vec<Value>,
 }
 
 pub(super) type Bank = Vec<Declaration>;
@@ -36,6 +37,7 @@ pub(super) fn bank(source: &mut Reader, entity: u32) -> Result<Bank> {
             "Nonuniform source channel initial storage needs a slot mapping"
         );
         let mut bank = Vec::new();
+        let providers = providers(source, &entity, &owner, schema)?;
         for row in owner.array(schema + 0x120, 112, Some(0x8080af86))? {
             bank.push(Declaration {
                 name: owner.u32(row)?,
@@ -55,6 +57,7 @@ pub(super) fn bank(source: &mut Reader, entity: u32) -> Result<Bank> {
                     .map(|at| owner.u64(at))
                     .collect::<Result<_>>()?,
                 initial,
+                providers: providers.get(&owner.u32(row)?).cloned().unwrap_or_default(),
             });
         }
         ensure!(
@@ -68,6 +71,59 @@ pub(super) fn bank(source: &mut Reader, entity: u32) -> Result<Bank> {
         result = Some(bank);
     }
     Ok(result.unwrap_or_default())
+}
+
+/// Incoming scalar getters write mutable channel storage even when a declaration has no
+/// bytecode. These are runtime producers, not zero-valued authored constants.
+fn providers(
+    source: &mut Reader,
+    entity: &Payload,
+    bank: &Payload,
+    schema: usize,
+) -> Result<BTreeMap<u32, Vec<Value>>> {
+    let definitions = bank.array(schema + 0x110, 32, Some(0x8080AF8D))?;
+    let mut result = BTreeMap::new();
+    for row in bank.array(schema + 0x160, 12, Some(0x8080AF85))? {
+        ensure!(
+            bank.u32(row)? == 0x811C9DC5,
+            "Source getter namespace differs"
+        );
+        let name = bank.u32(row + 4)?;
+        let definition = *definitions
+            .get(bank.u32(row + 8)? as usize)
+            .context("Source getter index")?;
+        let mut outputs = Vec::new();
+        for event in entity.array(24, 56, Some(0x8080BA61))? {
+            if entity.u32(event)? != bank.u32(schema)?
+                || entity.u32(event + 4)? != 0x8080AF8D
+                || entity.u64(event + 8)? != definition as u64
+            {
+                continue;
+            }
+            let tag = entity.u32(event + 24)?;
+            let target = source.tag(tag, Some(0x8080BADB))?;
+            let offset = usize::try_from(entity.u64(event + 32)?)?;
+            let mut methods = Vec::new();
+            if entity.u32(event + 28)? == 0x8080B88F {
+                let metadata = source.tag(target.u32(offset + 8)?, Some(0x8080BAF8))?;
+                ensure!(
+                    metadata.u32(8)? == 0x8080B88F && metadata.u32(12)? == 0x8080B890,
+                    "Source getter dispatch differs"
+                );
+                for method in metadata.array(16, 24, Some(0x8080BAFA))? {
+                    methods.push(json!({"interface":format!("{:08X}",metadata.u32(method)?),"method":metadata.u32(method+4)?}));
+                }
+            }
+            outputs.push(json!({"owner":format!("{tag:08X}"),"component":format!("{:08X}",target.u32(target.pointer(24)?-4)?),
+                "endpoint":offset,"interface":format!("{:08X}",entity.u32(event+28)?),"methods":methods,
+                "translated":false}));
+        }
+        ensure!(
+            result.insert(name, outputs).is_none(),
+            "Duplicate source getter channel"
+        );
+    }
+    Ok(result)
 }
 
 pub(super) struct Globals {

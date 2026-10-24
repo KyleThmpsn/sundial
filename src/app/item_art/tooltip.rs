@@ -159,7 +159,11 @@ pub(in crate::app) fn on_hover_authored(
     hash: u64,
     authored: Authored<'_>,
 ) -> egui::Response {
-    let menu_open = response.context_menu_opened() || egui::Popup::is_any_open(&response.ctx);
+    // Popup rows may show their own tooltip. Another popup, including a row's context menu,
+    // still takes precedence over the hovered item.
+    let menu_open = response.context_menu_opened()
+        || (egui::Popup::is_any_open(&response.ctx)
+            && !egui::Popup::is_id_open(&response.ctx, response.layer_id.id));
     if response.hovered() && !response.is_pointer_button_down_on() && !menu_open {
         show(&response.ctx, catalog, hash, authored);
     }

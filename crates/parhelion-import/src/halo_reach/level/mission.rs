@@ -3,7 +3,9 @@
 mod analysis;
 pub(super) mod audio;
 pub mod binding;
+pub mod encounter;
 pub mod execution;
+pub(super) mod pose;
 mod vocabulary;
 pub use audio::AudioOptions;
 

@@ -72,8 +72,9 @@ fn curve(
     let tangents = array(source, native, at + 64, 1, (0x80800009, 0x80800009))?;
     let mappings = array(source, native, at + 80, 2, (0x80800006, 0x80800006))?;
     ensure!(
-        mappings.len() == (tracks + 1) * 2 && source.u16(mappings.end - 2)? == 0,
-        "Source curve channel map count or sentinel differs"
+        mappings.len() == (tracks + 1) * 2
+            && usize::from(source.u16(mappings.end - 2)?) == compressed.len() / 2,
+        "Source curve channel map count or compressed endpoint differs"
     );
     for row in (mappings.start..mappings.end - 2).step_by(2) {
         let index = source.i16(row)?;

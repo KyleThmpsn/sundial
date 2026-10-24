@@ -5,7 +5,10 @@ use parhelion::{
     BatchBuildRequest, BatchBuildSnapshot, ItemKind, WeaponRecipe,
     build_and_stage_snapshot_with_progress,
 };
-use parhelion_import::d2_mot::{dyes, payload::Payload, reader::Reader, service};
+use parhelion_import::{
+    d2_mot::{payload::Payload, reader::Reader, service},
+    tiger::dye,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
@@ -299,21 +302,21 @@ fn verify_shader(hash: u32, matrix: bool) -> Result<(), Box<dyn std::error::Erro
         .map(|d| d["channel"].as_u64().unwrap() as u16)
         .collect::<BTreeSet<_>>();
     assert_eq!(channels, expected, "Every source gear channel must survive");
-    let readback = dyes::inspect(&mut staged, table.u32(row + 16)?, false)?;
+    let readback = dye::inspect(&mut staged, table.u32(row + 16)?, false)?;
     let original_target = original_recipe.identity.item_hash.parse_u32()?;
     let original_row = table
         .array(8, 24, None)?
         .into_iter()
         .find(|&r| table.u32(r).ok() == Some(original_target))
         .ok_or("Original shader was replaced by its copy")?;
-    let original_readback = dyes::inspect(&mut staged, table.u32(original_row + 16)?, false)?;
+    let original_readback = dye::inspect(&mut staged, table.u32(original_row + 16)?, false)?;
     let legacy_target = legacy_recipe.identity.item_hash.parse_u32()?;
     let legacy_row = table
         .array(8, 24, None)?
         .into_iter()
         .find(|&r| table.u32(r).ok() == Some(legacy_target))
         .ok_or("Legacy shader missing")?;
-    let legacy_readback = dyes::inspect(&mut staged, table.u32(legacy_row + 16)?, false)?;
+    let legacy_readback = dye::inspect(&mut staged, table.u32(legacy_row + 16)?, false)?;
     let mut animated_channels = Vec::new();
     let mut execution_channels = Vec::new();
     let global_tag = *staged

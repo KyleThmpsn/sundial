@@ -20,6 +20,24 @@ pub(super) fn values(
 }
 
 /// Follow named render globals in both package sets before adapting screen-space color.
+pub(super) fn view_scalars(source: &mut Reader, native: &mut Reader) -> Result<()> {
+    // Both view producers combine the same scalar pair with the same reciprocal
+    // coefficient chain. Their vector output row and opcode dialect differ.
+    scope_binding(
+        source,
+        true,
+        b"view",
+        &hex::decode("4a02004a02010c42004a02004a02010c040d5310")?,
+    )?;
+    scope_binding(
+        native,
+        false,
+        b"view",
+        &hex::decode("3c02003c02010c34003c02003c02010c040d430c")?,
+    )
+}
+
+/// Follow named render globals in both package sets before adapting screen-space color.
 pub(super) fn scene_depth(source: &mut Reader, native: &mut Reader) -> Result<()> {
     for (reader, modern, texture, coefficients) in [
         (
@@ -368,6 +386,18 @@ pub(super) fn colors(
 }
 
 pub(super) fn fresh(shell: &Payload, source: &Payload, stage: u8) -> Result<Vec<u8>> {
+    let state = source.u32(0x30)?;
+    ensure!(
+        matches!(
+            (stage, state),
+            (0, 0 | 0x810000) | (2, 0x9a) | (4 | 13, 0) | (8 | 17, 0x88)
+        ),
+        "Unsupported Marathon render state {state:08X} in stage {stage}"
+    );
+    envelope(shell, state)
+}
+
+pub(super) fn envelope(shell: &Payload, state: u32) -> Result<Vec<u8>> {
     let mut bytes = shell.0.clone();
     for offset in [24, 28] {
         put(
@@ -376,14 +406,6 @@ pub(super) fn fresh(shell: &Payload, source: &Payload, stage: u8) -> Result<Vec<
             &(shell.u32(offset)? & !0x1e000000).to_le_bytes(),
         )?;
     }
-    let state = source.u32(0x30)?;
-    ensure!(
-        matches!(
-            (stage, state),
-            (0, 0 | 0x810000) | (2, 0x9a) | (4 | 13, 0) | (8, 0x88)
-        ),
-        "Unsupported Marathon render state {state:08X} in stage {stage}"
-    );
     put(&mut bytes, 32, &state.to_le_bytes())?;
     for base in [0x48, 0xe8, 0x188, 0x228, 0x2c8, 0x368] {
         bytes[base..base + 0xa0].fill(0);

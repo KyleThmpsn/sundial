@@ -91,7 +91,7 @@ pub(super) fn weapon(
     donor: u32,
     native: &mut Reader,
 ) -> Result<Value> {
-    let tag = crate::d2_mot::assets::item::find_native(native, donor)?;
+    let tag = crate::tiger::shadowkeep::item_tag(native, donor)?;
     let target = crate::tiger::rig::inspect(native, tag, false)?;
     let roots = source["skeletons"]
         .as_array()

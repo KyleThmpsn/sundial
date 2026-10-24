@@ -1,6 +1,11 @@
 //! The installed tables whose rows Sunrise merges, and the fields that name their rows, as
 //! Sunrise Studio 007dd7a6 describes them (`TableMergeRecipes.cs`). A sidecar's ops and sites
 //! carry these layouts, so mods built by different editors agree on them.
+//!
+//! Parhelion also names rows it adds in fields Studio never writes: the item hash index, an item's
+//! secondary icon, item art selectors of other types, Collections parents and child nodes, node
+//! icons, subclass pools, nodes and attunements, and private match pictures. Their rules sit beside
+//! Studio's, so an earlier mod that adds rows to the same tables moves every one of them.
 use super::sidecar::{FieldKind, OpKind};
 
 /// A typed-array writer stops at this many rows.
@@ -38,11 +43,19 @@ pub const ART_NAMES: u32 = 0x80EC_3F61;
 pub const HUD_ICONS: u32 = 0x80EF_C07B;
 pub const PLUG_SETS: u32 = 0x8131_9349;
 pub const NODE_DISPLAYS: u32 = 0x8161_3CF8;
+/// Item hashes to item rows, in two family arrays.
+pub const ITEM_HASH_INDEX: u32 = 0x8131_934A;
+/// Private match activity groups and their map pictures.
+pub const PRIVATE_MATCH_DISPLAYS: u32 = 0x8161_3CFA;
 
 pub const ITEM_CLASS: u32 = 0x8080_7BEA;
 pub const ITEM_DISPLAY_CLASS: u32 = 0x8080_5CE1;
 pub const VENDOR_CLASS: u32 = 0x8080_7850;
 pub const VENDOR_DISPLAY_CLASS: u32 = 0x8080_58EE;
+/// A subclass's ability pool, its node records and its display.
+pub const POOL_CLASS: u32 = 0x8080_7A8B;
+pub const NODE_RECORD_CLASS: u32 = 0x8080_5C49;
+pub const SUBCLASS_DISPLAY_CLASS: u32 = 0x8080_5C42;
 /// Loading manifests, whose group entries the loader unions.
 pub const MANIFEST_CLASS: u32 = 0x8080_9EF9;
 
@@ -556,11 +569,17 @@ pub const TABLES: &[Recipe] = &[
             ..unique_keys(append("rows", ROWS, &PLAIN_8, None, SIGNED_ROW_LIMIT))
         }],
     },
-    // The runtime name map's `+24` array isn't rebuilt. Studio never changes it.
     Recipe {
         tag: RUNTIME_NAMES,
         name: "runtime name map",
-        arrays: &[sorted("rows", &PLAIN_8)],
+        arrays: &[
+            sorted("rows", &PLAIN_8),
+            // The game sets one bit of these zeroed words per row as it loads the row, so a build
+            // that adds rows past their capacity adds words. Studio's recipe stops at the rows, as
+            // Studio adds no words, and a mod that keeps the stock count merges with one that
+            // grows it.
+            append("loaded bits", 24, &PLAIN_4, None, EDITOR_ROW_LIMIT),
+        ],
     },
     Recipe {
         tag: ART_NAMES,
@@ -690,6 +709,8 @@ const ITEM_DISPLAY_RULES: &[Rule] = &[
             STAT_GROUPS,
         )
     },
+    // Parhelion's emblem nameplates and subclass screens.
+    rule("secondary icon row", ROOT, 130, 2, ICON_INDEX),
 ];
 
 const SALES: &[Step] = &[Step::Each {
@@ -721,6 +742,56 @@ const VENDOR_DISPLAY_RULES: &[Rule] = &[
     rule("subtitle bank", ROOT, 72, 2, STRING_BANK_INDEX),
 ];
 
+/// A pool's groups, their variants and each variant's sandbox perks.
+const POOL_RULES: &[Rule] = &[rule(
+    "pool perk",
+    &[
+        Step::Each {
+            offset: 8,
+            stride: 144,
+        },
+        Step::Each {
+            offset: 0,
+            stride: 88,
+        },
+        Step::Each {
+            offset: 32,
+            stride: 2,
+        },
+    ],
+    0,
+    2,
+    PERK_DEFINITIONS,
+)];
+/// A node record's steps and each step's display rows.
+const NODE_RECORD_RULES: &[Rule] = &[rule(
+    "node icon",
+    &[
+        Step::Each {
+            offset: 8,
+            stride: 32,
+        },
+        Step::Each {
+            offset: 0,
+            stride: 32,
+        },
+    ],
+    24,
+    2,
+    ICON_INDEX,
+)];
+/// An attunement's plug source hash, then its lore row.
+const SUBCLASS_DISPLAY_RULES: &[Rule] = &[rule(
+    "attunement lore",
+    &[Step::Each {
+        offset: 48,
+        stride: 8,
+    }],
+    4,
+    4,
+    LORE_TEXT,
+)];
+
 /// Site rules for single-record entries, by entry class.
 pub fn class_rules(class: u32) -> &'static [Rule] {
     match class {
@@ -728,6 +799,9 @@ pub fn class_rules(class: u32) -> &'static [Rule] {
         ITEM_DISPLAY_CLASS => ITEM_DISPLAY_RULES,
         VENDOR_CLASS => VENDOR_RULES,
         VENDOR_DISPLAY_CLASS => VENDOR_DISPLAY_RULES,
+        POOL_CLASS => POOL_RULES,
+        NODE_RECORD_CLASS => NODE_RECORD_RULES,
+        SUBCLASS_DISPLAY_CLASS => SUBCLASS_DISPLAY_RULES,
         _ => &[],
     }
 }
@@ -745,27 +819,111 @@ const fn each_row(stride: usize) -> Step {
     }
 }
 
-const COLLECTIBLE_RULES: &[Rule] = &[rule("item row", &[each_row(184)], 44, 2, ITEM_INDEX)];
+const COLLECTIBLE_RULES: &[Rule] = &[
+    rule("item row", &[each_row(184)], 44, 2, ITEM_INDEX),
+    // The Sunrise badge's leaves and Parhelion's pages.
+    rule(
+        "parent node",
+        &[
+            each_row(184),
+            Step::Each {
+                offset: 24,
+                stride: 2,
+            },
+        ],
+        0,
+        2,
+        PRESENTATION_NODES,
+    ),
+];
+/// A node row field that names a node of the same table.
+const fn node_rule(name: &'static str, path: &'static [Step]) -> Rule {
+    Rule {
+        op_local: true,
+        ..rule(name, path, 0, 2, PRESENTATION_NODES)
+    }
+}
 const COLLECTIBLE_DISPLAY_RULES: &[Rule] = &[
     rule("icon row", &[each_row(96)], 4, 4, ICON_INDEX),
     rule("name bank", &[each_row(96)], 8, 4, STRING_BANK_INDEX),
     rule("flavor bank", &[each_row(96)], 16, 4, STRING_BANK_INDEX),
     rule("source bank", &[each_row(96)], 24, 4, STRING_BANK_INDEX),
 ];
-const NODE_RULES: &[Rule] = &[rule(
-    "collectible row",
+const NODE_RULES: &[Rule] = &[
+    rule(
+        "collectible row",
+        &[
+            each_row(168),
+            Step::Each {
+                offset: 120,
+                stride: 4,
+            },
+        ],
+        0,
+        2,
+        COLLECTIBLES,
+    ),
+    // The Sunrise badge's nodes and Parhelion's pages, and the stock nodes that hold them.
+    node_rule(
+        "parent node",
+        &[
+            each_row(168),
+            Step::Each {
+                offset: 24,
+                stride: 2,
+            },
+        ],
+    ),
+    node_rule(
+        "child node",
+        &[
+            each_row(168),
+            Step::Each {
+                offset: 104,
+                stride: 24,
+            },
+        ],
+    ),
+];
+const NODE_DISPLAY_RULES: &[Rule] = &[
+    rule("name bank", &[each_row(44)], 8, 4, STRING_BANK_INDEX),
+    // The Sunrise badge's icons.
+    rule("icon row", &[each_row(44)], 4, 2, ICON_INDEX),
+];
+/// Each family array's rows: an item hash, then the item's row.
+const HASH_INDEX_RULES: &[Rule] = &[
+    Rule {
+        signed: true,
+        ..rule("item row", &[each_row(8)], 4, 2, ITEM_INDEX)
+    },
+    Rule {
+        signed: true,
+        ..rule(
+            "item row",
+            &[Step::Each {
+                offset: 24,
+                stride: 8,
+            }],
+            4,
+            2,
+            ITEM_INDEX,
+        )
+    },
+];
+/// Each activity group's map rows, whose picture is an icon row.
+const PRIVATE_MATCH_RULES: &[Rule] = &[rule(
+    "map picture",
     &[
-        each_row(168),
+        each_row(80),
         Step::Each {
-            offset: 120,
-            stride: 4,
+            offset: 64,
+            stride: 20,
         },
     ],
-    0,
-    2,
-    COLLECTIBLES,
+    16,
+    4,
+    ICON_INDEX,
 )];
-const NODE_DISPLAY_RULES: &[Rule] = &[rule("name bank", &[each_row(44)], 8, 4, STRING_BANK_INDEX)];
 const PERK_TEXT: &[Step] = &[Step::Each {
     offset: 24,
     stride: 28,
@@ -843,6 +1001,128 @@ const ITEM_ART_RULES: &[Rule] = &[
         0,
         24,
     ),
+    // Parhelion copies every selector of a template item, whose types 2 and 9 name handles and
+    // 0, 3, 4, 6 to 8, 10 and 12 name integers, as the client reads them.
+    art_rule(
+        "first handle",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 2,
+            },
+        ],
+        0,
+        8,
+    ),
+    art_rule(
+        "first handle",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 9,
+            },
+        ],
+        0,
+        8,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 0,
+            },
+        ],
+        0,
+        24,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 3,
+            },
+        ],
+        0,
+        24,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 4,
+            },
+        ],
+        0,
+        24,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 6,
+            },
+        ],
+        0,
+        24,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 7,
+            },
+        ],
+        0,
+        24,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 8,
+            },
+        ],
+        0,
+        24,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 10,
+            },
+        ],
+        0,
+        24,
+    ),
+    art_rule(
+        "first integer",
+        &[
+            ART_FIELD,
+            Step::Is {
+                offset: 4,
+                value: 12,
+            },
+        ],
+        0,
+        24,
+    ),
     rule(
         "sandbox perk",
         &[
@@ -875,6 +1155,8 @@ pub fn table_rules(tag: u32) -> &'static [Rule] {
         LORE_TEXT => LORE_TEXT_RULES,
         PLUG_SETS => PLUG_SET_RULES,
         ITEM_ART => ITEM_ART_RULES,
+        ITEM_HASH_INDEX => HASH_INDEX_RULES,
+        PRIVATE_MATCH_DISPLAYS => PRIVATE_MATCH_RULES,
         _ => &[],
     }
 }

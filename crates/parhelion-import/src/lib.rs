@@ -12,6 +12,7 @@ pub mod halo_reach;
 pub mod io;
 pub mod marathon;
 pub mod preview;
+mod stat_group;
 pub mod tiger;
 pub mod tools;
 pub mod weapon_type;

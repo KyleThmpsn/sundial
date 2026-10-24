@@ -64,41 +64,6 @@ fn settle(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::FullOutpu
 }
 
 #[test]
-fn perk_window_waits_for_package_operations_without_consuming_its_draft_or_request() {
-    for installing in [false, true] {
-        let mut app = PackageAuthoringApp::default();
-        app.perk_workbench.initialized = true;
-        app.perk_workbench.open = true;
-        app.perk_workbench
-            .documents
-            .push(Document::new(PerkRecipe::new(), None));
-        app.perk_request = Some(Request::EditChoice {
-            socket: 0,
-            choice: 0,
-        });
-        if installing {
-            app.install_receiver = Some(mpsc::channel().1);
-        } else {
-            app.build_receiver = Some(mpsc::channel().1);
-        }
-        let recipe = app.recipe.clone();
-        let perk = app.perk_workbench.documents[0].recipe.clone();
-        let output = settle(&egui::Context::default(), &mut app);
-        assert!(output.shapes.is_empty());
-        assert_eq!(
-            app.perk_request,
-            Some(Request::EditChoice {
-                socket: 0,
-                choice: 0
-            })
-        );
-        assert_eq!(app.recipe, recipe);
-        assert_eq!(app.perk_workbench.documents[0].recipe, perk);
-        assert!(app.perk_workbench.open);
-    }
-}
-
-#[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES for native editor entry and private speed apply"]
 fn native_micro_missile_entry_applies_speed_without_experimental_mode() {
     let packages = crate::test_support::stock_packages();

@@ -45,35 +45,45 @@ pub struct Weapon {
     pub ammo: Option<u16>,
     #[serde(default)]
     pub damage: Option<String>,
+    /// A saved recipe's namespace that a reimport keeps, so the authored item retains its
+    /// identity and edits whichever naming scheme made it. Unset for a new import.
+    #[serde(skip)]
+    pub namespace: Option<String>,
 }
 
 impl Weapon {
     pub fn is_shader(&self) -> bool {
         self.family() == Family::Shader
     }
+
+    /// The namespace the authored item's identity hashes come from.
+    pub fn namespace(&self) -> String {
+        self.namespace
+            .clone()
+            .unwrap_or_else(|| batch::namespace(self.hash, &self.name))
+    }
+
+    /// The authored item this import receives.
+    pub fn destination(&self) -> Result<u32> {
+        profile::hash(
+            &crate::graph::import_identity(&self.namespace())?,
+            "item_hash",
+        )
+    }
 }
 
-/// The stable authored identity also detects previous imports with a renamed weapon.
-pub fn destination_hash(source: u32) -> Result<u32> {
+/// The authored item an import of the source item `source`, named `name`, receives, which finds
+/// a previous import of it.
+pub fn destination_hash(source: u32, name: &str) -> Result<u32> {
     profile::hash(
-        &batch::identity(&super::compatibility::namespace(source))?,
+        &crate::graph::import_identity(&batch::namespace(source, name))?,
         "item_hash",
     )
-}
-
-/// The native model donor a retained compatibility profile names for a source weapon.
-pub fn profile_donor(source: u32) -> Option<u32> {
-    super::compatibility::profile(source).map(|profile| profile.model_donor)
 }
 
 /// The native weapon a source weapon type is built on when Shadowkeep has none of that type.
 pub fn type_base(weapon_type: &str) -> Option<u32> {
     (weapon_type == "Glaive").then_some(super::glaive::BASE)
-}
-
-/// Source weapons covered by the retained, gameplay-tested compatibility profiles.
-pub fn known_weapons() -> impl Iterator<Item = (u32, &'static str)> {
-    super::compatibility::known_weapons()
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -83,6 +93,9 @@ pub struct Settings {
     pub modern_packages: Option<PathBuf>,
     pub reach_maps: Option<PathBuf>,
     pub marathon_packages: Option<PathBuf>,
+    /// Experimental. Marathon imports play the source weapon's own animation instead of the
+    /// donor's.
+    pub marathon_animations: bool,
     pub d1_roi: Option<PathBuf>,
     /// Retained when saving existing preferences. Texture conversion no longer loads this DLL.
     pub d1_xg_library: Option<PathBuf>,
@@ -427,7 +440,8 @@ fn convert_with_donor(
         output,
     } = *inputs;
     fs::create_dir_all(attempt.join("recipes"))?;
-    let row = json!({"hash":weapon.hash,"name":weapon.name,"native_item":donor["hash"],"native_donor":donor["name"]});
+    let row = json!({"hash":weapon.hash,"name":weapon.name,"namespace":weapon.namespace(),
+        "native_item":donor["hash"],"native_donor":donor["name"]});
     let prepared = match batch::prepare_one_reusing(
         &row,
         weapon.hash & 0xffff,
@@ -452,8 +466,6 @@ fn convert_with_donor(
             .context("Missing prepared graph")?,
     );
     let mut document: Value = serde_json::from_slice(&fs::read(&recipe)?)?;
-    let verified_profile =
-        super::compatibility::apply(weapon.hash, profile::hash(donor, "hash")?, &mut document);
     progress("Matching source perks, stats and weapon properties…".into());
     let gameplay: Value = serde_json::from_slice(&fs::read(source.join("gameplay.json"))?)?;
     let mapping =
@@ -514,7 +526,7 @@ fn convert_with_donor(
     let audio = &graph_manifest["audio"];
     write_json(
         &output.join("result.json"),
-        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"verified_profile":verified_profile,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing. New conversions require an in-game test."}),
+        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing. New conversions require an in-game test."}),
     )?;
     Ok(Attempt::Prepared(recipe))
 }
@@ -581,12 +593,8 @@ fn prepare_steps(
     let preferred = if glaive {
         Some(super::glaive::BASE)
     } else {
-        super::compatibility::profile(weapon.hash)
-            .map(|p| p.model_donor)
-            .or_else(|| {
-                previous_model_donor(output, weapon.hash)
-                    .filter(|&hash| ordinary_base(&mut native_reader, donors, hash, weapon))
-            })
+        previous_model_donor(output, weapon.hash)
+            .filter(|&hash| ordinary_base(&mut native_reader, donors, hash, weapon))
     };
     let mut errors = Vec::new();
     // Converting checks a donor in full, and the donor that converted this weapon before
@@ -707,7 +715,7 @@ fn ordinary_base(reader: &mut Reader, donors: &Value, hash: u32, weapon: &Weapon
     if hash == weapon.hash || same_name {
         return true;
     }
-    super::assets::item::find_native(reader, hash)
+    crate::tiger::shadowkeep::item_tag(reader, hash)
         .and_then(|tag| reader.tag(tag, Some(0x80807BEA)))
         .and_then(|item| item.u8(0xBA))
         .is_ok_and(|rarity| rarity != 5)

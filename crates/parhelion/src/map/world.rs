@@ -324,6 +324,24 @@ pub(super) struct World {
 }
 
 impl World {
+    pub(super) fn encounters(&self) -> Vec<(usize, super::mission::Encounter)> {
+        self.registry
+            .iter()
+            .chain(&self.extra_registries)
+            .enumerate()
+            .filter_map(|(area, registry)| registry.encounter().map(|encounter| (area, encounter)))
+            .collect()
+    }
+
+    pub(super) fn triggers(&self) -> Vec<(usize, super::mission::Triggers)> {
+        self.registry
+            .iter()
+            .chain(&self.extra_registries)
+            .enumerate()
+            .filter_map(|(area, registry)| registry.triggers().map(|triggers| (area, triggers)))
+            .collect()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn load(
         directory: &Path,
@@ -372,7 +390,22 @@ impl World {
                 .map_err(|e| invalid(format!("Map streaming: {e:#}")))
             })
             .transpose()?
-            .flatten();
+            .flatten()
+            // A level of one area takes the same layout as a campaign's first, its own spatial tome,
+            // visibility record, lighting cells and layout graph. With the donor's layout kept and
+            // only a tome added, a converted Breakneck drew none of its statics.
+            .or_else(|| {
+                source.map(
+                    |source| parhelion_import::halo_reach::level::streaming::Plan {
+                        bubbles: vec![parhelion_import::halo_reach::level::streaming::Bubble {
+                            name: name.to_owned(),
+                            zone_sets: source.zone_sets.clone(),
+                            preload: Vec::new(),
+                            commit: Vec::new(),
+                        }],
+                    },
+                )
+            });
         // A campaign's connected areas convert together, each placing what its zone sets load.
         let areas = streaming_plan.as_ref().map_or_else(Vec::new, |plan| {
             plan.bubbles
@@ -393,6 +426,24 @@ impl World {
             geometry.disable_ambience();
         }
         report("Preparing Spawns, Objectives and Death Boundaries");
+        let mission_volumes = super::mission::volumes(source)?;
+        let triggers_in = |geometry: &super::geometry::Geometry| -> AuthoringResult<Vec<_>> {
+            if mission_volumes.is_empty() {
+                return Ok(Vec::new());
+            }
+            let bounds = geometry.bounds()?;
+            Ok(mission_volumes
+                .iter()
+                .filter(|volume| {
+                    let (minimum, maximum) = volume.bounds();
+                    (0..3).all(|axis| {
+                        minimum[axis] <= bounds.maximum[axis]
+                            && maximum[axis] >= bounds.minimum[axis]
+                    })
+                })
+                .cloned()
+                .collect())
+        };
         let registry = match (&slice_set, &geometry) {
             (Some(slice_set), Some(geometry)) => Some(super::registry::Registry::load(
                 directory,
@@ -401,13 +452,16 @@ impl World {
                 &slice_set.payload,
                 SLICE_SET_REGISTRY,
                 geometry.spawns(),
+                geometry.squads(),
                 geometry.objectives(),
                 if options.death_boundaries {
                     geometry.volumes()
                 } else {
                     &[]
                 },
+                &triggers_in(geometry)?,
                 BubbleName::new(&world, name),
+                name,
             )?),
             _ => None,
         };
@@ -453,13 +507,16 @@ impl World {
                         .payload,
                     SLICE_SET_REGISTRY,
                     geometry.spawns(),
+                    geometry.squads(),
                     geometry.objectives(),
                     if options.death_boundaries {
                         geometry.volumes()
                     } else {
                         &[]
                     },
+                    &triggers_in(&geometry)?,
                     BubbleName::new(&world, &layout.names[index]),
+                    &layout.names[index],
                 )?;
                 extra_geometry.push(geometry);
                 extra_registries.push(registry);
@@ -670,7 +727,7 @@ impl World {
     )> {
         if self.streaming.is_some() {
             return Err(invalid(
-                "Connected campaign areas require the managed standalone mod layout",
+                "Imported map geometry requires the managed standalone mod layout",
             ));
         }
         let Some(geometry) = &self.geometry else {
@@ -867,9 +924,14 @@ impl World {
             )?;
             let content = tags.split_off(geometry.chain_entries());
             layout.patch_chain(&mut tags, bubble)?;
-            let extra = TagHash::new(native, first.entry_index() + tags.len() as u16);
-            let spatial =
-                layout.spatial(&mut tags, first, extra, bubble, geometry.bounds()?, cells)?;
+            let spatial = layout.spatial(
+                &mut tags,
+                first,
+                bubble,
+                geometry.bounds()?,
+                cells,
+                geometry.visible(),
+            )?;
             previous_entry = geometry.spawns().first().map(|spawn| spawn.position);
             for mut reference in overrides {
                 reference.new_tag_ordinal = native_count

@@ -169,9 +169,9 @@ pub(crate) fn expand_socket_columns(
                 reusable_plug_set_index: None,
                 randomized_plug_set_index: None,
                 randomized_selection_program: Vec::new(),
+                reusable_choices: None,
             });
-        column.choices.retain(|choice| *choice != plug);
-        column.choices.insert(0, plug);
+        column.lead_with(plug);
     }
     // A weapon has one frame. A borrowed frame replaces the host's rather than sitting ahead of
     // it, so the intrinsic lane holds the borrowed frames alone. A plug carrying a custom perk

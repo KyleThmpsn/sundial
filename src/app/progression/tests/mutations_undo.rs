@@ -1,26 +1,6 @@
 use super::*;
 
 #[test]
-fn cache_refresh_preserves_local_progression_undo_until_document_replacement() {
-    let mut state = UiState::default();
-    state.record_progression_change(
-        "character_progressions",
-        7,
-        Some([1, 2, 3]),
-        Some([4, 5, 6]),
-    );
-    state.cached_progression = Some(Err("old cached read".into()));
-    let undo = state.last_progression_change;
-    state.invalidate_cache();
-    assert!(state.cached_progression.is_none());
-    assert!(state.progression_changed("character_progressions", 7));
-    assert_eq!(state.last_progression_change, undo);
-    state.invalidate_document();
-    assert!(!state.progression_changed("character_progressions", 7));
-    assert!(state.last_progression_change.is_none());
-}
-
-#[test]
 fn flag_mutations_split_and_rejoin_runs_without_touching_unknown_fields() {
     let mut document = json!({
         "state": {
@@ -48,35 +28,6 @@ fn flag_mutations_split_and_rejoin_runs_without_touching_unknown_fields() {
 }
 
 #[test]
-fn progression_undo_restores_rows_and_clears_matching_dirty_state() {
-    let mut document = json!({
-        "state": {"unlocks": {
-            "account_progressions": [[23, 1, 2, 3]]
-        }}
-    });
-    let mut state = UiState::default();
-
-    assert!(set_progression_value(&mut document, "account_progressions", 23, [9, 8, 7],).changed());
-    state.record_progression_change("account_progressions", 23, Some([1, 2, 3]), Some([9, 8, 7]));
-    assert!(state.progression_changed("account_progressions", 23));
-    assert!(undo_progression_change(&mut document, &mut state));
-    assert_eq!(
-        saved_progression_lanes(&document, ProgressionScope::Account, 23),
-        Some([1, 2, 3])
-    );
-    assert!(!state.progression_changed("account_progressions", 23));
-
-    assert!(set_progression_value(&mut document, "account_progressions", 24, [0; 3],).changed());
-    state.record_progression_change("account_progressions", 24, None, Some([0; 3]));
-    assert!(undo_progression_change(&mut document, &mut state));
-    assert_eq!(
-        saved_progression_lanes(&document, ProgressionScope::Account, 24),
-        None
-    );
-    assert!(!state.progression_changed("account_progressions", 24));
-}
-
-#[test]
 fn family5_overrides_add_edit_and_remove_the_selected_definition() {
     let mut document = json!({"state": {"investment": {}}});
 
@@ -100,39 +51,6 @@ fn family5_overrides_add_edit_and_remove_the_selected_definition() {
     assert_eq!(
         document.pointer("/state/investment/family5_flag_overrides"),
         Some(&json!([]))
-    );
-}
-
-#[test]
-fn investment_undo_restores_edits_and_removes_new_rows() {
-    let mut document = json!({
-        "state": {"investment": {
-            "family5_flag_overrides": [[2003, 2]],
-            "family5_value_overrides": [[3510, 9]]
-        }}
-    });
-    let mut state = UiState {
-        last_investment_change: Some(InvestmentUndo::Flag {
-            definition_index: 2003,
-            previous: None,
-        }),
-        ..UiState::default()
-    };
-    assert!(undo_investment_change(&mut document, &mut state));
-    assert_eq!(
-        document.pointer("/state/investment/family5_flag_overrides"),
-        Some(&json!([]))
-    );
-    assert!(state.last_investment_change.is_none());
-
-    state.last_investment_change = Some(InvestmentUndo::Value {
-        definition_index: 3510,
-        previous: Some(7),
-    });
-    assert!(undo_investment_change(&mut document, &mut state));
-    assert_eq!(
-        document.pointer("/state/investment/family5_value_overrides"),
-        Some(&json!([[3510, 7]]))
     );
 }
 

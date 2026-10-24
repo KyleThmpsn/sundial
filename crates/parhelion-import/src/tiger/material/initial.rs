@@ -11,7 +11,7 @@ pub(super) fn bind(bytes: &mut Vec<u8>, stage: usize) -> Result<()> {
         return Ok(());
     }
     ensure!(
-        payload.u8(stage + 0x74)? == 0x10 && payload.u32(stage + 0x80)? == 0,
+        matches!(payload.u8(stage + 0x74)?, 0 | 0x10) && payload.u32(stage + 0x80)? == 0,
         "static initial bank has an unsupported allocation or slot"
     );
     let values = payload.array_range(stage + 0x50, 16, Some(0x80800090))?;
@@ -37,6 +37,9 @@ pub(super) fn bind(bytes: &mut Vec<u8>, stage: usize) -> Result<()> {
             &constants,
         )?;
     }
+    // Older prepared D1 graphs retained initial vectors without requesting a writable bank.
+    // The checked slot has no external buffer, so allocate its own native upload storage.
+    bytes[stage + 0x74] = 0x10;
     // 011D8900 returns before Map for an empty expression. A value-preserving
     // store makes it copy the entire initial bank before evaluating this code.
     // Appending keeps every existing graph relocation at its original offset.

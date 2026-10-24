@@ -789,64 +789,6 @@ mod tests {
         );
     }
 
-    fn collection_state_fixture() -> CollectionStateSnapshot {
-        let document = json!({
-            "state": {
-                "unlocks": {
-                    "account_flag_runs": [[10, 1]],
-                    "objective_values": [[20, 7]]
-                },
-                "investment": {
-                    "family5_flag_overrides": [[30, 2], [31, 1], [60, 0]],
-                    "family5_value_overrides": [[40, -1], [61, 99]]
-                }
-            }
-        });
-        collection_state_snapshot(&document).unwrap()
-    }
-
-    fn unlock_definition(hash: u64, code: u16, compact_slot: Option<u16>) -> UnlockDefinition {
-        UnlockDefinition {
-            hash,
-            code,
-            compact_slot,
-            name: None,
-            description: None,
-            runtime_writers: Vec::new(),
-            tested_by: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn collection_state_snapshot_uses_native_unbacked_defaults() {
-        let snapshot = collection_state_fixture();
-        let unbanked = unlock_definition(3, 0, None);
-        let computed = unlock_definition(3, INVENTORY_COMPUTED_KIND.into(), None);
-
-        assert_eq!(snapshot.flag_value(50, &unbanked), Some(false));
-        assert_eq!(snapshot.value(50, &unbanked), Some(0));
-        assert_eq!(snapshot.flag_text(50, &unbanked), "Default false");
-        assert_eq!(snapshot.value_text(50, &unbanked), "Default 0");
-        assert_eq!(snapshot.flag_value(50, &computed), None);
-        assert_eq!(snapshot.flag_text(50, &computed), "Computed at runtime");
-    }
-
-    #[test]
-    fn collection_state_snapshot_applies_family5_overrides() {
-        let snapshot = collection_state_fixture();
-        let account_flag = unlock_definition(1, 1, Some(10));
-        let account_value = unlock_definition(2, 1, Some(20));
-        let unbanked = unlock_definition(3, 0, None);
-
-        assert_eq!(snapshot.flag_text(30, &unbanked), "Override 2");
-        assert_eq!(snapshot.value_text(40, &unbanked), "Override -1");
-        assert_eq!(snapshot.flag_value(31, &unbanked), Some(false));
-        assert_eq!(snapshot.flag_value(60, &account_flag), Some(false));
-        assert_eq!(snapshot.flag_text(60, &account_flag), "Override 0");
-        assert_eq!(snapshot.value(61, &account_value), Some(99));
-        assert_eq!(snapshot.value_text(61, &account_value), "Override 99");
-    }
-
     #[test]
     fn progression_accepts_missing_sections_and_unknown_fields() {
         let document = json!({

@@ -7,9 +7,11 @@ struct Expr {
     code: Vec<u8>,
     missing: BTreeSet<String>,
     initial: BTreeSet<String>,
+    presets: BTreeSet<String>,
     resource: bool,
     authored: bool,
     viewport: bool,
+    callbacks: BTreeMap<u32, Vec<Value>>,
 }
 
 fn missing(reason: String) -> Expr {
@@ -28,7 +30,7 @@ pub(super) fn arithmetic(op: u8) -> Option<(u8, usize, usize)> {
         0x28 => (0x21, 0, 1),
         0x29 => (0x22, 1, 1),
         0x2a => (0x23, 0, 1),
-        0x2c => (0x25, 0, 1),
+        0x2b..=0x2c => (op - 7, 0, 1),
         0x2e..=0x32 => (op - 7, 0, 1),
         0x35 => (0x2e, 0, 5),
         0x3b => (0x0a, 0, 2),
@@ -69,6 +71,30 @@ pub(super) fn written(code: &[u8]) -> Result<BTreeSet<usize>> {
     }
     Ok(rows)
 }
+/// Object names are operands, so bytes inside other instructions cannot request providers.
+pub(super) fn objects(code: &[u8]) -> Result<BTreeSet<u32>> {
+    let mut names = BTreeSet::new();
+    let mut at = 0;
+    while at < code.len() {
+        let op = take(code, &mut at, 1)?[0];
+        let size = match op {
+            0x42 | 0x51 | 0x53 | 0x57..=0x59 | 0x5d | 0x61 | 0x63 | 0x64 => 1,
+            0x62 => 4,
+            0x4a..=0x4f | 0x67..=0x69 => 2,
+            _ => {
+                arithmetic(op)
+                    .context("Unsupported source stage expression")?
+                    .1
+            }
+        };
+        let operands = take(code, &mut at, size)?;
+        if op == 0x62 {
+            names.insert(u32::from_be_bytes(operands.try_into()?));
+        }
+    }
+    Ok(names)
+}
+
 fn pop(stack: &mut Vec<Expr>) -> Result<Expr> {
     stack.pop().context("Marathon expression stack underflow")
 }
@@ -84,6 +110,7 @@ pub(super) struct Context<'a> {
     pub samplers: BTreeSet<u8>,
     pub authored: BTreeMap<super::super::inputs::Input, u8>,
     pub full_viewport: bool,
+    pub reticle: bool,
 }
 
 pub(super) struct Lowered {
@@ -146,7 +173,18 @@ impl Context<'_> {
         );
         let bank = if parent { self.parent } else { self.local };
         let declaration = bank.iter().find(|d| d.name == name).cloned();
-        let result = if let Some(d) = declaration.as_ref().filter(|d| !d.code.is_empty()) {
+        // Source attachments can forward these inputs through local declarations.
+        // The equipped native weapon owns their values even when that forwarding
+        // procedure has no usable source runtime provider here.
+        let live = matches!(name, 0x32CC5402 | 0x9F7F13A9)
+            .then(|| self.objects.get(&format!("{name:08X}")).copied())
+            .flatten();
+        let result = if let Some(index) = live {
+            Expr {
+                code: vec![0x4d, index],
+                ..Expr::default()
+            }
+        } else if let Some(d) = declaration.as_ref().filter(|d| !d.code.is_empty()) {
             let mut at = 0;
             let mut stack = Vec::new();
             let mut output = None;
@@ -201,9 +239,20 @@ impl Context<'_> {
                 ..Expr::default()
             }
         } else if let Some(d) = declaration {
-            let mut e = self.constant(d.initial)?;
-            e.initial.insert(format!("Object channel {name:08X}"));
-            e
+            if self.reticle
+                && let Some((role, value)) = reticle::preset(name)
+            {
+                let mut e = self.constant(resources::vector_bytes(value))?;
+                e.presets.insert(role.into());
+                e
+            } else {
+                let mut e = self.constant(d.initial)?;
+                e.initial.insert(format!("Object channel {name:08X}"));
+                if !d.providers.is_empty() {
+                    e.callbacks.insert(name, d.providers);
+                }
+                e
+            }
         } else {
             missing(format!("Object channel {name:08X}"))
         };
@@ -281,14 +330,23 @@ impl Context<'_> {
                 }
                 0x4a..=0x4f => {
                     let args = take(code, &mut at, 2)?;
-                    if op == 0x4b && args[0] == 2 && (0x47..=0x4e).contains(&args[1]) {
+                    if self.reticle && op == 0x4a && args[0] == 98 && matches!(args[1], 0 | 1) {
+                        // This adapter emits linear reticle color. Source-specific display
+                        // encoding is a separate boundary from the retained artwork equations.
+                        self.constant([0; 16])?
+                    } else if op == 0x4b && args[0] == 2 && (0x47..=0x4e).contains(&args[1]) {
                         self.authored(super::super::inputs::Input::Pattern(args[1] - 0x47))?
-                    } else if op == 0x4a && matches!(args, [1, 0 | 4]) {
+                    } else if op == 0x4a
+                        && (matches!(args, [1, 0 | 4]) || matches!(args, [2, 0 | 1]))
+                    {
                         Expr {
-                            code: vec![0x3c, 1, args[1]],
+                            code: vec![0x3c, args[0], args[1]],
                             ..Expr::default()
                         }
-                    } else if op == 0x4b && args == [3, 4] && self.full_viewport {
+                    } else if op == 0x4b
+                        && self.full_viewport
+                        && (args == [3, 4] || (self.reticle && args == [75, 5]))
+                    {
                         // The pixel adapter supplies native dimensions. Retain
                         // an unresolved dependency if arithmetic changes this row.
                         Expr {
@@ -310,6 +368,12 @@ impl Context<'_> {
                     } else if op == 0x4d && args == [45, 1] {
                         Expr {
                             code: vec![0x3f, 44, 1],
+                            resource: true,
+                            ..Expr::default()
+                        }
+                    } else if op == 0x4d && self.reticle && args == [75, 12] {
+                        Expr {
+                            code: vec![0x3f, 73, 12],
                             resource: true,
                             ..Expr::default()
                         }
@@ -407,7 +471,7 @@ impl Context<'_> {
                             result.code.extend(e.code);
                             result.code.extend([0x43, i]);
                         }
-                        result.evidence.push(json!({"output":i,"translated":e.missing.is_empty(),"source_initial_inputs":e.initial,"unresolved":e.missing,"fallback":if e.missing.is_empty(){Value::Null}else{json!("Source initial output")}}));
+                        result.evidence.push(json!({"output":i,"translated":e.missing.is_empty() && e.callbacks.is_empty(),"source_initial_inputs":e.initial,"untranslated_callbacks":e.callbacks,"target_presets":e.presets,"unresolved":e.missing,"fallback":if e.missing.is_empty(){Value::Null}else{json!("Source initial output")}}));
                     }
                     continue;
                 }
@@ -418,21 +482,25 @@ impl Context<'_> {
                         slot >> 5 == 1 && e.missing.is_empty() && e.resource,
                         "Unsupported source resource binding"
                     );
-                    let register = u32::from(slot & 31);
+                    let stencil = self.reticle && e.code == [0x3f, 73, 12];
+                    let register = if stencil { 6 } else { u32::from(slot & 31) };
                     if op == 0x5d {
                         ensure!(e.code.first() == Some(&0x4c), "Non-sampler binding");
                         result.samplers.insert(register);
                     } else {
                         ensure!(
-                            e.code == [0x3f, 44, 1] || e.code == [0x3f, 3, 19],
+                            e.code == [0x3f, 44, 1]
+                                || e.code == [0x3f, 3, 19]
+                                || (stencil && slot == 0x20),
                             "Unknown native scene texture"
                         );
                         result.resources.insert(register);
                     }
                     result.code.extend(e.code);
-                    result
-                        .code
-                        .extend([if op == 0x5d { 0x49 } else { 0x47 }, slot]);
+                    result.code.extend([
+                        if op == 0x5d { 0x49 } else { 0x47 },
+                        if stencil { 0x26 } else { slot },
+                    ]);
                     continue;
                 }
                 _ => {
@@ -477,6 +545,8 @@ fn combine(
         e.code.extend(input.code);
         e.missing.extend(input.missing);
         e.initial.extend(input.initial);
+        e.callbacks.extend(input.callbacks);
+        e.presets.extend(input.presets);
         e.authored |= input.authored;
     }
     e.code.push(op);

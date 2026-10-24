@@ -354,6 +354,7 @@ pub(super) fn draw_choice_part(
                 let needle = query.to_lowercase();
                 egui::ScrollArea::vertical()
                     .max_height(360.0)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for choice in choices.iter().filter(|choice| {
                             !filtered
@@ -1097,6 +1098,10 @@ impl PackageAuthoringApp {
     }
 
     pub(in crate::app) fn draw_animation_part(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        if imported_view::part(&self.recipe, ui, imported_view::Part::Animations) {
+            return;
+        }
         self.update_lenders(ui.ctx());
         let index = self.lenders.index().cloned();
         let lender = |hash: u32| index.as_ref().and_then(|index| index.get(&hash).copied());

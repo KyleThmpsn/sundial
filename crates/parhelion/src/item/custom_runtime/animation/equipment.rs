@@ -374,8 +374,10 @@ fn author_rigs(
                     && cut.checked_add(8) == Some(before)
                     && before.checked_add(delta) == Some(after) =>
             {
-                parhelion_import::d2_mot::rig_convert::validate_native_instance(&rig.converted)
-                    .map_err(|e| invalid(format!("Equipment skeleton: {e:#}")))?;
+                parhelion_import::tiger::animation::sections::validate_native_instance(
+                    &rig.converted,
+                )
+                .map_err(|e| invalid(format!("Equipment skeleton: {e:#}")))?;
                 parhelion_import::tiger::animation::rig::rebase_entity(
                     entity,
                     &original,
@@ -386,10 +388,8 @@ fn author_rigs(
                 .map_err(|e| invalid(format!("Equipment skeleton pointers: {e:#}")))?;
             }
             (0x80808F8F, None) if before == after => {
-                parhelion_import::d2_mot::rig_convert::animation::first_person::controls::validate(
-                    &rig.converted,
-                )
-                .map_err(|e| invalid(format!("Equipment controls: {e:#}")))?;
+                parhelion_import::tiger::animation::rig::controls::validate(&rig.converted)
+                    .map_err(|e| invalid(format!("Equipment controls: {e:#}")))?;
             }
             _ => return Err(invalid("Equipment rig has an unsupported relocation")),
         }

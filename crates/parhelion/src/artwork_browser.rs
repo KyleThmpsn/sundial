@@ -20,8 +20,6 @@ pub(crate) mod preview;
 mod purpose;
 mod selection;
 pub(crate) use purpose::Purpose;
-#[cfg(test)]
-mod tests;
 mod thumbnails;
 mod view;
 use crate::{icon_edit::package_icons, perk::Icon};

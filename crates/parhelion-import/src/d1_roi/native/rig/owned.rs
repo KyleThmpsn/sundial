@@ -311,6 +311,13 @@ pub(in crate::d1_roi::native) fn finish(
         ("states", 0x9C, 0x80803465),
     ] {
         let id = lookup.u32(resource + field)?;
+        if animation["first_person"]["state_conversion"]["status"] == "source_states" {
+            ensure!(
+                animation["first_person"]["state_conversion"][key] == id,
+                "Private action selector was prepared against another rig"
+            );
+            continue;
+        }
         let file = format!("animation/owned-{key}.bin");
         fs::write(graph.join(&file), &native.tag(id, Some(class))?.0)?;
         animation["first_person"]["files"][key] = json!(file);
@@ -319,12 +326,8 @@ pub(in crate::d1_roi::native) fn finish(
     }
     let attachments = native.tag(owner(rig, false, 0x80804221)?, Some(0x80809C36))?;
     let content = tag(&rig["content_key"])?;
-    let rows = crate::d2_mot::rig::attachment_rows(
-        &attachments,
-        attachments.pointer(24)?,
-        content,
-        false,
-    )?;
+    let rows =
+        crate::tiger::rig::attachment_rows(&attachments, attachments.pointer(24)?, content, false)?;
     ensure!(
         rows.len() == 1,
         "Private rig attachment profile is ambiguous"
@@ -333,7 +336,9 @@ pub(in crate::d1_roi::native) fn finish(
     let profile = attachments.u32(rows[0] + 0x6C)?;
     animation["first_person"]["attachment_profile"] = json!({"status":"native",
         "patch":{"content_key":content,"category":category,"before":profile,"after":profile}});
-    animation["first_person"]["state_conversion"] = Value::Object(states);
+    if animation["first_person"]["state_conversion"]["status"] != "source_states" {
+        animation["first_person"]["state_conversion"] = Value::Object(states);
+    }
     animation["first_person"]["rigs"] = rig["owned_rigs"].clone();
     animation["first_person"]["retained_motion"] = json!(retained);
     animation["first_person"]["controller"] =

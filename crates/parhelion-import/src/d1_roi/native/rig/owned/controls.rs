@@ -96,6 +96,6 @@ pub(super) fn convert(
         sc.0[sstate] == nc.0[nstate],
         "Private control instance state differs"
     );
-    crate::d2_mot::rig_convert::animation::first_person::controls::validate(&nc.0)?;
+    crate::tiger::animation::rig::controls::validate(&nc.0)?;
     Ok((nc, changed_slots))
 }

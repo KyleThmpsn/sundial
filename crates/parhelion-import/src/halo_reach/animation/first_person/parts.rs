@@ -83,10 +83,7 @@ pub(super) fn prepare(
         .get(&hash("b_handle"))
         .context("Equipment weapon root missing")?;
     let source_bind = source.bind_objects();
-    let source_gun = *source
-        .names
-        .get("b_gun")
-        .context("Source weapon root missing")?;
+    let source_gun = source.root;
     let mut fp_bind = carrier.rig.bind.clone();
     let mut equipment_extra = Vec::new();
     let mut fp_extra = Vec::new();
@@ -105,15 +102,10 @@ pub(super) fn prepare(
             source.weapon.contains(&bone.name),
             "Source world and first-person weapon joints differ"
         );
-        let role =
-            aliases
-                .get(&bone.name)
-                .map(String::as_str)
-                .unwrap_or(match bone.name.as_str() {
-                    "b_gun" | "b_weapon" => "b_handle",
-                    "b_mag" => "b_magazine",
-                    other => other,
-                });
+        let role = aliases
+            .get(&bone.name)
+            .map(String::as_str)
+            .unwrap_or_else(|| source.weapon_role(&bone.name));
         let name = hash(role);
         if let Some(&native) = names.get(&name) {
             mapped.push(native);

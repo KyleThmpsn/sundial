@@ -9,9 +9,9 @@
 //! the cube's capture points. A cube's volume spans every cluster it alone serves. A cluster served
 //! by several cubes, as a level's large outer cluster is, gives each of them the part of its bounds
 //! within half the distance to the cluster's nearest other cube. Volumes of clusters served by one
-//! cube take priority [`INTERIOR_PRIORITY`] over shared ones, and the level's whole bounds take the
-//! cube nearest the middle of its most shared cluster at the lowest priority, as Distant Shore's
-//! volumes do with 15, 2 and 1.
+//! cube form interior volumes. The level's whole bounds take the cube nearest the middle of its
+//! most shared cluster as an exterior fallback. Shadowkeep sorts the submitted volumes by their
+//! box volume. Its resource +0x40 scales radiance and does not encode these spatial categories.
 //!
 //! Reach decodes a dynamic cubemap as `64 * rgb^2 * a` (`calc_environment_map_dynamic_ps` in
 //! `templated\environment_mapping.fx`), normalized to an average of one, and scales it by the baked
@@ -22,8 +22,7 @@
 use super::occlusion;
 use crate::{
     halo_reach::{
-        cache::Cache, level::Level, material, native_material, resource::Pages,
-        rig::METRES_PER_UNIT,
+        cache::Cache, level::Level, material, native, resource::Pages, rig::METRES_PER_UNIT,
     },
     presentation::Graph,
     tiger::reader::Reader,
@@ -39,26 +38,29 @@ const BSP_CUBEMAP: usize = 0x58;
 const CLUSTERS: (usize, usize) = (0x138, 0x8C);
 const CLUSTER_CUBES: (usize, usize) = (0x80, 0x10);
 const CUBE_POINTS: (usize, usize) = (0x04, 0x10);
-const INTERIOR_PRIORITY: f32 = 15.;
-const SHARED_PRIORITY: f32 = 2.;
-const EXTERIOR_PRIORITY: f32 = 1.;
 /// The least half size of a shared cube's part of its cluster, in meters.
 const LEAST_HALF: f32 = 2.;
 /// Reach's dynamic cubemap scale.
 const DYNAMIC_SCALE: f32 = 64.;
 
 /// One cubemap volume in the map's coordinates: its texture's symbol, its box's middle and half
-/// sizes, where its cube was captured, and its priority over volumes it overlaps.
+/// sizes and where its cube was captured. Cube texels already contain their radiance scale.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CubemapVolume {
     pub texture: String,
     pub center: [f32; 3],
     pub extents: [f32; 3],
     pub capture: [f32; 3],
-    pub priority: f32,
 }
 
-/// A cube's share of the level: its BSP and image, its capture point, its box and priority, in
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Exterior,
+    Shared,
+    Interior,
+}
+
+/// A cube's share of the level: its BSP and image, its capture point, its box and category, in
 /// meters in the level's coordinates.
 struct Cube {
     bsp: usize,
@@ -66,7 +68,7 @@ struct Cube {
     capture: [f32; 3],
     low: [f32; 3],
     high: [f32; 3],
-    priority: f32,
+    kind: Kind,
 }
 
 fn mean(points: &[[f32; 3]]) -> [f32; 3] {
@@ -156,8 +158,8 @@ pub(super) fn volumes(
                 });
             }
             for &(image, point) in &served {
-                let (part_low, part_high, priority) = if served.len() == 1 {
-                    (low, high, INTERIOR_PRIORITY)
+                let (part_low, part_high, kind) = if served.len() == 1 {
+                    (low, high, Kind::Interior)
                 } else {
                     let nearest = served
                         .iter()
@@ -173,7 +175,7 @@ pub(super) fn volumes(
                     (
                         std::array::from_fn(|k| (point[k] - half).max(low[k])),
                         std::array::from_fn(|k| (point[k] + half).min(high[k])),
-                        SHARED_PRIORITY,
+                        Kind::Shared,
                     )
                 };
                 let cube = cubes.entry((bsp, image)).or_insert(Cube {
@@ -182,11 +184,11 @@ pub(super) fn volumes(
                     capture: point,
                     low: part_low,
                     high: part_high,
-                    priority,
+                    kind,
                 });
                 cube.low = std::array::from_fn(|k| cube.low[k].min(part_low[k]));
                 cube.high = std::array::from_fn(|k| cube.high[k].max(part_high[k]));
-                cube.priority = cube.priority.max(priority);
+                cube.kind = cube.kind.max(kind);
             }
         }
     }
@@ -208,7 +210,7 @@ pub(super) fn volumes(
                 capture,
                 low,
                 high,
-                priority: EXTERIOR_PRIORITY,
+                kind: Kind::Exterior,
             });
         }
     }
@@ -217,6 +219,7 @@ pub(super) fn volumes(
         &placed.iter().map(|cube| cube.capture).collect::<Vec<_>>(),
     );
     let mut volumes = Vec::new();
+    let mut kinds = [0usize; 3];
     let mut skipped = Vec::new();
     let mut textures = BTreeMap::<(usize, usize), (String, f32)>::new();
     for (cube, light) in placed.iter().zip(lights) {
@@ -262,7 +265,7 @@ pub(super) fn volumes(
                     })
                     .collect::<Vec<_>>();
                 let symbol = format!("cubemap-{}-{}", cube.bsp, cube.image);
-                native_material::cube_mips(native, graph, &symbol, source.size, &mips)?;
+                native::material::cube_mips(native, graph, &symbol, source.size, &mips)?;
                 textures.insert(key, (symbol.clone(), light));
                 symbol
             }
@@ -272,16 +275,16 @@ pub(super) fn volumes(
             center: std::array::from_fn(|k| (cube.low[k] + cube.high[k]) / 2. + offset[k]),
             extents: std::array::from_fn(|k| ((cube.high[k] - cube.low[k]) / 2.).max(LEAST_HALF)),
             capture: std::array::from_fn(|k| cube.capture[k] + offset[k]),
-            priority: cube.priority,
         });
+        kinds[cube.kind as usize] += 1;
     }
     let report = json!({
         "volumes": volumes.len(),
         "textures": textures.len(),
         "native_radiance": radiance,
-        "interior": volumes.iter().filter(|v| v.priority == INTERIOR_PRIORITY).count(),
-        "shared": volumes.iter().filter(|v| v.priority == SHARED_PRIORITY).count(),
-        "exterior": volumes.iter().filter(|v| v.priority == EXTERIOR_PRIORITY).count(),
+        "interior": kinds[Kind::Interior as usize],
+        "shared": kinds[Kind::Shared as usize],
+        "exterior": kinds[Kind::Exterior as usize],
         "lights": textures.values().map(|(_, light)| *light).collect::<Vec<_>>(),
         "skipped": skipped,
     });

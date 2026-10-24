@@ -328,7 +328,6 @@ pub(super) fn build(
             native,
             &mut graph,
             profile,
-            0x80f2f261,
             &format!("projectile-trail-{index}"),
             scene.metres(),
             speed,

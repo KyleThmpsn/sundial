@@ -12,7 +12,7 @@ fn tag(value: &Value) -> Result<u32> {
     )?)
 }
 
-fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Vec<Marker>>> {
+fn source_parts(source: &Path, selector: Selector) -> Result<BTreeMap<(u64, u64), Vec<Marker>>> {
     let report: Value = serde_json::from_slice(&fs::read(source.join("report.json"))?)?;
     let mut result = BTreeMap::new();
     let Some(parts) = report["art_parts"].as_array() else {
@@ -26,14 +26,9 @@ fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Vec<Marker>>> {
                 .as_array()
                 .context("empty source placements")?
             {
-                let key = (
-                    placement["selector"]
-                        .as_u64()
-                        .context("empty source selector")?,
-                    placement["position"]
-                        .as_u64()
-                        .context("empty source position")?,
-                );
+                let Some(key) = native_placement(placement, selector)? else {
+                    continue;
+                };
                 if let Some(previous) = result.insert(key, Vec::new()) {
                     ensure!(
                         previous.is_empty(),
@@ -67,18 +62,34 @@ fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Vec<Marker>>> {
             .as_array()
             .context("source marker placements")?
         {
-            let (Some(selector), Some(position)) = (
-                placement["selector"].as_u64(),
-                placement["position"].as_u64(),
-            ) else {
+            if placement["selector"].is_null() || placement["position"].is_null() {
+                continue;
+            }
+            let Some(key) = native_placement(placement, selector)? else {
                 continue;
             };
-            if let Some(previous) = result.insert((selector, position), markers.clone()) {
+            if let Some(previous) = result.insert(key, markers.clone()) {
                 ensure!(previous == markers, "source marker placement is ambiguous");
             }
         }
     }
     Ok(result)
+}
+
+/// The source markers for a part at `(selector, position)`: those of the source part placed
+/// there, or, where the source places that selector at one position only, those of that part.
+/// A donor can offer a part in several positions, such as sights a plug chooses between, and the
+/// source weapon's one part stands for each of them.
+fn placed(
+    source: &BTreeMap<(u64, u64), Vec<Marker>>,
+    selector: u64,
+    position: u64,
+) -> Option<&Vec<Marker>> {
+    source.get(&(selector, position)).or_else(|| {
+        let mut same = source.range((selector, 0)..=(selector, u64::MAX));
+        let (_, only) = same.next()?;
+        same.next().is_none().then_some(only)
+    })
 }
 
 fn template(reader: &mut Reader, native: &Value) -> Result<Option<(u32, Payload, Payload)>> {
@@ -171,16 +182,18 @@ pub fn replace(template: &Payload, markers: &[Marker]) -> Result<Payload> {
 }
 
 /// Finalize all source part markers after separate and retained parts have been
-/// authored. Source art placement, not marker-name overlap, selects the set.
+/// authored. Source art placement, not marker-name overlap, selects the set. Every placement is
+/// compared in native numbering, which `selector` gives a source selector.
 pub fn author(
     reader: &mut Reader,
     source: &Path,
     native: &Value,
     directory: &Path,
     graph: &mut Value,
+    selector: Selector,
 ) -> Result<()> {
     let source_path = source;
-    let source = source_parts(source_path)?;
+    let source = source_parts(source_path, selector)?;
     let fallback = template(reader, native)?;
     let host = graph["native_assignment"]
         .as_u64()
@@ -206,13 +219,15 @@ pub fn author(
             part["placement"].clone(),
         ));
     }
+    // Source parts record their source selector.
     for part in graph["source_parts"].as_array().into_iter().flatten() {
+        let source_selector = part["selector"].as_u64().context("source part selector")?;
         parts.push((
             part["entity"]
                 .as_str()
                 .context("source marker entity")?
                 .to_owned(),
-            json!({"selector":part["selector"],"position":part["position"]}),
+            json!({"selector":selector(source_selector)?,"position":part["position"]}),
         ));
     }
     let mut report = Vec::new();
@@ -223,7 +238,7 @@ pub fn author(
         ) else {
             continue;
         };
-        let Some(markers) = source.get(&(selector, position)) else {
+        let Some(markers) = placed(&source, selector, position) else {
             continue;
         };
         let nodes = graph["nodes"]
@@ -310,6 +325,14 @@ pub fn author(
         report.push(json!({"entity":entity_symbol,"markers":symbol,"selector":selector,"position":position,"count":markers.len(),"added_component":found.is_none(),"gameplay_verified":false}));
     }
     graph["source_markers"] = json!(report);
-    optics::author(reader, source_path, native, directory, graph, &parts)?;
+    optics::author(
+        reader,
+        source_path,
+        native,
+        directory,
+        graph,
+        &parts,
+        selector,
+    )?;
     Ok(())
 }

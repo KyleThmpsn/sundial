@@ -515,7 +515,11 @@ pub(in crate::halo_reach) fn prepare(
         let names = clip_names(&action["source_clip"])?;
         selected.extend(names.iter().cloned());
         let (source, total) = source_events(jmad, &names)?;
-        if state.starts_with("fire") {
+        if state
+            .strip_prefix("iron_sight_")
+            .unwrap_or(state)
+            .starts_with("fire")
+        {
             if !source.is_empty() {
                 omitted.push(
                     json!({"state":state,"source_clips":names,"events":source.len(),

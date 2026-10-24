@@ -5,8 +5,7 @@ use parhelion_import::{halo_reach::browse as reach, marathon::browse as marathon
 
 const SPARROW_BUCKET: u32 = 2025709351;
 
-/// Retarget a vehicle's new graph for its persisted summon before conversion. The
-/// publication step preserves that selection together with the user's tuning.
+/// Retain the saved runtime and presentation selections before converting a new graph.
 pub(super) fn reach_request(
     entry: &reach::Entry,
     donor: u32,
@@ -15,16 +14,45 @@ pub(super) fn reach_request(
 ) -> anyhow::Result<parhelion_import::halo_reach::ImportRequest> {
     use anyhow::{Context, ensure};
     let mut request = entry.request(donor, donor_name)?;
-    if entry.vehicle()
-        && let Some(path) = previous
-    {
+    if let Some(path) = previous {
         let saved = WeaponRecipe::load_json(path)
-            .with_context(|| format!("Read saved vehicle {}", path.display()))?;
+            .with_context(|| format!("Read saved item {}", path.display()))?;
+        let kind = if entry.vehicle() {
+            ItemKind::Sparrow
+        } else {
+            ItemKind::Weapon
+        };
         ensure!(
-            saved.kind == ItemKind::Sparrow
-                && saved.identity.item_hash.parse_u32()? == entry.destination()?,
-            "The saved vehicle changed before reimport. Refresh the library and try again"
+            saved.kind == kind && saved.identity.item_hash.parse_u32()? == entry.destination()?,
+            "The saved item changed before reimport. Refresh the library and try again"
         );
+        if !entry.vehicle() {
+            let generated_name = request.recipe["name"].clone();
+            request.recipe = serde_json::to_value(&saved)?;
+            request.recipe["overrides"]
+                .as_object_mut()
+                .context("Saved weapon overrides")?
+                .remove("imported_graph");
+            if generated_name
+                .as_str()
+                .is_some_and(|name| saved.name == format!("Reach {name}"))
+            {
+                request.recipe["name"] = generated_name;
+            }
+            if let Some(graph) = &saved.overrides.imported_graph {
+                if parhelion_import::artwork::generated_image(
+                    graph,
+                    &request.recipe["overrides"]["icon_edit"]["imported_image"],
+                )? {
+                    request.recipe["overrides"]["icon_edit"]
+                        .as_object_mut()
+                        .context("Saved icon edit")?
+                        .remove("imported_image");
+                }
+                request.retain_weapon_presentation(graph)?;
+            }
+            return Ok(request);
+        }
         let summon = &saved
             .overrides
             .sparrow
@@ -37,6 +65,9 @@ pub(super) fn reach_request(
             .context("Select a native vehicle for this imported appearance before reimporting")?;
         request.runtime_entity = Some(entity);
         request.recipe["overrides"]["sparrow"]["summon"] = serde_json::to_value(summon)?;
+        if let Some(graph) = &saved.overrides.imported_graph {
+            request.retain_vehicle_presentation(graph)?;
+        }
     }
     Ok(request)
 }
@@ -187,6 +218,7 @@ pub(super) struct Shelf {
     read_requested: bool,
     catalog_target: PathBuf,
     scan_error: Option<String>,
+    scan_warning: Option<String>,
     donor_stamp: (usize, usize),
     origins: BTreeMap<u32, Origin>,
 }
@@ -206,6 +238,7 @@ impl Shelf {
             read_requested: false,
             catalog_target: PathBuf::new(),
             scan_error: None,
+            scan_warning: None,
             donor_stamp: (usize::MAX, usize::MAX),
             origins: BTreeMap::new(),
         }
@@ -245,6 +278,7 @@ impl Importer {
             read_requested: self.read_requested,
             catalog_target: std::mem::take(&mut self.catalog_target),
             scan_error: self.scan_error.take(),
+            scan_warning: self.scan_warning.take(),
             donor_stamp: self.donor_stamp,
             origins: std::mem::take(&mut self.origins),
         };
@@ -261,6 +295,7 @@ impl Importer {
         self.read_requested = next.read_requested;
         self.catalog_target = next.catalog_target;
         self.scan_error = next.scan_error;
+        self.scan_warning = next.scan_warning;
         self.donor_stamp = next.donor_stamp;
         self.origins = next.origins;
         self.source = source;
@@ -322,6 +357,7 @@ impl PackageAuthoringApp {
                 self.importer.browser.anchor = None;
                 self.importer.selected.clear();
                 self.importer.scan_error = None;
+                self.importer.scan_warning = None;
                 self.importer.outcome = None;
                 match self.importer.save() {
                     Ok(()) => self.scan_importer(ctx, false),
@@ -360,10 +396,18 @@ impl PackageAuthoringApp {
                 ctx.request_repaint();
             };
             let result = match source {
-                Source::Reach => reach::browse_cached(&folder, &cache, refresh, progress)
-                    .map(|entries| rows(entries.into_iter().map(Origin::Reach))),
+                Source::Reach => {
+                    reach::browse_cached(&folder, &cache, refresh, progress).map(|entries| {
+                        let (weapons, origins) = rows(entries.into_iter().map(Origin::Reach));
+                        (weapons, origins, None)
+                    })
+                }
                 Source::Marathon => marathon::browse_cached(&folder, &cache, refresh, progress)
-                    .map(|entries| rows(entries.into_iter().map(Origin::Marathon))),
+                    .map(|listing| {
+                        let (weapons, origins) =
+                            rows(listing.entries.into_iter().map(Origin::Marathon));
+                        (weapons, origins, listing.warning)
+                    }),
                 Source::Modern | Source::Roi => {
                     Err(anyhow::anyhow!("This source uses a separate reader"))
                 }
@@ -389,27 +433,41 @@ impl PackageAuthoringApp {
         origin: &Origin,
         risky: &BTreeSet<u32>,
     ) -> Option<(u32, String)> {
+        self.foreign_donors(origin, risky).into_iter().next()
+    }
+
+    /// Every installed native item an origin can build on, in [`Self::foreign_donor`]'s order.
+    /// With Marathon animations on, a Marathon import takes the first whose first-person states
+    /// play the source's reloads.
+    pub(super) fn foreign_donors(
+        &self,
+        origin: &Origin,
+        risky: &BTreeSet<u32>,
+    ) -> Vec<(u32, String)> {
         let stock = |hash: u32| {
             self.catalog
                 .as_ref()
                 .and_then(|catalog| catalog.item_definition_tag(hash))
                 .is_none_or(crate::package_profile::is_stock_item_definition)
         };
-        let pick = |donors: &mut dyn Iterator<Item = &WeaponDonorSummary>| {
+        let order = |donors: &mut dyn Iterator<Item = &WeaponDonorSummary>| {
+            let mut donors = donors.filter(|donor| stock(donor.hash)).collect::<Vec<_>>();
+            donors.sort_by_key(|donor| {
+                (
+                    !donor.collection_backed,
+                    donor.name.to_lowercase(),
+                    donor.hash,
+                )
+            });
             donors
-                .filter(|donor| stock(donor.hash))
-                .min_by_key(|donor| {
-                    (
-                        !donor.collection_backed,
-                        donor.name.to_lowercase(),
-                        donor.hash,
-                    )
-                })
+                .into_iter()
                 .map(|donor| (donor.hash, donor.name.clone()))
+                .collect()
         };
-        match origin.base()? {
-            Base::Vehicle => pick(&mut self.gear_donors_for(ItemKind::Sparrow).iter()),
-            Base::Weapon(kind) => pick(
+        match origin.base() {
+            None => Vec::new(),
+            Some(Base::Vehicle) => order(&mut self.gear_donors_for(ItemKind::Sparrow).iter()),
+            Some(Base::Weapon(kind)) => order(
                 &mut self
                     .donor_summaries
                     .iter()
@@ -419,34 +477,44 @@ impl PackageAuthoringApp {
     }
 
     /// Converts the selected Halo: Reach or Marathon items, each onto its chosen native base.
-    pub(super) fn import_foreign(&mut self, ctx: &egui::Context) {
+    /// `reimport` names the saved namespace of each item a library reimport updates.
+    pub(super) fn import_foreign(&mut self, ctx: &egui::Context, reimport: &BTreeMap<u32, String>) {
         let source = self.importer.source;
         let Some(folder) = self.importer.folder().cloned() else {
             return;
         };
         let Ok(root) = data_root() else { return };
-        let native = PathBuf::from(&self.packages);
         let risky = self.risky_donors();
+        let source_animation = self.importer.settings.marathon_animations;
         let existing: BTreeMap<_, _> = self
             .recipe_entries
             .iter()
             .map(|entry| (entry.identity_hash, entry.path.clone()))
             .collect();
-        let jobs: Vec<(Weapon, Origin, (u32, String))> = self
+        let jobs: Vec<_> = self
             .importer
             .selected_weapons()
             .filter_map(|weapon| {
-                let origin = self.importer.origins.get(&weapon.hash)?;
-                let donor = self.foreign_donor(origin, &risky)?;
-                Some((weapon.clone(), origin.clone(), donor))
+                let mut origin = self.importer.origins.get(&weapon.hash)?.clone();
+                let donor = self.foreign_donors(&origin, &risky);
+                if donor.is_empty() {
+                    return None;
+                }
+                // Earlier Marathon imports were named by source hash or a short word. Halo:
+                // Reach recipes were only ever named by their entry slug.
+                if let Origin::Marathon(entry) = &mut origin {
+                    entry.saved_namespace = reimport.get(&weapon.hash).cloned();
+                }
+                Some((weapon.clone(), origin, donor))
             })
             .collect();
         let names = jobs
             .iter()
             .map(|(weapon, _, _)| weapon.name.clone())
             .collect();
-        self.run_import(ctx, names, move |index, progress| {
-            let (weapon, origin, (donor, donor_name)) = &jobs[index];
+        self.run_import(ctx, names, move |index, native, progress| {
+            let (weapon, origin, donors) = &jobs[index];
+            let (donor, donor_name) = &donors[0];
             let folder_name = match origin {
                 Origin::Reach(_) => format!("Reach {}", weapon.name),
                 Origin::Marathon(_) => weapon.name.clone(),
@@ -462,10 +530,16 @@ impl PackageAuthoringApp {
                         donor_name,
                         existing.get(&weapon.hash).map(PathBuf::as_path),
                     )?;
-                    reach::import(&request, &folder, &native, &output)
+                    reach::import(&request, &folder, native, &output)
                 }
                 Origin::Marathon(entry) => marathon::import(
-                    entry, *donor, donor_name, &folder, &native, &output, progress,
+                    entry,
+                    donors,
+                    source_animation,
+                    &folder,
+                    native,
+                    &output,
+                    progress,
                 ),
             }
         });

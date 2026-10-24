@@ -21,6 +21,7 @@ const SCHEMA: u32 = 2;
 /// Native summons a vehicle import drives. Tank physics keeps the tank's turret controls.
 const TANK: (&str, u32) = ("tank", 0x80BF_AF2D);
 const INTERCEPTOR: (&str, u32) = ("interceptor", 0x80C0_D7A6);
+const HEAVY_PIKE: (&str, u32) = ("heavy_pike", 0x80C0_C1EC);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Entry {
@@ -187,10 +188,16 @@ impl Entry {
         }
     }
 
-    /// Tank physics summons the tank, every other vehicle the interceptor.
+    /// Wheeled and fighter assemblies use Heavy Pike. Tank and hover sources retain their carriers.
     fn summon(&self) -> (&'static str, u32) {
         if self.physics.iter().any(|kind| kind == "human_tank") {
             TANK
+        } else if self
+            .physics
+            .iter()
+            .any(|kind| matches!(kind.as_str(), "human_jeep" | "alien_fighter"))
+        {
+            HEAVY_PIKE
         } else {
             INTERCEPTOR
         }
@@ -203,13 +210,13 @@ impl Entry {
     /// The authored item hash an import of this entry receives.
     pub fn destination(&self) -> Result<u32> {
         crate::graph::hash(
-            &crate::d2_mot::batch::identity(&self.namespace())?,
+            &crate::graph::import_identity(&self.namespace())?,
             "item_hash",
         )
     }
 
-    /// The import of this entry with a normal recipe on `donor`. A vehicle summons the native
-    /// vehicle its physics matches.
+    /// A normal recipe on `donor`. Conversion automatically attempts its modeled primary
+    /// projectile. A vehicle summons the native vehicle its physics matches.
     pub fn request(&self, donor: u32, donor_name: &str) -> Result<ImportRequest> {
         ensure!(!self.slug.is_empty(), "Reach entry has no slug");
         let vehicle = self.vehicle();
@@ -219,8 +226,8 @@ impl Entry {
             "namespace": self.namespace(),
             "collection_placement": "sunrise_badge",
             "donor": {"item_hash": format!("0x{donor:08X}"), "expected_name": donor_name},
-            "identity": crate::d2_mot::batch::identity(&self.namespace())?,
-            "name": format!("Reach {}", self.name()),
+            "identity": crate::graph::import_identity(&self.namespace())?,
+            "name": self.name(),
             "flavor": "Imported from Halo: Reach.",
             "source": "Source: Halo: Reach MCC",
             "overrides": {},
@@ -244,8 +251,16 @@ impl Entry {
                 audio: None,
             },
             recipe,
-            scale: 1.0,
-            inspection_scale: 1.0,
+            scale: if vehicle {
+                super::native::scale::VEHICLE_WORLD
+            } else {
+                1.
+            },
+            inspection_scale: if vehicle {
+                super::native::scale::VEHICLE_INSPECTION
+            } else {
+                1.
+            },
             runtime_entity: vehicle.then(|| self.summon().1),
             driver_pose: None,
             projectile_entity: None,

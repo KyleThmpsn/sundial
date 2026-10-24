@@ -6,7 +6,10 @@
 //! gameplay effect. The source display group carries as a group of the recipe's own, so the
 //! inspect screen shows the stats and numbers the source weapon showed.
 use super::*;
-use crate::d2_mot::gameplay::{limits::Shown, stat_definitions, stat_group};
+use crate::{
+    stat_group::{self, Shown},
+    tiger::shadowkeep::stat_definitions,
+};
 use std::collections::BTreeSet;
 
 pub(super) struct Translated {

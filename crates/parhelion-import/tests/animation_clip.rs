@@ -15,8 +15,10 @@ fn array(bytes: &mut Vec<u8>, at: usize, class: u32, stride: usize, data: &[u8])
     if data.is_empty() {
         return;
     }
-    let header = bytes.len().next_multiple_of(16);
+    // Native arrays keep their allocation marker in the four bytes before a 16-aligned header.
+    let header = (bytes.len() + 19) & !15;
     bytes.resize(header + 16, 0);
+    put(bytes, header - 4, &0x80809FBDu32.to_le_bytes());
     let count = (data.len() / stride) as u64;
     put(bytes, at, &count.to_le_bytes());
     put(
@@ -149,22 +151,66 @@ fn close(actual: f32, expected: f32) -> Result<()> {
     Ok(())
 }
 
-// Decode the emitted float representation directly, without the production codec reader.
-fn emitted(bytes: &Payload, kind: usize, slot: u16, frame: usize) -> Result<Vec<f32>> {
+fn within(actual: f32, expected: f32, tolerance: f32) -> Result<()> {
+    ensure!(
+        (actual - expected).abs() <= tolerance,
+        "Expected {expected} within {tolerance}, got {actual}"
+    );
+    Ok(())
+}
+
+// Decode the emitted pose spans directly, without the production codec reader. A track that
+// never moves is one float sample in the static span. A moving track is 16-bit codec 2 data,
+// ordered by control, frame and component, with one range and bias per component. Each value
+// comes back with the precision its storage promises.
+fn emitted(bytes: &Payload, kind: usize, slot: u16, frame: usize) -> Result<Vec<(f32, f32)>> {
+    let width = [1, 4, 3][kind];
+    let fixed = bytes.array(0xA8 + kind * 16, 2, Some(0x8080000A))?;
+    if let Some(track) = fixed
+        .iter()
+        .position(|&at| bytes.u16(at).ok() == Some(slot))
+    {
+        let base = bytes.pointer(0x10)?;
+        ensure!(bytes.u32(base - 4)? == 0x80808F73 && bytes.u32(base + 0x10)? == 1);
+        let rows = bytes.array(
+            base + 0x18 + kind * 16,
+            if kind == 0 { 4 } else { 16 },
+            None,
+        )?;
+        return (0..width)
+            .map(|axis| Ok((bytes.f32(rows[track] + axis * 4)?, 0.00002)))
+            .collect();
+    }
     let maps = bytes.array(0xD8 + kind * 16, 2, Some(0x8080000A))?;
     let track = maps
         .iter()
         .position(|&at| bytes.u16(at).ok() == Some(slot))
         .unwrap();
     let base = bytes.pointer(0x18)?;
-    ensure!(bytes.u32(base - 4)? == 0x80808F73 && bytes.u16(base)? == 0);
-    let rows = bytes.array(
-        base + 0x18 + kind * 16,
-        if kind == 0 { 4 } else { 16 },
-        None,
-    )?;
-    (0..[1, 4, 3][kind])
-        .map(|axis| bytes.f32(rows[track * 5 + frame] + axis * 4))
+    ensure!(bytes.u32(base - 4)? == 0x80808F71 && bytes.u16(base)? == 2);
+    let frames = bytes.u32(base + 0x10)? as usize;
+    let counts = [
+        bytes.u16(base + 2)?,
+        bytes.u16(base + 4)?,
+        bytes.u16(base + 6)?,
+    ];
+    let component = (0..kind)
+        .map(|k| usize::from(counts[k]) * [1, 4, 3][k])
+        .sum::<usize>()
+        + track * width;
+    let samples = bytes.array(base + 0x18, 2, Some(0x8080000A))?;
+    let ranges = bytes.array(base + 0x28, 4, Some(0x8080000F))?;
+    let biases = bytes.array(base + 0x38, 4, Some(0x8080000F))?;
+    (0..width)
+        .map(|axis| {
+            let range = bytes.f32(ranges[component + axis])?;
+            let bias = bytes.f32(biases[component + axis])?;
+            let sample = bytes.u16(samples[component * frames + frame * width + axis])?;
+            Ok((
+                f32::from(sample) / 65535. * range + bias,
+                range / 131070. + 0.00002,
+            ))
+        })
         .collect()
 }
 
@@ -199,17 +245,18 @@ fn curve_controls_survive_persisted_extension_and_translation() -> Result<()> {
                 3. + 2. * f32::from([-32767i16, -16384, 0, 16384, 32767][frame]) / 32767.
             };
             close(sampled[2][7], scale)?;
-            close(emitted(&extended, 0, 2, frame)?[0], scale)?;
+            let (value, tolerance) = emitted(&extended, 0, 2, frame)?[0];
+            within(value, scale, tolerance)?;
             let w = 2. * 16384. / 32767. - 1.;
             let expected_rotation = [0., 0., -(1f32 - w * w).sqrt(), w];
             for (actual, expected) in sampled[0][..4].iter().zip(expected_rotation) {
                 close(*actual, expected)?;
             }
-            for (actual, expected) in emitted(&extended, 1, 0, frame)?
+            for (&(actual, tolerance), expected) in emitted(&extended, 1, 0, frame)?
                 .iter()
                 .zip(expected_rotation)
             {
-                close(*actual, expected)?;
+                within(actual, expected, tolerance)?;
             }
             let y = 10.
                 + 4. * ((t * t * t - 2. * t * t + t) * (0.3 * 64. / 49.)
@@ -218,16 +265,17 @@ fn curve_controls_survive_persisted_extension_and_translation() -> Result<()> {
             for (actual, expected) in sampled[1][4..7].iter().zip(expected_position) {
                 close(*actual, expected)?;
             }
-            for (actual, expected) in emitted(&extended, 2, 1, frame)?
+            for (&(actual, tolerance), expected) in emitted(&extended, 2, 1, frame)?
                 .iter()
                 .zip(expected_position)
             {
-                close(*actual, expected)?;
+                within(actual, expected, tolerance)?;
             }
             ensure!(sampled[0][4..] == REST[4..]);
             ensure!(sampled[2][..4] == REST[..4]);
             ensure!(sampled[2][4..7] == [5., 6., 7.]);
-            close(emitted(&extended, 2, 3, frame)?[0], frame as f32)?;
+            let (value, tolerance) = emitted(&extended, 2, 3, frame)?[0];
+            within(value, frame as f32, tolerance)?;
         }
         let shifted = clip::translate(&original, 1, [0.; 3], [0., 0.1, 0.])?;
         for frame in 0..5 {

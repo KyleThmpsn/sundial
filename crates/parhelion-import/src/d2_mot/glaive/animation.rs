@@ -42,8 +42,6 @@ use std::{
 };
 
 const FIRE_CLIP: u32 = 0x80A8_A407;
-/// The fire clip's frame-zero selector event has no native counterpart.
-const FIRE_OMITTED_EVENTS: [usize; 1] = [0];
 const FIRE_STATE: u32 = 0x9FAC_79C9;
 const SPRINT_SWAY: u32 = 0x80A8_A3F0;
 const SPRINT_LAYER: u32 = 0x4D46_7CC1;
@@ -793,14 +791,7 @@ pub(super) fn apply(inputs: &Inputs) -> Result<Value> {
 
     // Clips: hip fire, sprint sway and poses, and the swings.
     let with = conversion(&mut sr, &mut nr, &fp, inputs.graph, inputs.calibration)?;
-    let fire = convert(
-        &mut sr,
-        &with,
-        &with.library,
-        FIRE_CLIP,
-        None,
-        &FIRE_OMITTED_EVENTS,
-    )?;
+    let fire = convert(&mut sr, &with, &with.library, FIRE_CLIP, None, &[])?;
     let sway = convert(&mut sr, &with, &with.library, SPRINT_SWAY, None, &[])?;
     let mut poses = Vec::new();
     for (_, _, clip) in SPRINT_POSES {
@@ -876,12 +867,21 @@ pub(super) fn apply(inputs: &Inputs) -> Result<Value> {
         }
         swing_descriptors.push(playing[0]);
     }
-    ensure!(
-        bank.playing(FIRE_CLIP).is_empty(),
-        "the hip fire clip is already in the bank"
-    );
     let fire_name = source_descriptor(&mut sr, &source_bank, FIRE_CLIP)?;
-    let fire_descriptor = bank.add(fire_name, FIRE_CLIP, fire.payload.u16(FRAMES)?)?;
+    let fire_frames = fire.payload.u16(FRAMES)?;
+    let mut fire_descriptors = bank.playing(FIRE_CLIP);
+    if fire_descriptors.is_empty() {
+        fire_descriptors.push(bank.add(fire_name, FIRE_CLIP, fire_frames)?);
+    }
+    for &index in &fire_descriptors {
+        let row = &bank.descriptors[index];
+        ensure!(
+            Bank::name(row) == fire_name && Bank::mode(row) == 1 && row[..16] == [0; 16],
+            "the converted hip fire descriptor differs from its source route"
+        );
+        bank.set_duration(index, duration(fire_frames));
+    }
+    let fire_descriptor = fire_descriptors[0];
 
     // States: hip fire on every fire choice, the swings on the light attacks.
     let states_path = file("states")?;

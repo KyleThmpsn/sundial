@@ -1,6 +1,98 @@
 //! One private identity space for an effect's start, stop and transition banks.
 use super::*;
 
+#[derive(PartialEq, Eq)]
+struct Definition<'a> {
+    kind: u8,
+    body: &'a [u8],
+    references: Vec<(usize, Kind, u32)>,
+}
+
+/// Banks have already been normalized to Wwise 113. Compare object-local bytes
+/// and typed relocations, excluding unrelated bank headers and physical offsets.
+fn definitions(bank: &Bank) -> Result<BTreeMap<u32, Definition<'_>>> {
+    let mut chunks = Read {
+        bytes: &bank.bytes,
+        at: 0,
+    };
+    let mut hierarchy = None;
+    let mut header = false;
+    while chunks.at < chunks.bytes.len() {
+        let kind = chunks.take(4)?;
+        let count = chunks.u32()? as usize;
+        let base = chunks.at;
+        let body = chunks.take(count)?;
+        match kind {
+            b"BKHD" => {
+                let mut reader = Read { bytes: body, at: 0 };
+                ensure!(
+                    !header && reader.u32()? == 113 && reader.u32()? == bank.bank_id,
+                    "linked audio bank header differs"
+                );
+                header = true;
+            }
+            b"HIRC" => ensure!(
+                hierarchy.replace((base, body)).is_none(),
+                "duplicate linked hierarchy"
+            ),
+            _ => {}
+        }
+    }
+    ensure!(header, "linked audio bank header missing");
+    let (base, bytes) = hierarchy.context("linked audio hierarchy missing")?;
+    let mut reader = Read { bytes, at: 0 };
+    let count = reader.count()?;
+    let mut result = BTreeMap::new();
+    for _ in 0..count {
+        let kind = reader.u8()?;
+        let size = reader.u32()? as usize;
+        let offset = base + reader.at;
+        let body = reader.take(size)?;
+        let id = u32::from_le_bytes(
+            body.get(..4)
+                .context("linked object identity")?
+                .try_into()?,
+        );
+        let mut references = Vec::new();
+        for reference in bank
+            .refs
+            .iter()
+            .filter(|r| (offset..offset + size).contains(&r.offset))
+        {
+            let at = reference.offset - offset;
+            ensure!(
+                body.get(at..at + 4) == Some(reference.value.to_le_bytes().as_slice()),
+                "linked audio object relocation differs from its bytes"
+            );
+            references.push((at, reference.kind, reference.value));
+        }
+        references.sort_by_key(|r| r.0);
+        ensure!(
+            references.windows(2).all(|w| w[0].0 + 4 <= w[1].0),
+            "linked audio object relocations overlap"
+        );
+        ensure!(
+            result
+                .insert(
+                    id,
+                    Definition {
+                        kind,
+                        body,
+                        references
+                    }
+                )
+                .is_none(),
+            "duplicate linked audio object {id:08X}"
+        );
+    }
+    reader.end()?;
+    ensure!(
+        result.keys().copied().collect::<BTreeSet<_>>() == bank.objects,
+        "linked audio object inventory differs from its hierarchy"
+    );
+    Ok(result)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Namespace {
     objects: BTreeMap<u32, u32>,
@@ -15,6 +107,20 @@ impl Namespace {
             !name.is_empty() && !banks.is_empty(),
             "empty audio namespace"
         );
+        let mut shared = BTreeMap::new();
+        for bank in banks {
+            for (id, definition) in definitions(bank)? {
+                if let Some((owner, existing)) = shared.get(&id) {
+                    ensure!(
+                        *existing == definition,
+                        "conflicting linked audio object {id:08X} in banks {owner:08X} and {:08X}",
+                        bank.bank_id
+                    );
+                } else {
+                    shared.insert(id, (bank.bank_id, definition));
+                }
+            }
+        }
         let owned = banks
             .iter()
             .flat_map(|bank| bank.objects.iter().copied())

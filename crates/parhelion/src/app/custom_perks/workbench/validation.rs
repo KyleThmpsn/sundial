@@ -150,6 +150,8 @@ impl Workbench {
                 let mut one = program.clone();
                 one.actions.clear();
                 one.ability_tunings.clear();
+                one.ability_inputs.clear();
+                one.ability_rows.clear();
                 if one.validate().is_err() {
                     return None;
                 }

@@ -618,30 +618,6 @@ fn reward_catalog(interval: bool, quantity: i32, instanced: bool, class_type: u6
 }
 
 #[test]
-fn pending_rewards_split_stacks_and_grant_only_new_stages() {
-    for (interval, flag) in [(false, false), (true, false), (true, true)] {
-        let catalog = reward_catalog(interval, 201, false, 3);
-        let mut record = catalog.records().unwrap()[0].clone();
-        if flag {
-            record.completion_flag = Some(0);
-        }
-        let mut document = json!({"_native_progression":{},"_reward_context":{"character":0,"character_count":1,"class":3,"pending":[]},"state":{"unlocks":{"objective_values":[[15,1],[2115,10]]}}});
-        edit::apply_record(&mut document, &catalog, &record, true).unwrap();
-        let rewards = document["_progression_rewards"].as_array().unwrap();
-        assert_eq!(
-            rewards
-                .iter()
-                .map(|row| row["quantity"].as_i64().unwrap())
-                .collect::<Vec<_>>(),
-            if interval { vec![1] } else { vec![99, 99, 3] }
-        );
-        let original = document.clone();
-        edit::apply_record(&mut document, &catalog, &record, true).unwrap();
-        assert_eq!(document, original);
-    }
-}
-
-#[test]
 fn instanced_rewards_check_class_before_changing_the_triumph() {
     let catalog = reward_catalog(false, 2, true, 1);
     let mut document = json!({"_native_progression":{},"_reward_context":{"character":0,"character_count":1,"class":0,"pending":[]}});

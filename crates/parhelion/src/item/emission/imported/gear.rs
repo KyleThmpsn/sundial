@@ -28,7 +28,13 @@ pub(super) fn bind(
     } else {
         crate::imported::kind(spec.kind).is_some_and(|kind| graph["kind"] == kind)
     };
-    if !matching_kind || graph["native_item"].as_u64() != Some(u64::from(spec.donor_item_hash)) {
+    // A weapon reimport keeps its authored gameplay base and saves the import's carrier as the
+    // appearance donor. Gear recipes cannot set one, so their base is the carrier.
+    let carrier = spec
+        .presentation_donor
+        .as_ref()
+        .map_or(spec.donor_item_hash, |donor| donor.item_hash);
+    if !matching_kind || graph["native_item"].as_u64() != Some(u64::from(carrier)) {
         return Err(invalid(
             "Imported gear requires its matching native slot and runtime template",
         ));

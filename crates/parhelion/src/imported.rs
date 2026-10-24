@@ -12,14 +12,22 @@ pub(crate) fn source_icon(
         .imported_graph
         .as_ref()
         .ok_or("No imported source selected")?;
-    let family = kind(recipe.kind).ok_or("Unsupported source item kind")?;
-    graph
-        .validate_reusable(family)
-        .map_err(|e| format!("{e:#}"))?;
     let document: serde_json::Value = serde_json::from_slice(
         &std::fs::read(graph.directory.join("asset-graph.json")).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    if recipe.kind.is_weapon() {
+        let item = document["item_hash"]
+            .as_u64()
+            .and_then(|hash| u32::try_from(hash).ok())
+            .ok_or("Imported weapon identity missing")?;
+        graph.validate(item).map_err(|e| format!("{e:#}"))?;
+    } else {
+        let family = kind(recipe.kind).ok_or("Unsupported source item kind")?;
+        graph
+            .validate_reusable(family)
+            .map_err(|e| format!("{e:#}"))?;
+    }
     let path = match document["source_icon_png"].as_str() {
         Some(file) => {
             let root = graph.directory.canonicalize().map_err(|e| e.to_string())?;

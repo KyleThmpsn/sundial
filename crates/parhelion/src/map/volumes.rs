@@ -29,7 +29,7 @@ use crate::{
     error::invalid,
     tag_payload::{
         bounded_relative_target, read_i64, read_u32, read_u64, synchronize_payload_size, write_i64,
-        write_u32, write_u64,
+        write_u16, write_u32, write_u64,
     },
 };
 
@@ -165,6 +165,32 @@ impl<'a> Donor<'a> {
             })
             .collect()
     }
+
+    /// Shape records bind each donor row to the packfile shape with the same index.
+    fn shapes(&self, names: &[String]) -> AuthoringResult<Vec<Vec<u8>>> {
+        let mut shapes = Vec::with_capacity(self.count);
+        for (index, name) in names.iter().enumerate() {
+            let at =
+                bounded_relative_target(self.payload, self.row(index) + ROW_SHAPE, "Volume shape")?;
+            if at < 4 || read_u32(self.payload, at - 4)? != SHAPE_CLASS {
+                return Err(invalid(format!("Volume {name} has no shape record")));
+            }
+            let size = if read_i64(self.payload, at)? != 0 {
+                SHAPE_WITH_NESTED_SIZE
+            } else {
+                SHAPE_SIZE
+            };
+            shapes.push(
+                self.payload
+                    .get(at..at + size)
+                    .ok_or_else(|| {
+                        invalid(format!("Volume {name}'s shape record leaves its record"))
+                    })?
+                    .to_vec(),
+            );
+        }
+        Ok(shapes)
+    }
 }
 
 /// The packfile a volume record names, when its entries include volumes that kill, else none.
@@ -298,25 +324,37 @@ pub(super) fn build(
     let donor = Donor::read(record)?;
     let names = donor.names()?;
     let assigned = assign(&names, volumes);
-    // The donor's pooled shape records, which bind each row to the packfile shape of its index.
-    let mut shapes = Vec::with_capacity(donor.count);
-    for (index, name) in names.iter().enumerate() {
-        let at = bounded_relative_target(record, donor.row(index) + ROW_SHAPE, "Volume shape")?;
-        if at < 4 || read_u32(record, at - 4)? != SHAPE_CLASS {
-            return Err(invalid(format!("Volume {name} has no shape record")));
-        }
-        let size = if read_i64(record, at)? != 0 {
-            SHAPE_WITH_NESTED_SIZE
-        } else {
-            SHAPE_SIZE
-        };
-        shapes.push(
-            record
-                .get(at..at + size)
-                .ok_or_else(|| invalid(format!("Volume {name}'s shape record leaves its record")))?
-                .to_vec(),
-        );
+    rebuild(record, packfile, &assigned, None)
+}
+
+/// Named neutral volumes use their own slots and preserve the donor's neutral entity graph.
+pub(super) fn named(
+    record: &[u8],
+    packfile: &[u8],
+    volumes: &[Volume],
+    key: u32,
+    first_slot: u16,
+) -> AuthoringResult<(Vec<u8>, Vec<u8>)> {
+    if volumes.is_empty()
+        || volumes.len() > usize::from(u16::MAX - first_slot)
+        || volumes
+            .iter()
+            .any(|volume| volume.name.is_empty() || volume.name.contains('\0'))
+    {
+        return Err(invalid("Invalid named trigger volumes"));
     }
+    rebuild(record, packfile, volumes, Some((key, first_slot)))
+}
+
+fn rebuild(
+    record: &[u8],
+    packfile: &[u8],
+    assigned: &[Volume],
+    named: Option<(u32, u16)>,
+) -> AuthoringResult<(Vec<u8>, Vec<u8>)> {
+    let donor = Donor::read(record)?;
+    let names = donor.names()?;
+    let shapes = donor.shapes(&names)?;
     // The tail: two arrays naming the record's other descriptors and its component header, then
     // the string blob and the names.
     let mut tails = Vec::with_capacity(TAIL.len());
@@ -348,16 +386,40 @@ pub(super) fn build(
         return Err(invalid("A volume record's names have no blob header"));
     }
 
+    let source_index = |index| if named.is_some() { 0 } else { index };
     let mut out = Layout {
-        out: record[..donor.rows].to_vec(),
+        out: record[..donor.entries - 20].to_vec(),
         pointers: Vec::new(),
     };
-    for index in 0..donor.count {
-        out.out
-            .extend_from_slice(&record[donor.row(index)..donor.row(index) + ROW_SIZE]);
+    let entries = (0..assigned.len())
+        .flat_map(|index| {
+            let start = donor.entry(source_index(index));
+            record[start..start + ENTRY_SIZE].iter().copied()
+        })
+        .collect::<Vec<_>>();
+    let entries = out.array(ENTRY_CLASS, assigned.len(), &entries)?;
+    let rows = (0..assigned.len())
+        .flat_map(|index| {
+            let start = donor.row(source_index(index));
+            record[start..start + ROW_SIZE].iter().copied()
+        })
+        .collect::<Vec<_>>();
+    let rows = out.array(ROW_CLASS, assigned.len(), &rows)?;
+    for (field, target) in [(DESCRIPTOR_ENTRIES, entries), (DESCRIPTOR_VOLUMES, rows)] {
+        write_u64(
+            &mut out.out,
+            donor.descriptor + field,
+            assigned.len() as u64,
+        )?;
+        out.pointer(donor.descriptor + field + 8, target);
+    }
+    if let Some((key, first_slot)) = named {
+        write_u32(&mut out.out, donor.descriptor + 0x18, key)?;
+        write_u16(&mut out.out, donor.descriptor + 0x1C, 60)?;
+        write_u16(&mut out.out, donor.descriptor + 0x1E, first_slot)?;
     }
     for (index, volume) in assigned.iter().enumerate() {
-        let row = donor.row(index);
+        let row = rows + 16 + index * ROW_SIZE;
         let (low, high) = volume.bounds();
         let [x, y] = volume.centroid();
         let z = volume.z[0];
@@ -378,7 +440,23 @@ pub(super) fn build(
         let triangle_count =
             u64::try_from(triangles.len()).map_err(|_| invalid("Volume triangle count"))?;
         write_u64(&mut out.out, row + ROW_TRIANGLES, triangle_count)?;
-        let shape = out.record(SHAPE_CLASS, &shapes[index]);
+        let mut shape = shapes[source_index(index)].clone();
+        if let Some((key, first_slot)) = named {
+            if shape.len() != SHAPE_SIZE || read_i64(&shape, 0)? != 0 {
+                return Err(invalid("Named trigger template has a nested shape"));
+            }
+            let slot = first_slot + index as u16;
+            for at in [entries + 16 + index * ENTRY_SIZE, row] {
+                write_u32(&mut out.out, at + 0x0C, key)?;
+                write_u16(&mut out.out, at + 0x10, 60)?;
+                write_u16(&mut out.out, at + 0x12, slot)?;
+            }
+            write_u32(&mut shape, 0x18, index as u32)?;
+            write_u32(&mut shape, 0x1C, key)?;
+            write_u16(&mut shape, 0x20, 60)?;
+            write_u16(&mut shape, 0x22, slot)?;
+        }
+        let shape = out.record(SHAPE_CLASS, &shape);
         out.pointer(row + ROW_SHAPE, shape);
         let points = volume
             .corners
@@ -404,22 +482,41 @@ pub(super) fn build(
         }
         out.pointer(field + 8, at);
     }
+    let strings = if named.is_some() {
+        assigned
+            .iter()
+            .flat_map(|volume| volume.name.bytes().chain([0]))
+            .collect::<Vec<_>>()
+    } else {
+        strings.to_vec()
+    };
     out.record(BLOB_CLASS, &(strings.len() as u64).to_le_bytes());
     let names_at = out.out.len();
-    out.out.extend_from_slice(strings);
+    out.out.extend_from_slice(&strings);
     // Entries and rows name themselves in the moved names.
-    for index in 0..donor.count {
-        for field in [donor.entry(index), donor.row(index)] {
-            let old = bounded_relative_target(record, field, "Volume name")?;
-            let moved = old
-                .checked_sub(strings_at)
-                .map(|offset| names_at + offset)
-                .ok_or_else(|| invalid("A volume name lies before the names"))?;
+    let mut name_offset = 0;
+    for (index, volume) in assigned.iter().enumerate() {
+        for (field, original) in [
+            (
+                entries + 16 + index * ENTRY_SIZE,
+                donor.entry(source_index(index)),
+            ),
+            (rows + 16 + index * ROW_SIZE, donor.row(source_index(index))),
+        ] {
+            let moved = if named.is_some() {
+                names_at + name_offset
+            } else {
+                let old = bounded_relative_target(record, original, "Volume name")?;
+                old.checked_sub(strings_at)
+                    .map(|offset| names_at + offset)
+                    .ok_or_else(|| invalid("A volume name lies before the names"))?
+            };
             out.pointer(field, moved);
         }
+        name_offset += volume.name.len() + 1;
     }
     let record = out.finish()?;
-    let packfile = level::packfile(packfile, &assigned)
+    let packfile = level::packfile(packfile, assigned)
         .map_err(|error| invalid(format!("Volume packfile: {error:#}")))?;
     Ok((record, packfile))
 }

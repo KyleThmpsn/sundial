@@ -28,7 +28,7 @@ use crate::package_runtime::{
 mod tests;
 
 /// The shard format this build writes. Files of older formats are dead weight.
-const SHARD_PREFIX: &str = "referrers-v1-";
+const SHARD_PREFIX: &str = "referrers-v2-";
 
 pub const CANCELLED: &str = "The reference index read was cancelled";
 
@@ -185,7 +185,10 @@ fn persist(path: &Path, saved: &Saved) -> Result<(), String> {
     cache_file::write(temporary.as_file_mut(), saved)?;
     temporary.persist(path).map_err(|error| error.to_string())?;
     let family = format!("{SHARD_PREFIX}{:04x}-", saved.package);
-    prune_siblings(parent, path, |name| name.starts_with(&family));
+    let previous = format!("referrers-v1-{:04x}-", saved.package);
+    prune_siblings(parent, path, |name| {
+        name.starts_with(&family) || name.starts_with(&previous)
+    });
     Ok(())
 }
 

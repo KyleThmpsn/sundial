@@ -36,8 +36,6 @@ pub(super) struct View {
     pub show_installed: bool,
     #[serde(default)]
     pub show_dummy: bool,
-    #[serde(default)]
-    pub supported_only: bool,
 }
 
 impl View {
@@ -63,8 +61,6 @@ pub(super) struct Browser {
     pub kind: String,
     pub show_dummy: bool,
     pub show_installed: bool,
-    /// Hides items with no installed donor.
-    pub supported_only: bool,
     pub order: Order,
     pub dirty: bool,
     /// The list returns to the top on its next draw.
@@ -90,7 +86,6 @@ impl Default for Browser {
             kind: String::new(),
             show_dummy: false,
             show_installed: false,
-            supported_only: false,
             order: Order::Catalog,
             dirty: true,
             reset_scroll: false,
@@ -123,7 +118,6 @@ impl Browser {
             order: self.order,
             show_installed: self.show_installed,
             show_dummy: self.show_dummy,
-            supported_only: self.supported_only,
         }
     }
 
@@ -134,14 +128,12 @@ impl Browser {
         self.order = view.order;
         self.show_installed = view.show_installed;
         self.show_dummy = view.show_dummy;
-        self.supported_only = view.supported_only;
         self.dirty = true;
     }
 
     fn matches(&self, weapon: &Weapon, query: &str) -> bool {
         (self.show_dummy || !weapon.dummy)
             && (self.show_installed || !weapon.present_in_native)
-            && (!self.supported_only || self.importable(weapon))
             && (self.kind.is_empty() || weapon.weapon_type == self.kind)
             && self.filters.matches(weapon)
             && query.split_whitespace().all(|word| {
@@ -151,6 +143,7 @@ impl Browser {
             })
     }
 
+    /// The listing's donor check, before source extraction and conversion validation.
     pub fn importable(&self, weapon: &Weapon) -> bool {
         !self.no_donor.contains(&weapon.hash)
     }
@@ -161,7 +154,6 @@ impl Browser {
             || self.filters.active()
             || self.show_installed
             || self.show_dummy
-            || self.supported_only
     }
 
     pub fn clear_filters(&mut self) {
@@ -170,7 +162,6 @@ impl Browser {
         self.filters = filters::Filters::default();
         self.show_installed = false;
         self.show_dummy = false;
-        self.supported_only = false;
         self.dirty = true;
         self.reset_scroll = true;
     }
@@ -457,7 +448,16 @@ impl PackageAuthoringApp {
                 .response;
             super::super::pickers::name_response(ui, &order, "Sort Order");
         });
-        changed |= filters::draw(ui, browser, &self.importer.weapons, self.importer.source);
+        let animations = &mut self.importer.settings.marathon_animations;
+        let animated = *animations;
+        changed |= filters::draw(
+            ui,
+            browser,
+            &self.importer.weapons,
+            self.importer.source,
+            animations,
+        );
+        let toggled = *animations != animated;
         if changed || query_changed {
             browser.dirty = true;
             browser.reset_scroll = true;
@@ -465,6 +465,9 @@ impl PackageAuthoringApp {
         }
         if changed || query_left {
             self.importer.save_view();
+        }
+        if toggled && let Err(error) = self.importer.save() {
+            self.importer.notice = error;
         }
     }
 

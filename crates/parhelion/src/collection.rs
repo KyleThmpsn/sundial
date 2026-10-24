@@ -44,9 +44,10 @@ pub enum Family {
     SniperRifles,
     SubmachineGuns,
     Swords,
+    TraceRifles,
 }
 impl Family {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::AutoRifles,
         Self::Bows,
         Self::FusionRifles,
@@ -63,6 +64,7 @@ impl Family {
         Self::SniperRifles,
         Self::SubmachineGuns,
         Self::Swords,
+        Self::TraceRifles,
     ];
     pub const fn label(self) -> &'static str {
         match self {
@@ -82,6 +84,7 @@ impl Family {
             Self::SniperRifles => "Sniper Rifles",
             Self::SubmachineGuns => "Submachine Guns",
             Self::Swords => "Swords",
+            Self::TraceRifles => "Trace Rifles",
         }
     }
     pub(crate) fn from_type_name(value: &str) -> Option<Self> {
@@ -92,7 +95,7 @@ impl Family {
         })
     }
     pub const fn template(self) -> Destination {
-        if matches!(self, Self::Glaives) {
+        if matches!(self, Self::Glaives | Self::TraceRifles) {
             // Only the native page structure is reused. The new family keeps
             // its own identity and localized label.
             return Self::FusionRifles.template();

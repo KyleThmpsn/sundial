@@ -8,7 +8,8 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn attachment_rows(
+/// Select checked content-specific attachment rows, falling back to the embedded default.
+pub fn attachment_rows(
     p: &Payload,
     resource: usize,
     content: u32,

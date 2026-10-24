@@ -19,23 +19,27 @@ pub(crate) struct Entry {
     pub size: [usize; 2],
 }
 
-fn dimensions(header: &[u8], purpose: Purpose) -> Result<[usize; 2], String> {
+const GLYPH_EDGE: usize = crate::artwork_browser::perk_quality::EDGE as usize;
+
+/// `native` limits perk artwork to the stock 96 × 96 glyphs the browser lists.
+fn dimensions(header: &[u8], purpose: Purpose, native: bool) -> Result<[usize; 2], String> {
     let width = usize::from(read_u16(header, 14)?);
     let height = usize::from(read_u16(header, 16)?);
     if !purpose.accepts_size(width as u32, height as u32)
         || width > 1024
         || height > 1024
-        || (purpose == Purpose::Perk
-            && [width, height] != [crate::artwork_browser::perk_quality::EDGE as usize; 2])
+        || (native && purpose == Purpose::Perk && [width, height] != [GLYPH_EDGE; 2])
         || read_u16(header, 18)? != 1
         || read_u16(header, 20)? != 1
         || !matches!(read_u32(header, 4)?, 28 | 29 | 71 | 72)
         || read_u32(header, 36)? != u32::MAX
     {
-        return Err(if purpose == Purpose::Perk {
-            "Choose a native 96 × 96 perk icon."
-        } else {
-            "Choose a supported single 2D artwork texture between 16 and 1024 pixels per side."
+        return Err(match purpose {
+            Purpose::Perk if native => "Choose a native 96 × 96 perk icon.",
+            Purpose::Perk => "Perk icon textures must be square, 96 to 512 pixels per side.",
+            _ => {
+                "Choose a supported single 2D artwork texture between 16 and 1024 pixels per side."
+            }
         }
         .into());
     }
@@ -46,14 +50,37 @@ fn visible_transparency(image: &egui::ColorImage) -> bool {
     image.pixels.iter().any(|p| p.a() < 255) && image.pixels.iter().any(|p| p.a() > 0)
 }
 
+/// The glyph a perk icon names, at 96 × 96. A native glyph already holds its authored margins
+/// and decodes as it is. A larger square stock texture, such as the 150-pixel Destiny logo, is
+/// fitted with the inset imported glyphs get.
 pub(crate) fn load(manager: &PackageManager, tag: TagHash) -> Result<egui::ColorImage, String> {
-    load_for(manager, tag, Purpose::Perk)
+    let image = decode(manager, tag, Purpose::Perk, false)?;
+    if image.size == [GLYPH_EDGE; 2] {
+        return Ok(image);
+    }
+    let source = image::RgbaImage::from_fn(image.size[0] as u32, image.size[1] as u32, |x, y| {
+        image::Rgba(image[(x as usize, y as usize)].to_srgba_unmultiplied())
+    });
+    let glyph = super::glyph::fit(&source);
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        [GLYPH_EDGE; 2],
+        glyph.as_raw(),
+    ))
 }
 
 pub(crate) fn load_for(
     manager: &PackageManager,
     tag: TagHash,
     purpose: Purpose,
+) -> Result<egui::ColorImage, String> {
+    decode(manager, tag, purpose, true)
+}
+
+fn decode(
+    manager: &PackageManager,
+    tag: TagHash,
+    purpose: Purpose,
+    native: bool,
 ) -> Result<egui::ColorImage, String> {
     if (crate::package_profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID
         ..=crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
@@ -67,7 +94,7 @@ pub(crate) fn load_for(
         return Err("Icon reference is not a supported 2D texture header".into());
     }
     let header = manager.read_tag(tag).map_err(|e| e.to_string())?;
-    dimensions(&header, purpose)?;
+    dimensions(&header, purpose, native)?;
     let data = manager
         .get_entry(TagHash(entry.reference))
         .ok_or("Icon pixel resource is missing")?;
@@ -194,8 +221,8 @@ pub(crate) fn author(
             );
             let image =
                 load(manager, texture).map_err(|e| invalid(format!("Perk icon {texture}: {e}")))?;
-            // Stock glyphs already include their authored margins. Decode without rescaling
-            // them, then reproduce each destination lane at its own native dimensions.
+            // The glyph arrives at 96 pixels with its margins, native or fitted. Each
+            // destination lane is reproduced from it at its own native dimensions.
             image::RgbaImage::from_fn(image.size[0] as u32, image.size[1] as u32, |x, y| {
                 image::Rgba(image[(x as usize, y as usize)].to_srgba_unmultiplied())
             })

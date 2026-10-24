@@ -1,6 +1,7 @@
 //! Attach translated cloth to independent native float models and components.
 use super::*;
-use crate::d2_mot::{cloth as solver, reader::Reader};
+use crate::d2_mot::reader::Reader;
+use crate::tiger::physics::cloth as solver;
 mod activation;
 mod component;
 mod definition;

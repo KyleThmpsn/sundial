@@ -32,7 +32,6 @@ mod animation;
 mod audio;
 
 use crate::d2_mot::{
-    ornaments,
     particles::native as particles,
     payload::Payload,
     reader::{Reader, write_json},
@@ -539,7 +538,7 @@ fn stat_index(native: &mut Reader, hash: u32) -> Result<u16> {
 
 /// The base's frame socket and the plug its recipe column, or else the base, gives it first.
 fn intrinsic(native: &mut Reader, base: u32, recipe: &Value) -> Result<(usize, u32)> {
-    let sockets = ornaments::native(native, base)?;
+    let sockets = crate::tiger::shadowkeep::sockets(native, base)?;
     let frames = sockets["sockets"]
         .as_array()
         .context("native sockets")?

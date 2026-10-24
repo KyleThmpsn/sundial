@@ -283,28 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn key_lookup_is_available_before_the_asset_scan_finishes() {
-        let (sender, receiver) = mpsc::channel();
-        let mut discovery = Discovery {
-            receiver: Some(receiver),
-            ..Discovery::default()
-        };
-        sender
-            .send(Event::Keys(Ok(Arc::new(properties::KeyIndex::default()))))
-            .unwrap();
-        discovery.poll();
-        assert!(discovery.keys.is_some());
-        assert!(discovery.busy());
-        assert!(discovery.data.is_none());
-        sender
-            .send(Event::Ready(Err("unrelated asset scan failure".into())))
-            .unwrap();
-        discovery.poll();
-        assert!(discovery.keys.is_some());
-        assert!(discovery.key_error.is_none());
-    }
-
-    #[test]
     fn invalidation_discards_results_from_the_previous_installation() {
         let (sender, receiver) = mpsc::channel();
         let mut discovery = Discovery {

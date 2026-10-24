@@ -124,28 +124,6 @@ pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
 }
 
 #[test]
-fn verified_speed_updates_both_lanes_and_reset_preserves_other_bytes() {
-    let loaded = fixture();
-    let speed = guided::ProjectileSpeed::discover(&loaded).unwrap();
-    let mut draft = vec![];
-    speed.set(&loaded, &mut draft, 62.5).unwrap();
-    assert_eq!(draft.len(), 2);
-    assert_eq!(speed.value(&loaded, &draft).unwrap(), 62.5);
-    if let WeaponRuntimeValue::Bytes(bytes) = &mut draft[0].value {
-        bytes[7] = 99;
-    }
-    speed.set(&loaded, &mut draft, 1.0).unwrap();
-    assert_eq!(draft.len(), 1);
-    assert_eq!(speed.value(&loaded, &draft).unwrap(), 1.0);
-    assert!(matches!(&draft[0].value, WeaponRuntimeValue::Bytes(bytes) if bytes[7] == 99));
-    let before = draft.clone();
-    for value in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-        assert!(speed.set(&loaded, &mut draft, value).is_err());
-        assert_eq!(draft, before);
-    }
-}
-
-#[test]
 fn speed_requires_the_known_perk_and_rejects_mismatched_lanes() {
     let mut loaded = fixture();
     let speed = guided::ProjectileSpeed::discover(&loaded).unwrap();

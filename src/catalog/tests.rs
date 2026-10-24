@@ -351,3 +351,35 @@ fn installed_power_cap_table_survives_catalog_cache_roundtrip() {
         );
     }
 }
+
+impl Catalog {
+    pub(crate) fn for_test_plug_tooltip() -> Self {
+        Self::finish(
+            CatalogContents {
+                names: HashMap::from([(42, "Test Barrel".into())]),
+                descriptions: HashMap::from([(42, "Improves handling.".into())]),
+                item_package_metadata: HashMap::from([(
+                    42,
+                    ItemPackageMetadata {
+                        plug_category_hash: Some(0x10001),
+                        investment_stats: vec![ItemInvestmentStat {
+                            definition_index: 0,
+                            value: 7,
+                        }],
+                        ..Default::default()
+                    },
+                )]),
+                item_stat_definitions: vec![ItemStatDefinition {
+                    definition_index: 0,
+                    hash: 13,
+                    name: "Handling".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            PathBuf::new(),
+            PathBuf::new(),
+            false,
+        )
+    }
+}

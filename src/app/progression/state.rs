@@ -137,12 +137,6 @@ impl UiState {
             });
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn progression_changed(&self, table: &'static str, definition_index: usize) -> bool {
-        self.progression_baselines
-            .contains_key(&(table, definition_index))
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

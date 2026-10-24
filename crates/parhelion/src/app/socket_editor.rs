@@ -882,6 +882,7 @@ fn draw_raw_embedded_choices(
             if choice < column.choice_conditions.len() {
                 column.choice_conditions.remove(choice);
             }
+            trim_rolled_choices(column, Some(choice));
             shift_socket_choice_queries_after_removal(queries, choice);
             removed_choice = Some(choice);
         }
@@ -1093,9 +1094,39 @@ fn draw_plug_set_rows(
             ui.weak(format!("{plug_set_count} installed rows"));
         }
     });
+    // A column that rolls from its own choices gets a private randomized set of all of them, and
+    // only the leading ones stay swappable.
+    ui.horizontal(|ui| {
+        let choices = column.choices.len();
+        let mut rolled = column.reusable_choices.is_some();
+        if ui
+            .add_enabled(
+                column.randomized_plug_set_index.is_none() && (rolled || choices > 1),
+                egui::Checkbox::new(&mut rolled, "Roll from Choices"),
+            )
+            .changed()
+        {
+            column.reusable_choices =
+                rolled.then(|| u16::try_from(choices.saturating_sub(1).clamp(1, 4)).unwrap_or(1));
+            if !rolled {
+                column.randomized_selection_program.clear();
+            }
+        }
+        if let Some(count) = &mut column.reusable_choices {
+            let most = u16::try_from(choices.saturating_sub(1).max(1)).unwrap_or(u16::MAX);
+            ui.add(egui::DragValue::new(count).range(1..=most));
+            ui.weak("swappable");
+        }
+    });
     ui.horizontal(|ui| {
         let mut enabled = column.randomized_plug_set_index.is_some();
-        if ui.checkbox(&mut enabled, "Randomized Plug Set").changed() {
+        if ui
+            .add_enabled(
+                column.reusable_choices.is_none(),
+                egui::Checkbox::new(&mut enabled, "Randomized Plug Set"),
+            )
+            .changed()
+        {
             if enabled {
                 column.randomized_plug_set_index = Some(donor_randomized.unwrap_or(0));
                 if column.randomized_selection_program.is_empty() {
@@ -1120,13 +1151,14 @@ fn draw_plug_set_rows(
             ui.weak(format!("{plug_set_count} installed rows"));
         }
     });
-    if column.randomized_plug_set_index.is_some() {
+    if column.randomized_plug_set_index.is_some() || column.reusable_choices.is_some() {
         ui.label("Randomized Selection-Count Program");
+        // An empty program on a column that rolls from its choices rolls one.
         draw_numeric_program_editor(
             ui,
             ("socket_random_program", socket_index),
             &mut column.randomized_selection_program,
-            false,
+            column.reusable_choices.is_some(),
         );
     }
 }
@@ -1397,6 +1429,25 @@ pub(super) fn shift_socket_choice_queries_after_removal(
     }
 }
 
+/// Keeps a column that rolls from its choices valid after choice `removed` leaves it. Removing a
+/// swappable choice shortens the swappable lead, and a pool with nothing past it is dropped.
+fn trim_rolled_choices(column: &mut WeaponSocketColumnRecipe, removed: Option<usize>) {
+    if let Some(count) = &mut column.reusable_choices
+        && removed.is_some_and(|index| index < usize::from(*count))
+    {
+        *count = count.saturating_sub(1).max(1);
+    }
+    let choices = column.choices.len();
+    if column
+        .reusable_choices
+        .take_if(|count| usize::from(*count) >= choices)
+        .is_some()
+        && column.randomized_plug_set_index.is_none()
+    {
+        column.randomized_selection_program.clear();
+    }
+}
+
 pub(super) fn set_recipe_socket_column(
     recipe: &mut WeaponRecipe,
     socket_count: usize,
@@ -1434,12 +1485,14 @@ pub(super) fn set_recipe_socket_column(
             .choice_conditions
             .resize_with(choices.len(), Vec::new);
     }
+    trim_rolled_choices(&mut column, removed_choice);
     let has_technical_overrides = column.socket_type.is_some()
         || !column.choice_weight_bits.is_empty()
         || !column.choice_conditions.is_empty()
         || column.reusable_plug_set_index.is_some()
         || column.randomized_plug_set_index.is_some()
-        || !column.randomized_selection_program.is_empty();
+        || !column.randomized_selection_program.is_empty()
+        || column.reusable_choices.is_some();
     recipe.overrides.socket_columns[socket_index] =
         (choices != inherited || has_technical_overrides).then_some(column);
     if recipe.overrides.socket_columns.iter().all(Option::is_none) {

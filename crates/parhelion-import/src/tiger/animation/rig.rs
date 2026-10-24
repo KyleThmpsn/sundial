@@ -1,4 +1,5 @@
 //! Append local controls without renumbering a carrier's physics and attachment bones.
+pub mod controls;
 mod instance;
 mod ranges;
 mod section;
@@ -82,6 +83,17 @@ pub fn procedural_bones(skeleton: &Payload) -> Result<Vec<usize>> {
         bones.extend(first..first + length);
     }
     Ok(bones)
+}
+
+/// The bones of a native FK skeleton owner: its hierarchy rows, which every other per-bone array
+/// matches. A gear model's geometry palette indexes these bones.
+pub fn bone_count(skeleton: &Payload) -> Result<usize> {
+    let base = skeleton.pointer(24)?;
+    ensure!(
+        base >= 4 && skeleton.u32(base - 4)? == 0x80808546,
+        "Bone count requires a native FK skeleton"
+    );
+    Ok(skeleton.array(base + 0x80, 16, Some(0x80808A08))?.len())
 }
 
 fn rows(p: &Payload, at: usize, stride: usize, class: u32) -> Result<Vec<u8>> {
@@ -570,6 +582,130 @@ fn controls(
     ] {
         append(&mut out, base + field, class, &data, stride)?;
     }
+    Ok(Payload(out))
+}
+
+/// The renumbering an extension applied, read back from its skeletons: each native bone keeps
+/// its name, and the appended bones are the contiguous run of names the native skeleton lacks.
+pub fn renumbering(native: &Payload, extended: &Payload) -> Result<Renumbering> {
+    let names = |skeleton: &Payload| -> Result<Vec<u32>> {
+        let base = skeleton.pointer(24)?;
+        ensure!(
+            base >= 4 && skeleton.u32(base - 4)? == 0x80808546,
+            "Renumbering requires native FK skeletons"
+        );
+        skeleton
+            .array(base + 0x80, 16, Some(0x80808A08))?
+            .into_iter()
+            .map(|row| skeleton.u32(row))
+            .collect()
+    };
+    let (native, extended) = (names(native)?, names(extended)?);
+    let mut map = native
+        .iter()
+        .map(|name| {
+            extended
+                .iter()
+                .position(|other| other == name)
+                .context("Extended skeleton lost a native bone")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let appended = (0..extended.len())
+        .filter(|index| !map.contains(index))
+        .collect::<Vec<_>>();
+    let first_appended = *appended
+        .first()
+        .context("Extended skeleton appends no bones")?;
+    ensure!(
+        appended
+            .iter()
+            .enumerate()
+            .all(|(offset, &index)| index == first_appended + offset),
+        "Appended bones are not contiguous"
+    );
+    map.extend(appended);
+    ensure!(map.len() == extended.len(), "Skeleton bone names repeat");
+    Ok(Renumbering {
+        map,
+        first_appended,
+    })
+}
+
+/// Extend `other`, native controls of the same bones and slots as `native`, as `extended`
+/// extends `native`: its rows follow the renumbered bones, and it takes the appended rows, their
+/// defaults and both bone and slot lookups from `extended`. Controls that pose a weapon
+/// skeleton apart from the weapon's own then pose the extended skeleton the same way.
+pub fn extend_controls_like(
+    other: &Payload,
+    native: &Payload,
+    extended: &Payload,
+    renumbering: &Renumbering,
+) -> Result<Payload> {
+    let read = |p: &Payload| -> Result<Vec<Vec<Vec<u8>>>> {
+        let rows = controls::read(p, false)?;
+        controls::check(&rows)?;
+        Ok(rows)
+    };
+    let (rows, native, extended) = (read(other)?, read(native)?, read(extended)?);
+    let base = other.pointer(24)?;
+    ensure!(
+        other.u64(base + 0xF8)? == 0,
+        "Procedural control tables require a separate animation adapter"
+    );
+    let slots = native[1].len();
+    let bones = native[4].len();
+    ensure!(
+        rows[4] == native[4] && rows[5] == native[5],
+        "Controls address other bones or slots than the extended ones"
+    );
+    let added = renumbering
+        .map
+        .len()
+        .checked_sub(bones)
+        .filter(|added| *added > 0)
+        .context("Renumbering differs from the controls' bones")?;
+    ensure!(
+        extended[1].len() == slots + added
+            && extended[4].len() == bones + added
+            && (0..slots).all(|slot| {
+                renumbering
+                    .map
+                    .get(usize::from(controls::short(&native[5][slot], 0)))
+                    == Some(&usize::from(controls::short(&extended[5][slot], 0)))
+            }),
+        "Extended controls follow another renumbering"
+    );
+    let mut groups = rows[0].concat();
+    let last = groups
+        .len()
+        .checked_sub(4)
+        .context("Controls have no groups")?;
+    let prior = u32::from_le_bytes(groups[last..].try_into()?);
+    put(
+        &mut groups,
+        last,
+        &(prior + u32::try_from(added)?).to_le_bytes(),
+    )?;
+    let mut controls = Vec::new();
+    for row in &rows[1] {
+        let mut row = row.clone();
+        renumber_control(&mut row, renumbering)?;
+        controls.extend(row);
+    }
+    controls.extend(extended[1][slots..].concat());
+    let mut defaults = rows[2].concat();
+    defaults.extend(extended[2][slots..].concat());
+    let mut out = other.0.clone();
+    for (field, class, stride, data) in [
+        (0x90, 0x8080907F, 8, groups),
+        (0xA0, 0x80809076, 52, controls),
+        (0xB0, 0x80809F75, 32, defaults),
+        (0xD8, 0x80800006, 2, extended[4].concat()),
+        (0xE8, 0x80800006, 2, extended[5].concat()),
+    ] {
+        append(&mut out, base + field, class, &data, stride)?;
+    }
+    controls::validate(&out)?;
     Ok(Payload(out))
 }
 

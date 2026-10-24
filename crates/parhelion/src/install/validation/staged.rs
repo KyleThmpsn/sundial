@@ -103,6 +103,7 @@ pub(super) fn verify(
         .iter()
         .chain(&validated.merge_data)
         .chain(validated.map_diagnostics.iter())
+        .chain(&validated.mission_scripts)
     {
         // Kept members resolve only while their installed receipt and loader manifest match.
         let path = crate::mod_family::source(&validated.mods, stage, target, &artifact.file_name)

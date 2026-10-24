@@ -17,24 +17,35 @@ pub(super) struct Folder {
     files: BTreeMap<String, TransactionDigest>,
 }
 
-/// Packages an earlier layout left in stock `packages` on an installation whose runtime loads
-/// Sunrise mods. Their patches add entries to stock packages, which the loader refuses, so they
-/// are never moved into the mod folder. The next install retires them with a verified backup
-/// while it publishes a build made for the mod folder, and removal retires them the same way.
+/// The build the active runtime doesn't load, and the one kept for it. On a runtime that loads
+/// Sunrise mods, these are packages an earlier layout or a Dawn install left in stock `packages`.
+/// Their patches add entries to stock packages, which the loader refuses, so they are never moved
+/// into the mod folder. The next install retires them with a verified backup while it publishes a
+/// build made for the mod folder, and removal retires them the same way. On Dawn or Sunrise before
+/// 0.6 it is Parhelion's mod folder, which the next install there retires, and the review appears
+/// only when a build is kept for this runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpgradeReview {
     target: PathBuf,
     artifacts: Vec<ArtifactMetadata>,
+    kept: Option<kept::KeptBuild>,
 }
 impl UpgradeReview {
     pub fn target(&self) -> &Path {
         &self.target
     }
+    /// The packages an earlier layout left in stock `packages`, empty on a runtime without the mod
+    /// loader.
     pub fn artifacts(&self) -> &[ArtifactMetadata] {
         &self.artifacts
     }
     pub fn mod_directory(&self) -> PathBuf {
         mod_content::directory(self.target.parent().expect("reviewed installation"))
+    }
+    /// The build last installed for the active runtime, which can install again without a
+    /// rebuild.
+    pub fn kept(&self) -> Option<&kept::KeptBuild> {
+        self.kept.as_ref()
     }
 }
 
@@ -103,15 +114,26 @@ fn review_upgrade(
             .ok_or_else(|| InstallError::validation("Missing game root"))?,
     )
     .map_err(InstallError::validation)?;
+    let install = target
+        .parent()
+        .ok_or_else(|| InstallError::validation("Missing game root"))?;
     if !runtime
         .uses_mod_loader()
         .map_err(InstallError::validation)?
     {
-        return Ok(None);
+        // The mod folder doesn't load here. The review offers the build kept for this runtime in
+        // its place, and otherwise the next install retires the folder without asking.
+        if !mod_content::has_family(install).map_err(failure)? {
+            return Ok(None);
+        }
+        return Ok(kept::find(&target, false)
+            .map_err(InstallError::validation)?
+            .map(|kept| UpgradeReview {
+                target,
+                artifacts: Vec::new(),
+                kept: Some(kept),
+            }));
     }
-    let install = target
-        .parent()
-        .ok_or_else(|| InstallError::validation("Missing game root"))?;
     progress(1);
     if target
         .join(INSTALL_TRANSACTION_FILE_NAME)
@@ -140,6 +162,7 @@ fn review_upgrade(
         return Ok(None);
     }
     Ok(Some(UpgradeReview {
+        kept: kept::find(&target, true).map_err(InstallError::validation)?,
         target,
         artifacts: plan.artifacts,
     }))
@@ -328,6 +351,7 @@ pub(super) fn install_with_observer(
         sources.as_slice(),
         &staged(&validated.merge_data)?,
         &staged(&diagnostics)?,
+        &staged(&validated.mission_scripts)?,
     ]
     .concat();
     if !legacy.is_empty() {
@@ -484,6 +508,8 @@ pub(super) fn install_with_observer(
         item_grants,
         mod_overlaps,
         retired_mod_backup: None,
+        kept_build_warning: None,
+        other_build_kept: false,
         cleaned_account: validated
             .replacement_guard
             .as_ref()

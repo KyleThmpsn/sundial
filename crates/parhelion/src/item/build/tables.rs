@@ -272,6 +272,15 @@ impl WeaponTables {
         if let Some(index) = row.authored_pattern_index {
             gear::runtime::set_pattern(&mut definition, index)?;
         }
+        if let Some(perks) = &donor.weapon.overrides.base_sandbox_perks {
+            set_weapon_base_sandbox_perks_with_strings(
+                &mut definition,
+                &mut strings,
+                perks,
+                context.sandbox_perk_definition_template,
+                context.sandbox_perk_string_template,
+            )?;
+        }
         definition::apply_scalar_overrides(&mut definition, &donor.weapon.overrides)?;
         let expected_socket_columns = definition::apply_socket_overrides(
             &mut definition,

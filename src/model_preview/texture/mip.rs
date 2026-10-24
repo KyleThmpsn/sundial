@@ -74,7 +74,7 @@ pub(in crate::model_preview) fn length(
         10 => width * height * 8,
         61 => width * height,
         71 | 72 | 80 => width.div_ceil(4) * height.div_ceil(4) * 8,
-        74 | 75 | 77 | 78 | 83 | 98 | 99 => width.div_ceil(4) * height.div_ceil(4) * 16,
+        74 | 75 | 77 | 78 | 83 | 84 | 98 | 99 => width.div_ceil(4) * height.div_ceil(4) * 16,
         _ => return Err(format!("Unsupported texture mip format {format}")),
     })
 }

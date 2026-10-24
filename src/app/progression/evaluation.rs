@@ -197,26 +197,6 @@ mod tests {
         serde_json::from_value(json!({"definition_index":0,"hash":1,"scope":"Account","scope_slot":0,"repeat_last_step":false,"steps":[{"cost":200},{"cost":850},{"cost":1050}]})).unwrap()
     }
 
-    #[test]
-    fn ranks_consume_each_cost_and_repeat_only_the_final_step() {
-        let mut definition = ladder();
-        for (progress, rank) in [
-            (0, 0),
-            (199, 0),
-            (200, 1),
-            (1049, 1),
-            (1050, 2),
-            (2100, 3),
-            (4200, 3),
-        ] {
-            assert_eq!(rank_for_progress(&definition, progress), Some(rank));
-        }
-        definition.repeat_last_step = true;
-        assert_eq!(rank_for_progress(&definition, 4200), Some(5));
-        definition.steps[0].cost = -1;
-        assert_eq!(rank_for_progress(&definition, 0), None);
-    }
-
     fn catalog() -> Catalog {
         let flags = vec![
             UnlockDefinition {

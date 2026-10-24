@@ -15,6 +15,7 @@ use std::{
 pub(super) mod clips;
 mod firing;
 mod looping;
+mod selection;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
@@ -44,8 +45,60 @@ pub struct Options {
     /// Explicit routes are required to link successfully, including paired loop events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firing: Option<Firing>,
+    /// A required firing route must never silently fall back to donor sounds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_firing: bool,
     /// Explicit vgmstream-cli executable. No decoder is downloaded by the importer.
     pub decoder: PathBuf,
+}
+
+/// Source item imports use installed MCC banks and the configured decoder.
+pub(super) fn defaults(maps: &Path, behavior: &Value) -> Result<Option<Options>> {
+    let nodes = behavior["nodes"]
+        .as_object()
+        .context("Source sound nodes")?;
+    if !nodes.values().any(|node| node["tag"]["group"] == "snd!") {
+        return Ok(None);
+    }
+    let weapon = behavior["root"]["group"] == "weap";
+    if weapon {
+        selection::validate_firing_routes(behavior)?;
+    }
+    let folder = maps
+        .parent()
+        .context("Reach installation folder")?
+        .join("fmod/pc");
+    let bank = folder.join("sfx.fsb");
+    ensure!(
+        bank.is_file() && bank.with_extension("fsb.info").is_file(),
+        "Reach source audio requires fmod/pc/sfx.fsb and sfx.fsb.info beside the maps folder"
+    );
+    let decoder = crate::tools::located(crate::tools::Tool::Vgmstream)
+        .context("Choose vgmstream-cli under Import Tools to import Reach source audio")?;
+    let english = folder.join("english.fsb");
+    let additional_banks = if english.is_file() && english.with_extension("fsb.info").is_file() {
+        vec![english]
+    } else {
+        Vec::new()
+    };
+    let require_firing =
+        weapon && (!fire_sounds(behavior)?.0.is_empty() || selection::has_firing_loop(behavior)?);
+    Ok(Some(Options {
+        bank,
+        additional_banks,
+        decoder,
+        // Missing closure samples remain explicit exclusions. A sample used by a
+        // firing or handling route is still required when that route is emitted.
+        record_missing_samples: true,
+        fire_bus: None,
+        firing: None,
+        require_firing,
+    }))
+}
+
+/// Follow the selected native event to its declared output bus.
+pub(super) fn output_bus(bank: &[u8], explicit: Option<u32>, event: u32) -> Result<u32> {
+    selection::output_bus(bank, explicit, event)
 }
 
 struct Bank {
@@ -366,9 +419,15 @@ pub(super) fn export(
     Ok(report)
 }
 
+/// MCC Reach U13 trigger behavior 6, Spew-Charge. It spews the primary barrel while the
+/// trigger charges and fires the secondary barrel once charged.
+const SPEW_CHARGE: i64 = 6;
+
 /// The root's primary firing effects. A weapon with several barrels follows the barrel its
-/// first trigger names as primary, which the source trigger record stores explicitly, and
-/// reports the barrels left without source firing audio.
+/// first trigger fires as its shot, which the source trigger record stores explicitly, and
+/// reports the barrels left without source firing audio. A Spew-Charge trigger's shot is its
+/// secondary barrel. Its primary barrel fires tracers without heat or ammunition while the
+/// trigger charges in every inspected source, and a native weapon fires once per activation.
 fn primary_fire(behavior: &Value) -> Result<(Vec<u64>, Option<Value>)> {
     let edges = behavior["edges"].as_array().context("Behavior links")?;
     let root = behavior["root"]["datum"]
@@ -385,12 +444,19 @@ fn primary_fire(behavior: &Value) -> Result<(Vec<u64>, Option<Value>)> {
             .collect::<Result<Vec<_>>>()?;
         return Ok((queue, None));
     }
-    let primary =
+    let trigger =
         behavior["nodes"][format!("{root:08X}")]["data"]["object"]["gameplay"]["triggers"]
             .as_array()
             .and_then(|triggers| triggers.first())
-            .and_then(|trigger| trigger["primary_barrel"].as_i64())
-            .context("Source primary trigger barrel")?;
+            .context("Source primary trigger")?;
+    let charged = trigger["behavior"].as_i64() == Some(SPEW_CHARGE);
+    let primary = trigger[if charged {
+        "secondary_barrel"
+    } else {
+        "primary_barrel"
+    }]
+    .as_i64()
+    .context("Source primary trigger barrel")?;
     let mut selected = Vec::new();
     let mut unselected = Vec::new();
     for edge in &fires {
@@ -407,11 +473,16 @@ fn primary_fire(behavior: &Value) -> Result<(Vec<u64>, Option<Value>)> {
         selected.len() == 1,
         "The source primary trigger's barrel has no single firing effect"
     );
+    let limit = if charged {
+        "Only the charged barrel's firing recording is translated. The tracer barrel and the source charge keep the native audio."
+    } else {
+        "Only the primary barrel's firing recording is translated. The other barrels keep the native firing audio and no source charge or secondary firing route."
+    };
     Ok((
         selected,
         Some(
-            json!({"primary_barrel":primary,"barrels":fires.len(),"unselected":unselected,
-            "limits":["Only the primary barrel's firing recording is translated. The other barrels keep the native firing audio and no source charge or secondary firing route."]}),
+            json!({"primary_barrel":primary,"spew_charge":charged,"barrels":fires.len(),"unselected":unselected,
+            "limits":[limit]}),
         ),
     ))
 }
@@ -469,6 +540,7 @@ pub(super) fn native(
     options: &Options,
 ) -> Result<Value> {
     let rig = crate::tiger::rig::inspect_with_audio(reader, item, false)?;
+    let options = selection::resolve(reader, &rig, behavior, options)?;
     if let Some(Firing::Loop {
         source: path,
         slot,
@@ -476,7 +548,7 @@ pub(super) fn native(
     }) = &options.firing
     {
         return looping::native(
-            reader, &rig, behavior, source, graph, options, path, *slot, *node,
+            reader, &rig, behavior, source, graph, &options, path, *slot, *node,
         );
     }
     let (sounds, barrels) = fire_sounds(behavior)?;
@@ -566,11 +638,16 @@ pub(super) fn native(
         );
         candidates[0]
     };
-    let output_bus = options
-        .fire_bus
-        .context("Configure an explicit native fire_bus for nonspatial primary-fire playback")?;
     let native_bank =
         u32::from_str_radix(native["bank"].as_str().context("Native firing bank")?, 16)?;
+    let output_bus = selection::output_bus(
+        &reader.tag(native_bank, None)?.0,
+        options.fire_bus,
+        u32::from_str_radix(
+            native["event_id"].as_str().context("Native firing event")?,
+            16,
+        )?,
+    )?;
     verify_bus(&reader.tag(native_bank, None)?.0, output_bus)?;
     let (sound, files) = firing::convert(&sounds, source, graph, output_bus)?;
     let mut report = json!({"authoring_schema":3,"runtime_entity":rig["runtime_entity"],"matched_events":[],"firing_events":[],"routing":"source_one_shot","transcoded_media":files,"converted_banks":[{"source_tag":"00000001","file":"audio/fire.bank.json","version":113,"routing":"source_one_shot"}],"conversion_errors":[],"output_bus":output_bus,"limits":["Primary firing PCM, gain, variation count and the source per-object voice limit are translated. New triggers replace the oldest voice at that limit. This explicit nonspatial route does not reproduce cross-object class limits, source attenuation, tails, pitch modulation, skip fractions or environment switches. Native trigger timing is retained."]});
@@ -596,9 +673,29 @@ pub(super) fn verify_bus(bank: &[u8], bus: u32) -> Result<()> {
 }
 
 fn bank_has_bus(bank: &[u8], bus: u32) -> Result<bool> {
+    Ok(bank_buses(bank)?.contains(&bus))
+}
+
+fn bank_buses(bank: &[u8]) -> Result<BTreeSet<u32>> {
+    let mut found = BTreeSet::new();
+    for (kind, object) in bank_objects(bank)?.values() {
+        if matches!(kind, 2 | 5 | 6 | 7 | 9) {
+            let node = if *kind == 2 { 18 } else { 4 };
+            if object.get(node..node + 3) == Some(&[0, 0, 0]) {
+                let bus = word(object, node + 3)?;
+                if !matches!(bus, 0 | u32::MAX) {
+                    found.insert(bus);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn bank_objects(bank: &[u8]) -> Result<BTreeMap<u32, (u8, &[u8])>> {
     let mut at = 0;
     let mut version = None;
-    let mut found = false;
+    let mut found = BTreeMap::new();
     while at < bank.len() {
         let size = word(bank, at + 4)? as usize;
         let body = bank
@@ -614,12 +711,10 @@ fn bank_has_bus(bank: &[u8], bus: u32) -> Result<bool> {
                     let object = body
                         .get(cursor + 5..cursor + 5 + size)
                         .context("Native HIRC object exceeds chunk")?;
-                    if matches!(kind, 2 | 5 | 6 | 7 | 9) {
-                        let node = if kind == 2 { 18 } else { 4 };
-                        if object.get(node..node + 3) == Some(&[0, 0, 0]) {
-                            found |= word(object, node + 3)? == bus;
-                        }
-                    }
+                    ensure!(
+                        found.insert(word(object, 0)?, (kind, object)).is_none(),
+                        "Native audio object is repeated"
+                    );
                     cursor += 5 + size;
                 }
                 ensure!(cursor == body.len(), "Native HIRC extent differs");

@@ -174,9 +174,28 @@ fn companions(
         .map(|tag| (tag.pkg_id(), tag.entry_index()))
         .collect::<BTreeSet<_>>();
     if companions.is_empty() || covered != expected {
+        let unnamed = expected.difference(&covered).copied().collect::<Vec<_>>();
+        let named = |entries: &[(u16, u16)]| {
+            entries
+                .iter()
+                .take(8)
+                .map(|&(package, entry)| {
+                    let at = addresses
+                        .iter()
+                        .position(|tag| tag.pkg_id() == package && tag.entry_index() == entry);
+                    let template = at.map(|at| tags[at].template_tag.0).unwrap_or(0);
+                    format!(
+                        "{:08X} (from {template:08X})",
+                        TagHash::new(package, entry).0
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         return Err(invalid(format!(
-            "Map packages {ids:04X?} have {} unnamed entries and {} out-of-range dependencies",
-            expected.difference(&covered).count(),
+            "Map packages {ids:04X?} have {} unnamed entries ({}) and {} out-of-range dependencies",
+            unnamed.len(),
+            named(&unnamed),
             covered.difference(&expected).count(),
         )));
     }
@@ -235,6 +254,7 @@ pub(super) struct Resolved {
     pub(super) activities: Vec<u32>,
     pub(super) title_hash: u32,
     pub(super) description_hash: u32,
+    pub(super) destination: Option<u8>,
 }
 
 /// One of a map's packages.
@@ -273,6 +293,7 @@ pub(crate) struct Plan {
     pictures: Vec<Picture>,
     /// Each map's new private match displays, which name its picture's row once it has one.
     displays: Vec<private_match::Display>,
+    destinations: Vec<(u32, String)>,
 }
 
 /// The private match display table's place in [`Plan::replacements`].
@@ -330,6 +351,15 @@ impl Plan {
         let rows = activity::Rows::read(&activities)?;
         let mut taken = rows.hashes(&activities)?;
         let mut strings = BTreeSet::new();
+        let destinations = super::destination::prepare(
+            manager,
+            &root,
+            &globals,
+            &activities,
+            &recipes,
+            string_floor,
+            &mut strings,
+        )?;
         let mut maps = Vec::with_capacity(recipes.len());
         let total = recipes.len();
         for (index, recipe) in recipes.into_iter().enumerate() {
@@ -371,6 +401,10 @@ impl Plan {
             let title_hash = string("title")?;
             let description_hash = string("description")?;
             maps.push(Resolved {
+                destination: recipe
+                    .destination
+                    .as_ref()
+                    .map(|label| destinations.rows[label]),
                 recipe,
                 activities: hashes,
                 title_hash,
@@ -457,8 +491,10 @@ impl Plan {
             anchors: anchors(manager),
             pictures,
             displays: picture_displays,
+            destinations: destinations.strings,
             ..Self::default()
         };
+        plan.replacements.extend(destinations.replacement);
         let mut companions = Default::default();
         for (index, map) in maps.iter().enumerate() {
             let prefix = format!(
@@ -698,6 +734,13 @@ impl Plan {
                 }
                 flatten(ids, &mut tags)?;
                 let mut named = self.aliases[index].clone();
+                super::mission::prepare(
+                    &self.maps[index].recipe,
+                    world.encounters(),
+                    world.triggers(),
+                    ids[0],
+                    &tags,
+                )?;
                 named.extend(names);
                 Ok((tags, named, Vec::new()))
             }
@@ -714,6 +757,7 @@ impl Plan {
                     (map.description_hash, map.recipe.description.clone()),
                 ]
             })
+            .chain(self.destinations.iter().cloned())
             .collect()
     }
 

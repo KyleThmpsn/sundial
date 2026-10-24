@@ -1,8 +1,6 @@
 //! Complete native records in the private-perk editor.
 use super::*;
 use crate::app::custom_perks::workbench::controls::{column, sized};
-#[cfg(test)]
-use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 use sundial::package_authoring::sandbox_perk::action::native::{
     self, Graph,
     fields::{self, Format},
@@ -266,36 +264,6 @@ pub(in crate::app::custom_perks::workbench) fn add_behavior_group(
     structure::add_group(&mut native.graph)?;
     *program = program.with_native(native)?;
     Ok(())
-}
-
-#[cfg(test)]
-pub(super) fn draw(ui: &mut egui::Ui, id: &str, node: &mut NativeNode, family: NativeFamily) {
-    let Some(entry) = family.catalog(node.kind) else {
-        return;
-    };
-    let result = Graph::read(&node.bytes, 0, entry.class).and_then(|mut graph| {
-        ui.push_id(id, |ui| {
-            behavior::draw_node(ui, &mut graph, 0)?;
-            egui::CollapsingHeader::new("Advanced")
-                .show(ui, |ui| allocation(ui, &mut graph, 0, &[], &mut Vec::new()))
-                .body_returned
-                .transpose()?;
-            Ok::<_, String>(())
-        })
-        .inner?;
-        graph.validate_node(if family == NativeFamily::Condition {
-            NativeNodeKind::Condition(node.kind)
-        } else {
-            NativeNodeKind::Effect(node.kind)
-        })?;
-        graph.emit()
-    });
-    match result {
-        Ok(bytes) => node.bytes = bytes,
-        Err(error) => {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-    }
 }
 
 fn allocation(
@@ -1717,24 +1685,6 @@ fn timer_seconds(block: &native::Block) -> Option<f32> {
             .bytes(block, 0)
             .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
             .map(f32::from_le_bytes),
-    }
-}
-
-/// The Not of a general predicate, drawn on its condition's line.
-#[cfg(test)]
-pub(super) fn negation(ui: &mut egui::Ui, node: &mut NativeNode) {
-    let Some(entry) = nodes::condition(node.kind) else {
-        return;
-    };
-    let Ok(mut graph) = Graph::read(&node.bytes, 0, entry.class) else {
-        return;
-    };
-    let before = graph.blocks[0].bytes.clone();
-    behavior::negation(ui, &mut graph.blocks[0]);
-    if graph.blocks[0].bytes != before
-        && let Ok(bytes) = graph.emit()
-    {
-        node.bytes = bytes;
     }
 }
 

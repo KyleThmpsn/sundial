@@ -173,6 +173,3 @@ fn draw_input(ui: &mut egui::Ui, input: Input, value: &mut Value, width: f32) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

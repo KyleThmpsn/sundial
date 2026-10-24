@@ -204,7 +204,6 @@ impl Assembly {
                     native,
                     graph,
                     profile,
-                    flow::SYSTEM,
                     &prefix,
                     scene.metres(),
                     speed,
@@ -266,7 +265,7 @@ impl Assembly {
             report: json!({"owner":format!("{owner:08X}"),"attachments":report,
                 "thrust_threshold":threshold,"input":flow.input,"gate":flow.gates[0],
                 "parallel_entry":0,"independent_flow":true,"gameplay_verified":false,
-                "limits":["Source profiles and bitmaps use straight ribbon segments. Thrust gates are authored independently of the vehicle carrier. Historical bending and light volumes are not translated. Live visibility and release cleanup require gameplay acceptance."]}),
+                "limits":["Source profiles and bitmaps use ordinary CPU samples with camera-facing quads. Thrust gates are authored independently of the vehicle carrier. Connected source ribbon topology and light volumes are not translated. Moving-host placement, live visibility and release cleanup require gameplay acceptance."]}),
         })
     }
 }

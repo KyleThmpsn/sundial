@@ -104,11 +104,63 @@ fn nonnegative(code: &Code, source: Value<'_>, depth: usize) -> bool {
         return false;
     }
     source.node(code).is_some_and(|(row, at, lane)| {
-        row.code == 52
-            && !row.saturate
-            && (nonnegative(code, value(row, at, lane, 1), depth + 1)
-                || nonnegative(code, value(row, at, lane, 2), depth + 1))
+        row.saturate
+            || row.code == 56 && same_value(code, value(row, at, lane, 1), value(row, at, lane, 2))
+            || row.code == 52
+                && (nonnegative(code, value(row, at, lane, 1), depth + 1)
+                    || nonnegative(code, value(row, at, lane, 2), depth + 1))
     })
+}
+
+/// A translated deferred surface initializes Y to 0.5, then optionally writes the native
+/// logarithmic emission encoding. Validate every writer, including each conditional branch.
+pub(in crate::model_preview::effects::native) fn recover_translated(code: &Code) -> bool {
+    let mut initialized = false;
+    let mut emission = false;
+    for (at, row) in code.instructions.iter().enumerate().filter(|(_, row)| {
+        row.operands.first().is_some_and(|destination| {
+            destination.kind == 2 && destination.indices[0].base == 2 && destination.mask & 2 != 0
+        })
+    }) {
+        if row.code == 54 && !row.saturate && value(row, at, 1, 1).number(0.5) {
+            initialized = true;
+        } else if initialized && translated_writer(code, row, at) {
+            emission = true;
+        } else {
+            return false;
+        }
+    }
+    initialized && emission
+}
+
+fn translated_writer(code: &Code, row: &Instruction, at: usize) -> bool {
+    if row.code != 50
+        || row.saturate
+        || !value(row, at, 1, 2).number(1.0 / 26.0)
+        || !value(row, at, 1, 3).number((7.0 / 13.0 + 257.0 / 255.0) / 2.0)
+    {
+        return false;
+    }
+    let Some((log, at, lane)) = value(row, at, 1, 1).node(code) else {
+        return false;
+    };
+    if log.code != 47 || log.saturate {
+        return false;
+    }
+    let Some((power, at, lane)) = value(log, at, lane, 1).node(code) else {
+        return false;
+    };
+    let bound = |value: Value<'_>, minimum: f32| {
+        value.operand.kind == 4 && value.operand.modifier == 0 && {
+            let number = f32::from_bits(value.operand.literal[value.operand.lanes[value.lane]]);
+            number.is_finite() && number >= minimum
+        }
+    };
+    power.code == 50
+        && !power.saturate
+        && nonnegative(code, value(power, at, lane, 1), 0)
+        && bound(value(power, at, lane, 2), 0.0)
+        && bound(value(power, at, lane, 3), 1.0 / 128.0)
 }
 
 fn visibility(code: &Code, ambient: Value<'_>) -> bool {
@@ -129,7 +181,7 @@ pub(super) fn present(code: &Code) -> bool {
     writer(code).is_some_and(|(at, row)| !(row.code == 54 && value(row, at, 1, 1).number(0.0)))
 }
 
-pub(super) fn recover(code: &Code) -> bool {
+pub(in crate::model_preview::effects::native) fn recover(code: &Code) -> bool {
     let Some((at, row)) = writer(code) else {
         return false;
     };

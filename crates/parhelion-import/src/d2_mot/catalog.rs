@@ -60,7 +60,10 @@ pub(crate) fn match_native(
     for weapon in weapons {
         weapon.native_item = native_hashes.contains(&weapon.hash);
         weapon.present_in_native = weapon.native_item
-            || native_hashes.contains(&super::service::destination_hash(weapon.hash)?);
+            || native_hashes.contains(&super::service::destination_hash(
+                weapon.hash,
+                &weapon.name,
+            )?);
     }
     Ok(())
 }
@@ -125,7 +128,7 @@ pub fn weapons_with_progress(
                 let icon_index = strings.u32(0x78)?;
                 let icon_index = (icon_index != u32::MAX).then_some(icon_index);
                 let present = native_hashes.contains(&hash)
-                    || native_hashes.contains(&super::service::destination_hash(hash)?);
+                    || native_hashes.contains(&super::service::destination_hash(hash, &name)?);
                 let native_item = native_hashes.contains(&hash);
                 // Optional browse fields must not hide an otherwise discoverable item.
                 let metadata = super::gameplay::browse_metadata(

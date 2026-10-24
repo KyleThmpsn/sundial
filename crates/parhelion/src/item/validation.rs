@@ -391,6 +391,7 @@ pub(super) fn validate_socket_column_choices(
             || column.reusable_plug_set_index.is_some()
             || column.randomized_plug_set_index.is_some()
             || !column.randomized_selection_program.is_empty()
+            || column.reusable_choices.is_some()
         {
             return Err(invalid(format!(
                 "Removed socket {lane} cannot retain plug selection settings"
@@ -496,11 +497,39 @@ pub(super) fn validate_socket_column_programs(
             "Authored socket column {lane} uses 65535 as an active plug-set index"
         )));
     }
+    if let Some(reusable) = column.reusable_choices {
+        // The pool is a set of its own, so the column cannot also name a stock one. Dawn records
+        // which rows an instance rolled as one 64-bit mask per socket, and no stock randomized set
+        // has more than 64 members.
+        if let Some(set) = column.randomized_plug_set_index {
+            return Err(invalid(format!(
+                "Authored socket column {lane} rolls from its own choices and cannot also name randomized plug set {set}"
+            )));
+        }
+        if !(1..=column.choices.len()).contains(&usize::from(reusable)) {
+            return Err(invalid(format!(
+                "Authored socket column {lane} offers {reusable} of its {} choices, but it must offer at least one and at most all",
+                column.choices.len()
+            )));
+        }
+        if column.choices.len() > MAX_ROLLED_CHOICES {
+            return Err(invalid(format!(
+                "Authored socket column {lane} rolls from {} choices, but a socket can roll from at most {MAX_ROLLED_CHOICES}",
+                column.choices.len()
+            )));
+        }
+    }
     match column.randomized_plug_set_index {
         Some(_) => validate_numeric_instructions(
             &format!("Socket column {lane} randomized selection program"),
             &column.randomized_selection_program,
             false,
+        ),
+        // An empty program rolls one plug.
+        None if column.reusable_choices.is_some() => validate_numeric_instructions(
+            &format!("Socket column {lane} randomized selection program"),
+            &column.randomized_selection_program,
+            true,
         ),
         None if !column.randomized_selection_program.is_empty() => Err(invalid(format!(
             "Authored socket column {lane} has a randomized selection program without a randomized plug set"
@@ -508,6 +537,10 @@ pub(super) fn validate_socket_column_programs(
         None => Ok(()),
     }
 }
+
+/// The most choices a column that rolls from its own pool can hold: the rows one 64-bit
+/// ownership mask covers, which is also the largest stock randomized set.
+const MAX_ROLLED_CHOICES: usize = 64;
 
 pub(crate) fn validate_socket_plug_variant_shapes(
     variants: &[WeaponSocketPlugVariantOverride],

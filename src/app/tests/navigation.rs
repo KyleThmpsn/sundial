@@ -162,15 +162,12 @@ fn v18_native_database_all_pages_preserve_data_across_sizes_and_themes() {
             std::fs::create_dir_all(database.parent().unwrap()).unwrap();
             let db = rusqlite::Connection::open(&database).unwrap();
             db.execute_batch("BEGIN").unwrap();
+            let resources = crate::persistence::sqlite_account::tests::default_resources();
             for sql in [
-                include_str!("../../persistence/sqlite_account/fixtures/investment_schema.sql"),
-                include_str!(
-                    "../../persistence/sqlite_account/fixtures/account_settings_schema.sql"
-                ),
-                include_str!("../../persistence/sqlite_account/fixtures/investment_defaults.sql"),
-                include_str!(
-                    "../../persistence/sqlite_account/fixtures/account_settings_defaults.sql"
-                ),
+                &resources.schema,
+                &resources.settings_schema,
+                &resources.rows,
+                &resources.settings_rows,
             ] {
                 db.execute_batch(sql).unwrap();
             }

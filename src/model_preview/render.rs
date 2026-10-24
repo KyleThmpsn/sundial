@@ -521,7 +521,7 @@ fn frame(
                     ab[0] * ac[1] - ab[1] * ac[0],
                 ])
                 .unwrap_or([0.0, 0.0, 1.0]);
-                let mut values = [[[0.0; 4]; 9]; 3];
+                let mut values = [[[0.0; 4]; 10]; 3];
                 for (corner, &vertex) in triangle.iter().enumerate() {
                     let vertex = vertex as usize;
                     let normal = source_normals
@@ -1199,29 +1199,25 @@ fn raster(
             let normal = basis.map_or(geometric, |basis| basis.normal);
             let lighting = band.scene.fill
                 + band.scene.key * super::shader::normal::dot(geometric, key).abs().min(1.0);
+            let mut material = material;
+            let native_color = (style != Style::Wireframe)
+                .then(|| opaque_color(triangle, &mut material, effect, &band, [b, c], [px, py, z]))
+                .flatten();
+            if native_color.is_some_and(|(rgba, _)| rgba[3] <= 0.0) {
+                continue;
+            }
             {
                 band.depth[index] = z;
                 band.coverage[index] = 1.0;
                 band.pixels[index] = if style == Style::Wireframe {
-                    let near_edge = [a, b, c]
-                        .iter()
-                        .zip(edge_lengths)
-                        .any(|(weight, length)| weight * area.abs() / length <= 0.8);
-                    if near_edge {
-                        [180.0, 215.0, 245.0].map(|v| super::shader::linear(v / 255.0))
-                    } else {
-                        band.scene
-                            .background
-                            .map(|v| super::shader::linear(f32::from(v) / 255.0))
-                    }
+                    wireframe_pixel([a, b, c], edge_lengths, area, band.scene.background)
                 } else {
                     let detail = std::array::from_fn(|i| {
                         triangle.detail_uvs[0][i]
                             + b * (triangle.detail_uvs[1][i] - triangle.detail_uvs[0][i])
                             + c * (triangle.detail_uvs[2][i] - triangle.detail_uvs[0][i])
                     });
-                    let mut material = material;
-                    opaque_color(triangle, &mut material, effect, &band, [b, c], [px, py, z])
+                    native_color
                         .map(|(rgba, normal)| {
                             band.normals[index] = [
                                 normal[0] * 0.375 + 0.5,
@@ -1258,6 +1254,24 @@ fn raster(
                 };
             }
         }
+    }
+}
+
+/// A wireframe pixel: the line color within 0.8 pixels of an edge, else the background.
+fn wireframe_pixel(
+    weights: [f32; 3],
+    edge_lengths: [f32; 3],
+    area: f32,
+    background: [u8; 3],
+) -> [f32; 3] {
+    let near_edge = weights
+        .iter()
+        .zip(edge_lengths)
+        .any(|(weight, length)| weight * area.abs() / length <= 0.8);
+    if near_edge {
+        [180.0, 215.0, 245.0].map(|v| super::shader::linear(v / 255.0))
+    } else {
+        background.map(|v| super::shader::linear(f32::from(v) / 255.0))
     }
 }
 

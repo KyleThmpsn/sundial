@@ -200,7 +200,7 @@ pub(crate) fn prepare_reusing(
             (native, &nd, &native_report, false),
         ] {
             let mut r = Reader::new(packages, output, modern)?;
-            let report = crate::d2_mot::dyes::inspect(&mut r, hash(report, "item_tag")?, modern)?;
+            let report = crate::tiger::dye::inspect(&mut r, hash(report, "item_tag")?, modern)?;
             write_json(&output.join("dyes.json"), &report)?;
             r.finish()?;
         }

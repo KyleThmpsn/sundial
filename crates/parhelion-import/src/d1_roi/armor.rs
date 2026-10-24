@@ -160,6 +160,7 @@ impl Source {
         let bodies = self.armor_bodies(&armor, &mut assets)?;
         let ornaments = self.ornaments(&armor, &mut assets)?;
         let dyes = self.dyes(armor.definition, &mut assets)?;
+        let talents = self.item_talents(armor.definition, &mut assets)?;
         self.unchanged()?;
         fs::create_dir_all(&output)?;
         let assets = self.write_assets(&output, assets)?;
@@ -167,7 +168,7 @@ impl Source {
         crate::io::write_json(
             &path,
             &json!({"source":"d1_roi","native_conversion":false,"item":armor,
-            "builds":self.report.builds,"package_stamp":self.report.stamp,"bodies":bodies,"ornaments":ornaments,"dyes":dyes,"assets":assets,
+            "builds":self.report.builds,"package_stamp":self.report.stamp,"bodies":bodies,"ornaments":ornaments,"dyes":dyes,"talents":talents,"assets":assets,
             "limits":["Source armor, ornaments, material programs and texture bytes are preserved. Material execution, body skinning, effects and cloth still need native D2 translation and gameplay verification."]}),
         )?;
         Ok(path)

@@ -123,47 +123,6 @@ fn retains(program: &Program) -> bool {
 pub(super) mod native;
 pub(super) use native::draw_complete;
 
-/// Draws a node read only with the node editor's controls, as the layout and accessibility
-/// checks draw every native kind. Nothing in the app draws a lone node since the stock reading
-/// left Edit Behavior….
-#[cfg(test)]
-pub(super) fn read_native(ui: &mut egui::Ui, condition: bool, node: &NativeNode) {
-    ui.add_enabled_ui(false, |ui| {
-        let mut node = node.clone();
-        if condition {
-            native::negation(ui, &mut node);
-        }
-        native::draw(
-            ui,
-            "native-reader",
-            &mut node,
-            if condition {
-                NativeFamily::Condition
-            } else {
-                NativeFamily::Effect
-            },
-        )
-    });
-}
-
-/// Which node table a native node comes from.
-#[cfg(test)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NativeFamily {
-    Condition,
-    Effect,
-}
-
-#[cfg(test)]
-impl NativeFamily {
-    fn catalog(self, kind: u8) -> Option<&'static nodes::NodeKind> {
-        match self {
-            Self::Condition => nodes::condition(kind),
-            Self::Effect => nodes::effect(kind),
-        }
-    }
-}
-
 /// One field control by format. The stored value only changes on valid input.
 fn draw_native_field(ui: &mut egui::Ui, field: &layout::Field, bytes: &mut [u8]) {
     let Some(value) = field.read(bytes) else {

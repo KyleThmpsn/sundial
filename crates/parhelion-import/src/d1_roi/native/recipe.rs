@@ -98,8 +98,16 @@ impl Source {
         let bodies = self.armor_bodies(&armor, &mut assets)?;
         let ornaments = self.ornaments(&armor, &mut assets)?;
         let dyes = self.dyes(armor.definition, &mut assets)?;
-        let namespace = format!("parhelion.import.d1_roi.{item:08x}");
-        let identity = crate::d2_mot::batch::identity(&namespace)?;
+        let talents = self.item_talents(armor.definition, &mut assets)?;
+        let source = json!({"source":"d1_roi","item":armor,"talents":talents,
+            "builds":self.report.builds,"package_stamp":self.report.stamp});
+        fs::create_dir_all(output.join("source"))?;
+        crate::io::write_json(&output.join("source/armor.json"), &source)?;
+        let namespace = options
+            .namespace
+            .clone()
+            .unwrap_or_else(|| crate::graph::import_namespace("d1_roi", &armor.name, item));
+        let identity = crate::graph::import_identity(&namespace)?;
         let private_item = u32::from_str_radix(
             identity["item_hash"]
                 .as_str()
@@ -120,7 +128,7 @@ impl Source {
                 continue;
             }
             let hash = number(&donor["hash"])?;
-            let tag = crate::d2_mot::assets::item::find_native(&mut assembly.native, hash)?;
+            let tag = crate::tiger::shadowkeep::item_tag(&mut assembly.native, hash)?;
             let definition = assembly.native.tag(tag, Some(0x80807BEA))?;
             if definition.u8(0xBA)? == 5 {
                 continue;
@@ -129,7 +137,7 @@ impl Source {
             let Some(selector) = selectors.first() else {
                 continue;
             };
-            let sockets = crate::d2_mot::ornaments::native(&mut assembly.native, hash)?;
+            let sockets = crate::tiger::shadowkeep::sockets(&mut assembly.native, hash)?;
             let socket = sockets["sockets"]
                 .as_array()
                 .context("Native socket report")?
@@ -155,18 +163,24 @@ impl Source {
             if !ornaments.is_empty() && socket.is_none() {
                 continue;
             }
-            selected = Some((
-                donor.clone(),
-                definition.u16(selector + 2)?,
-                sockets,
-                socket,
-            ));
+            selected = Some((donor.clone(), definition.u16(selector + 2)?, socket));
             break;
         }
-        let (donor, template, native_sockets, socket) = selected.context(
+        let (donor, template, socket) = selected.context(
             "No native armor template has the required class, slot and appearance choices",
         )?;
         let donor_hash = number(&donor["hash"])?;
+        let (columns, variants, perks, damage) =
+            perk::translate(&mut assembly, &source, donor_hash, perk::Host::Armor)?;
+        ensure!(
+            damage.is_none(),
+            "Armor talents cannot set the item's damage type"
+        );
+        let mut columns = columns.as_array().context("Armor talent columns")?.clone();
+        let mut variants = variants
+            .as_array()
+            .context("Armor talent variants")?
+            .clone();
         progress(format!("Converting {}", armor.name));
         let mut reference = assembly.armor_graph(
             &armor,
@@ -177,8 +191,6 @@ impl Source {
             &dyes,
             &ornaments,
         )?;
-        let mut columns = Vec::new();
-        let mut variants = Vec::new();
         if let Some(socket) = socket.filter(|_| !ornaments.is_empty()) {
             let socket_index =
                 usize::try_from(socket["index"].as_u64().context("Ornament socket index")?)?;
@@ -272,15 +284,28 @@ impl Source {
                 choices.push(json!(format!("0x{plug:08X}")));
                 variants.push(json!({"socket_index":socket_index,"choice_index":choice,"source_plug_hash":format!("0x{plug:08X}"),"name":source_item.name,"description":"Changes this armor's appearance. Select the default ornament to restore its original appearance.","replace_effects":true,"sandbox_perks":[]}));
             }
-            columns.resize(
-                native_sockets["sockets"]
-                    .as_array()
-                    .context("Native sockets")?
-                    .len(),
-                Value::Null,
+            ensure!(
+                socket_index < columns.len(),
+                "Ornament socket exceeds the armor columns"
+            );
+            ensure!(
+                columns[socket_index].is_null(),
+                "Armor perk layout overlaps its ornament socket"
             );
             columns[socket_index] = json!({"choices":choices,"socket_type":socket["socket_type"],"choice_conditions":[],"choice_weight_bits":[],"randomized_selection_program":[]});
         }
+        let manifest = reference.directory.join("asset-graph.json");
+        let mut graph: Value = serde_json::from_slice(&fs::read(&manifest)?)?;
+        graph["source_talents"] = talents;
+        graph["perk_translation"] = perks;
+        graph["limitations"].as_array_mut().context("Armor limitations")?.extend([
+            json!("Supported armor talents use private native effects. Equipping, event delivery, repeated use, selection changes and cleanup require in-game acceptance."),
+            json!("Native base stats remain the baseline. Source armor stat tiers, ability grants, progression and unsupported talent effects are not translated."),
+        ]);
+        crate::io::write_json(&manifest, &graph)?;
+        let attachments = std::mem::take(&mut reference.attachments);
+        reference = GraphReference::new(&reference.directory, private_item)?;
+        reference.attachments = attachments;
         reference.validate_reusable("armor")?;
         self.unchanged()?;
         let rarity = match armor.rarity {
@@ -298,7 +323,7 @@ impl Source {
         )?;
         let mut recipe = json!({"schema":1,"kind":"armor","collection_placement":"sunrise_badge","namespace":namespace,"identity":identity,"name":armor.name,"type_name":armor.kind,"flavor":flavor,
             "donor":{"item_hash":format!("0x{donor_hash:08X}"),"expected_name":donor["name"]},"source":"Source: Rise of Iron",
-            "overrides":{"rarity":rarity,"imported_graph":reference,"socket_columns":columns,"socket_plug_variants":variants,"remove_lore":true}});
+            "overrides":{"rarity":rarity,"imported_graph":reference,"base_sandbox_perks":[],"socket_columns":columns,"socket_plug_variants":variants,"remove_lore":true}});
         crate::artwork::apply(&mut recipe, &output.join("graph"))?;
         let path = output.join("armor.parhelion.json");
         crate::io::write_json(&path, &recipe)?;

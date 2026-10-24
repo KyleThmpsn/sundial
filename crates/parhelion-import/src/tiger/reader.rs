@@ -64,6 +64,10 @@ pub struct Reader {
     record_reads: bool,
 }
 impl Reader {
+    pub(crate) fn packages(&self) -> &Path {
+        &self.packages
+    }
+
     pub(crate) fn is_native(&self) -> bool {
         self.version == "shadowkeep"
     }

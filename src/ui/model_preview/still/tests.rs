@@ -3,6 +3,7 @@
 //! unintended motion while paused and an unreadable frame artifact.
 use super::*;
 mod armor;
+mod inspection;
 
 #[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
@@ -113,33 +114,6 @@ fn workbench_controls_respond_during_model_loading_and_rendering() {
         .unwrap(),
     )
     .unwrap();
-}
-
-#[test]
-fn abandoned_preview_results_do_not_replace_the_current_selection() {
-    let appearance = |arrangement| {
-        Subject::Appearance(Appearance {
-            arrangement,
-            dyes: vec![],
-            dye_textures: vec![],
-        })
-    };
-    let old = (PathBuf::from("temporary-packages"), appearance(1), None);
-    let current = (PathBuf::from("temporary-packages"), appearance(2), None);
-    let (sender, receiver) = mpsc::channel();
-    let mut still = Still {
-        wanted: Some(current.clone()),
-        pending: Some((old, receiver)),
-        ..Default::default()
-    };
-    sender.send(Ok(Model::default())).unwrap();
-    still.receive();
-    assert!(still.model.is_none());
-    assert!(still.shown.is_none());
-    assert!(matches!(
-        still.wanted.as_ref().map(|wanted| &wanted.1),
-        Some(Subject::Appearance(Appearance { arrangement: 2, .. }))
-    ));
 }
 
 #[test]

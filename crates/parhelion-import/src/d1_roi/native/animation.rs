@@ -8,6 +8,7 @@
 use super::*;
 use crate::tiger::{animation::runtime, payload::write_array};
 mod channel;
+pub(super) mod character;
 mod constraint;
 mod controls;
 mod event;
@@ -147,6 +148,14 @@ fn convert_bound(
     source: &Payload,
     binding: Option<(&Payload, &[u16])>,
 ) -> Result<(Payload, Value)> {
+    convert_events(source, binding, None)
+}
+
+fn convert_events(
+    source: &Payload,
+    binding: Option<(&Payload, &[u16])>,
+    events: Option<&event::Library>,
+) -> Result<(Payload, Value)> {
     let length = source.0.len();
     ensure!(
         length > SOURCE_HEADER && source.u64(0)? == length as u64,
@@ -176,7 +185,10 @@ fn convert_bound(
     );
     let mut native = vec![0; NATIVE_HEADER];
     native.extend_from_slice(&source.0[SOURCE_HEADER..]);
-    let events = event::convert(source, &mut native, frames)?;
+    let events = match events {
+        Some(library) => library.convert(source, &mut native, frames)?,
+        None => event::convert(source, &mut native, frames)?,
+    };
     // Fields from 0x60 up to the track maps, and from the last map to the counts, move by 0x10.
     native[0x70..0xA8].copy_from_slice(&source.0[0x60..0x98]);
     native[0x118..0x130].copy_from_slice(&source.0[0x108..0x120]);

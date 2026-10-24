@@ -198,6 +198,29 @@ impl RecipeRead {
 }
 
 impl BuildInputs {
+    /// Progress uses the selected name without restoring embedded assets just to label a read.
+    pub(super) fn recipe_name(&self, path: &Path) -> String {
+        self.open
+            .as_ref()
+            .filter(|open| open.path == path)
+            .map(|open| open.recipe.name.as_str())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                self.library_items
+                    .iter()
+                    .find(|item| item.path == path)
+                    .map(|item| item.name.as_str())
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                path.file_name().and_then(|name| name.to_str()).map_or_else(
+                    || path.display().to_string(),
+                    |name| name.trim_end_matches(".parhelion.json").to_owned(),
+                )
+            })
+    }
+
     #[cfg(test)]
     pub(super) fn request(&self) -> Result<BatchBuildRequest, String> {
         self.request_reporting(&mut |_, _, _| {})

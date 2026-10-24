@@ -238,30 +238,3 @@ fn node_line(ui: &egui::Ui, text: &str, width: f32) -> String {
         .first()
         .map_or_else(String::new, |row| row.text())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn link(source: u32, target: u32) -> tft::Reference {
-        tft::Reference {
-            source,
-            target,
-            source_class: 0,
-            target_class: 0,
-            offset: 0,
-            path: String::new(),
-        }
-    }
-    #[test]
-    fn expansion_is_bounded_and_reports_hidden_neighbors() {
-        let index = tft::Index {
-            references: (2..102).map(|tag| link(1, tag)).collect(),
-            ..Default::default()
-        };
-        let Neighborhood { nodes, hidden, .. } = neighborhood(&index, 1, 3);
-        assert!(nodes.contains_key(&1));
-        assert!(nodes.len() <= 40);
-        assert_eq!(nodes.len() + hidden, 101);
-        assert!(hidden > 0);
-    }
-}

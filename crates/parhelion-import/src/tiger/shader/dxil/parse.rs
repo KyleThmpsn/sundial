@@ -1,5 +1,28 @@
 use super::*;
 
+pub(crate) fn entry(text: &str) -> Result<&str> {
+    let mut functions = text.split("define void @").skip(1);
+    let function = functions.next().context("Missing DXIL entry point")?;
+    ensure!(
+        functions.next().is_none(),
+        "Multiple DXIL executable functions"
+    );
+    let (name, body) = function
+        .split_once("() {")
+        .context("Unsupported DXIL entry point")?;
+    ensure!(
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+        "Invalid DXIL entry point name"
+    );
+    Ok(body
+        .split_once("\n}")
+        .context("Unterminated DXIL entry point")?
+        .0)
+}
+
 pub(super) fn signature(text: &str, name: &str) -> Result<Vec<Field>> {
     let table = text.split_once(name).context("Missing DXIL signature")?.1;
     let mut fields = Vec::new();
@@ -50,14 +73,7 @@ impl Program {
                 .all(|field| field.semantic.eq_ignore_ascii_case("SV_Target")),
             "Unsupported DXIL output semantic"
         );
-        let body = text
-            .split_once("define void @main_ps() {")
-            .or_else(|| text.split_once("define void @main_ps_depth_only() {"))
-            .context("Missing DXIL pixel entry point")?
-            .1
-            .split_once("\n}")
-            .context("Unterminated DXIL entry point")?
-            .0;
+        let body = entry(text)?;
         let mut blocks = BTreeMap::from([(0, Vec::new())]);
         let mut order = vec![0];
         let mut current = 0;

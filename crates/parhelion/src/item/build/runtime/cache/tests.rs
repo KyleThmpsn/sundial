@@ -1,4 +1,4 @@
-//! Persist, relocate, emit, then independently follow sound and clip references.
+//! Persist, relocate, emit, then independently follow sound, clip and collision references.
 //! The isolation failure model is retained in the build follow-up investigation.
 use super::*;
 use serde_json::{Value, json};
@@ -130,6 +130,53 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
         payload: clip_payload.clone(),
         storage: crate::NewTagStorageMode::InheritTemplate,
     });
+    // This native physical owner has reciprocal instance/definition prefixes. Keep
+    // the runtime definition at its original address while moving the typed view,
+    // as a component with extended mutable arrays requires. The native consumer
+    // reaches its collision through instance +8, independently of header +24.
+    let body_template = TagHash(0x80FC_6B9A);
+    let mut body = manager.read_tag(body_template).unwrap();
+    native_inputs.insert(body_template.0, hash(&body));
+    let relative = |bytes: &[u8], at: usize| {
+        (at as i64 + i64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())) as usize
+    };
+    let instance = relative(&body, 16);
+    let definition = relative(&body, 24);
+    assert_eq!(word(&body, definition - 4), 0x8080_8A0C);
+    assert_eq!(word(&body, instance + 8) as usize, definition);
+    let collision_template = TagHash(word(&body, definition + 0x380));
+    let collision = manager.read_tag(collision_template).unwrap();
+    native_inputs.insert(collision_template.0, hash(&collision));
+    let collision_digest = hash(&collision);
+    let collision_index = tags.len();
+    tags.push(NewTagSpec {
+        template_tag: collision_template,
+        payload: collision,
+        storage: crate::NewTagStorageMode::InheritTemplate,
+    });
+    let body_index = tags.len();
+    for at in [instance, definition] {
+        body[at..at + 4].copy_from_slice(&allocated(id, body_index).to_le_bytes());
+    }
+    body[definition + 0x380..definition + 0x384]
+        .copy_from_slice(&allocated(id, collision_index).to_le_bytes());
+    let first = relative(&body, 8) - 4;
+    let delta = (body.len() + 15) & !15;
+    let copy = body[first..].to_vec();
+    body.resize(delta + first, 0);
+    body.extend(copy);
+    for (at, value) in [
+        (0, body.len()),
+        (24, delta + definition - 24),
+        (0x48, delta + definition - instance),
+    ] {
+        body[at..at + 8].copy_from_slice(&(value as u64).to_le_bytes());
+    }
+    tags.push(NewTagSpec {
+        template_tag: body_template,
+        payload: body,
+        storage: crate::NewTagStorageMode::InheritTemplate,
+    });
     let expected = tags
         .iter()
         .map(|tag| hash(&tag.payload))
@@ -161,6 +208,7 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
     let mut placed = vec![
         TagHash(allocated(id, sound_index)),
         TagHash(allocated(id, clip_index)),
+        TagHash(allocated(id, body_index)),
     ];
     let mut impacts = vec![];
     let mut symbols = BTreeMap::new();
@@ -224,7 +272,8 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
         placed,
         [
             TagHash(allocated(id + 1, sound_index)),
-            TagHash(allocated(id + 1, clip_index))
+            TagHash(allocated(id + 1, clip_index)),
+            TagHash(allocated(id + 1, body_index))
         ]
     );
     let destination = output.join("packages");
@@ -267,6 +316,22 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
         );
     }
     assert_eq!(reopened.read_tag(placed[1]).unwrap(), clip_payload);
+    let body = reopened.read_tag(placed[2]).unwrap();
+    let instance = relative(&body, 16);
+    let actual = u64::from_le_bytes(body[instance + 8..instance + 16].try_into().unwrap()) as usize;
+    let typed = relative(&body, 24);
+    assert_ne!(actual, typed);
+    assert_eq!(actual, definition);
+    let collision_tag = TagHash(word(&body, actual + 0x380));
+    assert_eq!(collision_tag.0, allocated(id + 1, collision_index));
+    assert_eq!(
+        hash(&reopened.read_tag(collision_tag).unwrap()),
+        collision_digest
+    );
+    assert_eq!(word(&body, typed + 0x380), collision_tag.0);
+    for at in [instance, actual, typed] {
+        assert_eq!(word(&body, at), placed[2].0);
+    }
     // A changed sharing decision must leave all caller state untouched before recompilation.
     let mut rejected = prefix();
     let mut rejected_placed = vec![];
@@ -326,8 +391,10 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
         "source_packages":packages,"executable_sha256":crate::artifact::digest_file(&std::env::current_exe().unwrap()).unwrap(),
         "packages":emitted,"sound":placed[0].0,"clip":placed[1].0,"bank":bank_tag.0,"native_inputs":native_inputs,
         "media":media_tags,"pcm_size":bytes.len(),"before":before,"after":hash(&bytes),
+        "body":placed[2].0,"runtime_definition":actual,"typed_definition":typed,
+        "collision":collision_tag.0,"collision_sha256":hex::encode(collision_digest),
         "shared_clip_rejection_preserved_state":true,"same_size_edit_rejected":true,
         "repeat_filter":"item::build::runtime::cache::tests::imported_fragment_reopens_across_packages_and_rejects_changed_inputs",
-        "limits":"Persisted fragment and package readback with configured imported PCM and clip payloads. No whole importer, runtime playback or gameplay claim."
+        "limits":"Persisted fragment and package readback with configured imported PCM, clip payloads and a sealed native physical owner. Collision readback follows the runtime definition. No whole importer, runtime playback or gameplay claim."
     })).unwrap()).unwrap();
 }

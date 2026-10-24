@@ -138,6 +138,12 @@ impl Drop for StagedRun {
     }
 }
 
+/// Whether `name` is one of the files that mark a run as this module's, so a copy without them is
+/// an unmarked run, which stays installable and is never pruned.
+pub(crate) fn is_marker(name: &std::ffi::OsStr) -> bool {
+    name == LEASE_FILE || name == COMPLETE_FILE
+}
+
 /// Unmarked legacy runs remain installable and are never pruned by this module.
 pub(crate) fn lease_for_read(directory: &Path) -> Result<Option<ReadLease>, String> {
     let lease_path = directory.join(LEASE_FILE);
@@ -345,8 +351,18 @@ fn owned_inventory(directory: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn owned_file_name(name: &str) -> bool {
+    use sundial::package_authoring::mod_content::{map_diagnostics, mission_script};
+
+    // Partial runs can fail before their manifest is written. Recognize the
+    // producers' flat artifact names without requiring completed file contents.
     matches!(name, LEASE_FILE | COMPLETE_FILE | MANIFEST_FILE_NAME)
+        || name == crate::merge_data::REPORT_FILE_NAME
+        || name == map_diagnostics::FILE_NAME
+        || mission_script::path(name).is_some()
         || authored_package_for_file_name(name).is_some()
+        || name
+            .strip_suffix(".merge")
+            .is_some_and(|stem| authored_package_for_file_name(&format!("{stem}.pkg")).is_some())
 }
 
 fn collect_recipes(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {

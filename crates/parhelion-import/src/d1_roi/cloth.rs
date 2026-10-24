@@ -8,7 +8,7 @@ pub(super) fn native_bindings(
     solver: &[u8],
     bones: u32,
 ) -> Result<Value> {
-    let report = crate::d2_mot::cloth::inspect_native(solver)?;
+    let report = crate::tiger::physics::cloth::inspect_native(solver)?;
     let bindings = &report["bindings"];
     for count in bindings["transforms"]
         .as_array()

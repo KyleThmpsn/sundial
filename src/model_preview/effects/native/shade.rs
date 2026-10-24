@@ -243,7 +243,13 @@ impl evaluate::Context for Context<'_, '_> {
         }
     }
 
-    fn lod(&self, resource: usize, sampler: usize, coordinates: [f32; 4]) -> [f32; 4] {
+    fn lod(
+        &self,
+        instruction: usize,
+        resource: usize,
+        sampler: usize,
+        coordinates: [f32; 4],
+    ) -> [f32; 4] {
         let Some(binding) = self
             .native
             .bindings
@@ -278,7 +284,7 @@ impl evaluate::Context for Context<'_, '_> {
             let value = self
                 .native
                 .pixel
-                .lod_coordinates(&other)
+                .lod_coordinates(&other, instruction)
                 .unwrap_or(coordinates);
             std::array::from_fn(|i| (value[i] - coordinates[i]) * offset)
         };

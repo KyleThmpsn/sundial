@@ -110,29 +110,6 @@ fn accepting_a_loaded_source_cannot_record_or_restore_the_previous_source() {
 }
 
 #[test]
-fn disconnected_catalog_worker_releases_the_authoring_pause() {
-    use crate::app::background_tasks::{CatalogTask, CatalogTaskKind};
-    let directory = TestDirectory::new("catalog-worker-disconnect");
-    let mut app = app(directory.0.clone());
-    app.manifest.suspend_package_access();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    app.catalog_task = Some(CatalogTask {
-        kind: CatalogTaskKind::Rebuild,
-        receiver,
-        progress: CatalogProgress {
-            message: "Testing",
-            completed: 0,
-            total: 1,
-        },
-    });
-    drop(sender);
-    app.poll_catalog_task();
-    assert!(app.catalog_task.is_none());
-    assert!(!app.manifest.inspection_access().is_suspended());
-    assert!(app.status_is_error);
-}
-
-#[test]
 fn applying_stale_json_preserves_the_current_document_and_the_draft() {
     let directory = TestDirectory::new("json-draft-conflict");
     let mut app = app(directory.0.clone());

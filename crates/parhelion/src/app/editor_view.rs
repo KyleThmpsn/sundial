@@ -9,6 +9,8 @@ impl PackageAuthoringApp {
         ui.spacing_mut().item_spacing.y = 4.0;
         let donor = self.current_donor();
         let model = self.catalog.is_some() && donor.is_some();
+        #[cfg(feature = "d2-model-importer")]
+        let model = model || self.recipe.overrides.imported_graph.is_some();
         let column = egui::Layout::top_down(egui::Align::Min);
         if let Some(donor_width) = workbench_left_column_width(ui.available_width()) {
             let spacing = ui.spacing().item_spacing.x;
@@ -94,19 +96,39 @@ impl PackageAuthoringApp {
         }
     }
 
-    /// The recipe's weapon as the game draws it: the appearance donor's model in the recipe's
-    /// colors with its ornament, turning on drag. Beside the weapon's text it ends where the
+    /// The recipe's selected model, including pinned imported assets, turning on drag.
+    /// Beside the weapon's text it ends where the
     /// donor column ends, `band`, within its bounds. Its corner opens the model viewer, which
     /// has the full tools.
-    fn draw_weapon_preview(&self, ui: &mut egui::Ui, band: Option<f32>) {
+    pub(in crate::app) fn draw_weapon_preview(&self, ui: &mut egui::Ui, band: Option<f32>) {
+        let id = egui::Id::new("weapon-preview");
+        let width = ui.available_width();
+        let height = preview_height(width, band);
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(reference) = &self.recipe.overrides.imported_graph {
+            let appearance = crate::imported::preview::appearance(reference, self.recipe.kind);
+            sundial::ui::model_preview::still::placeholder(ui.ctx(), id, None);
+            let response = sundial::ui::model_preview::still::show_local(
+                ui,
+                id,
+                &self.packages,
+                appearance.clone(),
+                egui::vec2(width, height),
+            );
+            sundial::ui::model_preview::pop_out_local(
+                ui,
+                id,
+                response.rect,
+                &self.packages,
+                (appearance, &self.recipe.name),
+            );
+            return;
+        }
         let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
         let appearance = donor_view::preview::loadout(catalog, &self.recipe)
             .map(|loadout| catalog.preview_appearance(&loadout));
-        let id = egui::Id::new("weapon-preview");
-        let width = ui.available_width();
-        let height = preview_height(width, band);
         // The appearance's icon stands in until its model is read.
         let icon = self
             .recipe
@@ -538,7 +560,12 @@ impl PackageAuthoringApp {
         #[cfg(not(feature = "d2-model-importer"))]
         let importing = false;
         ui.add_space(6.0);
-        if importing || self.appearance_ornaments_offered() {
+        #[cfg(feature = "d2-model-importer")]
+        if imported {
+            imported_view::part(&self.recipe, ui, imported_view::Part::Model);
+            self.draw_imported_model_picker(ui);
+        }
+        if !imported && (importing || self.appearance_ornaments_offered()) {
             ui.horizontal(|ui| {
                 let width = Self::appearance_label_width(ui);
                 ui.allocate_ui_with_layout(

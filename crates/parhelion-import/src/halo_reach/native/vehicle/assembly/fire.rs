@@ -90,11 +90,13 @@ fn cue(
     graph: &mut Graph,
     sound: &Value,
     template: u32,
-    bus: u32,
+    bus: Option<u32>,
 ) -> Result<Value> {
     let original = native.tag(template, Some(0x80809802))?;
     let bank_tag = original.u32(20)?;
-    audio::verify_bus(&native.tag(bank_tag, None)?.0, bus)?;
+    let bank = native.tag(bank_tag, None)?;
+    let bus = audio::output_bus(&bank.0, bus, original.u32(8)?)?;
+    audio::verify_bus(&bank.0, bus)?;
     let source = &sound["data"];
     ensure!(
         source["promotion_index"] == -1 && source["custom_playback_index"] == -1,
@@ -199,7 +201,7 @@ impl Assembly {
         graph: &mut Graph,
         behavior: &Value,
         cache: &Cache,
-        bus: u32,
+        bus: Option<u32>,
     ) -> Result<Value> {
         let Some(source) = primary(behavior, cache)? else {
             return Ok(json!({"status":"source_only","reason":"No source primary firing sound"}));

@@ -26,8 +26,8 @@ pub(super) fn prepare(
         !candidates.is_empty(),
         "No installed native shader to convert with"
     );
-    let namespace = super::super::compatibility::namespace(source.hash);
-    let identity = batch::identity(&namespace)?;
+    let namespace = source.namespace();
+    let identity = crate::graph::import_identity(&namespace)?;
     let item = profile::hash(&identity, "item_hash")?;
     let donor = candidates
         .first()

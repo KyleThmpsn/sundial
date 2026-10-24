@@ -894,17 +894,18 @@ fn plan_maps(
     Ok(assets_end)
 }
 
-/// Reserve each private overflow output after checking its range against the asset packages.
+/// Reserve each private overflow output after checking it takes no id of the asset and map
+/// packages, the window's first `assets_end`.
 fn plan_private_runtime_overflow(
     packages: &mut packages::Packages<'_>,
     assets_end: usize,
     overflow: Vec<(u16, Vec<crate::NewTagSpec>)>,
 ) -> AuthoringResult<Vec<packages::Ticket>> {
+    let window = crate::package_profile::window();
     let mut planned = Vec::new();
     for (id, tags) in overflow {
-        if crate::package_profile::window()
-            .position(id)
-            .is_none_or(|position| position < assets_end)
+        if !(window.base..=window.top).contains(&id)
+            || (0..assets_end).any(|position| window.nth(position) == Some(id))
         {
             return Err(validation(
                 "The build's private copies and assets need more packages than the free authored ids hold",

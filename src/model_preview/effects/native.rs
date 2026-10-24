@@ -405,9 +405,9 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
         .iter()
         .filter(|i| i.code == 108)
         .count()
-        > 1
+        > 4
     {
-        return Err("The effect uses more than one dependent reflection footprint".into());
+        return Err("The effect exceeds four dependent reflection footprints".into());
     }
     for &(slot, count) in &program.buffers {
         // The vertex object scope ends with a motion palette of three rows per bone from row 8,
@@ -444,7 +444,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
     }
     for semantic in &program.outputs {
         let supported = if vertex {
-            (semantic.name == "TEXCOORD" && semantic.index < 9) || semantic.system == 1
+            (semantic.name == "TEXCOORD" && semantic.index < 10) || semantic.system == 1
         } else {
             semantic.name == "SV_TARGET"
                 && semantic.register == semantic.index as usize
@@ -465,7 +465,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
                 _ => false,
             }
         } else {
-            (semantic.name == "TEXCOORD" && semantic.index < 9) || matches!(semantic.system, 1 | 9)
+            (semantic.name == "TEXCOORD" && semantic.index < 10) || matches!(semantic.system, 1 | 9)
         };
         if !supported {
             return Err(format!(

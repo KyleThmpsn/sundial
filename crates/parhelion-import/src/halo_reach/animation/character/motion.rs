@@ -40,6 +40,7 @@ pub(super) struct Calibration {
     pelvis: usize,
     scale: f32,
     limbs: Vec<([usize; 3], f32, f32)>,
+    grip: Option<super::grip::Grip>,
 }
 
 impl Calibration {
@@ -49,6 +50,7 @@ impl Calibration {
         skeleton: &Payload,
         controls: &Payload,
         options: &Options,
+        weapon_scale: Option<f32>,
     ) -> Result<Self> {
         let parent_rows = skeleton.array(skeleton.pointer(24)? + 0x80, 16, Some(0x80808A08))?;
         let parents = parent_rows
@@ -169,6 +171,9 @@ impl Calibration {
                 ));
             }
         }
+        let grip = weapon_scale
+            .map(|scale| super::grip::Grip::new(source, rig, &parents, scale))
+            .transpose()?;
         Ok(Self {
             parents,
             selected,
@@ -176,6 +181,7 @@ impl Calibration {
             pelvis,
             scale,
             limbs,
+            grip,
         })
     }
 
@@ -201,6 +207,9 @@ impl Calibration {
                     }
                 }
                 targets[bone] = Pose::checked(target.0)?;
+            }
+            if let Some(grip) = &self.grip {
+                grip.apply(frame, &mut targets)?;
             }
             // Supply the plane expected by the native arm and leg postpass. Its
             // segment lengths come from the retained native bind hierarchy.

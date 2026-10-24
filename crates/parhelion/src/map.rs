@@ -17,11 +17,18 @@ use crate::{AuthoringResult, error::invalid};
 mod activity;
 #[cfg(feature = "d2-model-importer")]
 mod chain;
+#[cfg(feature = "d2-model-importer")]
+mod destination;
 pub mod diagnostics;
 #[cfg(feature = "d2-model-importer")]
+mod encounters;
+#[cfg(feature = "d2-model-importer")]
 mod geometry;
+pub(crate) mod mission;
 #[cfg(feature = "d2-model-importer")]
 mod picture;
+#[cfg(feature = "d2-model-importer")]
+mod placed;
 #[cfg(feature = "d2-model-importer")]
 mod plan;
 #[cfg(feature = "d2-model-importer")]
@@ -30,6 +37,8 @@ mod private_match;
 mod registry;
 #[cfg(feature = "d2-model-importer")]
 mod streaming;
+#[cfg(feature = "d2-model-importer")]
+mod triggers;
 #[cfg(not(feature = "d2-model-importer"))]
 mod unsupported;
 #[cfg(feature = "d2-model-importer")]
@@ -70,6 +79,9 @@ pub struct MapRecipe {
     pub name: String,
     pub title: String,
     pub description: String,
+    /// A label shared by authored activities in an otherwise unused native destination row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
     /// The internal name of the stock activity the new map is cloned from: a Crucible map for a
     /// multiplayer level, a mission or strike for a stretch of a campaign mission.
     pub donor: String,
@@ -151,9 +163,25 @@ pub struct MapSource {
     /// JSON native mission bindings with explicit source names, target activity and SDK identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission_bindings: Option<PathBuf>,
+    /// Encounter prefixes for native squad bring-up. They stop at their first source wait.
+    /// These openings use Normal, solo difficulty and do not execute full mission progression.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encounter_starts: Vec<String>,
+    /// Ordered encounter openings activated by a named source player volume. Each opening still
+    /// ends at its first wait. The recipe records the chosen source gate explicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encounter_gates: Vec<EncounterGate>,
     /// Whole meters the level moves by.
     #[serde(default)]
     pub offset: [i32; 3],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EncounterGate {
+    /// Any of these source volumes activates the next opening while the player is inside it.
+    pub volumes: Vec<String>,
+    pub scripts: Vec<String>,
 }
 
 fn first_zone_set() -> Vec<usize> {
@@ -212,6 +240,23 @@ impl MapRecipe {
             .is_some_and(|source| source.zone_sets.is_empty())
         {
             return Err(invalid(format!("Map {} loads no zone set", self.name)));
+        }
+        if let Some(source) = &self.source {
+            if !source.encounter_gates.is_empty() && source.encounter_starts.is_empty() {
+                return Err(invalid(
+                    "Encounter gates require an initial encounter opening",
+                ));
+            }
+            for gate in &source.encounter_gates {
+                if gate.volumes.is_empty()
+                    || gate.scripts.is_empty()
+                    || gate.volumes.iter().collect::<BTreeSet<_>>().len() != gate.volumes.len()
+                {
+                    return Err(invalid(
+                        "Encounter gates need distinct source volumes and selected scripts",
+                    ));
+                }
+            }
         }
         Ok(())
     }

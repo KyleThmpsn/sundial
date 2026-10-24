@@ -119,7 +119,12 @@ impl PackageAuthoringApp {
         }
     }
 
-    pub(super) fn import_roi_selected(&mut self, ctx: &egui::Context) {
+    /// `reimport` names the saved namespace of each source item a library reimport updates.
+    pub(super) fn import_roi_selected(
+        &mut self,
+        ctx: &egui::Context,
+        reimport: &BTreeMap<u32, String>,
+    ) {
         let Some(folder) = self.importer.folder().cloned() else {
             return;
         };
@@ -150,24 +155,27 @@ impl PackageAuthoringApp {
             return;
         }
         let Ok(root) = data_root() else { return };
-        let native = PathBuf::from(&self.packages);
-        let options = d1_roi::NativeOptions {
-            xg_library: self.importer.settings.d1_xg_library.clone(),
-        };
+        let xg_library = self.importer.settings.d1_xg_library.clone();
+        let reimport = reimport.clone();
         let gear = self.gear_donors_for(ItemKind::Armor).iter().filter(|donor| self.catalog.as_ref().and_then(|catalog|catalog.item_definition_tag(donor.hash)).is_none_or(crate::package_profile::is_stock_item_definition))
             .map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name,"bucket_hash":donor.bucket_hash,
                 "class_type":self.catalog.as_ref().and_then(|catalog|catalog.item_class_type(donor.hash)),"collection_backed":donor.collection_backed})).collect::<Vec<_>>();
         let donors = serde_json::json!({"gear":gear});
         let names = items.iter().map(|(_, name, _)| name.clone()).collect();
-        self.run_import(ctx, names, move |index, progress| {
+        self.run_import(ctx, names, move |index, native, progress| {
             let (hash, name, bases) = &items[index];
             let model = service::model_directory(&root.join("models"), name, *hash)?;
             let output = service::reserve_assets(&model, "d1-roi")?.join("import");
             let source = d1_roi::Source::open(&folder, |_, _| {})?;
+            let options = d1_roi::NativeOptions {
+                xg_library: xg_library.clone(),
+                namespace: reimport.get(hash).cloned(),
+            };
             match bases {
-                Some(bases) => source
-                    .prepare_weapon_on_base(*hash, &native, bases, &output, &options, progress),
-                None => source.prepare_armor(*hash, &native, &donors, &output, &options, progress),
+                Some(bases) => {
+                    source.prepare_weapon_on_base(*hash, native, bases, &output, &options, progress)
+                }
+                None => source.prepare_armor(*hash, native, &donors, &output, &options, progress),
             }
         });
     }

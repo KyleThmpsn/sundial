@@ -22,6 +22,7 @@ const GROUP_SIZE: usize = 0x28;
 
 pub(crate) mod native;
 pub(crate) mod partition;
+pub(crate) mod relocate;
 pub(crate) mod scoped;
 
 use sundial::package_authoring::loading_index::{Group, entries as indexed_dependencies};

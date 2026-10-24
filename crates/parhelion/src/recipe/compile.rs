@@ -257,6 +257,7 @@ impl WeaponRecipeOverrides {
                                     operand: instruction.operand,
                                 })
                                 .collect(),
+                            reusable_choices: column.reusable_choices,
                         })
                     })
                     .transpose()

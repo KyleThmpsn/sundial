@@ -1,10 +1,11 @@
 //! Preserve each source custom, default and locked dye layer with its material program.
 use super::*;
-use crate::d2_mot::{dye_bundle, dyes, tfx};
+use crate::d2_mot::dye_bundle;
+use crate::tiger::dye;
 
 fn templates(r: &mut Reader, donor: u32) -> Result<Vec<Value>> {
-    let tag = crate::d2_mot::assets::item::find_native(r, donor)?;
-    let rows = dyes::inspect(r, tag, false)?;
+    let tag = crate::tiger::shadowkeep::item_tag(r, donor)?;
+    let rows = dye::inspect(r, tag, false)?;
     let rows = rows.as_array().context("native dye templates")?.clone();
     if !rows.is_empty() {
         return Ok(rows);
@@ -29,7 +30,7 @@ fn templates(r: &mut Reader, donor: u32) -> Result<Vec<Value>> {
         if item.u8(0xB8)? != 14 {
             continue;
         }
-        let rows = dyes::inspect(r, tag, false)?;
+        let rows = dye::inspect(r, tag, false)?;
         let rows = rows.as_array().context("native shader templates")?;
         if !rows.is_empty()
             && rows.iter().all(|row| {
@@ -57,7 +58,7 @@ pub(super) fn append(
     let native_path = folder.join("native-dyes");
     let mut r = Reader::new(modern, &source_path, true)?;
     let (_, tag) = crate::d2_mot::assets::item::find(&mut r, source)?;
-    let all = dyes::inspect(&mut r, tag, true)?;
+    let all = dye::inspect(&mut r, tag, true)?;
     write_json(&source_path.join("dyes-all.json"), &all)?;
     if all.as_array().context("source dye layers")?.is_empty() {
         graph["dyes"] = json!([]);
@@ -68,14 +69,14 @@ pub(super) fn append(
     }
     write_json(
         &source_path.join("render-context.json"),
-        &tfx::context(&mut r, true)?,
+        &crate::tiger::shader::globals::read(&mut r, true)?,
     )?;
     r.finish()?;
     let mut r = Reader::new(native, &native_path, false)?;
     let templates = templates(&mut r, donor)?;
     write_json(
         &native_path.join("render-context.json"),
-        &tfx::context(&mut r, false)?,
+        &crate::tiger::shader::globals::read(&mut r, false)?,
     )?;
     r.finish()?;
     let mut rows = vec![Vec::<Value>::new(); 3];

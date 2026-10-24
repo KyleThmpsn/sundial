@@ -28,7 +28,7 @@ pub fn native_fidelity(stock: &[u8], compiled: &[u8]) -> Result<Vec<Difference>,
         for block in &mut graph.blocks {
             if crate::sandbox_perk::nodes::CONDITIONS
                 .iter()
-                .any(|node| node.observed() && node.class == block.class)
+                .any(|node| node.has_layout() && node.class == block.class)
             {
                 block.bytes[6..8].fill(0);
             }
@@ -354,7 +354,7 @@ fn compare_native(node: &str, class: u32, left: &[u8], right: &[u8], out: &mut V
         for block in &mut graph.blocks {
             if crate::sandbox_perk::nodes::CONDITIONS
                 .iter()
-                .any(|entry| entry.observed() && entry.class == block.class)
+                .any(|entry| entry.has_layout() && entry.class == block.class)
             {
                 block.bytes[7] = 0;
             }

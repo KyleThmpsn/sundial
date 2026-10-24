@@ -4,6 +4,7 @@ use crate::{
     tiger::payload::Payload,
 };
 use anyhow::{Context, Result, ensure};
+pub mod holding;
 
 fn rows(p: &Payload, field: usize, stride: usize, class: u32) -> Result<Vec<u8>> {
     Ok(p.array(field, stride, Some(class))?

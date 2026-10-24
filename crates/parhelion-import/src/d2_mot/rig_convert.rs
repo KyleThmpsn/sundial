@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
 pub mod animation;
 pub mod owned;
-mod sections;
+use crate::tiger::animation::sections::{
+    self, validate_native_instance, validate_source_relocation,
+};
 
 pub(crate) fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
     let report = load(&root.join("report.json"))?;
@@ -32,7 +34,7 @@ pub(crate) fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
                     .context("Source cloth definition")?,
             )?;
             let solver = raw(root, &format!("{:08X}", definition.u32(0x6A0)?))?;
-            used.extend(super::cloth::used_bones(&solver.0)?);
+            used.extend(crate::tiger::physics::cloth::used_bones(&solver.0)?);
         }
         let model = raw(root, entry["model"].as_str().context("rig source model")?)?;
         let mesh = super::geometry::selected_mesh(&model, entry)?;
@@ -283,25 +285,6 @@ fn unlink_owner(payload: &mut Payload, owner: u32) -> Result<Vec<usize>> {
     }
     Ok(offsets)
 }
-/// Convert the complete source FK arrays into a native component envelope.
-/// The result is unlinked. Animation/controller and entity connections must be
-/// converted before a package may use it.
-pub fn validate_native_instance(bytes: &[u8]) -> Result<()> {
-    sections::validate_instance(&Payload(bytes.to_vec()))
-}
-
-/// Validate the native envelope and interior connections of a source-owned FK instance.
-pub fn validate_source_relocation(
-    original: &[u8],
-    converted: &[u8],
-    relocation: Option<(usize, usize)>,
-) -> Result<()> {
-    sections::validate_relocation(
-        &Payload(original.to_vec()),
-        &Payload(converted.to_vec()),
-        relocation,
-    )
-}
 
 pub fn skeleton(source: &[u8], native: &[u8], native_owner: u32) -> Result<(Payload, Value)> {
     let modern = Payload(source.to_vec());
@@ -390,6 +373,9 @@ pub fn skeleton(source: &[u8], native: &[u8], native_owner: u32) -> Result<(Payl
     ))
 }
 
+/// Convert the complete source FK arrays into a native component envelope.
+/// The result is unlinked. Animation/controller and entity connections must be
+/// converted before a package may use it.
 pub fn convert(
     source: &Path,
     native: &Path,

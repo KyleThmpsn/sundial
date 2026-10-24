@@ -93,7 +93,7 @@ pub(super) fn convert(
             );
         }
     }
-    crate::d2_mot::rig_convert::validate_native_instance(&ns.0)?;
-    crate::d2_mot::rig_convert::validate_source_relocation(&original.0, &ns.0, None)?;
+    crate::tiger::animation::sections::validate_native_instance(&ns.0)?;
+    crate::tiger::animation::sections::validate_source_relocation(&original.0, &ns.0, None)?;
     Ok((ns, changed_bones))
 }

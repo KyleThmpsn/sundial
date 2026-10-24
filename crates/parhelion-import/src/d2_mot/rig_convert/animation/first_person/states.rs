@@ -340,17 +340,31 @@ fn profile_choices(
     Ok(profile_choices)
 }
 
-/// Rebuild each native node from its source counterpart where every name and
-/// descriptor converts. Returns the nodes, the converted name count and the
-/// names keeping their native fallback.
-fn convert_nodes(
-    ns: &States,
-    ss: &States,
-    descriptor_map: &BTreeMap<u32, u32>,
-) -> (Vec<Node>, usize, Vec<u32>) {
-    let mut nodes = Vec::new();
-    let mut source_count = 0;
-    let mut fallback = Vec::new();
+struct Routes {
+    nodes: Vec<Node>,
+    names: BTreeMap<u32, usize>,
+    source_count: usize,
+    fallback: Vec<u32>,
+}
+
+fn mapped_node(node: &Node, descriptors: &BTreeMap<u32, u32>) -> Option<Node> {
+    let mut node = node.clone();
+    for (descriptor, _) in node.choices.iter_mut().flatten() {
+        *descriptor = *descriptors.get(descriptor)?;
+    }
+    Some(node)
+}
+
+/// Preserve native indexed entry points while giving independently convertible
+/// named aliases their own routes. An absent source alias must not suppress a
+/// different action that happens to share the same native node.
+fn convert_nodes(ns: &States, ss: &States, descriptor_map: &BTreeMap<u32, u32>) -> Routes {
+    let mut result = Routes {
+        nodes: ns.nodes.clone(),
+        names: ns.names.clone(),
+        source_count: 0,
+        fallback: Vec::new(),
+    };
     // Controllers outside this asset address the original node ordinals. Several
     // names may alias one node, and unnamed nodes can still be called directly.
     // Rebuilding one node per name silently changes the controller's dispatch
@@ -363,35 +377,60 @@ fn convert_nodes(
             .collect::<Vec<_>>();
         let candidates = names
             .iter()
-            .map(|name| ss.names.get(name).map(|i| &ss.nodes[*i]))
-            .collect::<Option<Vec<_>>>();
-        let converted = candidates
-            .as_ref()
-            .and_then(|candidates| candidates.first().copied())
-            .filter(|node| {
-                candidates
-                    .as_ref()
-                    .is_some_and(|candidates| candidates.iter().all(|other| *other == *node))
-                    && node
-                        .choices
-                        .iter()
-                        .flatten()
-                        .all(|(descriptor, _)| descriptor_map.contains_key(descriptor))
-            });
-        let node = if let Some(node) = converted {
-            let mut node = node.clone();
-            for (descriptor, _) in node.choices.iter_mut().flatten() {
-                *descriptor = descriptor_map[descriptor];
-            }
-            source_count += names.len();
-            node
-        } else {
-            fallback.extend(names);
-            original.clone()
-        };
-        nodes.push(node);
+            .map(|name| {
+                ss.names
+                    .get(name)
+                    .and_then(|i| mapped_node(&ss.nodes[*i], descriptor_map))
+            })
+            .collect::<Vec<_>>();
+        if let Some(Some(node)) = candidates.first()
+            && candidates.iter().all(|other| other.as_ref() == Some(node))
+        {
+            result.nodes[index] = node.clone();
+            result.source_count += names.len();
+            continue;
+        }
+        // Direct indexed callers and untranslated aliases keep this entry.
+        // Only the name lookup for a fully converted action selects an append.
+        result.nodes[index] = original.clone();
+        for (name, node) in names.into_iter().zip(candidates) {
+            let Some(node) = node else {
+                result.fallback.push(name);
+                continue;
+            };
+            let target = if let Some(offset) = result.nodes[ns.nodes.len()..]
+                .iter()
+                .position(|n| *n == node)
+            {
+                ns.nodes.len() + offset
+            } else {
+                result.nodes.push(node);
+                result.nodes.len() - 1
+            };
+            result.names.insert(name, target);
+            result.source_count += 1;
+        }
     }
-    (nodes, source_count, fallback)
+    // A source bank can expose additional named actions without native indexed
+    // callers. Preserve those names once every selected descriptor converted,
+    // while leaving all original native ordinals intact.
+    for (&name, &index) in &ss.names {
+        if ns.names.contains_key(&name) {
+            continue;
+        }
+        let Some(node) = mapped_node(&ss.nodes[index], descriptor_map) else {
+            continue;
+        };
+        let target = if let Some(index) = result.nodes.iter().position(|n| *n == node) {
+            index
+        } else {
+            result.nodes.push(node);
+            result.nodes.len() - 1
+        };
+        result.names.insert(name, target);
+        result.source_count += 1;
+    }
+    result
 }
 
 /// The source names each parameter group must keep addressable.
@@ -547,16 +586,16 @@ fn write_selector(states: &mut Write, at: usize, selector: &Selector, maps: &[Or
     }
 }
 
-/// Write the native state table with every native name and node ordinal.
-fn write_states(ns: &States, nodes: &[Node], maps: &[Ordinals]) -> Result<Vec<u8>> {
+/// Write every native name and indexed entry, followed by private named routes.
+fn write_states(routes: &Routes, maps: &[Ordinals]) -> Result<Vec<u8>> {
     let mut states = Write(vec![0; 40]);
-    let names = states.array(8, ns.names.len(), 8, 0x8080342E);
-    let rows = states.array(24, nodes.len(), 16, 0x8080342F);
-    for (index, (name, target)) in ns.names.iter().enumerate() {
+    let names = states.array(8, routes.names.len(), 8, 0x8080342E);
+    let rows = states.array(24, routes.nodes.len(), 16, 0x8080342F);
+    for (index, (name, target)) in routes.names.iter().enumerate() {
         states.word(names + index * 8, *name);
         states.word(names + index * 8 + 4, u32::try_from(*target)?);
     }
-    for (index, node) in nodes.iter().enumerate() {
+    for (index, node) in routes.nodes.iter().enumerate() {
         let kind = if node.selector.is_some() { 2 } else { 1 };
         let at = states.allocation(
             if kind == 2 { 0x80803432 } else { 0x80803434 },
@@ -608,11 +647,9 @@ pub(super) fn convert_for_profile(
         .map(|b| u16::from_le_bytes([b[0], b[1]]))
         .collect::<Vec<_>>();
     ensure!(
-        source.groups.len() <= native.groups.len()
-            && source_header.iter().zip(&native_header).all(|(s, n)| {
-                *s == u16::MAX || (s == n && usize::from(*s) < source.groups.len())
-            })
-            && (0..source.groups.len()).all(|group| source_header.contains(&(group as u16)))
+        source_header.iter().zip(&native_header).all(|(s, n)| {
+            *s == u16::MAX || (usize::from(*s) < source.groups.len() && (*n == u16::MAX || s == n))
+        }) && (0..source.groups.len()).all(|group| source_header.contains(&(group as u16)))
             && native_header
                 .iter()
                 .all(|group| *group == u16::MAX || usize::from(*group) < native.groups.len()),
@@ -620,7 +657,15 @@ pub(super) fn convert_for_profile(
     );
     let mut ss = States::read(source_states, &source, true)?;
     let mut profile_choices = profile_choices(&mut ss, &source, profile)?;
-    let ns = States::read(native_states, &native, false)?;
+    let mut ns = States::read(native_states, &native, false)?;
+    if let Some((_, native_profile)) = implied {
+        // Source ancestry is added to the private dictionary below. Resolve the
+        // fixed native profile first so retained nodes cannot select another
+        // weapon's branch through that added ancestry. Dynamic inputs stay live.
+        for node in &mut ns.nodes {
+            profile::specialize(node, &native, native_profile)?;
+        }
+    }
     // A source controller can omit trailing dictionaries that native fallback
     // states still use. Keep those native domains and builtin bindings, provided
     // source selectors never run against a changed binding. Incompatible named
@@ -634,24 +679,42 @@ pub(super) fn convert_for_profile(
         })
     });
     profile_choices.retain(|name, _| ss.names.contains_key(name));
-    source
-        .groups
-        .extend_from_slice(&native.groups[source.groups.len()..]);
+    if source.groups.len() < native.groups.len() {
+        source
+            .groups
+            .extend_from_slice(&native.groups[source.groups.len()..]);
+    }
     source.header = native.header.clone();
-    let (nodes, source_count, fallback) = convert_nodes(&ns, &ss, descriptor_map);
+    let routes = convert_nodes(&ns, &ss, descriptor_map);
     ensure!(
-        source_count > 0,
+        routes.source_count > 0,
         "no source animation states have converted clips"
     );
-    let mut used = used_names(&source, required, &nodes)?;
+    // New source-only domains cannot be bound to a native builtin. Actions
+    // requiring them were excluded above. Validate the actual emitted records
+    // before discarding those trailing domains.
+    ensure!(
+        routes
+            .nodes
+            .iter()
+            .all(|node| node.selector.as_ref().is_none_or(|selector| {
+                selector
+                    .records
+                    .iter()
+                    .all(|record| record.group.is_none_or(|g| g < native.groups.len()))
+            })),
+        "retained animation selector requires an unavailable native domain"
+    );
+    source.groups.truncate(native.groups.len());
+    let mut used = used_names(&source, required, &routes.nodes)?;
     let (kept, maps) = select(&source, &mut used)?;
     let parameters = write_params(&source, &kept, &maps, implied)?;
-    let states = write_states(&ns, &nodes, &maps)?;
+    let states = write_states(&routes, &maps)?;
     Ok(Converted {
         parameters,
         states,
-        source_states: source_count,
-        fallback_states: fallback,
+        source_states: routes.source_count,
+        fallback_states: routes.fallback,
         profile_choices,
     })
 }

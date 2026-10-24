@@ -3,7 +3,7 @@
 //! `levels\multi\forge_halo\post_fx\forge_halo`.
 use std::collections::BTreeMap;
 
-use crate::halo_reach::{cache::Cache, cache::Tag, native_material};
+use crate::halo_reach::{cache::Cache, cache::Tag, native};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
@@ -40,7 +40,7 @@ pub(super) fn read(
     cache: &Cache,
     bsps: &[Tag],
     lift: f32,
-) -> Result<(Option<native_material::Fog>, Value)> {
+) -> Result<(Option<native::material::Fog>, Value)> {
     let scenario = cache.only("scnr")?.address()?;
     let rows = cache.block(scenario + PALETTE.0, PALETTE.1)?;
     let scenario_bsps = cache.block(scenario + 0x50, 0xAC)?;
@@ -115,7 +115,7 @@ pub(super) fn read(
     };
     let at = tag.address()?;
     let flags = cache.u16(at + FLAGS)?;
-    let band = |offset: usize, enabled: bool| -> Result<(native_material::Band, Value)> {
+    let band = |offset: usize, enabled: bool| -> Result<(native::material::Band, Value)> {
         let [base, height, thickness, reach] = cache.floats::<4>(at + offset)?;
         let color = cache.floats::<3>(at + offset + 0x10)?;
         let intensity = cache.f32(at + offset + 0x1C)?;
@@ -129,7 +129,7 @@ pub(super) fn read(
             "intensity": intensity,
         });
         let band = if enabled {
-            native_material::Band::from_thickness(
+            native::material::Band::from_thickness(
                 base,
                 height,
                 thickness,
@@ -137,7 +137,7 @@ pub(super) fn read(
                 color.map(|c| c * intensity),
             )
         } else {
-            native_material::Band::clear()
+            native::material::Band::clear()
         };
         Ok((band, value))
     };
@@ -163,7 +163,7 @@ pub(super) fn read(
         "lift": lift,
     });
     Ok((
-        Some(native_material::Fog {
+        Some(native::material::Fog {
             sky,
             ground,
             bias,

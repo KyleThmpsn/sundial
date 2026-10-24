@@ -21,6 +21,8 @@ use super::{
 };
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+mod pose;
+use super::mission::pose::{Pose, Poses};
 
 /// A scenario placement block: its rows, their size, its palette of one tag reference per row, and
 /// the palette's tag group.
@@ -96,6 +98,8 @@ const UNSOLID: [&str; 3] = ["rmd ", "rmw ", "rmhg"];
 pub struct Objects {
     pub materials: Vec<Material>,
     pub primitives: Vec<Primitive>,
+    /// Each scripted pose stays a separate render entity with its own lighting binding.
+    pub props: Vec<Vec<Primitive>>,
     pub faces: Vec<[[f32; 3]; 3]>,
     /// The structure BSPs each of `faces` belongs to, as a primitive's [`Primitive::bsps`].
     pub face_bsps: Vec<u32>,
@@ -106,6 +110,8 @@ pub struct Objects {
     pub hidden: BTreeMap<String, usize>,
     /// Loaded placements whose machine motion and collision lifecycle have no native binding.
     pub motion: BTreeMap<String, usize>,
+    /// Constant mission clip assignments, including objects excluded for conflicting poses.
+    pub poses: Poses,
     /// The skies' render geometry about the origin, in meters and in the order Reach draws it,
     /// with materials among `materials`, and each vertex's color: the light Reach baked into
     /// the sky's vertex color stream. It is never stood on.
@@ -158,6 +164,7 @@ fn model_of(
     pages: &mut Pages,
     tag: &Tag,
     variant: &str,
+    pose: Option<&Pose>,
 ) -> Result<Option<model::Model>> {
     let object = Object::read_appearance(cache, tag)?;
     let Some(render) = object
@@ -170,9 +177,17 @@ fn model_of(
     let requested = (!variant.is_empty() && object.variants.iter().any(|v| v.name == variant))
         .then_some(variant);
     let selection = choices(&object, requested, &BTreeMap::new())?;
-    model::read_static(cache, pages, render, &selection)
-        .with_context(|| format!("Object {}", tag.path))
-        .map(Some)
+    let mut model = if pose.is_some() {
+        model::read(cache, pages, render, &selection)
+    } else {
+        model::read_static(cache, pages, render, &selection)
+    }
+    .with_context(|| format!("Object {}", tag.path))?;
+    if let Some(pose) = pose {
+        pose::apply(cache, pages, &mut model, pose)
+            .with_context(|| format!("Posing object {}", tag.path))?;
+    }
+    Ok(Some(model))
 }
 
 /// Each primitive's vertex colors in `model`, the render model `render` draws: the stream of
@@ -330,13 +345,14 @@ fn model_for<'a>(
     cache: &Cache,
     pages: &mut Pages,
     objects: &mut Objects,
-    models: &'a mut BTreeMap<(String, String), Option<Loaded>>,
+    models: &'a mut BTreeMap<(String, String, Option<Pose>), Option<Loaded>>,
     tag: &Tag,
     name: String,
+    pose: Option<&Pose>,
 ) -> Result<Option<&'a Loaded>> {
-    let key = (tag.path.clone(), name);
+    let key = (tag.path.clone(), name, pose.cloned());
     if !models.contains_key(&key) {
-        let model = match model_of(cache, pages, tag, &key.1) {
+        let model = match model_of(cache, pages, tag, &key.1, key.2.as_ref()) {
             Ok(Some(model)) => {
                 let hidden = model
                     .materials
@@ -408,17 +424,20 @@ pub fn read(
     pages: &mut Pages,
     variant: Option<&Variant>,
     zone_sets: &[usize],
+    mission: &super::mission::Program,
 ) -> Result<Objects> {
     let scenario = cache.only("scnr")?.address()?;
     let loaded = super::loaded_bsps(cache, zone_sets)?;
     let mut objects = Objects {
         materials: Vec::new(),
         primitives: Vec::new(),
+        props: Vec::new(),
         faces: Vec::new(),
         face_bsps: Vec::new(),
         placed: BTreeMap::new(),
         hidden: BTreeMap::new(),
         motion: BTreeMap::new(),
+        poses: super::mission::pose::read(mission)?,
         sky: Vec::new(),
         absent: BTreeSet::new(),
     };
@@ -452,8 +471,20 @@ pub fn read(
                 continue;
             }
             let name = cache.string_id(cache.u32(row + PLACEMENT_VARIANT)?)?;
-            let Some((model, base, hidden)) =
-                model_for(cache, pages, &mut objects, &mut models, tag, name)?
+            let object = cache.i16(row + 2)?;
+            let pose = u16::try_from(object)
+                .ok()
+                .and_then(|index| objects.poses.objects.get(&index))
+                .cloned();
+            let Some((model, base, hidden)) = model_for(
+                cache,
+                pages,
+                &mut objects,
+                &mut models,
+                tag,
+                name,
+                pose.as_ref(),
+            )?
             else {
                 continue;
             };
@@ -466,7 +497,11 @@ pub fn read(
                 .map(|value| value * METRES_PER_UNIT);
             let transform = placement(position, cache.floats(row + PLACEMENT_ROTATION)?, scale);
             let bsps = placement_bsps(cache, row)?;
+            let first = objects.primitives.len();
             objects.place(&tag.path, model, *base, &transform, true, hidden, bsps)?;
+            if pose.is_some() && objects.primitives.len() > first {
+                objects.props.push(objects.primitives.split_off(first));
+            }
         }
     }
     // A map variant's crates, scenery and controls, at its own positions and axes. Its machines
@@ -483,6 +518,7 @@ pub fn read(
             &mut models,
             tag,
             placement.variant.clone(),
+            None,
         )?
         else {
             continue;
@@ -490,6 +526,17 @@ pub fn read(
         let transform = transform(placement.position, placement.axes, 1.);
         objects.place(&tag.path, model, *base, &transform, true, hidden, 0)?;
     }
+    read_skies(cache, pages, scenario, loaded, &mut objects)?;
+    Ok(objects)
+}
+
+fn read_skies(
+    cache: &Cache,
+    pages: &mut Pages,
+    scenario: usize,
+    loaded: u32,
+    objects: &mut Objects,
+) -> Result<()> {
     // Each sky assigned to a loaded structure BSP draws around the level from its origin.
     // An empty mask assigns no BSP. Such rows can be alternate or cinematic sky entries,
     // including another reference to the same sky, so treating zero as all duplicates layers.
@@ -501,7 +548,7 @@ pub fn read(
         let Some(tag) = cache.reference(row, Some("scen"))? else {
             continue;
         };
-        let model = match model_of(cache, pages, &tag, "") {
+        let model = match model_of(cache, pages, &tag, "", None) {
             Ok(model) => model,
             Err(error) if error.downcast_ref::<Absent>().is_some() => {
                 objects.absent.insert(tag.path.clone());
@@ -524,5 +571,5 @@ pub fn read(
             objects.sky.extend(sky.into_iter().zip(colors));
         }
     }
-    Ok(objects)
+    Ok(())
 }

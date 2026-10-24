@@ -59,7 +59,9 @@ fn curve(
             let at = *rows
                 .get(start + frame * 3 + axis)
                 .context("Curve translation exceeds samples")?;
-            let value = i32::from(p.u16(at)? as i16) + shift;
+            let value = i32::from(p.u16(at)? as i16)
+                .checked_add(*shift)
+                .context("Native curve translation overflow")?;
             ensure!(
                 (-32767..=32767).contains(&value),
                 "Held offset exceeds native curve translation range"
@@ -84,9 +86,14 @@ pub fn translate(
             && original.u64(0x108)? == 0
             && (1..=3600).contains(&frames)
             && slot < slots
-            && slots <= 256
-            && delta.iter().all(|v| v.is_finite() && v.abs() <= 0.2),
-        "Held offset or native clip dimensions differ"
+            && slots <= 256,
+        "Native clip dimensions differ: {frames} frames, {slots} controls, selected control {slot}"
+    );
+    // The caller bounds manual adjustments. A source-frame mapping can be larger,
+    // while every native codec still enforces its own representable range below.
+    ensure!(
+        delta.iter().chain(&default).all(|v| v.is_finite()),
+        "Native clip translation must be finite"
     );
     let mut out = original.0.clone();
     let mut found = false;
@@ -139,6 +146,7 @@ pub fn translate(
                 {
                     for (v, shift) in value.iter_mut().zip(delta) {
                         *v += shift;
+                        ensure!(v.is_finite(), "Nonfinite native translation");
                     }
                 }
                 write(&mut out, pointer, maps, count, &channels)?;

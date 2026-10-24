@@ -26,6 +26,7 @@ mod coexistence;
 mod compliance;
 mod diagnostics;
 mod family;
+mod scripts;
 
 pub(super) fn fixture() -> Fixture {
     let mut fixture = Fixture::new();

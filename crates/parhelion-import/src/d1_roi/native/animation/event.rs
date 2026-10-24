@@ -1,5 +1,7 @@
 //! Relocate selector markers and direct cue events without changing frame or dispatch fields.
 use super::*;
+mod library;
+pub(super) use library::Library;
 
 pub(super) fn convert(source: &Payload, native: &mut [u8], frames: u16) -> Result<Value> {
     let rows = source.array(0x140, 8, Some(0x808004E1))?;

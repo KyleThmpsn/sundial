@@ -1,5 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod scope;
+pub(super) use scope::Lens;
 
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
@@ -8,6 +10,9 @@ pub struct Mesh {
     pub groups: Vec<(u32, Vec<[u16; 3]>)>,
     pub surfaces: BTreeMap<u32, Surface>,
     pub omitted: Vec<Value>,
+    pub weights: Vec<[u8; 8]>,
+    pub bones: u32,
+    pub motion: String,
 }
 
 pub struct Surface {
@@ -19,6 +24,8 @@ pub struct Surface {
     pub scale: [f32; 3],
     pub offset: [f32; 3],
     pub has_colors: bool,
+    pub lens: Option<Lens>,
+    pub cutout: Option<Lens>,
 }
 
 impl Surface {
@@ -29,6 +36,14 @@ impl Surface {
             4 => 3,
             8 => 7,
             13 => 12,
+            15 => {
+                if self.lens.as_ref().is_some_and(|lens| lens.artwork) {
+                    14
+                } else {
+                    7
+                }
+            }
+            17 => 16,
             _ => unreachable!(),
         }
     }
@@ -41,7 +56,7 @@ fn transform(v: [f32; 3], m: &[f32; 16], point: bool) -> [f32; 3] {
             + if point { m[i * 4 + 3] } else { 0. }
     })
 }
-pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
+pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mesh> {
     let mut out = Mesh {
         positions: vec![],
         attributes: vec![],
@@ -49,6 +64,9 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
         groups: vec![],
         surfaces: BTreeMap::new(),
         omitted: vec![],
+        weights: vec![],
+        bones: rig.bones,
+        motion: rig.program.clone(),
     };
     for entry in entries {
         let tag = hash(entry, "model")?;
@@ -70,6 +88,7 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                 "Marathon vertex stride differs"
             );
             let p = r.tag(r.reference(pt)?, None)?;
+            let weights = rig.vertices(r, &b, m, hash(entry, "entity")?, &p, &ph)?;
             let uv = r.tag(r.reference(ut)?, None)?;
             let ib = r.tag(r.reference(it)?, None)?;
             let color_tag = b.u32(m + 20)?;
@@ -113,6 +132,7 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let parts = b.array(m + 32, 40, Some(0x808087D1))?;
+            let aperture = scope::read(r, entry, &b, m, &parts, (&p, &indices, width))?;
             let mut selected = vec![];
             let mut seen = BTreeSet::new();
             for stage in 0..25 {
@@ -122,13 +142,16 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                 if records.is_empty() {
                     continue;
                 }
-                if ![0, 2, 4, 8, 13].contains(&stage) {
+                let optical = aperture
+                    .as_ref()
+                    .is_some_and(|lens| stage == 15 || (stage == 17 && lens.artwork));
+                if ![0, 2, 4, 8, 13].contains(&stage) && !optical {
                     let active = records
                         .iter()
                         .filter(|part| b.u8(**part + 33).is_ok_and(|lod| lod <= 3))
                         .count();
                     if active > 0 {
-                        out.omitted.push(json!({"model":format!("{tag:08X}"),"stage":stage,"draws":active,"reason":if stage == 24 { "Source skinning is replaced by the static native assembly" } else { "Source renderer pass has no native adapter" }}));
+                        out.omitted.push(json!({"model":format!("{tag:08X}"),"stage":stage,"draws":active,"reason":if stage == 24 { "Source skinning is evaluated by the native vertex program" } else { "Source renderer pass has no native adapter" }}));
                     }
                     continue;
                 }
@@ -148,25 +171,8 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                     if !seen.insert((stage, material, start, count)) {
                         continue;
                     }
-                    let values = indices
-                        .get(start..start + count)
-                        .context("draw outside buffer")?;
-                    let faces = match b.u16(part + 6)? {
-                        5 => crate::tiger::geometry::triangles(
-                            values,
-                            p.0.len() / 24,
-                            if width == 2 { 65535 } else { u32::MAX },
-                        )?,
-                        3 => {
-                            ensure!(
-                                count.is_multiple_of(3)
-                                    && values.iter().all(|i| (*i as usize) < p.0.len() / 24),
-                                "invalid triangle list"
-                            );
-                            values.chunks_exact(3).map(|f| [f[0], f[1], f[2]]).collect()
-                        }
-                        n => anyhow::bail!("unhandled Marathon primitive {n} in {tag:08X}"),
-                    };
+                    let faces = faces(&b, part, &indices, width, p.0.len() / 24)
+                        .with_context(|| format!("Marathon model {tag:08X}, stage {stage}"))?;
                     if faces.is_empty() {
                         continue;
                     }
@@ -190,12 +196,34 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                             scale,
                             offset,
                             has_colors: colors.is_some(),
+                            lens: aperture
+                                .as_ref()
+                                .filter(|lens| {
+                                    stage == 15
+                                        || (stage == 8 && scope::covers(lens, &b, &p, &faces))
+                                })
+                                .map(|lens| lens.placed(&mat, stage == 15)),
+                            cutout: aperture
+                                .as_ref()
+                                .filter(|lens| {
+                                    !lens.outline.is_empty() && matches!(stage, 0 | 4 | 13)
+                                })
+                                .map(|lens| lens.placed(&mat, false)),
                         },
                     );
                     selected.push((key, faces));
                 }
             }
-            append(&mut out, &b, &mat, &p, &uv, colors.as_deref(), selected)?;
+            append(
+                &mut out,
+                &b,
+                &mat,
+                &p,
+                &uv,
+                colors.as_deref(),
+                &weights,
+                selected,
+            )?;
         }
     }
     ensure!(!out.groups.is_empty(), "no render geometry");
@@ -203,6 +231,36 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
 }
 type Draw = (u32, Vec<[u32; 3]>);
 
+fn faces(
+    model: &Payload,
+    part: usize,
+    indices: &[u32],
+    width: usize,
+    vertices: usize,
+) -> Result<Vec<[u32; 3]>> {
+    let start = model.u32(part + 8)? as usize;
+    let count = model.u32(part + 12)? as usize;
+    let values = indices
+        .get(start..start + count)
+        .context("draw outside buffer")?;
+    match model.u16(part + 6)? {
+        5 => crate::tiger::geometry::triangles(
+            values,
+            vertices,
+            if width == 2 { 65535 } else { u32::MAX },
+        ),
+        3 => {
+            ensure!(
+                count.is_multiple_of(3) && values.iter().all(|i| (*i as usize) < vertices),
+                "invalid triangle list"
+            );
+            Ok(values.chunks_exact(3).map(|f| [f[0], f[1], f[2]]).collect())
+        }
+        n => anyhow::bail!("unhandled Marathon primitive {n}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn append(
     out: &mut Mesh,
     b: &Payload,
@@ -210,6 +268,7 @@ fn append(
     p: &Payload,
     uv: &Payload,
     colors: Option<&Payload>,
+    weights: &[[u8; 8]],
     selected: Vec<Draw>,
 ) -> Result<()> {
     let used = selected
@@ -228,8 +287,8 @@ fn append(
         .collect::<BTreeMap<_, _>>();
     for v in used {
         let o = v as usize * 24;
-        // This adapter bakes bind-pose positions to native root zero. W is a
-        // skinning selector and does not change the stored XYZ coordinates.
+        // XYZ remains in source bind space. The palette retains every influence,
+        // including an unskinned attachment's named parent mechanism.
         let mut xyz = [0.; 3];
         let mut normal = [0.; 3];
         let mut tangent = [0.; 3];
@@ -257,6 +316,7 @@ fn append(
             "nonfinite decoded vertex"
         );
         out.positions.push(xyz);
+        out.weights.push(weights[v as usize]);
         // The source vertex program clamps SV_VertexID to the last
         // color row. Reordering the geometry must reorder that lookup.
         out.colors.push(if let Some(colors) = colors {
@@ -297,8 +357,8 @@ pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encod
                 .iter()
                 .map(|(m, f)| (*m, f.iter().map(|f| f.map(u32::from)).collect()))
                 .collect(),
-            weights: Vec::new(),
-            bones: 1,
+            weights: mesh.weights.clone(),
+            bones: mesh.bones,
         },
         native,
         native_mesh,
@@ -342,11 +402,16 @@ mod tests {
                             scale: [1.; 3],
                             offset: [0.; 3],
                             has_colors: false,
+                            lens: None,
+                            cutout: None,
                         },
                     )
                 })
                 .collect(),
             omitted: vec![],
+            weights: vec![],
+            bones: 1,
+            motion: String::new(),
         };
         // A native carrier has an opaque body record, including its activation group.
         let mut carrier = vec![0; 0x170];

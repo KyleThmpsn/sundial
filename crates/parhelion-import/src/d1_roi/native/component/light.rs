@@ -1,6 +1,6 @@
 //! Source sight-light transforms and live parameters on a checked native light renderer.
 use super::*;
-mod inputs;
+pub(super) mod inputs;
 mod program;
 
 const OWNER: u32 = 0x80BBCC83;
@@ -10,6 +10,7 @@ impl Assembly<'_> {
     pub(super) fn light(
         &mut self,
         source_tag: u32,
+        ordinal: usize,
         source: &Payload,
         source_entity: &Payload,
         name: &str,
@@ -31,6 +32,7 @@ impl Assembly<'_> {
             .into_iter()
             .filter(|&a| {
                 source_entity.u32(a + 8).ok() == Some(source_tag)
+                    && source_entity.u64(a + 32).ok() == Some(ordinal as u64)
                     && source_entity.u32(a + 24).ok() == Some(0x8080073D)
             })
             .collect::<Vec<_>>();
@@ -71,7 +73,7 @@ impl Assembly<'_> {
                 "Nonfinite source light transform"
             );
         }
-        let channels = inputs::names(self.source, source, source_entity, source_tag)?;
+        let channels = inputs::names(self.source, source, source_entity, source_tag, ordinal)?;
         activation(source, &mut component.payload)?;
         put(
             &mut component.payload.0,

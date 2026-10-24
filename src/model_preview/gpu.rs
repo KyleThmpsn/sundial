@@ -1079,7 +1079,7 @@ out vec3 vView;
 out vec3 vNormal;
 out vec2 vUv;
 out vec2 vDetailUv;
-out vec4 vNative[9];
+out vec4 vNative[10];
 flat out float vBasisValid;
 out float vSortDepth;
 // NATIVE VERTEX FUNCTIONS
@@ -1110,7 +1110,7 @@ void main() {
     vView = p;
     vNormal = uRotate * normal;
     vSortDepth=p.z;
-    for(int i=0;i<9;i++)if(any(isnan(vNative[i]))||any(isinf(vNative[i])))vSortDepth=uintBitsToFloat(0x7fc00000u);
+    for(int i=0;i<10;i++)if(any(isnan(vNative[i]))||any(isinf(vNative[i])))vSortDepth=uintBitsToFloat(0x7fc00000u);
     vUv = aUv;
     vDetailUv = aDetailUv;
     gl_Position = vec4(p.x * uScale.x + uPan.x, p.y * uScale.y + uPan.y, p.z * uDepthScale, 1.0);
@@ -1121,7 +1121,7 @@ const FRAGMENT: &str = r#"#version 330 core
 in vec3 vView;
 in vec3 vNormal;
 in vec2 vUv;
-in vec4 vNative[9];
+in vec4 vNative[10];
 flat in float vBasisValid;
 uniform mat3 uRotate;
 uniform sampler2D uAlbedo;

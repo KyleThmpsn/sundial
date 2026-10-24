@@ -1,4 +1,4 @@
-//! Preserve the native linear values of half and packed unsigned-float textures.
+//! Preserve native float values, including signed block-compressed normal channels.
 use super::*;
 
 pub(in crate::model_preview) fn decode(
@@ -33,12 +33,37 @@ pub(in crate::model_preview) fn decode(
                 ]
             })
             .collect(),
+        84 => bc5(bytes, width, height)?,
         _ => return Ok(None),
     };
     if pixels.iter().flatten().any(|v| !v.is_finite()) {
         return Err("The float texture has non-finite pixel values".into());
     }
     Ok(Some(pixels))
+}
+
+fn bc5(bytes: &[u8], width: usize, height: usize) -> Result<Vec<[f32; 4]>, String> {
+    let columns = width.div_ceil(4);
+    let rows = height.div_ceil(4);
+    let source = bytes
+        .get(..columns * rows * 16)
+        .ok_or("Truncated signed BC5 texture")?;
+    let mut pixels = vec![[0.0, 0.0, 0.0, 1.0]; width * height];
+    for (index, block) in source.chunks_exact(16).enumerate() {
+        let mut values = [0.0; 32];
+        bcdec_rs::bc5_float(block, &mut values, 8, true);
+        for y in 0..4 {
+            for x in 0..4 {
+                let px = (index % columns) * 4 + x;
+                let py = (index / columns) * 4 + y;
+                if px < width && py < height {
+                    let from = (y * 4 + x) * 2;
+                    pixels[py * width + px] = [values[from], values[from + 1], 0.0, 1.0];
+                }
+            }
+        }
+    }
+    Ok(pixels)
 }
 
 fn unsigned(bits: u32, fraction: u32) -> f32 {

@@ -678,7 +678,6 @@ pub(crate) fn shader_preview(
 #[cfg(test)]
 mod tests {
     mod confirmation;
-    mod resync;
     mod runtime;
     use std::fs;
 

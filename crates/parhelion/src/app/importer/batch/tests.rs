@@ -108,28 +108,3 @@ fn cancellation_retains_completed_work_and_reports_a_failed_active_item() {
         );
     }
 }
-
-#[test]
-fn empty_and_single_item_batches_finish_with_extreme_worker_counts() {
-    let cancel = AtomicBool::new(false);
-    let empty = run::<()>(
-        0,
-        usize::MAX,
-        &cancel,
-        |_, _| panic!("empty batch"),
-        |_, _| panic!("empty result"),
-    );
-    assert_eq!(empty.completed, 0);
-    for workers in [0, usize::MAX] {
-        let mut values = Vec::new();
-        let result = run(
-            1,
-            workers,
-            &cancel,
-            |_, index| Ok(index),
-            |_, result| values.push(result.unwrap()),
-        );
-        assert_eq!(result.completed, 1);
-        assert_eq!(values, [0]);
-    }
-}

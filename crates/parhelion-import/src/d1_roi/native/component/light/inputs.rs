@@ -6,10 +6,23 @@ pub(super) fn names(
     p: &Payload,
     entity: &Payload,
     owner: u32,
+    ordinal: usize,
+) -> Result<Vec<u32>> {
+    names_at(source, p, entity, owner, ordinal, 0xC8, 0x1D0)
+}
+
+pub(in crate::d1_roi::native::component) fn names_at(
+    source: &Source,
+    p: &Payload,
+    entity: &Payload,
+    owner: u32,
+    ordinal: usize,
+    instance_field: usize,
+    definition_field: usize,
 ) -> Result<Vec<u32>> {
     let r = p.pointer(24)?;
-    let inputs = p.array(p.pointer(16)? + 0xC8, 88, Some(0x8080077D))?;
-    let definitions = p.array(r + 0x1D0, 48, Some(0x80800927))?;
+    let inputs = p.array(p.pointer(16)? + instance_field, 88, Some(0x8080077D))?;
+    let definitions = p.array(r + definition_field, 48, Some(0x80800927))?;
     ensure!(
         inputs.len() == definitions.len(),
         "Source light input count differs"
@@ -30,6 +43,7 @@ pub(super) fn names(
             .copied()
             .filter(|&a| {
                 entity.u32(a + 8).ok() == Some(owner)
+                    && entity.u64(a + 32).ok() == Some(ordinal as u64)
                     && entity.u32(a + 24).ok() == Some(0x80800927)
                     && entity.u64(a + 16).ok() == Some(def as u64)
             })

@@ -57,6 +57,15 @@ fn literals(text: &str) -> Result<Vec<u32>> {
         .collect()
 }
 
+fn literal_bits(token: &str) -> Result<u32> {
+    Ok(if let Some(hex) = token.strip_prefix("0x") {
+        ensure!(hex.len() == 16, "Unsupported output floating literal");
+        (f64::from_bits(u64::from_str_radix(hex, 16)?) as f32).to_bits()
+    } else {
+        token.parse::<f32>()?.to_bits()
+    })
+}
+
 impl Emitter<'_> {
     fn remap_value(
         &self,
@@ -91,16 +100,59 @@ impl Emitter<'_> {
                 self.remap_value(args[2], mapping, depth + 1)?
             ));
         }
-        let bits = if let Some(hex) = token.strip_prefix("0x") {
-            ensure!(hex.len() == 16, "Unsupported output floating literal");
-            (f64::from_bits(u64::from_str_radix(hex, 16)?) as f32).to_bits()
-        } else {
-            token.parse::<f32>()?.to_bits()
-        };
         let native = mapping
-            .get(&bits)
+            .get(&literal_bits(token)?)
             .context("Unknown source output encoding")?;
         Ok(format!("asfloat(0x{native:08X}u)"))
+    }
+
+    /// Replace matching literal leaves reached through sums and selections. Every
+    /// other operand keeps its source value. The flag reports whether a leaf matched.
+    fn substitute_leaf(
+        &self,
+        operand: &str,
+        literal: u32,
+        replacement: &str,
+        depth: usize,
+    ) -> Result<(String, bool)> {
+        ensure!(depth < 16, "DXIL output substitution exceeds budget");
+        let token = operand
+            .split_whitespace()
+            .last()
+            .context("Missing output value")?;
+        if !token.starts_with('%') {
+            return Ok(if literal_bits(token)? == literal {
+                (replacement.to_owned(), true)
+            } else {
+                (value(operand)?, false)
+            });
+        }
+        let ident = id(token)?;
+        let definition = self
+            .program
+            .blocks
+            .values()
+            .flatten()
+            .find(|i| i.id == Some(ident))
+            .context("Missing output definition")?;
+        let (op, rest) = definition
+            .code
+            .split_once(' ')
+            .context("Malformed DXIL instruction")?;
+        let a = arguments(rest)?;
+        match (op, a.len()) {
+            ("fadd", 2) => {
+                let (left, l) = self.substitute_leaf(a[0], literal, replacement, depth + 1)?;
+                let (right, r) = self.substitute_leaf(a[1], literal, replacement, depth + 1)?;
+                Ok((format!("({left} + {right})"), l || r))
+            }
+            ("select", 3) => {
+                let (left, l) = self.substitute_leaf(a[1], literal, replacement, depth + 1)?;
+                let (right, r) = self.substitute_leaf(a[2], literal, replacement, depth + 1)?;
+                Ok((format!("({} ? {left} : {right})", value(a[0])?), l || r))
+            }
+            _ => Ok((value(operand)?, false)),
+        }
     }
 
     fn handle(&self, text: &str, kind: u32) -> Result<u32> {
@@ -131,7 +183,11 @@ impl Emitter<'_> {
                     "Unsupported DXIL aggregate extraction"
                 );
                 (
-                    "float",
+                    if a[0].starts_with("%dx.types.ResRet.i32 ") {
+                        "uint"
+                    } else {
+                        "float"
+                    },
                     format!(
                         "{}.{}",
                         value(a[0])?,
@@ -139,9 +195,17 @@ impl Emitter<'_> {
                     ),
                 )
             }
-            "fmul" | "fadd" | "fsub" | "fdiv" | "and" | "or" | "xor" => {
+            "fmul" | "fadd" | "fsub" | "fdiv" | "sub" | "and" | "or" | "xor" => {
                 let a = arguments(rest)?;
                 ensure!(a.len() == 2, "DXIL binary arity");
+                ensure!(
+                    op != "sub"
+                        || a[0]
+                            .strip_prefix("nsw ")
+                            .unwrap_or(a[0])
+                            .starts_with("i32 "),
+                    "Unsupported DXIL integer subtraction width"
+                );
                 let boolean = a[0].contains("i1 ");
                 let typ = if op.starts_with('f') {
                     "float"
@@ -153,7 +217,7 @@ impl Emitter<'_> {
                 let symbol = match op {
                     "fmul" => "*",
                     "fadd" => "+",
-                    "fsub" => "-",
+                    "fsub" | "sub" => "-",
                     "fdiv" => "/",
                     "and" if boolean => "&&",
                     "or" if boolean => "||",
@@ -207,7 +271,7 @@ impl Emitter<'_> {
                     },
                 )
             }
-            "uitofp" | "sitofp" | "fptosi" | "fptoui" | "bitcast" => {
+            "uitofp" | "sitofp" | "fptosi" | "fptoui" | "bitcast" | "zext" => {
                 let (source, target) = rest.split_once(" to ").context("DXIL cast type")?;
                 let from = source
                     .split_whitespace()
@@ -217,11 +281,19 @@ impl Emitter<'_> {
                     ("bitcast", "float", "i32") => ("uint", "asuint"),
                     ("bitcast", "i32", "float") => ("float", "asfloat"),
                     ("uitofp", "i32" | "i1", "float") => ("float", "float"),
+                    ("sitofp", "i32", "float") => ("float", "float"),
+                    ("zext", "i1", "i32") => ("uint", "uint"),
                     ("fptosi", "float", "i32") => ("int", "int"),
                     ("fptoui", "float", "i32") => ("uint", "uint"),
                     _ => bail!("Unsupported DXIL conversion {code}"),
                 };
-                (typ, format!("{function}({})", value(source)?))
+                let value = value(source)?;
+                let value = if op == "sitofp" {
+                    format!("int({value})")
+                } else {
+                    value
+                };
+                (typ, format!("{function}({value})"))
             }
             "phi" => {
                 return Ok((
@@ -337,6 +409,18 @@ impl Emitter<'_> {
                     } else {
                         value(a[4])?
                     };
+                let output = match self.options.output_leaves.get(&(field.index, col)) {
+                    Some((literal, replacement)) => {
+                        let (output, found) =
+                            self.substitute_leaf(a[4], *literal, replacement, 0)?;
+                        ensure!(
+                            found,
+                            "Output lane has no literal leaf for its native adapter"
+                        );
+                        output
+                    }
+                    None => output,
+                };
                 (
                     "void",
                     format!("o{index}.{} = {output};", "xyzw".as_bytes()[col] as char),
@@ -371,11 +455,15 @@ impl Emitter<'_> {
                     "DXIL sample arity"
                 );
                 let slot = self.handle(a[1], 0)?;
-                let kind = self
+                let properties = self
                     .resources
                     .get(&(0, slot))
-                    .context("DXIL sampled resource properties")?
-                    .0;
+                    .context("DXIL sampled resource properties")?;
+                ensure!(
+                    properties.1 & 0xFF != 5,
+                    "Integer texture cannot use filtered sampling"
+                );
+                let kind = properties.0;
                 let dimension = if matches!(kind, 4 | 5) { 3 } else { 2 };
                 ensure!(
                     a[3 + dimension..7].iter().all(|v| *v == "float undef"),
@@ -495,8 +583,24 @@ impl Emitter<'_> {
                     !self.options.samples.contains_key(&self.handle(a[1], 0)?),
                     "Renderer probe adapter cannot provide a source volume load"
                 );
+                let slot = self.handle(a[1], 0)?;
+                let integer = self
+                    .resources
+                    .get(&(0, slot))
+                    .context("DXIL load resource properties")?
+                    .1
+                    & 0xFF
+                    == 5;
+                ensure!(
+                    typ == if integer {
+                        "%dx.types.ResRet.i32"
+                    } else {
+                        "%dx.types.ResRet.f32"
+                    },
+                    "DXIL texture load scalar type differs"
+                );
                 (
-                    "float4",
+                    if integer { "uint4" } else { "float4" },
                     format!(
                         "t{}.Load(int3({},{},{}))",
                         self.handle(a[1], 0)?,

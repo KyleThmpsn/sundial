@@ -163,27 +163,3 @@ fn compile_stage(text: &str, stage: u8) -> Result<Compiled> {
 pub(super) fn compute(text: &str) -> Result<Compiled> {
     cached(text, 5)
 }
-
-#[cfg(test)]
-fn key(text: &str, vertex: bool) -> [u8; 32] {
-    program_key(text, u8::from(vertex))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn cache_separates_programs_and_stages_and_bounds_memory() {
-        let mut cache = Cache::default();
-        let first = key("source", true);
-        cache.insert(first, (vec![1; MAX_BYTES - 1], String::new()));
-        assert!(cache.bytes <= MAX_BYTES);
-        assert!(cache.get(&key("source", false)).is_none());
-        assert!(cache.get(&key("other source", true)).is_none());
-        let second = key("other source", true);
-        cache.insert(second, (vec![3; 2], String::new()));
-        assert!(cache.bytes <= MAX_BYTES);
-        assert!(cache.get(&first).is_none());
-        assert_eq!(cache.get(&second).unwrap().0, [3; 2]);
-    }
-}

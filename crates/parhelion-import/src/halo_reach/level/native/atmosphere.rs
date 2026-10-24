@@ -40,7 +40,11 @@ struct Volume {
 
 impl Volume {
     fn read(native: &mut Reader, volume: u32) -> Result<Self> {
-        let header = native.tag(volume, None)?.0.clone();
+        let header = native
+            .tag(volume, None)
+            .with_context(|| format!("Atmosphere volume {volume:08X}"))?
+            .0
+            .clone();
         let word = |at: usize| -> Result<u32> {
             Ok(u32::from_le_bytes(
                 header
@@ -63,7 +67,11 @@ impl Volume {
         );
         let texels = half(DIMENSIONS)? * half(DIMENSIONS + 2)? * half(DIMENSIONS + 4)?;
         let source = native.reference(volume)?;
-        let data = native.tag(source, None)?.0.clone();
+        let data = native
+            .tag(source, None)
+            .with_context(|| format!("Data of atmosphere volume {volume:08X}"))?
+            .0
+            .clone();
         ensure!(
             texels > 0
                 && data.len() == texels * TEXEL_BYTES
@@ -165,7 +173,11 @@ pub(super) fn clear_lookup(
     graph: &mut Graph,
     lookup: u32,
 ) -> Result<(String, Value)> {
-    let header = native.tag(lookup, None)?.0.clone();
+    let header = native
+        .tag(lookup, None)
+        .with_context(|| format!("Atmosphere lookup {lookup:08X}"))?
+        .0
+        .clone();
     let marker = header
         .get(MARKER..MARKER + 2)
         .context("Atmosphere lookup header boundary")?;
@@ -178,7 +190,11 @@ pub(super) fn clear_lookup(
         "The atmosphere lookup {lookup:08X} is not a texture"
     );
     let source = native.reference(lookup)?;
-    let data = native.tag(source, None)?.0.clone();
+    let data = native
+        .tag(source, None)
+        .with_context(|| format!("Data of atmosphere lookup {lookup:08X}"))?
+        .0
+        .clone();
     ensure!(
         data.len() == bytes,
         "The atmosphere lookup {lookup:08X} holds {} bytes, its header {bytes}",

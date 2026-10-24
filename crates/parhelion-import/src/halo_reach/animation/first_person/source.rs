@@ -5,6 +5,7 @@ pub(super) struct Source {
     pub graph: Value,
     pub names: BTreeMap<String, usize>,
     pub weapon: BTreeSet<String>,
+    pub root: usize,
     parents: Vec<Option<usize>>,
     bind: Vec<Pose>,
     tracks: Vec<usize>,
@@ -81,7 +82,17 @@ impl Source {
     }
 
     pub fn read(cache: &Cache, scene: &Scene, options: &Options, root: &Path) -> Result<Self> {
-        let arm_tag = cache.find("mode", &options.arms_model)?;
+        Self::select(cache, scene, &options.arms_model, root)?
+            .context("Source first-person branch does not match the configured arm rig")
+    }
+
+    pub(super) fn select(
+        cache: &Cache,
+        scene: &Scene,
+        arms_model: &str,
+        root: &Path,
+    ) -> Result<Option<Self>> {
+        let arm_tag = cache.find("mode", arms_model)?;
         let mut arms = crate::halo_reach::model::read_bones(cache, arm_tag.address()?)?;
         crate::halo_reach::native::scale::bones(&mut arms, scene.scale);
         let graphs: Vec<Value> = serde_json::from_slice(&fs::read(root.join("animations.json"))?)?;
@@ -101,10 +112,33 @@ impl Source {
             }
         }
         ensure!(
-            candidates.len() == 1,
+            candidates.len() <= 1,
             "Source first-person branch does not uniquely match the configured arm rig"
         );
-        Ok(candidates.remove(0))
+        Ok(candidates.pop())
+    }
+
+    pub(super) fn supports(&self, root: &Path, name: &str) -> Result<bool> {
+        let clips = self.graph["clips"].as_array().context("Source arm clips")?;
+        let candidates = clips
+            .iter()
+            .filter(|clip| clip["name"] == name)
+            .collect::<Vec<_>>();
+        ensure!(candidates.len() <= 1, "Repeated source arm clip {name}");
+        let Some(clip) = candidates.first() else {
+            return Ok(false);
+        };
+        let variants = clip["shared"]
+            .as_array()
+            .context("Source arm clip variants")?;
+        let [shared] = variants.as_slice() else {
+            return Ok(false);
+        };
+        if shared["animation_type"] != 1 {
+            return Ok(false);
+        }
+        let member = super::super::playback::member(&self.graph, shared)?;
+        stationary(root, shared, member)
     }
 
     fn bind_graph(graph: &Value, arms: &[Bone], weapon: &[Bone]) -> Result<Option<Self>> {
@@ -145,20 +179,22 @@ impl Source {
                 // are excluded only when no retained bone depends on them.
                 continue;
             };
-            let model_bones = if arms.iter().any(|b| b.name == name) {
-                arms
-            } else {
-                weapon
-            };
+            let arm = arms.iter().any(|b| b.name == name);
+            let model_bones = if arm { arms } else { weapon };
             let expected = source.parent.map(|p| model_bones[p].name.as_str());
             let actual = if parent < 0 {
                 None
             } else {
                 bones[parent as usize]["name"].as_str()
             };
+            // The combined animation graph attaches a standalone weapon root
+            // to an arm bone. Root names vary between weapon families. Internal
+            // weapon joints and the arm hierarchy must still match their models.
+            let attachment = !arm
+                && expected.is_none()
+                && actual.is_some_and(|parent| arms.iter().any(|bone| bone.name == parent));
             ensure!(
-                expected == actual
-                    || (name == "b_gun" && expected.is_none() && actual == Some("r_hand")),
+                expected == actual || attachment,
                 "Source arm and model parents disagree for {name}"
             );
             parents.push(
@@ -175,15 +211,34 @@ impl Source {
             poses.push(bind(source)?);
             tracks.push(i);
         }
+        let mut roots = weapon.iter().filter(|bone| bone.parent.is_none());
+        let root = roots.next().context("Source weapon root missing")?;
+        ensure!(roots.next().is_none(), "Source weapon root is ambiguous");
+        let root = *names
+            .get(&root.name)
+            .context("Source weapon root is not bound")?;
         Ok(Some(Self {
             graph: graph.clone(),
             names,
             weapon: weapon.iter().map(|bone| bone.name.clone()).collect(),
+            root,
             bind: poses,
             parents,
             tracks,
             scale: 1.,
         }))
+    }
+
+    pub fn weapon_role<'a>(&self, name: &'a str) -> &'a str {
+        if self.names.get(name) == Some(&self.root) {
+            "b_handle"
+        } else {
+            match name {
+                "b_gun" | "b_weapon" => "b_handle",
+                "b_mag" => "b_magazine",
+                other => other,
+            }
+        }
     }
 
     fn channels(&self, motion: &super::super::codec::Motion) -> Result<Vec<Vec<Pose>>> {

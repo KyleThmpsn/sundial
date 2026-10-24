@@ -33,8 +33,10 @@ mod ability;
 pub use ability::ABILITY_PROPERTY_KIND;
 pub use ability::AbilityInput;
 pub use ability::AbilityTuning;
+mod ability_row;
 pub use ability::ability_properties_in;
 use ability::*;
+pub use ability_row::{AbilityRow, AbilityRowModifier};
 pub use properties::{KeyCatalog, KeyEvidence};
 
 /// The empty FNV-1 hash. A native key holds this value when nothing is named.
@@ -189,7 +191,7 @@ impl NativeNode {
             } else {
                 crate::sandbox_perk::nodes::effect(self.kind)
             }
-            .filter(|entry| entry.observed())
+            .filter(|entry| entry.has_layout())
             .ok_or_else(|| {
                 format!(
                     "{family} kind {} has no recovered native layout.",
@@ -592,6 +594,7 @@ impl Program {
             native: Some(native),
             ability_tunings: self.ability_tunings.clone(),
             ability_inputs: self.ability_inputs.clone(),
+            ability_rows: self.ability_rows.clone(),
             ..Self::default()
         })
     }
@@ -686,15 +689,22 @@ impl Program {
         Ok(())
     }
 
-    /// Drops the tunings no Ability Property action applies any more. A program that cannot
-    /// be read keeps them all.
+    /// Drops private bank definitions no Ability Property action applies any more. A program
+    /// that cannot be read keeps them all, including bank-scoped rows and numeric inputs.
     pub fn prune_ability_tunings(&mut self) {
-        if self.ability_tunings.is_empty() {
+        if self.ability_tunings.is_empty()
+            && self.ability_inputs.is_empty()
+            && self.ability_rows.is_empty()
+        {
             return;
         }
         if let Ok(applied) = self.ability_properties() {
             self.ability_tunings
                 .retain(|tuning| applied.iter().any(|(_, key)| *key == tuning.key));
+            self.ability_inputs
+                .retain(|input| applied.contains(&(input.slot, input.key)));
+            self.ability_rows
+                .retain(|row| applied.contains(&(row.slot, row.key)));
         }
     }
 }
@@ -1106,6 +1116,9 @@ pub struct Program {
     /// Private adjustments to native ability inputs, activated by Ability Property actions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ability_inputs: Vec<AbilityInput>,
+    /// Private property rows restricted to one native ability bank.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ability_rows: Vec<AbilityRow>,
     /// Further rearm conditions beside the primary one, carried verbatim.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternative_rearms: Vec<NativeNode>,
@@ -1285,6 +1298,7 @@ impl Default for Program {
             additional_groups: Vec::new(),
             ability_tunings: Vec::new(),
             ability_inputs: Vec::new(),
+            ability_rows: Vec::new(),
         }
     }
 }
@@ -1711,6 +1725,22 @@ impl Program {
 
     pub fn validate(&self) -> Result<(), String> {
         self.validate_structure()?;
+        if !self.ability_rows.is_empty() {
+            let applied = self.ability_properties()?;
+            let mut keys = BTreeSet::new();
+            for row in &self.ability_rows {
+                row.validate()?;
+                if !keys.insert(row.key)
+                    || !applied.contains(&(row.slot, row.key))
+                    || self.ability_inputs.iter().any(|v| v.key == row.key)
+                    || self.ability_tunings.iter().any(|v| v.key == row.key)
+                {
+                    return Err(
+                        "Private ability row is duplicated or lacks its activating action".into(),
+                    );
+                }
+            }
+        }
         if !self.ability_inputs.is_empty() {
             let applied = self.ability_properties()?;
             let mut keys = BTreeSet::new();

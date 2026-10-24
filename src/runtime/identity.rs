@@ -245,6 +245,37 @@ pub fn native_members(schema: u32) -> Vec<NativeMember> {
     members
 }
 
+/// A type's size and its native layout entries as `(offset, code)`.
+pub type PointerLayout = (usize, Vec<(usize, u32)>);
+
+/// A type's size and its native layout entries as `(offset, code)` in offset order, including
+/// those its base types declare. Code 3 is a signed 64-bit offset from the field to an array
+/// header or to an object after its class word, and code 1 the same offset to string bytes.
+/// Code 0 entries name a class rather than an offset and are left out. `None` means the type
+/// is outside the definition table.
+pub fn native_pointer_layout(schema: u32) -> Result<Option<PointerLayout>, String> {
+    let registry = runtime_registry()?;
+    let Some(record) = registry.records.get(&schema) else {
+        return Ok(None);
+    };
+    let mut entries = Vec::new();
+    let mut base = Some(record);
+    for _ in 0..32 {
+        let Some(current) = base else { break };
+        entries.extend(
+            current
+                .native_layout
+                .iter()
+                .filter(|entry| entry.type_code != 0)
+                .map(|entry| (entry.byte_offset as usize, entry.type_code)),
+        );
+        base = registry.records.get(&current.base_type);
+    }
+    entries.sort_unstable();
+    entries.dedup();
+    Ok(Some((record.struct_size as usize, entries)))
+}
+
 /// Every reflected member, in any type, that holds a `schema`.
 pub fn native_holders(schema: u32) -> Vec<NativeMember> {
     let Ok(registry) = runtime_registry() else {

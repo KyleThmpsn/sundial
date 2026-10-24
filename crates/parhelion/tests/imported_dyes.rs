@@ -183,7 +183,7 @@ fn inspect_recipe(
             "Source layer precedence or material identity changed"
         );
     }
-    let inspected = parhelion_import::d2_mot::dyes::inspect(staged, items.u32(item + 16)?, false)?;
+    let inspected = parhelion_import::tiger::dye::inspect(staged, items.u32(item + 16)?, false)?;
     for dye in inspected.as_array().ok_or("Native dye readback")? {
         assert!(
             !dye["found"]

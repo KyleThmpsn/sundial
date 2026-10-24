@@ -1,6 +1,10 @@
 //! Fit explicit Reach first-person actions to a private native arm controller.
+mod actions;
 mod arm;
 mod carrier;
+mod constraint;
+mod defaults;
+mod framing;
 mod layer;
 mod melee;
 mod motion;
@@ -15,6 +19,8 @@ use crate::{
     tiger::{animation, payload::Payload, reader::Reader},
 };
 use anyhow::{Context, Result, ensure};
+pub(in crate::halo_reach) use defaults::select as defaults;
+pub use framing::Framing;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -61,6 +67,9 @@ pub struct Options {
     /// Metres in the native grip parent's axes, applied only to absolute motion.
     #[serde(default)]
     pub held_offset: [f32; 3],
+    /// Source view placement uses the native utility-parented weapon reference.
+    #[serde(default)]
+    pub framing: Framing,
     /// Bind the source handling recordings to the translated actions' clips. Off keeps the
     /// donor's cues on every clip, which isolates the route when an equip or action misbehaves.
     #[serde(default = "enabled")]
@@ -106,6 +115,7 @@ impl Files<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::halo_reach) fn prepare(
     cache: &Cache,
     scene: &Scene,
@@ -114,7 +124,15 @@ pub(in crate::halo_reach) fn prepare(
     options: &Options,
     aliases: &BTreeMap<String, String>,
     root: &Path,
+    source_audio: bool,
 ) -> Result<Value> {
+    ensure!(
+        options
+            .held_offset
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 0.2),
+        "Held offset exceeds 20 centimetres"
+    );
     ensure!(
         scene.object.tag.group == "weap"
             && (!options.actions.is_empty()
@@ -126,6 +144,10 @@ pub(in crate::halo_reach) fn prepare(
     let source = (!options.actions.is_empty() || !options.melee.is_empty())
         .then(|| source::Source::read(cache, scene, options, &source_root))
         .transpose()?;
+    ensure!(
+        source.is_some() || options.framing == Framing::Native,
+        "Source framing requires translated source actions"
+    );
     let mut carrier = carrier::Carrier::read(native, donor)?;
     let reference_defaults = carrier.rig.defaults.clone();
     let reference_controls = carrier.controls.clone();
@@ -213,7 +235,8 @@ pub(in crate::halo_reach) fn prepare(
     let mut extras = Vec::new();
     let mut actions = Vec::new();
     let mut hands = Vec::new();
-    let grip = offset::grip(&rig, options.held_offset)?;
+    let mut held_offset = options.held_offset;
+    let mut framing = json!({"mode":"native"});
     let calibration = if let Some(source) = &source {
         let idle = *animation::state::descriptors(&states, hash("idle"))?
             .first()
@@ -231,7 +254,11 @@ pub(in crate::halo_reach) fn prepare(
             bank.u32(*rows.get(slot).context("Native idle clip")?)?,
             Some(0x80808F49),
         )?;
-        let source_reference = source.clip(&source_root, "first_person:idle", 1)?;
+        let source_reference = if let Some(idle) = options.actions.get("idle") {
+            source.action(&source_root, idle, 1)?
+        } else {
+            source.clip(&source_root, "first_person:idle", 1)?
+        };
         let mut defaults = animation::clip::sample_common(
             &reference,
             &reference_defaults,
@@ -239,6 +266,15 @@ pub(in crate::halo_reach) fn prepare(
             0,
         )?;
         defaults.extend_from_slice(&rig.defaults[defaults.len()..]);
+        (held_offset, framing) = framing::resolve(
+            cache,
+            scene,
+            source,
+            &rig,
+            &defaults,
+            &source_reference[0],
+            options,
+        )?;
         Some(motion::Calibration::new(
             source,
             &rig,
@@ -246,12 +282,14 @@ pub(in crate::halo_reach) fn prepare(
             &defaults,
             &source_reference[0],
             aliases,
-            options.held_offset,
+            held_offset,
         )?)
     } else {
         None
     };
-    for (action, source_clip) in &options.actions {
+    let grip = offset::grip(&rig, held_offset)?;
+    let selected_actions = actions::complete(&options.actions, &states, &bank)?;
+    for (action, source_clip) in &selected_actions {
         let source = source.as_ref().context("Source arm actions")?;
         let name = hash(action);
         let mut mapped = BTreeMap::new();
@@ -289,7 +327,10 @@ pub(in crate::halo_reach) fn prepare(
             } else {
                 ensure!(hands == hand_slots, "Native action hand maps disagree");
             }
-            let converted = animation::clip::replace_for(&clip, &poses, rig.bind.len(), &controls)?;
+            let mut converted =
+                animation::clip::replace_for(&clip, &poses, rig.bind.len(), &controls)?;
+            let released_constraints = constraint::release(&mut converted, &rig)
+                .with_context(|| format!("Source action {action}, native clip {template:08X}"))?;
             let marker = hash(&format!(
                 "reach/arms/{action}/{descriptor}/{}",
                 serde_json::to_string(source_clip)?
@@ -301,7 +342,7 @@ pub(in crate::halo_reach) fn prepare(
             let file = files.add(&format!("clip-{name:08X}-{descriptor}"), &converted)?;
             emitted.push(
                 json!({"descriptor":descriptor,"marker":format!("{marker:08X}"),
-                "template":template,"file":&file}),
+                "template":template,"file":&file,"released_hand_constraints":released_constraints}),
             );
             extras.push(json!({"source":marker,"template":template,"file":file}));
             let index = u16::try_from(clip_rows.len() / 4)?;
@@ -344,6 +385,7 @@ pub(in crate::halo_reach) fn prepare(
             &controls,
             calibration.as_ref().context("Melee arm calibration")?,
             &options.melee,
+            source_audio,
         )? {
             ensure!(
                 ![0, u32::MAX].contains(&strike.marker) && markers.insert(strike.marker),
@@ -379,7 +421,7 @@ pub(in crate::halo_reach) fn prepare(
             strikes.push(strike.report);
         }
     }
-    let clips = offset::clips(native, &bank, &rig, grip, options.held_offset, &mut files)?;
+    let clips = offset::clips(native, &bank, &rig, grip, held_offset, &mut files)?;
     let mut converted_bank = (*bank).clone();
     append(&mut converted_bank.0, 8, 0x80808F48, &clip_rows, 4)?;
     append(&mut converted_bank.0, 24, 0x80800007, &auxiliary, 2)?;
@@ -414,9 +456,9 @@ pub(in crate::halo_reach) fn prepare(
             "state_conversion":{"status":"source_states","parameters":parameter_tag,"states":state_tag},
             "melee":{"strikes":strikes,"selection":"Equal source alternatives inside each native state choice",
                 "limits":["The source primary keyframe and full motion duration are translated. The native attack controller, hit acceptance and post-melee ready transition still require gameplay acceptance."]},
-            "arm_motion":{"actions":actions,"hand_slots":hands,"weapon_parts":calibration.as_ref().map(|c| &c.parts),"source_graph":source.as_ref().map(|s| &s.graph["tag"]),"arms_model":options.arms_model,"native_bones":rig.bind.len(),"native_controls":rig.controls.len(),"held_offset":options.held_offset,"grip_control":grip,"alignment":"Shared idle weapon frame with source wrists, palm axes, shoulder movement, elbow planes and bind-relative weapon parts. Shoulders move only as far as required to retain wrist contact within native segment lengths."},
-            "retained_native_behavior":["Arm geometry and segment lengths", "Two-bone arm solver", "Action duration and event timing", "Untranslated pose layers and state transitions"],
-            "limits":["Source motion is fitted to native action duration and events. Source elbow and shoulder controls drive the native arm solver. Weapon parts without a corresponding native control remain unmapped and are listed separately. In-game playback remains unverified."]
+            "arm_motion":{"actions":actions,"hand_slots":hands,"weapon_parts":calibration.as_ref().map(|c| &c.parts),"source_graph":source.as_ref().map(|s| &s.graph["tag"]),"arms_model":options.arms_model,"native_bones":rig.bind.len(),"native_controls":rig.controls.len(),"held_offset":options.held_offset,"applied_offset":held_offset,"framing":framing,"grip_control":grip,"alignment":"Native gun orientation with the selected idle framing, source wrists, palm axes, shoulder movement, elbow planes and bind-relative weapon parts. Translated actions release donor hand targets while retaining native arm solving. Shoulders move only as far as required to retain wrist contact within native segment lengths."},
+            "retained_native_behavior":["Arm geometry and segment lengths", "Two-bone arm solver", "Non-melee action duration and event timing", "Untranslated pose layers and state transitions"],
+            "limits":["Non-melee source motion is fitted to native action duration and events. Weapon strikes retain their source duration and contact keyframe. Source elbow and shoulder controls drive the native arm solver. Weapon parts without a corresponding native control remain unmapped and are listed separately. In-game playback remains unverified.", "Source framing maps camera-relative source positions into the native utility-parented weapon reference. This does not establish the final native camera origin, view projection or ADS blend."]
         }}),
     )
 }

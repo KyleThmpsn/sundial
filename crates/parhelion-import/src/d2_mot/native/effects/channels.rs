@@ -14,6 +14,8 @@ struct Channel {
     declaration: Vec<u8>,
     dependencies: Vec<String>,
     procedure: Option<procedural::Declaration>,
+    /// A source declaration that nothing writes, kept at its initial vector.
+    constant: bool,
     modern: bool,
     preserved_pointers: Vec<(usize, usize)>,
     resting_procedure: Option<String>,
@@ -166,7 +168,8 @@ fn declarations(
             "channel initial vector is not zero"
         );
         let deps = dependency::read(p, row + 80, rows.len())?;
-        if !(!modern || only.is_none() || deps == [i]) {
+        let constant = modern && procedural::constant(p, row, &rows)?;
+        if !(!modern || only.is_none() || deps == [i] || constant) {
             // This arm only inspects the source bank, so the verdict is the
             // same whichever native donor the conversion is using.
             return Err(crate::d2_mot::source_limit(anyhow::anyhow!(
@@ -193,6 +196,7 @@ fn declarations(
                 declaration,
                 dependencies,
                 procedure,
+                constant,
                 modern,
                 preserved_pointers,
                 resting_procedure: None,
@@ -351,7 +355,9 @@ fn source_channels(
                 merge_source_channel(&mut result, hash.clone(), channel)?;
                 continue;
             }
-            if bank.u16(row + 72)? == u16::MAX {
+            // A constant declaration has no storage either, but no variable
+            // component feeds it. It keeps its initial vector as declared.
+            if bank.u16(row + 72)? == u16::MAX && !procedural::constant(&bank, row, &rows)? {
                 let provider = procedural::validate_source(source, &bank, &entity)
                     .with_context(|| format!("source channel {hash}"))?;
                 ensure!(
@@ -516,6 +522,7 @@ fn static_channel(hash: &str, channel: &mut Channel) -> Result<()> {
     channel.declaration[106..108].copy_from_slice(&u16::MAX.to_le_bytes());
     channel.dependencies = vec![hash.to_owned()];
     channel.procedure = None;
+    channel.constant = false;
     channel.preserved_pointers.clear();
     Ok(())
 }
@@ -650,6 +657,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
         if !channels.contains_key(&hash) {
             ensure!(
                 channel.name.is_some()
+                    || channel.constant
                     || computed_outputs.contains(&hash)
                     || (has_procedure
                         && (channel.resource_name.is_some() || channel.alias.is_some())),
@@ -1198,6 +1206,7 @@ mod tests {
             declaration,
             dependencies: vec!["64590948".to_owned()],
             procedure: None,
+            constant: false,
             modern: true,
             preserved_pointers: vec![(16, 128)],
             resting_procedure: None,
@@ -1227,6 +1236,7 @@ mod tests {
             declaration: vec![0; 112],
             dependencies: dependencies.iter().map(|s| (*s).to_owned()).collect(),
             procedure: None,
+            constant: false,
             modern: true,
             preserved_pointers: vec![],
             resting_procedure: None,

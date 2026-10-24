@@ -40,7 +40,11 @@ impl Group {
             let name = dictionary.u32(row + 16)?;
             let index = usize::from(dictionary.u16(row + 20)?);
             ensure!(
-                names.get(index).is_some_and(|entry| entry.0 == name)
+                names.get(index).is_some()
+                    && names
+                        .iter()
+                        .position(|&(canonical, _)| canonical == name)
+                        .is_none_or(|i| i == index)
                     && previous.is_none_or(|before| before < name)
                     && masks.insert(name, record).is_none(),
                 "Animation parameter lookup is invalid"
@@ -52,7 +56,7 @@ impl Group {
             );
         }
         ensure!(
-            masks.len() == names.len(),
+            names.iter().all(|(name, _)| masks.contains_key(name)),
             "Animation parameter lookup is incomplete"
         );
         Ok(Self { at, names, masks })
@@ -77,6 +81,40 @@ impl Group {
             .copied()
             .context("Animation profile is absent from its parameter group")
     }
+
+    fn gate(&self, name: u32) -> Result<[u8; 24]> {
+        let mut record = self.selected(name)?;
+        if !self.names.iter().any(|&(canonical, _)| canonical == name) {
+            // Lookup aliases inherit the parent's runtime mask, but a private
+            // selector gate must compare their raw name without ancestor matching.
+            record[..16].fill(0);
+        }
+        Ok(record)
+    }
+}
+
+/// Publish another exact name with its parent's mask without consuming a hierarchy bit.
+/// Native mask lookup searches the sorted lookup records independently of the name array.
+pub fn alias(dictionary: &Payload, builtin: u8, parent: u32, private: u32) -> Result<Payload> {
+    let mut group = Group::read(dictionary, builtin)?;
+    ensure!(
+        ![0, u32::MAX, EMPTY].contains(&private) && !group.masks.contains_key(&private),
+        "Private animation alias collides with an existing name"
+    );
+    let mut record = group.selected(parent)?;
+    record[16..20].copy_from_slice(&private.to_le_bytes());
+    group.masks.insert(private, record);
+    let mut output = dictionary.clone();
+    append(
+        &mut output.0,
+        group.at + 16,
+        0x80808EE8,
+        &group.masks.values().flatten().copied().collect::<Vec<_>>(),
+        24,
+    )?;
+    finish(&mut output)?;
+    Group::read(&output, builtin)?;
+    Ok(output)
 }
 
 /// Every existing bit ordinal and lookup record is retained. The new name inherits its parent.
@@ -401,12 +439,27 @@ pub fn table_branch(
     mapping: &BTreeMap<usize, usize>,
     conditions: &BTreeMap<u8, u32>,
 ) -> Result<Payload> {
+    table_branch_from(p, p, dictionary, builtin, private, mapping, conditions)
+}
+
+/// Fork an original selector for the new profile while retaining all previously added profiles.
+/// The private fork does not duplicate the already extended tree.
+pub fn table_branch_from(
+    p: &Payload,
+    original: &Payload,
+    dictionary: &Payload,
+    builtin: u8,
+    private: u32,
+    mapping: &BTreeMap<usize, usize>,
+    conditions: &BTreeMap<u8, u32>,
+) -> Result<Payload> {
     ensure!(!mapping.is_empty(), "Empty private motion table mapping");
     ensure!(
         !conditions.contains_key(&builtin),
         "Private motion condition repeats its profile parameter"
     );
     let selector = Selector::at(p, 8)?;
+    let private_selector = Selector::at(original, 8)?;
     let gates = std::iter::once((builtin, private))
         .chain(
             conditions
@@ -419,7 +472,7 @@ pub fn table_branch(
     let mut records = Vec::new();
     let mut operations = Vec::new();
     for (index, &(parameter, name)) in gates.iter().enumerate() {
-        let mask = Group::read(dictionary, parameter)?.selected(name)?;
+        let mask = Group::read(dictionary, parameter)?.gate(name)?;
         let mut root = [0; 28];
         root[15] = 128;
         root[16..20].copy_from_slice(&EMPTY.to_le_bytes());
@@ -444,7 +497,12 @@ pub fn table_branch(
         (prefix, old_operation, false),
         (prefix + selector.records.len(), new_operation, true),
     ] {
-        let (mut copied, ops) = relocated(&selector, record_base, operation_base, 0)?;
+        let selected = if private_branch {
+            &private_selector
+        } else {
+            &selector
+        };
+        let (mut copied, ops) = relocated(selected, record_base, operation_base, 0)?;
         if private_branch {
             for record in &mut copied {
                 let result = short(record, 24);
@@ -549,7 +607,7 @@ pub fn branch(
     routes: &BTreeMap<u32, BTreeMap<usize, usize>>,
 ) -> Result<Payload> {
     let group = Group::read(dictionary, builtin)?;
-    let private_mask = group.selected(private)?;
+    let private_mask = group.gate(private)?;
     let mut out = p.clone();
     let mut nodes = p
         .array(24, 16, Some(0x8080342F))?

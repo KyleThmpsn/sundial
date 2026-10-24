@@ -231,7 +231,7 @@ pub(super) fn emit(
         .context("Particle base map")?;
     let mut textures = vec![(
         0u32,
-        native_material::texture(
+        native::material::texture(
             cache,
             pages,
             native,
@@ -245,7 +245,7 @@ pub(super) fn emit(
         let palette = material.mapping(&["palette"]).context("Particle palette")?;
         textures.push((
             1,
-            native_material::texture(cache, pages, native, graph, palette, false, true)?,
+            native::material::texture(cache, pages, native, graph, palette, false, true)?,
         ));
         "float index=Map.Sample(SurfaceSampler,uv).r;\nfloat4 texel=Palette.Sample(SurfaceSampler,float2(index,paletteValue));".into()
     } else {
@@ -257,7 +257,7 @@ pub(super) fn emit(
             .context("Particle alpha map")?;
         textures.push((
             2,
-            native_material::texture(cache, pages, native, graph, alpha, false, false)?,
+            native::material::texture(cache, pages, native, graph, alpha, false, false)?,
         ));
         let [u, v, x, y] = alpha.transform;
         let coordinates = if albedo.contains("billboard") {
@@ -277,8 +277,8 @@ pub(super) fn emit(
     );
     let vertex_name = format!("{prefix}-vertex");
     let pixel_name = format!("{prefix}-pixel");
-    native_material::program(native, graph, &vertex_name, shell.u32(0x48)?, &vertex, true)?;
-    native_material::program(native, graph, &pixel_name, shell.u32(0x2c8)?, &pixel, false)?;
+    native::material::program(native, graph, &vertex_name, shell.u32(0x48)?, &vertex, true)?;
+    native::material::program(native, graph, &pixel_name, shell.u32(0x2c8)?, &pixel, false)?;
     let mut bytes = shell.0.clone();
     for stage in [0x48, 0xe8, 0x188, 0x228, 0x2c8, 0x368] {
         bytes[stage..stage + 0xa0].fill(0);

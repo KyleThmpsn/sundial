@@ -512,7 +512,9 @@ pub(super) fn add(
     if emitters.is_empty() {
         return Ok((vec![None; areas.len()], json!({"points": 0})));
     }
-    let table = native.tag(templates.points, None)?;
+    let table = native
+        .tag(templates.points, None)
+        .context("Ambience sound point template")?;
     let rows = table.array(0x08, ROW_SIZE, Some(TABLE_ROW_CLASS))?;
     let row = *rows.first().context("Donor sound point table is empty")?;
     let resource = table.pointer(row + ROW_RESOURCE)?;
@@ -523,15 +525,24 @@ pub(super) fn add(
     let row_template = table.0[row..row + ROW_SIZE].to_vec();
     let point_template = table.0[resource..resource + POINT_SIZE].to_vec();
     let record_tag = table.u32(resource + POINT_SOUND)?;
-    let record = native.tag(record_tag, Some(SOUND_CLASS))?;
+    let record = native
+        .tag(record_tag, Some(SOUND_CLASS))
+        .with_context(|| format!("Ambience sound record {record_tag:08X}"))?;
     ensure!(
         record.0.len() >= SOUND_MEDIA && record.pointer(0x20)? == 0x40,
         "Donor sound record envelope differs"
     );
     let attenuation_tag = record.u32(SOUND_ATTENUATION)?;
-    let attenuation = native.tag(attenuation_tag, Some(ATTENUATION_CLASS))?;
+    let attenuation = native
+        .tag(attenuation_tag, Some(ATTENUATION_CLASS))
+        .with_context(|| format!("Ambience attenuation {attenuation_tag:08X}"))?;
     let bank_tag = record.u32(SOUND_BANK)?;
-    let bus = output_bus(&native.tag(bank_tag, None)?.0)?;
+    let bus = output_bus(
+        &native
+            .tag(bank_tag, None)
+            .with_context(|| format!("Ambience bank {bank_tag:08X}"))?
+            .0,
+    )?;
     let media_template = record.u32(SOUND_MEDIA)?;
 
     // Every sample the sounds play, decoded once. A sample the bank lacks leaves its layer, and a

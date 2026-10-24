@@ -1,10 +1,9 @@
 //! Source weapon art on a native runtime that preserves every source bone binding.
 use super::*;
 use crate::GraphReference;
-mod perk;
 mod stats;
 
-fn key(text: &str) -> u32 {
+pub(super) fn key(text: &str) -> u32 {
     let value = text.bytes().fold(0x811C9DC5u32, |h, b| {
         h.wrapping_mul(16777619) ^ u32::from(b)
     });
@@ -48,7 +47,7 @@ impl Source {
         for &base in bases {
             crate::cancellation::check()?;
             if kinetic {
-                let tag = crate::d2_mot::assets::item::find_native(&mut reader, base)?;
+                let tag = crate::tiger::shadowkeep::item_tag(&mut reader, base)?;
                 let item = reader.tag(tag, Some(0x80807BEA))?;
                 let sockets = item.array(item.pointer(0x68)?, 0x50, Some(0x808077C4))?;
                 if sockets.iter().any(|&at| item.u16(at).ok() == Some(68)) {
@@ -121,8 +120,11 @@ impl Source {
             .find(|w| w.hash == hash)
             .context("Selected source weapon is missing")?;
         progress(format!("Reading {}", weapon.name));
-        let namespace = format!("parhelion.import.d1_roi.{hash:08x}");
-        let identity = crate::d2_mot::batch::identity(&namespace)?;
+        let namespace = options
+            .namespace
+            .clone()
+            .unwrap_or_else(|| crate::graph::import_namespace("d1_roi", &weapon.name, hash));
+        let identity = crate::graph::import_identity(&namespace)?;
         let private_item = crate::graph::hash(&identity, "item_hash")?;
         let directory = output.join("graph");
         let mut assembly = Assembly::new(
@@ -132,7 +134,7 @@ impl Source {
             options,
             Some((&source["runtime"], donor)),
         )?;
-        let donor_tag = crate::d2_mot::assets::item::find_native(&mut assembly.native, donor)?;
+        let donor_tag = crate::tiger::shadowkeep::item_tag(&mut assembly.native, donor)?;
         let definition = assembly.native.tag(donor_tag, Some(0x80807BEA))?;
         ensure!(
             definition.u8(0xB8)? <= 2 && definition.u8(0xBB)? == 1,
@@ -163,7 +165,8 @@ impl Source {
             row["template_index"] = json!(template);
         }
         let icon = assembly.item_icon(weapon.strings)?;
-        let (columns, variants, perks, damage) = perk::translate(&mut assembly, source, donor)?;
+        let (columns, variants, perks, damage) =
+            perk::translate(&mut assembly, source, donor, perk::Host::Weapon)?;
         let stats = stats::translate(&mut assembly, source)?;
         progress(format!("Converting {} runtime animation", weapon.name));
         let mut native_rig = assembly.evidence[0]["native_runtime"].clone();
@@ -210,6 +213,23 @@ impl Source {
                 &mut first_person_animation,
             )?;
         }
+        match super::animation::character::prepare(
+            self,
+            &source["runtime"],
+            &mut assembly.native,
+            &native_rig,
+            &directory,
+            key(&format!("d1/character/{private_item:08X}")),
+        ) {
+            Ok(character) => {
+                first_person_animation["character"] = character;
+                first_person_animation["character_status"] = json!("linked");
+            }
+            Err(error) => {
+                first_person_animation["character_status"] = json!("native");
+                first_person_animation["character_reason"] = json!(format!("{error:#}"));
+            }
+        }
         let audio_assets = runtime_animation
             .as_object_mut()
             .and_then(|v| v.remove("audio_assets"));
@@ -237,6 +257,11 @@ impl Source {
         ]
         .map(String::from)
         .to_vec();
+        limitations.push(if first_person_animation["character_status"] == "linked" {
+            "Qualified standing and crouched poses retain source body motion, holding and finger layers. Dynamic aim, movement and combat actions retain native behavior. Third-person playback requires in-game acceptance.".into()
+        } else {
+            format!("Third-person poses retain native behavior: {}", first_person_animation["character_reason"].as_str().unwrap_or("source holding profile was not converted"))
+        });
         limitations.extend(assembly.approximations.iter().cloned());
         let mut graph = json!({"kind":"weapon","source":"d1_roi","source_item":hash,"source_name":weapon.name,
             "source_icon_png":icon,"source_builds":self.report.builds,"source_stamp":self.report.stamp,

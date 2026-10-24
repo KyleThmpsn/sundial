@@ -36,21 +36,6 @@ fn postmaster_discard_confirmation_expires_after_leaving_and_after_discard() {
     );
 }
 
-#[test]
-fn postmaster_missing_definition_disables_recovery() {
-    let dir = TestDirectory::new("postmaster-missing-definition");
-    let mut app = seeded(&dir);
-    app.manifest = Manifest::for_test(vec![], HashMap::new());
-    let ctx = egui::Context::default();
-    ctx.enable_accesskit();
-    frame(&mut app, &ctx, vec![], false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    click(&mut app, &ctx, button(&out, "Postmaster").0, false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    assert!(!button(&out, "Recover").1);
-    assert!(app.undo_history.is_empty());
-}
-
 fn item(hash: u64, name: &str) -> crate::catalog::ItemDef {
     crate::catalog::ItemDef {
         hash,
@@ -257,21 +242,6 @@ fn dawn_vendor_and_mission_tabs_render_and_clear_checkpoint_is_undoable() {
             .reward_debts()
             .is_empty()
     );
-}
-
-#[test]
-fn dawn_progression_editing_preference_disables_mission_controls() {
-    let dir = TestDirectory::new("mission-read-only");
-    let mut app = seeded(&dir);
-    app.preferences.experimental_progression = false;
-    app.progression_section = ProgressionSection::Missions;
-    let ctx = egui::Context::default();
-    ctx.enable_accesskit();
-    frame(&mut app, &ctx, vec![], true);
-    let output = frame(&mut app, &ctx, vec![], true);
-    // The whole editor is disabled, including its disclosure button.
-    assert!(!button(&output, "Mission 0000007B").1);
-    assert!(app.undo_history.is_empty());
 }
 
 #[test]

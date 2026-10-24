@@ -237,8 +237,9 @@ fn compile_canonical(
             .cloned()
             .collect::<Vec<_>>();
         // A plug offered everywhere joins the shared plug sets that offer its type's plug, as
-        // every mod is.
-        let plug_sets = super::plug_sets::plan(&sources, &resolved, &plugs)?;
+        // every mod is. A socket that rolls from its own choices gets a set of them, which its
+        // resolved column then names.
+        let plug_sets = super::plug_sets::plan(&sources, &mut resolved, &plugs)?;
         let mut planner = custom_plugs::RecordPlanner::new(&sources, &resolved, &plugs)?;
         let entries = resolved
             .iter()

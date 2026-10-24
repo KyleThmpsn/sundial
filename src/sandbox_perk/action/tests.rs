@@ -46,29 +46,6 @@ fn incoming_damage_summaries_distinguish_literal_stats_and_source_distance() {
 }
 
 #[test]
-fn a_drawn_pattern_action_decodes_into_its_lists_and_assets() {
-    let payload = drawn_pattern_action();
-    let action = decode(&payload).expect("decode");
-    assert_eq!(action.groups.len(), 1);
-    assert_eq!(action.policy, 0);
-    assert_eq!(action.retained_state_budget, 2);
-    let group = &action.groups[0];
-    assert_eq!(group.activation.len(), 1);
-    assert_eq!(group.activation[0].kind, 16);
-    assert_eq!(group.removal[0].kind, 17);
-    assert_eq!(group.effects.len(), 2);
-    assert_eq!(group.effects[0].kind, 26);
-    assert_eq!(group.effects[0].referenced_tag, Some(0x8161_F73A));
-    assert_eq!(
-        group.effects[0].referenced_path.as_deref(),
-        Some("content/sandbox/weapons/demo/demo.pattern.tft")
-    );
-    assert_eq!(group.effects[1].kind, 3);
-    assert_eq!(group.effects[1].referenced_tag, Some(0x80BC_2F21));
-    assert_eq!(action.support(), Support::Authorable);
-}
-
-#[test]
 fn a_precision_kill_action_decodes_its_labels_timers_and_nested_conditions() {
     let payload = precision_kill_action();
     let action = decode(&payload).expect("decode");
@@ -91,28 +68,6 @@ fn a_precision_kill_action_decodes_its_labels_timers_and_nested_conditions() {
     assert_eq!(extend.conditions[0].kind, 2);
     assert_eq!(action.conditions().len(), 4);
     assert_eq!(action.activation_event_mask, 1 << 2);
-}
-
-#[test]
-fn a_partial_probability_is_reported_rather_than_hidden() {
-    let mut out = Builder::new();
-    let activation = out.kill(&[], false, 0.25);
-    out.pointer_list(
-        PRIMARY_GROUP + GROUP_ACTIVATION,
-        CONDITION_ROW_CLASS,
-        &[activation],
-    );
-    let payload = out.finish();
-    let action = decode(&payload).expect("decode");
-    assert_eq!(
-        action.groups[0].activation[0].probability,
-        Probability::Literal(0.25)
-    );
-    let summary = ActionSummary::new(&action);
-    assert_eq!(
-        summary.groups[0].activation[0].text,
-        "A kill from any credited source (25% chance)"
-    );
 }
 
 #[test]

@@ -3,8 +3,11 @@
 //! open ground, and the probes the donor placed describe the donor's own geometry. The map's copy
 //! takes probes placed and valued from the converted level instead.
 //!
-//! Probes stand [`STANDING`] meters above the level's floors near its spawn points: the spawn
-//! points themselves, then the floor points farthest from every probe chosen so far. A point
+//! Probes stand [`STANDING`] meters above the level's floors, near its spawn points and inside its
+//! structure clusters: the spawn points themselves, then the floor points farthest from every
+//! probe chosen so far. A campaign mission keeps its player starts at its beginning, so probes near
+//! the spawns alone left every later stretch without one, and the objects there took the donor's
+//! open-ground probe, bright even indoors. A point
 //! whose rays meet the back of a face more often than [`INSIDE`] lies inside geometry and is
 //! skipped. Each probe's value is the mean light arriving from [`RAYS`] directions over the whole
 //! sphere: an escaping ray brings the sky, the upper quarter of the lightmap's ambient light, and a
@@ -35,6 +38,10 @@ const REGION_MARGIN: [f32; 3] = [32., 32., 16.];
 const REACH: f32 = 120.;
 /// The cell size of the face grid, in meters.
 const CELL: f32 = 4.;
+/// The most grid cells a face's box may cover before rays test it directly instead. A mission's
+/// distant backdrop faces span kilometres, and binning one in every cell it covers asked for
+/// tens of gigabytes.
+const LARGE_FACE_CELLS: i64 = 4096;
 /// The spacing candidate floor points are thinned to, in meters.
 const CANDIDATE_SPACING: f32 = 2.;
 /// Rays per probe, and per inside test.
@@ -67,10 +74,11 @@ struct Hit {
     weights: [f32; 2],
 }
 
-/// The level's faces near the probes, binned by cell.
+/// The level's faces near the probes, binned by cell, and those too large to bin.
 struct Scene {
     faces: Vec<Face>,
     cells: HashMap<[i32; 3], Vec<u32>>,
+    large: Vec<u32>,
 }
 
 fn cell(point: [f32; 3]) -> [i32; 3] {
@@ -81,6 +89,7 @@ impl Scene {
     fn new(level: &Level, low: [f32; 3], high: [f32; 3]) -> Self {
         let mut faces = Vec::new();
         let mut cells = HashMap::<[i32; 3], Vec<u32>>::new();
+        let mut large = Vec::new();
         for primitive in &level.primitives {
             let lit = primitive.vertices.iter().all(|v| v.lightmap.is_some());
             for corners in primitive.indices.chunks_exact(3) {
@@ -102,6 +111,13 @@ impl Scene {
                     lightmap: lit.then(|| vertices.map(|v| v.lightmap.unwrap_or_default())),
                 });
                 let (from, to) = (cell(a), cell(b));
+                let covered = (0..3)
+                    .map(|k| i64::from(to[k]) - i64::from(from[k]) + 1)
+                    .product::<i64>();
+                if covered > LARGE_FACE_CELLS {
+                    large.push(index);
+                    continue;
+                }
                 for x in from[0]..=to[0] {
                     for y in from[1]..=to[1] {
                         for z in from[2]..=to[2] {
@@ -111,7 +127,11 @@ impl Scene {
                 }
             }
         }
-        Self { faces, cells }
+        Self {
+            faces,
+            cells,
+            large,
+        }
     }
 
     /// The nearest face along the ray from `origin` toward unit `direction` within `reach`.
@@ -134,22 +154,28 @@ impl Scene {
             }
         });
         let mut best: Option<Hit> = None;
+        let nearest = |index: u32, best: &mut Option<Hit>| {
+            let face = &self.faces[index as usize];
+            if let Some((distance, weights)) = intersect(face, origin, direction)
+                && distance > 1e-3
+                && distance <= reach
+                && best.as_ref().is_none_or(|hit| distance < hit.distance)
+            {
+                *best = Some(Hit {
+                    distance,
+                    face: index,
+                    back: dot(face.normal, direction) > 0.,
+                    weights,
+                });
+            }
+        };
+        for &index in &self.large {
+            nearest(index, &mut best);
+        }
         loop {
             let exit = next[0].min(next[1]).min(next[2]);
             for &index in self.cells.get(&at).into_iter().flatten() {
-                let face = &self.faces[index as usize];
-                if let Some((distance, weights)) = intersect(face, origin, direction)
-                    && distance > 1e-3
-                    && distance <= reach
-                    && best.as_ref().is_none_or(|hit| distance < hit.distance)
-                {
-                    best = Some(Hit {
-                        distance,
-                        face: index,
-                        back: dot(face.normal, direction) > 0.,
-                        weights,
-                    });
-                }
+                nearest(index, &mut best);
             }
             if best.as_ref().is_some_and(|hit| hit.distance <= exit) {
                 return best;
@@ -314,11 +340,13 @@ pub(super) fn lights(level: &Level, points: &[[f32; 3]]) -> Vec<f32> {
 }
 
 /// `count` probes for `level`, each a position in the map's coordinates (the level's moved by
-/// `offset`) and a sky visibility, and a report. `spawns` are the level's spawn points in its own
-/// coordinates. None when the level has no spawn points or no floor near them.
+/// `offset`) and a sky visibility, and a report. `spawns` are the level's spawn points and
+/// `regions` the boxes of its structure clusters, in its own coordinates. None when the level has
+/// no spawn points or no floor near them.
 pub(super) fn probes(
     level: &Level,
     spawns: &[[f32; 3]],
+    regions: &[([f32; 3], [f32; 3])],
     count: usize,
     offset: [f32; 3],
 ) -> (Vec<[f32; 4]>, Value) {
@@ -329,8 +357,25 @@ pub(super) fn probes(
         );
     }
     let (spawn_low, spawn_high) = bounds(spawns.iter().copied());
-    let low: [f32; 3] = std::array::from_fn(|k| spawn_low[k] - REGION_MARGIN[k]);
-    let high: [f32; 3] = std::array::from_fn(|k| spawn_high[k] + REGION_MARGIN[k] + STANDING);
+    let spawn_region = (
+        std::array::from_fn::<f32, 3, _>(|k| spawn_low[k] - REGION_MARGIN[k]),
+        std::array::from_fn::<f32, 3, _>(|k| spawn_high[k] + REGION_MARGIN[k] + STANDING),
+    );
+    let regions = std::iter::once(spawn_region)
+        .chain(
+            regions
+                .iter()
+                .map(|&(low, high)| (low, [high[0], high[1], high[2] + STANDING])),
+        )
+        .collect::<Vec<_>>();
+    let low: [f32; 3] =
+        std::array::from_fn(|k| regions.iter().map(|r| r.0[k]).fold(f32::INFINITY, f32::min));
+    let high: [f32; 3] = std::array::from_fn(|k| {
+        regions
+            .iter()
+            .map(|r| r.1[k])
+            .fold(f32::NEG_INFINITY, f32::max)
+    });
     let scene = Scene::new(level, low, high);
     let atlas = level.lightmap.as_ref();
     let sky = atlas.map_or(1., sky_light);
@@ -343,7 +388,10 @@ pub(super) fn probes(
         let middle: [f32; 3] =
             std::array::from_fn(|k| face.origin[k] + (face.edges[0][k] + face.edges[1][k]) / 3.);
         let point = [middle[0], middle[1], middle[2] + STANDING];
-        if (0..3).any(|k| point[k] < low[k] || point[k] > high[k]) {
+        if !regions
+            .iter()
+            .any(|(low, high)| (0..3).all(|k| point[k] >= low[k] && point[k] <= high[k]))
+        {
             continue;
         }
         thinned

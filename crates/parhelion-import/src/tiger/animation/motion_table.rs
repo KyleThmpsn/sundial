@@ -120,5 +120,7 @@ pub fn extend(
             append(&mut output.0, new + field, u64::from(class), &bytes, stride)?;
         }
     }
+    let length = output.0.len() as u64;
+    put(&mut output.0, 0, &length.to_le_bytes())?;
     Ok((output, choices))
 }

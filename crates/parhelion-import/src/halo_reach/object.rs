@@ -209,7 +209,8 @@ impl Object {
                 json!({"kind":"weapon", "weapon_class":cache.string_id(cache.u32(at+0x3ac)?)?,
                     "weapon_name":cache.string_id(cache.u32(at+0x3b0)?)?, "weapon_type":cache.i16(at+0x3b4)?,
                     "handle_node":cache.string_id(cache.u32(at+0x3a8)?)?, "flags":cache.u32(at+0x204)?,
-                    "ready_seconds":cache.f32(at+0x214)?, "magnification":cache.floats::<2>(at+0x2cc)?,
+                    "ready_seconds":cache.f32(at+0x214)?, "zoom_levels":cache.u16(at+0x2ca)?,
+                    "magnification":cache.floats::<2>(at+0x2cc)?,
                     "magazines":magazines,"barrels":barrels,"triggers":triggers})
             }
             "vehi" => vehicle(cache, at)?,

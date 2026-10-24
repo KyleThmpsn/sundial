@@ -49,6 +49,8 @@ const TRIANGLE_LIST: u8 = 3;
 /// The trailing word of every stock static draw group, and of every stock instance group.
 const GROUP_WORD: u16 = 0x0102;
 const INSTANCE_GROUP_WORD: u16 = 7;
+/// The preheader word of a group drawn through the bubble's precomputed visibility.
+const VISIBILITY_WORD: u32 = 1;
 /// A special mesh's byte `+5`, 127 in every stock transparent row.
 const SPECIAL_BYTE: u8 = 0x7F;
 
@@ -89,6 +91,14 @@ pub(super) struct Instance<'a> {
     pub maximum: [f32; 3],
 }
 
+/// The bounds-row identifiers of group `name`'s `count` instances. The bubble's visibility record
+/// keys each instance by its identifier, so the map writes the same ones there.
+pub(super) fn identifiers(name: &str, count: usize) -> Vec<u32> {
+    (0..count)
+        .map(|index| fnv1a32(&format!("parhelion/statics/{name}/{index}")) | 1)
+        .collect()
+}
+
 fn fnv1a32(text: &str) -> u32 {
     text.bytes().fold(0x811C_9DC5, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
@@ -118,8 +128,18 @@ fn buffers(
         ("positions", 0, &streams.positions),
         ("attributes", 4, &streams.attributes),
     ] {
-        let tag = template.u32(row + at)?;
-        let mut header = native.tag(tag, None)?.0.clone();
+        // A template mesh may leave a vertex stream empty, as Midtown's do. Both vertex streams'
+        // headers are vertex buffer headers whose size and stride are written below, so an empty
+        // one takes the other's.
+        let mut tag = template.u32(row + at)?;
+        if tag == u32::MAX && kind != "indices" {
+            tag = template.u32(row + if at == 0 { 4 } else { 0 })?;
+        }
+        let mut header = native
+            .tag(tag, None)
+            .with_context(|| format!("Static buffer {tag:08X}"))?
+            .0
+            .clone();
         if kind == "indices" {
             put(&mut header, 8, &u32::try_from(bytes.len())?.to_le_bytes())?;
             // Byte 1 selects 32-bit indices, and a static's are 16 bits.
@@ -213,7 +233,9 @@ pub(super) fn mesh(
         techniques.push(technique);
     }
 
-    let data_template = native.tag(templates.data, Some(DATA_CLASS))?;
+    let data_template = native
+        .tag(templates.data, Some(DATA_CLASS))
+        .context("Static mesh data template")?;
     let mut data = vec![0u8; DATA_HEADER];
     data[0x38..DATA_HEADER].copy_from_slice(
         data_template
@@ -242,7 +264,9 @@ pub(super) fn mesh(
             .collect(),
     )?;
 
-    let mesh_template = native.tag(templates.mesh, Some(MESH_CLASS))?;
+    let mesh_template = native
+        .tag(templates.mesh, Some(MESH_CLASS))
+        .context("Static mesh template")?;
     let mut bytes = vec![0u8; MESH_HEADER];
     bytes[0x30..MESH_HEADER].copy_from_slice(
         mesh_template
@@ -339,9 +363,7 @@ pub(super) fn group(
         "Static instance group {name} places {} statics",
         instances.len()
     );
-    let ids = (0..instances.len())
-        .map(|index| fnv1a32(&format!("parhelion/statics/{name}/{index}")) | 1)
-        .collect::<Vec<_>>();
+    let ids = identifiers(name, instances.len());
     let mut bounds = vec![0u8; BOUNDS_HEADER];
     let mut rows = Vec::with_capacity(instances.len() * 48);
     for (instance, id) in instances.iter().zip(&ids) {
@@ -355,7 +377,9 @@ pub(super) fn group(
     let bounds_symbol = format!("{name}-bounds");
     graph.add(&bounds_symbol, templates.bounds, &bounds, None, vec![])?;
 
-    let template = native.tag(templates.instances, Some(INSTANCES_CLASS))?;
+    let template = native
+        .tag(templates.instances, Some(INSTANCES_CLASS))
+        .context("Static instance set template")?;
     let mut bytes = vec![0u8; INSTANCES_HEADER];
     for range in [0x30..0x38, 0x50..0x58] {
         bytes[range.clone()].copy_from_slice(
@@ -424,14 +448,19 @@ pub(super) fn group(
         patches,
     )?;
 
-    let preheader = native.tag(templates.preheader, Some(PREHEADER_CLASS))?;
+    let preheader = native
+        .tag(templates.preheader, Some(PREHEADER_CLASS))
+        .context("Static preheader template")?;
     let mut bytes = preheader.0.clone();
     put(&mut bytes, 0x08, &u32::MAX.to_le_bytes())?;
-    // Word 1 at +0x20 draws the group through the bubble's precomputed visibility, whose table
-    // maps each instance id to an Umbra object. Converted tomes hold no objects, so the group
-    // takes word 0, as stock groups outside the table do (Distant Shore's 62 backdrop statics).
-    // Across the Shadowkeep packages no group with word 0 or 0x101 has an instance in a table.
-    put(&mut bytes, 0x20, &0u32.to_le_bytes())?;
+    // Word 1 at +0x20 draws the group through the bubble's precomputed visibility: the client
+    // looks each instance identifier up in the area's visibility record and draws the instance
+    // when the Umbra object its index names is visible. Each area's tome holds one object per
+    // instance. Across the Shadowkeep packages no group with word 0 or 0x101 has an instance in
+    // such a table. Every converted map builds that tome, a single-area map's as well as each
+    // connected area's: drawn with word 0 instead, a converted multiplayer level's statics drew
+    // stretched triangles near the camera and took none of Destiny's dynamic lighting.
+    put(&mut bytes, 0x20, &VISIBILITY_WORD.to_le_bytes())?;
     graph.add(
         name,
         templates.preheader,

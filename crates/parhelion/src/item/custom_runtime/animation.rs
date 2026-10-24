@@ -12,6 +12,8 @@ use parhelion_import::d2_mot::rig_convert::animation::first_person::consumers;
 use parhelion_import::d2_mot::rig_convert::animation::first_person::profile;
 use serde_json::Value;
 use std::collections::BTreeMap;
+mod attachment;
+pub(in crate::item) mod character;
 pub(in crate::item) mod equipment;
 
 const FIRST_PERSON_ENTITY_CLASS: u32 = 0x8080_9C0F;
@@ -32,6 +34,7 @@ pub(in crate::item) struct ImportedAnimation {
     /// Native clip tag and the converted payload replacing it, in bank order.
     pub clips: Vec<(u32, Vec<u8>)>,
     pub profile: Option<profile::Patch>,
+    shared_profile: Option<character::Binding>,
     pub states: Option<ImportedStates>,
     pub rigs: Vec<ImportedRig>,
     pub rig_extension: bool,
@@ -93,6 +96,16 @@ fn payload(graph: &Inputs, file: &Value) -> AuthoringResult<Vec<u8>> {
     graph.read(name)
 }
 
+/// A converted clip, re-encoded where an earlier import stored its animated span as floats.
+/// First-person clips stay loaded with the weapon runtime in every activity, so their size
+/// counts against tag memory. No weighted layer row records these clips' spans.
+fn clip_payload(graph: &Inputs, file: &Value) -> AuthoringResult<Vec<u8>> {
+    let clip = parhelion_import::tiger::payload::Payload(payload(graph, file)?);
+    parhelion_import::tiger::animation::clip::compact(&clip)
+        .map(|clip| clip.0)
+        .map_err(|error| invalid(format!("Imported clip could not be re-encoded: {error:#}")))
+}
+
 /// Read a graph's linked first-person animation, if it prepared one.
 pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAnimation>> {
     let value = graph.value();
@@ -107,7 +120,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
         .as_array()
         .ok_or_else(|| invalid("Imported animation clips missing"))?
     {
-        clips.push((tag(clip, "native")?, payload(graph, &clip["file"])?));
+        clips.push((tag(clip, "native")?, clip_payload(graph, &clip["file"])?));
     }
     let state_status = first_person["state_conversion"]["status"].as_str();
     let states = if matches!(state_status, Some("source_states" | "native_states")) {
@@ -161,7 +174,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
                 Ok((
                     tag(clip, "source")?,
                     tag(clip, "template")?,
-                    payload(graph, &clip["file"])?,
+                    clip_payload(graph, &clip["file"])?,
                 ))
             })
             .collect::<AuthoringResult<_>>()?,
@@ -178,6 +191,14 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAn
             .collect::<AuthoringResult<_>>()?,
         clips,
         states,
+        shared_profile: if value["animation"]["character"]
+            .get("first_person_parameters")
+            .is_some()
+        {
+            character::load(graph)?
+        } else {
+            None
+        },
         pose_layers: first_person
             .get("pose_layers")
             .filter(|value| !value.is_null())
@@ -287,9 +308,17 @@ fn stock(
             entry.reference
         )));
     }
-    if read_tag(manager, TagHash(*tag), what)? != *payload {
+    let live = read_tag(manager, TagHash(*tag), what)?;
+    if live != *payload {
+        let first = live
+            .iter()
+            .zip(payload)
+            .position(|(a, b)| a != b)
+            .unwrap_or(live.len().min(payload.len()));
         return Err(invalid(format!(
-            "Imported animation {what} 0x{tag:08X} changed since the graph was prepared"
+            "Imported animation {what} 0x{tag:08X} changed since the graph was prepared ({} stock bytes, {} prepared bytes, first difference at 0x{first:X})",
+            live.len(),
+            payload.len()
         )));
     }
     Ok(())
@@ -337,7 +366,8 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
         ));
     }
     for rig in &animation.rigs {
-        if animation.rig_extension {
+        // A runtime marker owner is replaced row by row and has no range layout to extend.
+        if animation.rig_extension && rig.kind != RigKind::Markers {
             parhelion_import::tiger::animation::rig::validate_extension(
                 &parhelion_import::tiger::payload::Payload(rig.original.1.clone()),
                 &parhelion_import::tiger::payload::Payload(rig.converted.clone()),
@@ -345,7 +375,7 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
             )
             .map_err(|error| invalid(format!("Imported rig extension: {error:#}")))?;
         } else if rig.kind == RigKind::Skeleton {
-            parhelion_import::d2_mot::rig_convert::validate_source_relocation(
+            parhelion_import::tiger::animation::sections::validate_source_relocation(
                 &rig.original.1,
                 &rig.converted,
                 rig.relocation,
@@ -356,14 +386,14 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
         }
         match rig.kind {
             RigKind::Controls => {
-                parhelion_import::d2_mot::rig_convert::animation::first_person::controls::validate(
-                    &rig.converted,
-                )
-                .map_err(|error| invalid(format!("Imported rig controls: {error:#}")))?;
+                parhelion_import::tiger::animation::rig::controls::validate(&rig.converted)
+                    .map_err(|error| invalid(format!("Imported rig controls: {error:#}")))?;
             }
             RigKind::Skeleton => {
-                parhelion_import::d2_mot::rig_convert::validate_native_instance(&rig.converted)
-                    .map_err(|error| invalid(format!("Imported skeleton instance: {error:#}")))?;
+                parhelion_import::tiger::animation::sections::validate_native_instance(
+                    &rig.converted,
+                )
+                .map_err(|error| invalid(format!("Imported skeleton instance: {error:#}")))?;
             }
             RigKind::Markers => {
                 if rig.first_person
@@ -376,10 +406,8 @@ fn validate_rigs(manager: &PackageManager, animation: &ImportedAnimation) -> Aut
                 {
                     return Err(invalid("Imported runtime marker owner is ambiguous"));
                 }
-                parhelion_import::d2_mot::rig_convert::animation::first_person::markers::validate(
-                    &rig.converted,
-                )
-                .map_err(|error| invalid(format!("Imported runtime markers: {error:#}")))?;
+                parhelion_import::tiger::markers::validate(&rig.converted)
+                    .map_err(|error| invalid(format!("Imported runtime markers: {error:#}")))?;
             }
         }
         stock(manager, &rig.original, RESOURCE_OWNER_CLASS, "rig owner")?;
@@ -581,11 +609,26 @@ pub(in crate::item) fn author(
     let mut lookup = animation.lookup_owner.1.clone();
     relink(&mut lookup, animation.bank.0, bank_tag, "lookup owner")?;
     if let Some(states) = &animation.states {
+        let mut dictionary = states.converted_parameters.clone();
+        if let Some(binding) = animation.shared_profile {
+            let parent = animation
+                .profile
+                .as_ref()
+                .map_or(binding.parent, |patch| patch.after);
+            dictionary = parhelion_import::tiger::animation::state::parameter::alias(
+                &parhelion_import::tiger::payload::Payload(dictionary),
+                3,
+                parent,
+                binding.private,
+            )
+            .map_err(|error| invalid(format!("Shared animation profile: {error:#}")))?
+            .0;
+        }
         let parameters = push(
             allocator,
             tags,
             states.parameters.0,
-            states.converted_parameters.clone(),
+            dictionary,
             "animation parameter dictionary",
         )?;
         let state_table = push(
@@ -723,47 +766,8 @@ pub(in crate::item) fn author(
         entity,
         "first-person entity",
     )?;
-    let mut attachments = animation.attachment_owner.1.clone();
-    if let Some(patch) = &animation.profile {
-        let mut payload = parhelion_import::d2_mot::payload::Payload(attachments);
-        profile::apply(&mut payload, patch)
-            .map_err(|error| invalid(format!("Imported animation profile: {error:#}")))?;
-        attachments = payload.0;
-    }
-    relink(
-        &mut attachments,
-        animation.entity.0,
-        entity_tag,
-        "attachment owner",
-    )?;
-    // Audio authoring adds weapon-specific routes to this owner afterwards.
-    // Sharing it through the immutable animation cache would let a later
-    // weapon replace the sounds selected by an earlier weapon in the batch.
-    let attachment_tag = allocator
-        .assigned_tag(tags.len(), "Imported animation", "attachment owner")?
-        .0;
-    retarget_weapon_component_owner_payload(
-        &mut attachments,
-        pattern_entity,
-        animation.attachment_owner.0,
-        attachment_tag,
-    )
-    .map_err(invalid)?;
-    tags.push(NewTagSpec {
-        template_tag: TagHash(animation.attachment_owner.0),
-        payload: attachments,
-        storage: crate::NewTagStorageMode::InheritTemplate,
-    });
-    retarget_weapon_component_owner(pattern_entity, animation.attachment_owner.0, attachment_tag)
-        .map_err(invalid)?;
-    if pattern_entity
-        .chunks_exact(4)
-        .any(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) == animation.attachment_owner.0)
-    {
-        return Err(invalid(
-            "Authored runtime entity keeps a stale attachment owner reference",
-        ));
-    }
+    let attachment_tag =
+        attachment::author(animation, entity_tag, pattern_entity, allocator, tags)?;
     Ok((
         animation.clips.len() + animation.extra_clips.len(),
         attachment_tag,

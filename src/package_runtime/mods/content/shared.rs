@@ -290,6 +290,17 @@ fn table_name(table: u32) -> String {
     )
 }
 
+/// Whether Parhelion's merge data names every reference to the rows it adds to one array, so the
+/// loader can move them when earlier mods add rows there. Node display rows run beside the
+/// presentation nodes, and subclass socket entry lists beside item art's list rows. Neither
+/// companion has a recipe, so its rows would stay where the build put them.
+fn follows(item: &merge::Shifted) -> bool {
+    !matches!(
+        (item.table, item.descriptor),
+        (recipes::PRESENTATION_NODES, 8) | (recipes::ITEM_ART, 72)
+    )
+}
+
 /// The mods before `owner` in load order that change entry `table`.
 fn earlier(stage: &Stage, groups: &BTreeMap<u16, Vec<&Claim>>, owner: usize, table: u32) -> String {
     let changed = TagHash(table);
@@ -337,15 +348,13 @@ fn report(
             reason.text(),
         ));
     }
-    // Parhelion's merge data names the references to its rows that recipes describe, which
-    // aren't yet all of them.
     for item in outcome
         .shifted
         .iter()
-        .filter(|item| is_family_id(name(item.owner)))
+        .filter(|item| is_family_id(name(item.owner)) && !follows(item))
     {
         notices.push(format!(
-            "{} loads before Parhelion and adds rows to the {}, so Sunrise renumbers Parhelion's rows there. Parhelion's merge data can't follow every reference to them yet, so its items may show the wrong content.",
+            "{} loads before Parhelion and adds rows to the {}, so Sunrise renumbers Parhelion's rows there. A table beside it keeps Parhelion's rows where they were, so its items may show the wrong content.",
             earlier(stage, groups, item.owner, item.table),
             table_name(item.table),
         ));
@@ -397,6 +406,8 @@ fn coexistence(
         .map(|item| (tag(item.package, item.entry), item.reason))
         .collect::<HashMap<_, _>>();
     let mut shares = false;
+    // Merged entry counts per other mod and package, reported as one line per mod.
+    let mut joint = BTreeMap::<&str, Vec<(u16, usize)>>::new();
     for (&package, group) in groups {
         let Some(ours) = group.iter().find(|claim| is_family_id(&claim.owner)) else {
             continue;
@@ -408,12 +419,10 @@ fn coexistence(
                 .partition(|changed| merged.contains(changed));
             shares |= !joined.is_empty() || !apart.is_empty();
             if !joined.is_empty() {
-                result.merged.push(format!(
-                    "Sunrise merges {} {} of package {package:04X} that Parhelion and {} both change.",
-                    joined.len(),
-                    entries(joined.len()),
-                    other.owner,
-                ));
+                joint
+                    .entry(other.owner.as_str())
+                    .or_default()
+                    .push((package, joined.len()));
             }
             // One line per table, naming its entries, why Sunrise can't combine them and what
             // makes the two mods load together.
@@ -456,6 +465,23 @@ fn coexistence(
             }
         }
     }
+    for (owner, packages) in joint {
+        let total = packages.iter().map(|(_, count)| count).sum::<usize>();
+        let place = if let [(package, _)] = packages.as_slice() {
+            format!("package {package:04X}")
+        } else {
+            let mut names = packages
+                .iter()
+                .map(|(package, count)| format!("{package:04X} ({count})"))
+                .collect::<Vec<_>>();
+            let last = names.pop().unwrap_or_default();
+            format!("packages {} and {last}", names.join(", "))
+        };
+        result.merged.push(format!(
+            "Sunrise merges {total} {} that Parhelion and {owner} both change, in {place}.",
+            entries(total)
+        ));
+    }
     if shares && let Some(reason) = ignored.get(&own) {
         result.problems.push(format!(
             "Sunrise would ignore Parhelion's merge data: {reason}. Build again to write it."
@@ -477,9 +503,13 @@ fn coexistence(
             name(item.later),
         ));
     }
-    for item in outcome.shifted.iter().filter(|item| owned(item.owner)) {
+    for item in outcome
+        .shifted
+        .iter()
+        .filter(|item| owned(item.owner) && !follows(item))
+    {
         result.problems.push(format!(
-            "{} loads before Parhelion and adds rows to the {} that Parhelion adds to as well. Sunrise would renumber Parhelion's rows there, which its merge data can't follow yet. Remove the overlapping edits from one of them.",
+            "{} loads before Parhelion and adds rows to the {} that Parhelion adds to as well. Sunrise would renumber Parhelion's rows there, but a table beside it would keep them where they were. Remove the overlapping edits from one of them.",
             earlier(stage, groups, own, item.table),
             table_name(item.table),
         ));

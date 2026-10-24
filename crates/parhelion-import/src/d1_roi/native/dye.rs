@@ -8,8 +8,8 @@ impl Assembly<'_> {
         donor: u32,
         item: u32,
     ) -> Result<(Vec<Value>, Vec<Value>)> {
-        let tag = crate::d2_mot::assets::item::find_native(&mut self.native, donor)?;
-        let templates = crate::d2_mot::dyes::inspect(&mut self.native, tag, false)?;
+        let tag = crate::tiger::shadowkeep::item_tag(&mut self.native, donor)?;
+        let templates = crate::tiger::dye::inspect(&mut self.native, tag, false)?;
         let mut effective = BTreeMap::new();
         for dye in source {
             let channel = dye["channel"]

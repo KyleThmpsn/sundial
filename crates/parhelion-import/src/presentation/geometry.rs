@@ -148,7 +148,9 @@ pub(crate) fn encode_static(mesh: &Mesh, step: f32) -> Result<StaticStreams> {
         scale,
         uv_scale,
         uv_center,
-        bounds: (lo, hi),
+        // Rounding can move a corner outwards by half a grid step. Keep the full step for
+        // the additional float rounding in the native instance transform as well.
+        bounds: (lo.map(|v| v - step), hi.map(|v| v + step)),
     })
 }
 
@@ -186,7 +188,7 @@ pub fn encode_source_passes(
     ensure!(
         stages
             .values()
-            .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 9 | 12 | 16)),
+            .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 9 | 12 | 14 | 16)),
         "Unsupported source presentation pass"
     );
     encode_passes(mesh, native, native_mesh, stages, false, None, None)
@@ -309,7 +311,7 @@ fn encode_passes(
     // index span, avoiding a second resident copy of every shadow-casting triangle.
     let mut group_starts = vec![None; mesh.groups.len()];
     for stage in 0..23 {
-        if [0, 1, 3, 7, 9, 12, 16].contains(&stage) {
+        if [0, 1, 3, 7, 9, 12, 14, 16].contains(&stage) {
             for (group_index, (mat, faces)) in mesh.groups.iter().enumerate() {
                 let surface_stage = usize::from(*stages.get(mat).unwrap_or(&0));
                 let shadowless = grid.is_some_and(|(_, shadowless)| shadowless.contains(mat));
@@ -336,13 +338,16 @@ fn encode_passes(
                     24,
                     &(match stage {
                         1 => 39u16,
+                        14 => 0x2004,
                         7 | 9 | 16 => 21,
                         _ => 5,
                     })
                     .to_le_bytes(),
                 )?;
                 rec[26] = 0;
-                rec[27] = 0;
+                // This writer emits one complete detail level. Category 3 covers all
+                // four native bands, including the coarser view used during inspection.
+                rec[27] = 3;
                 rec[28] = 0x7f;
                 // The native draw iterator advances by this group length.
                 // Zero leaves it on the first record indefinitely.

@@ -42,7 +42,7 @@ pub(super) fn source(entity: &Payload, tag: u32, owner: &Payload) -> Result<[u32
     Ok(parents)
 }
 
-pub(super) fn apply(
+pub(crate) fn apply(
     entity: &mut Payload,
     patches: &mut Vec<Value>,
     tag: u32,

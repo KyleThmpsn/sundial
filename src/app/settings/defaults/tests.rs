@@ -4,27 +4,14 @@ use super::*;
 fn account_resource_sets_select_v2_or_v3_and_require_starter_defaults() {
     for version in [2, 3] {
         let base = crate::persistence::sqlite_account::tests::default_resources();
-        let schema = if version == 3 {
-            include_str!("../../../persistence/sqlite_account/fixtures/v3/investment_schema.sql")
-        } else {
-            &base.schema
-        };
-        let rows = if version == 3 {
-            include_str!("../../../persistence/sqlite_account/fixtures/v3/investment_defaults.sql")
-        } else {
-            &base.rows
-        };
+        let v3 = crate::persistence::sqlite_account::tests::v3_resources();
+        let selected = if version == 3 { &v3 } else { &base };
         let resources = std::collections::BTreeMap::from([
-            (106, schema),
-            (107, rows),
+            (106, selected.schema.as_str()),
+            (107, selected.rows.as_str()),
             (109, base.settings_schema.as_str()),
             (110, base.settings_rows.as_str()),
-            (
-                111,
-                include_str!(
-                    "../../../persistence/sqlite_account/fixtures/v3/character_starter.sql"
-                ),
-            ),
+            (111, v3.starter.as_deref().expect("v3 starter defaults")),
         ]);
         let mut requested = Vec::new();
         let defaults = decode_account_defaults(&mut |id, _| {

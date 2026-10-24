@@ -18,11 +18,19 @@ pub(super) struct RuntimeGraphJob {
 }
 
 impl PackageAuthoringApp {
+    /// The build the installation review and install act on: a kept build under review to restore,
+    /// else the latest build.
+    pub(super) fn install_candidate(&self) -> Option<&BuildReport> {
+        self.restore
+            .as_ref()
+            .or_else(|| self.latest_build.as_ref()?.as_ref().ok())
+    }
+
     pub(super) fn start_replacement_review(&mut self) {
         self.replacement_review = None;
         self.replacement_receiver = None;
         self.replacement_status = build_status::InstallStatus::default();
-        let Some(Ok(build)) = &self.latest_build else {
+        let Some(build) = self.install_candidate() else {
             return;
         };
         let staged = build.run_directory.clone();
@@ -481,10 +489,7 @@ impl PackageAuthoringApp {
             // can take a while, so each recipe is reported as its file is read.
             let snapshot = inputs
                 .request_reporting(&mut |path, index, total| {
-                    let name = path.file_name().and_then(|name| name.to_str()).map_or_else(
-                        || path.display().to_string(),
-                        |name| name.trim_end_matches(".parhelion.json").to_owned(),
-                    );
+                    let name = inputs.recipe_name(path);
                     let _ = sender.send(BuildWorkerEvent::Progress(
                         TimedBuildProgress::from_progress(
                             BuildProgress::artifact(
@@ -526,6 +531,7 @@ impl PackageAuthoringApp {
             activity: None,
         });
         self.latest_build = None;
+        self.restore = None;
         self.build_blocker = None;
         self.latest_install = None;
         self.replacement_review = None;
@@ -693,7 +699,7 @@ impl PackageAuthoringApp {
             ));
             return;
         }
-        let Some(Ok(build)) = self.latest_build.as_ref() else {
+        let Some(build) = self.install_candidate() else {
             self.log
                 .push(LogEntry::error("Build & Stage before installing"));
             return;
@@ -873,6 +879,45 @@ impl PackageAuthoringApp {
         self.account_resync.finish(result);
     }
 
+    /// Logs what an install retired, kept, pruned and shared with other mods.
+    fn log_install_housekeeping(&mut self, report: &InstallReport) {
+        if let Some(backup) = &report.retired_mod_backup {
+            self.log.push(LogEntry::info(format!(
+                "Moved your Sunrise 0.6 build out of the mod folder, which this runtime doesn't load, so the two never load together. Its backup is in {}",
+                backup.display()
+            )));
+        }
+        if let Some(warning) = &report.kept_build_warning {
+            self.log.push(LogEntry::error(warning.as_str()));
+        }
+        if !report.pruned_backup_directories.is_empty() {
+            self.log.push(LogEntry::info(format!(
+                "Removed {} old automatic package {}",
+                report.pruned_backup_directories.len(),
+                if report.pruned_backup_directories.len() == 1 {
+                    "backup"
+                } else {
+                    "backups"
+                }
+            )));
+        }
+        if let Some(error) = &report.backup_prune_warning {
+            self.log.push(LogEntry::error(format!(
+                "Packages installed, but old backups could not be removed: {error}"
+            )));
+        }
+        for overlap in &report.mod_overlaps {
+            self.log.push(LogEntry::info(overlap.as_str()));
+        }
+        for member in &report.mods {
+            self.log.push(LogEntry::info(format!(
+                "{}: {}",
+                member.name,
+                member.status.label()
+            )));
+        }
+    }
+
     pub(super) fn poll_install(&mut self) {
         self.install_status.poll(&mut self.log);
         let Some(receiver) = &self.install_receiver else {
@@ -941,38 +986,8 @@ impl PackageAuthoringApp {
                         report.removed_obsolete_packages.len()
                     )));
                 }
-                if let Some(backup) = &report.retired_mod_backup {
-                    self.log.push(LogEntry::info(format!(
-                        "Removed the Sunrise mod folder, which this runtime doesn't load. Its backup is in {}",
-                        backup.display()
-                    )));
-                }
-                if !report.pruned_backup_directories.is_empty() {
-                    self.log.push(LogEntry::info(format!(
-                        "Removed {} old automatic package {}",
-                        report.pruned_backup_directories.len(),
-                        if report.pruned_backup_directories.len() == 1 {
-                            "backup"
-                        } else {
-                            "backups"
-                        }
-                    )));
-                }
-                if let Some(error) = &report.backup_prune_warning {
-                    self.log.push(LogEntry::error(format!(
-                        "Packages installed, but old backups could not be removed: {error}"
-                    )));
-                }
-                for overlap in &report.mod_overlaps {
-                    self.log.push(LogEntry::info(overlap.as_str()));
-                }
-                for member in &report.mods {
-                    self.log.push(LogEntry::info(format!(
-                        "{}: {}",
-                        member.name,
-                        member.status.label()
-                    )));
-                }
+                self.log_install_housekeeping(&report);
+                self.restore = None;
                 self.latest_install = Some(Ok(report));
                 self.install_receiver = None;
                 finished = true;

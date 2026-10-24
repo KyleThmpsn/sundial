@@ -296,6 +296,8 @@ pub(super) fn handler_slot_in(
         return Ok(Some(HandlerIndex::new(next)));
     }
     let (class, kind) = match modifier {
+        Modifier::Group(_) => (group::CLASS, "grouped ability property"),
+        Modifier::Fixed(body) => (body.class, "fixed ability property"),
         Modifier::Charges(_) => (CHARGE_DEFINITION_CLASS, "charge"),
         Modifier::Parameter { .. } => (SCRIPT_DEFINITION_CLASS, "script parameter"),
         Modifier::Melee { .. } => (ATTACK_DEFINITION_CLASS, "melee attack"),
@@ -306,6 +308,29 @@ pub(super) fn handler_slot_in(
         .filter(|row| row.modifier_class == class)
         .collect();
     let reading: BTreeSet<HandlerIndex> = match modifier {
+        Modifier::Group(body) => {
+            body.validate()?;
+            let matches = same_class
+                .iter()
+                .filter(|r| r.key == body.template_key)
+                .map(|r| r.handler)
+                .collect::<BTreeSet<_>>();
+            if matches.len() != 1 {
+                return Err("Grouped ability property has no unique handler witness".into());
+            }
+            matches
+        }
+        Modifier::Fixed(body) => {
+            body.validate()?;
+            let matches = same_class
+                .iter()
+                .filter(|r| r.key == body.template_key)
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err("Fixed ability property has no unique handler witness".into());
+            }
+            BTreeSet::from([matches[0].handler])
+        }
         Modifier::Parameter { name, .. } => same_class
             .iter()
             .filter(|row| {

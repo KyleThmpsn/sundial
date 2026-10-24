@@ -47,6 +47,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::package_payload::{i64_at, u32_at, u64_at};
 
 mod census;
+mod fixed;
+pub use fixed::FixedModifier;
+mod group;
+pub use group::{GroupEntry, GroupModifier};
 mod handler;
 pub use crate::ability::AbilityTarget;
 pub use handler::HandlerIndex;
@@ -310,6 +314,10 @@ pub struct PropertyRow {
 /// What a new row does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Modifier {
+    /// A checked super-specific declaration with its own flattened numeric inputs.
+    Group(GroupModifier),
+    /// A pointer-free typed body, scoped by an existing property in this bank.
+    Fixed(FixedModifier),
     /// Adds to the ability's charge count.
     Charges(i64),
     /// Sets a script parameter the bank already lists to `applied`, added to the running value
@@ -346,6 +354,40 @@ pub fn with_charge_row(payload: &[u8], key: u32) -> Result<Vec<u8>, String> {
     with_property_row(payload, key, Modifier::Charges(1))
 }
 
+/// Appends a charge, parameter, numeric or fixed property with its explicit native mode byte. Key admission
+/// copies this byte to the active-property list. It is not part of the numeric modifier body.
+pub fn with_property_row_mode(
+    payload: &[u8],
+    key: u32,
+    modifier: Modifier,
+    mode: u8,
+) -> Result<Vec<u8>, String> {
+    if !matches!(
+        modifier,
+        Modifier::Charges(_)
+            | Modifier::Parameter { .. }
+            | Modifier::Scalar { .. }
+            | Modifier::Fixed(_)
+            | Modifier::Group(_)
+    ) {
+        return Err(
+            "An explicit property mode requires a charge, parameter, numeric or fixed row".into(),
+        );
+    }
+    let mut out = with_property_row(payload, key, modifier)?;
+    let layout = layout(&out)?;
+    let rows = (0..layout.definition_rows.count)
+        .map(|i| layout.definition_rows.first + i * DEFINITION_ROW_SIZE)
+        .filter(|&at| u32_at(&out, at + ROW_KEY).ok() == Some(key))
+        .collect::<Vec<_>>();
+    if rows.len() != 1 {
+        return Err("Explicit property mode requires one new row".into());
+    }
+    put_u32(&mut out, rows[0] + ROW_MODE, u32::from(mode));
+    validate(&out)?;
+    Ok(out)
+}
+
 /// The bank with one more property row under `key`, doing what `modifier` says. A charge row
 /// takes the Dodge bank's shape (no name); a parameter row takes the stock parameter rows'
 /// shape and appends its parameter to the table with the bank's own reset value. Either
@@ -358,6 +400,13 @@ pub fn with_charge_row(payload: &[u8], key: u32) -> Result<Vec<u8>, String> {
 /// parameter, since only a listed parameter is known to be read by the bank's script, or that
 /// shows no slot for the modifier.
 pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result<Vec<u8>, String> {
+    if let Modifier::Group(body) = modifier {
+        body.check_bank(payload)?;
+        return scalar::with_group(payload, key, body);
+    }
+    if let Modifier::Fixed(body) = modifier {
+        body.check_bank(payload)?;
+    }
     if let Modifier::Scalar {
         input,
         value,
@@ -384,7 +433,7 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
         })?;
     let count = layout.definition_rows.count;
     let links = blocks(payload, layout.owner);
-    let classes = modifier_classes(modifier);
+    let classes = modifier_classes(modifier)?;
     // Each new row's key, the stock row it goes before, the key gating it, and whether it closes
     // the ranged melee window rather than doing what `modifier` says. Rows under `key` go last.
     let mut new_rows: Vec<(u32, usize, Option<u32>, bool)> = Vec::new();
@@ -432,7 +481,11 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
     // attack list. All rank above every attack the bank holds, or the first walked wins a tie.
     let priority = match modifier {
         Modifier::Melee { .. } => Some(weapon_attack_priority(payload, &layout)?),
-        Modifier::Charges(_) | Modifier::Parameter { .. } | Modifier::Scalar { .. } => None,
+        Modifier::Charges(_)
+        | Modifier::Parameter { .. }
+        | Modifier::Scalar { .. }
+        | Modifier::Fixed(_)
+        | Modifier::Group(_) => None,
     };
     let mut added = Vec::with_capacity(new_rows.len());
     for (&(row_key, before_row, gate, closes), &modifier_instance) in
@@ -449,6 +502,7 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
             ),
             (Modifier::Charges(charges), _) => Body::Charges(charges),
             (Modifier::Parameter { .. }, _) => Body::Parameter(table.len()),
+            (Modifier::Fixed(body), _) => Body::Fixed(body),
             _ => return Err("The bank row has no modifier body".into()),
         };
         let gate = gate.map(|gate| append_gate(out, gate));
@@ -561,6 +615,7 @@ struct Added {
 /// What an added row's definition modifier holds.
 #[derive(Clone, Copy)]
 enum Body {
+    Fixed(FixedModifier),
     Charges(i64),
     /// The index of the row's parameter in the bank's parameter table.
     Parameter(usize),

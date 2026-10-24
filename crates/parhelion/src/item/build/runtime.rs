@@ -1,17 +1,19 @@
 use super::*;
 
+#[cfg(feature = "d2-model-importer")]
+mod attachments;
 mod cache;
 mod dependencies;
 mod plan;
 pub(super) use plan::{DependencyTimings, Payloads, author};
 
-/// Where imported runtime assets go: a group per weapon in the rolling asset packages, and
+/// Where imported runtime assets go: a group per item in the rolling asset packages, and
 /// the tags placed there for the runtime dependency index.
 pub(super) struct RuntimeAssets<'a> {
     pub packages: &'a mut crate::asset_packages::AssetPackages,
     pub placed: &'a mut Vec<TagHash>,
     pub impacts: &'a mut Vec<crate::ability::banks::MeleeImpact>,
-    /// Each weapon's imported particle tags by node symbol, by weapon ordinal, for the private
+    /// Each item's imported particle tags by node symbol, by item ordinal, for the private
     /// perk programs that name them.
     #[cfg(feature = "d2-model-importer")]
     pub particle_symbols: &'a mut BTreeMap<usize, BTreeMap<String, TagHash>>,
@@ -135,13 +137,13 @@ impl Cache {
             )
         });
         progress.diagnostic(format!(
-            "Runtime timings for {name}: compilation {:.3}s, cache save {:.3}s. Save {}.",
+            "Runtime timings for {name}: compilation {:.3}s, cache save {:.3}s. {}.",
             compile_time.as_secs_f64(),
             writing.elapsed().as_secs_f64(),
             match saved {
-                Some(Ok(())) => "saved".to_owned(),
-                Some(Err(reason)) => format!("skipped {reason}"),
-                None => "not requested".to_owned(),
+                Some(Ok(())) => "Cache saved".to_owned(),
+                Some(Err(reason)) => format!("Cache not saved: {reason}"),
+                None => "No cache save requested".to_owned(),
             }
         ));
         Ok(copy)
@@ -288,16 +290,16 @@ pub(super) fn author_entities(
         let write_status = match write_result {
             Some(Ok(())) => {
                 saved += 1;
-                "saved".to_owned()
+                "Cache saved".to_owned()
             }
             Some(Err(reason)) => {
                 skipped += 1;
-                format!("skipped {reason}")
+                format!("Cache not saved: {reason}")
             }
-            None => "not requested".to_owned(),
+            None => "No cache save requested".to_owned(),
         };
         progress.diagnostic(format!(
-            "Runtime timings for {}: compilation {:.3}s, cache save {:.3}s. Save {write_status}.",
+            "Runtime timings for {}: compilation {:.3}s, cache save {:.3}s. {write_status}.",
             donor.weapon.text.name,
             compile_time.as_secs_f64(),
             write_time.as_secs_f64()
@@ -400,12 +402,14 @@ fn author_entity(
     #[cfg(feature = "d2-model-importer")]
     let ImportedRuntime {
         animation: mut imported_animation,
+        character: imported_character,
         audio: imported_audio,
         extensions: imported_extensions,
         particles: mut imported_particles,
         equipment: equipment_animation,
         crosshair: imported_crosshair,
         zoom: imported_zoom,
+        inputs: imported_inputs,
     } = imported;
     let vehicle_settings = donor.weapon.overrides.sparrow.as_ref();
     let has_runtime_edits = recipe_runtime_edits(donor)
@@ -627,6 +631,17 @@ fn author_entity(
     #[cfg(feature = "d2-model-importer")]
     let extended_overrides = {
         let mut overrides = runtime_overrides.clone();
+        if let Some(character) = &imported_character {
+            character.apply(
+                manager,
+                &pattern_entity,
+                groups
+                    .selected
+                    .or(groups.own)
+                    .ok_or_else(|| invalid("Imported character has no selected weapon content"))?,
+                &mut overrides.runtime_resource_patches,
+            )?;
+        }
         overrides.runtime_resource_patches.extend(
             crate::item::custom_runtime::extensions::input_patches(
                 manager,
@@ -739,6 +754,13 @@ fn author_entity(
         )?);
     }
     let with_stats;
+    #[cfg(feature = "d2-model-importer")]
+    stat_patches.extend(crate::weapon::input::patches(
+        manager,
+        &pattern_entity,
+        pattern_source.weapon_translation_group_hash,
+        &imported_inputs,
+    )?);
     #[cfg(feature = "d2-model-importer")]
     if let Some(magnification) = imported_zoom {
         stat_patches.extend(crate::weapon::zoom::patches(
@@ -982,12 +1004,14 @@ fn reuse_stock_entity(
 #[cfg(feature = "d2-model-importer")]
 struct ImportedRuntime {
     animation: Option<crate::item::custom_runtime::animation::ImportedAnimation>,
+    character: Option<crate::item::custom_runtime::animation::character::Binding>,
     audio: Option<crate::item::custom_runtime::audio::ImportedAudio>,
     extensions: Vec<crate::item::custom_runtime::extensions::Extension>,
     particles: Option<crate::item::custom_runtime::particles::ImportedParticles>,
     equipment: Option<crate::item::custom_runtime::animation::equipment::EquipmentAnimation>,
     crosshair: Option<crate::item::custom_runtime::crosshair::Crosshair>,
     zoom: Option<f32>,
+    inputs: Vec<crate::weapon::input::Input>,
 }
 
 #[cfg(feature = "d2-model-importer")]
@@ -995,12 +1019,14 @@ impl ImportedRuntime {
     /// Whether the recipe imports anything onto the runtime entity.
     fn any(&self) -> bool {
         self.animation.is_some()
+            || self.character.is_some()
             || self.audio.is_some()
             || self.equipment.is_some()
             || self.particles.is_some()
             || !self.extensions.is_empty()
             || self.crosshair.is_some()
             || self.zoom.is_some()
+            || !self.inputs.is_empty()
     }
 
     /// Reads each part from `donor`'s imported graph, all empty for a weapon without one.
@@ -1011,12 +1037,14 @@ impl ImportedRuntime {
         use crate::item::custom_runtime::{animation, audio, crosshair, extensions, particles};
         let mut loaded = Self {
             animation: None,
+            character: None,
             audio: None,
             extensions: Vec::new(),
             particles: None,
             equipment: None,
             crosshair: None,
             zoom: None,
+            inputs: Vec::new(),
         };
         let mut directories = BTreeSet::new();
         if let Some(reference) = donor.weapon.overrides.imported_graph.as_ref() {
@@ -1024,6 +1052,7 @@ impl ImportedRuntime {
             let graph = &inputs;
             loaded = Self {
                 animation: animation::load(graph)?,
+                character: animation::character::load(graph)?,
                 audio: audio::load(graph).map_err(|error| {
                     error.context(format!(
                         "Loading prepared audio from {}",
@@ -1035,6 +1064,7 @@ impl ImportedRuntime {
                 equipment: animation::equipment::load(graph)?,
                 crosshair: crosshair::load(graph)?,
                 zoom: crate::weapon::zoom::imported(graph.value())?,
+                inputs: crate::weapon::input::imported(graph.value())?,
             };
             if let Some(audio) = loaded.audio.as_mut() {
                 audio.set_item(donor.weapon.identity.item_hash);
@@ -1054,39 +1084,7 @@ impl ImportedRuntime {
             .filter_map(|perk| perk.program.as_ref())
             .flat_map(|program| &program.imported_assets)
         {
-            let directory = fs::canonicalize(&imported.directory).map_err(|error| {
-                invalid(format!("Imported attachment {}: {error}", imported.symbol))
-            })?;
-            let check = || -> AuthoringResult<()> {
-                let actual = parhelion_import::d2_mot::native::attachment::fingerprint(&directory)
-                    .map_err(|error| {
-                        invalid(format!("Imported attachment {}: {error}", imported.symbol))
-                    })?;
-                if actual != imported.sha256 {
-                    return Err(invalid(
-                        "Imported attachment assets changed after preparation. Import the perk again.",
-                    ));
-                }
-                Ok(())
-            };
-            check()?;
-            if directories.insert(directory.clone()) {
-                let inputs = custom_runtime::imports::Inputs::open_directory(&directory)?;
-                let group = particles::load(&inputs)?
-                    .ok_or_else(|| invalid("Imported attachment group has no assets"))?;
-                group.attachment(&imported.symbol)?;
-                if let Some(assets) = loaded.particles.as_mut() {
-                    assets.merge(group)?;
-                } else {
-                    loaded.particles = Some(group);
-                }
-            }
-            loaded
-                .particles
-                .as_ref()
-                .ok_or_else(|| invalid("Imported attachment has no asset group"))?
-                .attachment(&imported.symbol)?;
-            check()?;
+            attachments::load(imported, &mut directories, &mut loaded.particles)?;
             // These additional directories participate in the live symbol allocation.
             // Programs naming them bypass persistent runtime reuse above.
             *reads = None;

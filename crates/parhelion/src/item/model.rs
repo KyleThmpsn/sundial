@@ -620,6 +620,24 @@ pub struct WeaponSocketColumnOverride {
     pub reusable_plug_set_index: Option<u16>,
     pub randomized_plug_set_index: Option<u16>,
     pub randomized_selection_program: Vec<WeaponNumericInstruction>,
+    /// How many leading choices the socket's own list offers. When set, every choice also joins a
+    /// private randomized plug set appended to the shared table, which the socket rolls from.
+    pub reusable_choices: Option<u16>,
+}
+
+impl WeaponSocketColumnOverride {
+    /// Puts `plug` first, as the column's default. The choices that were swappable stay swappable
+    /// beside it.
+    pub(crate) fn lead_with(&mut self, plug: u32) {
+        let position = self.choices.iter().position(|choice| *choice == plug);
+        self.choices.retain(|choice| *choice != plug);
+        self.choices.insert(0, plug);
+        if let Some(count) = &mut self.reusable_choices
+            && position.is_none_or(|position| position >= usize::from(*count))
+        {
+            *count = count.saturating_add(1);
+        }
+    }
 }
 
 /// One finished sandbox-perk chain cloned privately for an authored socket plug.

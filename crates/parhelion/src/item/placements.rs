@@ -448,13 +448,19 @@ fn stock_family_hashes(
 ) -> AuthoringResult<BTreeMap<u32, Family>> {
     let mut hashes = BTreeMap::new();
     for family in Family::ALL {
-        if family.template().family != family {
-            continue;
-        }
-        let exemplar = family
-            .template()
-            .stock_exemplar()
-            .ok_or_else(|| invalid("Collections family template has no stock exemplar"))?;
+        // Shadowkeep has trace rifles but only Exotic Collections entries for
+        // them. Their native type identity still selects a new ordinary page.
+        let exemplar = if family == Family::TraceRifles {
+            0x0122_48BA // Prometheus Lens supplies the native Trace Rifle type.
+        } else {
+            if family.template().family != family {
+                continue;
+            }
+            family
+                .template()
+                .stock_exemplar()
+                .ok_or_else(|| invalid("Collections family template has no stock exemplar"))?
+        };
         let item = item_index(sources, exemplar)?;
         let string_tag = TagHash(read_u32(
             &sources.stock_item_strings,

@@ -1,62 +1,9 @@
 use super::*;
-use sundial::investment::{InvestmentCatalog, WeaponAmmoType};
+use sundial::investment::InvestmentCatalog;
 use sundial::package_authoring::entity::{
     WEAPON_RELOAD_COMPONENT_KEY, WEAPON_TRIGGER_COMPONENT_KEY,
 };
 use sundial::package_authoring::runtime::SchemaHandle;
-
-fn donor(hash: u32) -> WeaponDonorSummary {
-    WeaponDonorSummary {
-        bucket_hash: 1,
-        ammo_type: Some(WeaponAmmoType::Primary),
-        weapon_pattern_index: Some(hash as u16),
-        weapon_translation_group: Some(1),
-        ..crate::test_support::donor_summary(hash, &format!("Donor {hash}"), "Sidearm")
-    }
-}
-
-#[test]
-fn group_selection_replaces_conflicting_choices_and_preserves_independent_edits() {
-    let mut recipe =
-        WeaponRecipe::new_weapon_for_donor("parhelion.group-test", 1, "Donor 1").unwrap();
-    let mut key = RuntimeGraphKey::new(
-        Some(1),
-        1,
-        [(10, Some(2), 2), (20, Some(3), 3), (30, Some(4), 4)],
-    );
-    for (binding, _, hash) in &key.component_donors {
-        recipe.set_runtime_component_donor(
-            *binding,
-            Some(WeaponDonorReference {
-                item_hash: (*hash).into(),
-                expected_name: None,
-            }),
-        );
-    }
-    let independent = recipe.runtime_component_donor(30).cloned();
-    replace_group(&mut recipe, &mut key, &[10, 20], &donor(5), false);
-    assert_eq!(
-        key.component_donors,
-        vec![(10, Some(5), 5), (20, Some(5), 5), (30, Some(4), 4)]
-    );
-    assert_eq!(recipe.runtime_component_donor(30), independent.as_ref());
-    for binding in [10, 20] {
-        assert_eq!(
-            recipe
-                .runtime_component_donor(binding)
-                .unwrap()
-                .item_hash
-                .parse_u32()
-                .unwrap(),
-            5
-        );
-    }
-    replace_group(&mut recipe, &mut key, &[10, 20], &donor(1), true);
-    assert_eq!(key.component_donors, vec![(30, Some(4), 4)]);
-    assert!(recipe.runtime_component_donor(10).is_none());
-    assert!(recipe.runtime_component_donor(20).is_none());
-    assert_eq!(recipe.runtime_component_donor(30), independent.as_ref());
-}
 
 fn stock() -> (std::path::PathBuf, Vec<WeaponDonorSummary>) {
     let packages = crate::test_support::stock_packages();

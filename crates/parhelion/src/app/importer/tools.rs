@@ -15,6 +15,11 @@ pub(super) struct Checked {
 }
 
 impl Source {
+    fn requires(self, tool: Tool) -> bool {
+        // Browser weapon imports translate source firing audio and require its decoder.
+        self == Source::Reach || tool.required()
+    }
+
     fn tools(self) -> &'static [Tool] {
         match self {
             Source::Modern => tools::MONUMENT,
@@ -33,7 +38,9 @@ impl Importer {
             .and_then(|checked| checked.rows.as_ref())
             .map_or_else(Vec::new, |rows| {
                 rows.iter()
-                    .filter(|(tool, status)| tool.required() && *status == Status::Missing)
+                    .filter(|(tool, status)| {
+                        self.source.requires(*tool) && *status == Status::Missing
+                    })
                     .map(|(tool, _)| *tool)
                     .collect()
             })
@@ -339,7 +346,7 @@ impl PackageAuthoringApp {
                         .on_hover_text(&text);
                     }
                     Status::Missing => {
-                        let color = if tool.required() {
+                        let color = if self.importer.source.requires(tool) {
                             ui.visuals().warn_fg_color
                         } else {
                             ui.visuals().weak_text_color()

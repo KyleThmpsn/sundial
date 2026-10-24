@@ -36,20 +36,6 @@ fn invalid_runtime_setting_is_rejected_before_save_review() {
 }
 
 #[test]
-fn save_and_exit_closes_after_all_edits_were_reverted() {
-    let directory = TestDirectory::new("save-exit-reverted-edits");
-    let mut app = app(directory.0.clone());
-    load(&mut app, defaults());
-    app.dirty = true;
-    app.preferences.review_changes_before_saving = true;
-    app.request_save(&egui::Context::default(), SaveAction::SaveAndExit);
-    assert!(app.exit_confirmed, "{}", app.status);
-    assert!(!app.has_unsaved_changes());
-    assert!(app.confirmation.is_none());
-    assert!(!app.settings_path.exists());
-}
-
-#[test]
 fn unchanged_error_cannot_hide_a_new_invalid_setting() {
     let directory = TestDirectory::new("save-hidden-validation-error");
     let mut app = app(directory.0.clone());

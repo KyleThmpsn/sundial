@@ -50,6 +50,8 @@ pub(super) fn put_pointer(out: &mut [u8], at: usize, target: usize) -> Result<()
 /// What a modifier is called when the bank cannot take it.
 pub(super) fn modifier_kind(modifier: Modifier) -> &'static str {
     match modifier {
+        Modifier::Group(_) => "grouped ability property",
+        Modifier::Fixed(_) => "fixed ability property",
         Modifier::Charges(_) => "charge",
         Modifier::Parameter { .. } => "script parameter",
         Modifier::Melee { .. } => "melee attack",
@@ -57,8 +59,14 @@ pub(super) fn modifier_kind(modifier: Modifier) -> &'static str {
     }
 }
 
-pub(super) fn modifier_classes(modifier: Modifier) -> ModifierClasses {
+pub(super) fn modifier_classes(modifier: Modifier) -> Result<ModifierClasses, String> {
     let (definition, instance, definition_size) = match modifier {
+        Modifier::Group(_) => (group::CLASS, group::TWIN, 40),
+        Modifier::Fixed(body) => (
+            body.class,
+            body.class + 1,
+            (16 + body.byte_len()?).next_multiple_of(8),
+        ),
         Modifier::Charges(_) => (
             CHARGE_DEFINITION_CLASS,
             CHARGE_INSTANCE_CLASS,
@@ -76,11 +84,11 @@ pub(super) fn modifier_classes(modifier: Modifier) -> ModifierClasses {
         ),
         Modifier::Scalar { .. } => (scalar::CLASS, scalar::TWIN, 40),
     };
-    ModifierClasses {
+    Ok(ModifierClasses {
         definition,
         instance,
         definition_size,
-    }
+    })
 }
 
 /// The parameter row a parameter modifier appends: the bank's own reset value with the
@@ -90,7 +98,11 @@ pub(super) fn listed_parameter(
     modifier: Modifier,
 ) -> Result<Option<Parameter>, String> {
     match modifier {
-        Modifier::Charges(_) | Modifier::Melee { .. } | Modifier::Scalar { .. } => Ok(None),
+        Modifier::Charges(_)
+        | Modifier::Melee { .. }
+        | Modifier::Scalar { .. }
+        | Modifier::Fixed(_)
+        | Modifier::Group(_) => Ok(None),
         Modifier::Parameter { name, applied, add } => {
             let listed = table
                 .iter()
@@ -378,6 +390,11 @@ pub(super) fn write_modifier_pair(out: &mut [u8], owner: u32, row: &Added) -> Re
         modifier_instance as u64,
     );
     match row.body {
+        Body::Fixed(body) => {
+            for (i, &word) in body.words[..body.byte_len()? / 4].iter().enumerate() {
+                put_u32(out, modifier_definition + 16 + i * 4, word);
+            }
+        }
         Body::Charges(charges) => {
             put_u64(out, modifier_definition + CHARGE_VALUE, charges as u64);
         }

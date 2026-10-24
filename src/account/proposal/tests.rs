@@ -31,7 +31,7 @@ fn cleanup_preserves_unrelated_data_and_removes_both_unlock_lanes() {
             slot: 42,
         }];
         let (cleaned, removed, plugs, flags, rewards) =
-            clean(&original, &hashes, &unlocks).unwrap();
+            clean(&original, &hashes, &unlocks, &[]).unwrap();
         assert_eq!(rewards, 0);
         assert_eq!(removed, BTreeMap::from([(100, 4)]));
         assert_eq!((plugs, flags), (1, 1));
@@ -46,7 +46,7 @@ fn cleanup_preserves_unrelated_data_and_removes_both_unlock_lanes() {
         expected["state"]["unlocks"]["account_flag_runs"] = json!([[41, 1], [43, 1]]);
         expected["state"]["investment"]["family5_flag_overrides"] = json!([[201, 2]]);
         assert_eq!(cleaned, expected, "v{version}");
-        let (again, items, plugs, flags, _) = clean(&cleaned, &hashes, &unlocks).unwrap();
+        let (again, items, plugs, flags, _) = clean(&cleaned, &hashes, &unlocks, &[]).unwrap();
         assert_eq!(again, cleaned);
         assert!(items.is_empty());
         assert_eq!((plugs, flags), (0, 0));
@@ -60,7 +60,7 @@ fn malformed_and_future_accounts_are_not_silently_cleaned() {
         json!({"version": 13, "state": {"characters": {}}}),
         json!({"version": 8, "state": {"unlocks": {"account_flag_runs": "bad"}}}),
     ] {
-        assert!(clean(&original, &BTreeSet::from([100]), &[]).is_err());
+        assert!(clean(&original, &BTreeSet::from([100]), &[], &[]).is_err());
     }
 }
 
@@ -75,7 +75,7 @@ fn equipped_custom_plugs_and_reward_rules_are_removed_without_deleting_stock_ite
         "characters": [{"soid": "0x0000000000000002", "class": 0, "equipment": {"kinetic": stock}}]
     }});
     let (cleaned, items, plugs, flags, rewards) =
-        clean(&original, &BTreeSet::from([100, 300]), &[]).unwrap();
+        clean(&original, &BTreeSet::from([100, 300]), &[], &[]).unwrap();
     assert!(items.is_empty());
     assert_eq!((plugs, flags, rewards), (1, 0, 1));
     assert_eq!(

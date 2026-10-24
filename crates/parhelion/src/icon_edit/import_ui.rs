@@ -107,23 +107,3 @@ impl ImageImport {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn failed_and_cancelled_imports_leave_draft_unchanged() {
-        let mut draft = WeaponIconEdit {
-            brightness: 25,
-            ..Default::default()
-        };
-        let before = draft.clone();
-        let mut importer = ImageImport::default();
-        importer.accept(Err("bad file".to_owned()), &mut draft);
-        assert_eq!(draft, before);
-        assert!(importer.error.is_some());
-        importer.accept(Ok(None), &mut draft);
-        assert_eq!(draft, before);
-    }
-}

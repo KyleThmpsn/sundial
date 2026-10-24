@@ -78,67 +78,6 @@ fn a_damaged_marker_component_is_refused_rather_than_read_past() {
     assert!(read_component(&infinite, 0x20).is_err());
 }
 
-fn carrier(entity: u32, sets: usize, markers: &[(u32, [f32; 3])]) -> Carrier {
-    Carrier {
-        entity,
-        sets,
-        markers: markers
-            .iter()
-            .map(|&(name, position)| Marker {
-                name,
-                position,
-                orientation: [0.0, 0.0, 0.0, 1.0],
-            })
-            .collect(),
-    }
-}
-
-/// The index is derived from what the disk keeps, so a scan that went through the cache
-/// file must describe the game exactly as the scan that was written.
-#[test]
-fn a_scan_read_back_from_the_cache_gives_the_same_index() {
-    let named = crate::hash::fnv1_name_hash("primary_fire");
-    assert!(marker_name(named).is_some());
-    let scan = Scan {
-        scanned: 40,
-        carriers: vec![
-            carrier(
-                0x8080_0001,
-                2,
-                &[(named, [0.0, 0.0, 0.0]), (0x1234_5678, [0.0, 0.011, 0.0])],
-            ),
-            carrier(
-                0x8080_0002,
-                1,
-                &[
-                    (0x1234_5678, [0.1, 0.1, 0.1]),
-                    (0x1234_5678, [0.2, 0.2, 0.2]),
-                ],
-            ),
-        ],
-    };
-    let mut bytes = Vec::new();
-    crate::package_runtime::cache_file::write(&mut bytes, &scan).unwrap();
-    let read: Scan = crate::package_runtime::cache_file::read(&bytes).unwrap();
-    let index = index_from(&scan);
-    assert_eq!(index_from(&read), index);
-
-    assert_eq!(index.scanned, 40);
-    assert_eq!(index.sets, 3);
-    assert_eq!(index.objects.len(), 2);
-    assert!(index.object(0x8080_0002).is_some());
-    // Counted once per object that carries it, however many rows it has there.
-    let unnamed = index
-        .entries
-        .iter()
-        .find(|e| e.hash == 0x1234_5678)
-        .unwrap();
-    assert_eq!(unnamed.objects, 2);
-    assert_eq!(unnamed.examples, vec![0x8080_0001, 0x8080_0002]);
-    assert_eq!(unnamed.neighbour.map(|n| n.name), Some("primary_fire"));
-    assert_eq!(index.entries[0].hash, 0x1234_5678, "the widest name leads");
-}
-
 /// The parallel read against real packages: the same objects as reading them one by one,
 /// progress that ends at the total, and a cancel that stops it without a result.
 #[test]

@@ -14,64 +14,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) fn identity(namespace: &str) -> Result<Value> {
-    let mut values = serde_json::Map::new();
-    let mut occupied = BTreeSet::from([0x2DF71B81u32, 0x304D56FE]);
-    for (i, role) in [
-        "item",
-        "collectible",
-        "unlock",
-        "pattern_global",
-        "name",
-        "type",
-        "flavor",
-        "source",
-        "collection_name",
-        "collection_description",
-        "inventory_hint",
-        "collection_requirement",
-    ]
-    .iter()
-    .enumerate()
-    {
-        let mut allocated = None;
-        for nonce in 0..65536 {
-            let key = format!(
-                "parhelion/{namespace}/{role}{}",
-                if nonce == 0 {
-                    String::new()
-                } else {
-                    format!("/{nonce}")
-                }
-            );
-            let hash = key.bytes().fold(0x811C9DC5u32, |h, b| {
-                h.wrapping_mul(16777619) ^ u32::from(b)
-            });
-            if hash == 0
-                || hash == 0x811C9DC5
-                || occupied.contains(&hash)
-                || (i >= 4 && hash <= 0x304D56FE)
-            {
-                continue;
-            }
-            occupied.insert(hash);
-            allocated = Some(hash);
-            break;
-        }
-        let field = if *role == "pattern_global" {
-            "pattern_global_id_hash".to_owned()
-        } else {
-            format!("{role}_hash")
-        };
-        values.insert(
-            field,
-            json!(format!(
-                "0x{:08X}",
-                allocated.context("private identity exhausted")?
-            )),
-        );
-    }
-    Ok(Value::Object(values))
+/// The namespace an import of the source item `source`, named `name`, takes.
+pub(crate) fn namespace(source: u32, name: &str) -> String {
+    crate::graph::import_namespace("d2_mot", name, source)
 }
 
 pub(crate) fn prepare_one(
@@ -277,8 +222,12 @@ pub(crate) fn prepare_one_reusing(
             rig_selection["reason"]
         )
     })?;
-    let namespace = super::compatibility::namespace(hash);
-    let id = identity(&namespace)?;
+    // A reimport names the saved recipe's namespace, so the item keeps its identity.
+    let namespace = row["namespace"].as_str().map_or_else(
+        || namespace(hash, row["name"].as_str().unwrap_or_default()),
+        str::to_owned,
+    );
+    let id = crate::graph::import_identity(&namespace)?;
     let use_rig = source_owned || !(rigid_root(mapping) && has_rigid_carrier(&template)?);
     progress("Checking all model parts against donor materials…".into());
     let stride = if use_rig { 24 } else { 20 };
@@ -383,7 +332,7 @@ pub(crate) fn prepare_one_reusing(
     graph["animation"] = animation.clone();
     let audio = super::audio::prepare(modern, native, &graph_dir, &source_rig, &native_rig);
     graph["audio"] = audio.clone();
-    progress("Keeping donor sight and barrel markers…".into());
+    progress("Placing source sight and barrel markers…".into());
     let mut kept = Reader::new(native, &folder.join("kept"), false)?;
     super::kept_parts::build(
         &mut kept,
@@ -394,8 +343,15 @@ pub(crate) fn prepare_one_reusing(
         ordinal,
     )
     .context("kept donor parts")?;
-    super::markers::author(&mut kept, &source_path, &template, &graph_dir, &mut graph)
-        .context("source part markers")?;
+    super::markers::author(
+        &mut kept,
+        &source_path,
+        &template,
+        &graph_dir,
+        &mut graph,
+        super::artwork::native_selector,
+    )
+    .context("source part markers")?;
     kept.finish()?;
     write_json(&graph_path, &graph)?;
     result["animation"] = animation;
@@ -645,7 +601,6 @@ pub(crate) fn donors_with_reader(
     progress: &mut dyn FnMut(String),
 ) -> Result<Value> {
     let catalog: Value = serde_json::from_slice(&fs::read(catalog)?)?;
-    let source_report: Value = serde_json::from_slice(&fs::read(source.join("report.json"))?)?;
     let gameplay = source
         .join("gameplay.json")
         .exists()
@@ -655,8 +610,6 @@ pub(crate) fn donors_with_reader(
             )?)?)
         })
         .transpose()?;
-    let preferred = super::compatibility::profile(profile::hash(&source_report, "item_hash")?)
-        .map(|profile| profile.model_donor);
     let source_rig: Value = serde_json::from_slice(&fs::read(source.join("rig.json"))?)?;
     let from = source_rig["skeletons"]
         .as_array()
@@ -689,7 +642,7 @@ pub(crate) fn donors_with_reader(
         .as_array()
         .context("weapon catalog")?
         .iter()
-        .filter(|v| donor_candidate(v, kind, preferred))
+        .filter(|v| donor_candidate(v, kind, None))
         .collect::<Vec<_>>();
     for (index, row) in candidates.iter().enumerate() {
         progress(format!(
@@ -702,19 +655,7 @@ pub(crate) fn donors_with_reader(
         let result = (|| -> Result<()> {
             let item = *table.get(&hash).context("native catalog item missing")?;
             if let Some(gameplay) = &gameplay {
-                let source_hash = profile::hash(&source_report, "item_hash")?;
-                let gameplay_hash = super::compatibility::profile(source_hash)
-                    .filter(|p| p.model_donor == hash)
-                    .map(|p| profile::hash(&p.donor, "item_hash"))
-                    .transpose()?
-                    .unwrap_or(hash);
-                let gameplay_item = *table
-                    .get(&gameplay_hash)
-                    .context("native gameplay donor missing")?;
-                super::gameplay::check_donor(
-                    gameplay,
-                    r.tag(gameplay_item, Some(0x80807BEA))?.as_ref(),
-                )?;
+                super::gameplay::check_donor(gameplay, r.tag(item, Some(0x80807BEA))?.as_ref())?;
             }
             let rarity = r.tag(item, Some(0x80807BEA))?.u8(0xBA)?;
             let exotic = rarity == 5;
@@ -856,11 +797,5 @@ mod tests {
         )
         .unwrap();
         super::super::native::effects::check_channels(&source, output.path(), owner).unwrap();
-    }
-
-    #[test]
-    fn identity_matches_existing_imported_chroma_recipe() {
-        let id = identity("parhelion.bulk.42bdcc00").unwrap();
-        assert_eq!(id["item_hash"], "0x39A0CE76");
     }
 }

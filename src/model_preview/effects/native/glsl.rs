@@ -279,6 +279,7 @@ impl Program {
                     output.push_str("}\n");
                     continue;
                 }
+                79 => format!("uvec4(lessThan({},{}))*0xFFFFFFFFu", b(1), b(2)),
                 80 => format!("uvec4(greaterThanEqual({},{}))*0xFFFFFFFFu", b(1), b(2)),
                 85 => format!("({} >> ({} & uvec4(31u)))", b(1), b(2)),
                 86 => wrap(format!("vec4({})", b(1))),

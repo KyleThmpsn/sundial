@@ -29,7 +29,7 @@ fn one_node(entry: &nodes::NodeKind, condition: bool) -> (Builder, usize) {
 #[test]
 fn every_observed_catalog_type_decodes_and_validates_its_class_and_extent() {
     for (entries, condition) in [(&nodes::CONDITIONS[..], true), (&nodes::EFFECTS[..], false)] {
-        for entry in entries.iter().filter(|entry| entry.observed()) {
+        for entry in entries.iter().filter(|entry| entry.has_layout()) {
             let (out, at) = one_node(entry, condition);
             let payload = out.finish();
             let decoded = decode(&payload)
@@ -84,7 +84,7 @@ fn every_unrecovered_or_unregistered_kind_is_rejected_explicitly() {
             } else {
                 nodes::effect(kind)
             };
-            if entry.is_some_and(nodes::NodeKind::observed) {
+            if entry.is_some_and(nodes::NodeKind::has_layout) {
                 continue;
             }
             let entry = nodes::NodeKind {

@@ -93,6 +93,7 @@ pub(super) fn technical_recipe_features(recipe: &WeaponRecipe) -> Vec<String> {
                 !column.randomized_selection_program.is_empty(),
                 "random choice count program",
             ),
+            (column.reusable_choices.is_some(), "roll from choices"),
         ]
         .into_iter()
         .filter_map(|(active, label)| active.then_some(label))

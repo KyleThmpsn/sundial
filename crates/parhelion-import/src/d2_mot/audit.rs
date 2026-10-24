@@ -649,14 +649,33 @@ fn audit_artwork(
                 .context("source region position")?,
         )?;
         let key = u32::try_from(part["key"].as_u64().context("source region key")?)?;
+        let positions = match part.get("positions") {
+            Some(values) => values
+                .as_array()
+                .context("source region positions")?
+                .iter()
+                .map(|v| {
+                    Ok(usize::try_from(
+                        v.as_u64().context("source region position")?,
+                    )?)
+                })
+                .collect::<Result<Vec<_>>>()?,
+            None => vec![position],
+        };
         ensure!(
-            regions
-                .entry(selector)
-                .or_default()
-                .insert(position, key)
-                .is_none(),
-            "duplicate source region position"
+            positions.first() == Some(&position) && positions.windows(2).all(|p| p[0] < p[1]),
+            "source region positions are invalid"
         );
+        for position in positions {
+            ensure!(
+                regions
+                    .entry(selector)
+                    .or_default()
+                    .insert(position, key)
+                    .is_none(),
+                "duplicate source region position"
+            );
+        }
     }
     for (selector, positions) in regions {
         ensure!(

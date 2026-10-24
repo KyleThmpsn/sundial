@@ -2,30 +2,6 @@
 use super::*;
 
 impl Source {
-    pub(in super::super) fn runtime_assignments(
-        &self,
-        assets: &mut BTreeMap<u32, Payload>,
-    ) -> Result<BTreeMap<u32, u32>> {
-        let root_tag = self.named("investment_assets")?;
-        let root = self.read(root_tag)?;
-        let tag = root.u32(0x10)?;
-        ensure!(
-            self.reference(tag)? == 0x80800341,
-            "Source runtime assignment root differs"
-        );
-        let map = self.read(tag)?;
-        let mut result = BTreeMap::new();
-        for row in map.array(8, 8, None)? {
-            ensure!(
-                result.insert(map.u32(row)?, map.u32(row + 4)?).is_none(),
-                "Duplicate source runtime assignment"
-            );
-        }
-        assets.insert(root_tag, root);
-        assets.insert(tag, map);
-        Ok(result)
-    }
-
     pub(in super::super) fn weapon_runtime(
         &self,
         item: &Weapon,

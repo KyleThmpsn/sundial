@@ -13,10 +13,13 @@ use crate::{
 };
 mod fragment;
 mod inspection;
+mod marker;
+pub(super) mod material;
 mod optic;
 mod report;
 pub(super) mod scale;
 pub(super) mod seat;
+mod settings;
 mod vehicle;
 pub use seat::DriverPose;
 
@@ -88,7 +91,7 @@ pub struct ImportRequest {
     /// Source rider actions already provide their own pose and omit this correction.
     #[serde(default)]
     pub driver_pose: Option<DriverPose>,
-    /// An explicit native projectile carrier for a single visible source projectile.
+    /// Override automatic selection of a native carrier for one modeled source projectile.
     #[serde(default)]
     pub projectile_entity: Option<u32>,
     /// Source bone name to native bone name. Unmapped nodes follow their mapped ancestor.
@@ -356,7 +359,7 @@ fn weights(joints: [u16; 4], weights: [f32; 4], first: usize, count: usize) -> R
 
 struct Assembly {
     mesh: Mesh,
-    materials: BTreeMap<u32, material::Material>,
+    materials: BTreeMap<u32, crate::halo_reach::material::Material>,
     rig_report: Vec<Value>,
     palette: Vec<u8>,
     groups: Vec<u16>,
@@ -426,7 +429,7 @@ fn assemble(
                 .material
                 .and_then(|i| model.materials.get(i))
                 .cloned()
-                .unwrap_or(material::Material {
+                .unwrap_or(crate::halo_reach::material::Material {
                     decal: None,
                     tag: None,
                     options: BTreeMap::new(),
@@ -623,7 +626,7 @@ fn carrier_models(
 }
 
 fn validate_material_overrides(
-    materials: &BTreeMap<u32, material::Material>,
+    materials: &BTreeMap<u32, crate::halo_reach::material::Material>,
     overrides: &BTreeMap<String, BTreeMap<String, [f32; 4]>>,
 ) -> Result<()> {
     for (path, values) in overrides {
@@ -732,20 +735,21 @@ fn selected_skeleton(original: Value, extended: Option<&Value>, projectile: bool
 
 fn prepare_optic(
     entry: &ImportRequest,
+    scene: &Scene,
     projectile: bool,
     mesh: &mut Mesh,
-    materials: &BTreeMap<u32, material::Material>,
+    materials: &BTreeMap<u32, crate::halo_reach::material::Material>,
 ) -> Result<Option<optic::Prepared>> {
     if projectile {
         return Ok(None);
     }
     validate_material_overrides(materials, &entry.material_overrides)?;
-    optic::select(entry, mesh, materials)
+    optic::select(entry, scene, mesh, materials)
 }
 
 fn material_stages(
-    materials: &BTreeMap<u32, material::Material>,
-    lenses: &BTreeMap<u32, native_material::Lens>,
+    materials: &BTreeMap<u32, crate::halo_reach::material::Material>,
+    lenses: &BTreeMap<u32, material::Lens>,
 ) -> BTreeMap<u32, u8> {
     materials
         .iter()
@@ -821,7 +825,7 @@ pub(super) fn build(
         groups,
     } = assemble(scene, &bones, &entry.bone_aliases)?;
     let inspection_fit = inspection::fit(&mut mesh, &header, entry, projectile)?;
-    let optic = prepare_optic(entry, projectile, &mut mesh, &materials)?;
+    let optic = prepare_optic(entry, scene, projectile, &mut mesh, &materials)?;
     let lenses = optic.as_ref().map(|o| o.lenses.clone()).unwrap_or_default();
     let stages = material_stages(&materials, &lenses);
     let encoded = if scene.damage.is_some() {
@@ -846,7 +850,7 @@ pub(super) fn build(
     }
     crate::tiger::entity::reject_stale_owner(&Payload(entity.clone()), owner_tag)?;
     let marker_report = if entry.runtime_entity.is_none() && !projectile {
-        super::native_marker::build(
+        marker::build(
             native,
             &mut g,
             &scene.models[0].model,
@@ -906,13 +910,13 @@ pub(super) fn build(
         // the summoned model regardless of its occupancy state.
         paint.surfaces.clear();
     }
-    let material_report = super::native_material::build(
+    let material_report = material::build(
         cache,
         pages,
         native,
         &mut g,
         &materials,
-        super::native_material::Binding {
+        material::Binding {
             palette: &palette,
             rigid: bones["rigid_uniforms"] == true,
             objects: &objects,
@@ -922,6 +926,7 @@ pub(super) fn build(
             lightmap: None,
             vertex_data: None,
             statics: false,
+            prefix: "",
         },
     )?;
     let instance_layout = g.seal_instances()?;
@@ -1276,7 +1281,14 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
         native_packages.parent().context("Native install root")?,
     )?;
     ensure!(!output.exists(), "Reach import output already exists");
-    let mut entries: Vec<ImportRequest> = serde_json::from_slice(&fs::read(plan)?)?;
+    let mut requests: Vec<Value> = serde_json::from_slice(&fs::read(plan)?)?;
+    for request in &mut requests {
+        scale::request_defaults(request)?;
+    }
+    let mut entries: Vec<ImportRequest> = requests
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<std::result::Result<_, _>>()?;
     ensure!(!entries.is_empty(), "Reach import plan is empty");
     validate_requests(&mut entries)?;
     fs::create_dir_all(output.parent().context("Output parent")?)?;
@@ -1286,7 +1298,7 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
     let mut native = Reader::new(&native_packages, &temporary.path().join("native"), false)?;
     let mut pages = resource::Pages::default();
     let mut items = Vec::new();
-    for entry in entries {
+    for mut entry in entries {
         eprintln!("Translating {}", entry.slug);
         let root = temporary.path().join(&entry.slug);
         let source = root.join("source");
@@ -1295,20 +1307,67 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
         pages.record(&path)?;
         let cache = cache::Cache::open(&path)?;
         let mut scene = scene(&cache, &mut pages, &entry.source)?;
+        if entry.character.is_none()
+            && (scene.object.tag.group != "vehi" || entry.driver_pose.is_none())
+        {
+            entry.character = super::animation::character::defaults(
+                &cache,
+                &scene,
+                &mut native,
+                hash(&entry.recipe["donor"], "item_hash")?,
+            )?;
+        }
         gltf::write(&cache, &mut pages, &scene, &source)?;
         write_json(&source.join("source.json"), &serde_json::to_value(&scene)?)?;
         let behavior = behavior::read(&cache, &scene)?;
-        let (mut recipe, mut gameplay) = recipe(&entry, &scene, &behavior)?;
-        if entry.first_person.is_some() {
-            gameplay["aim"] = super::hud::scope::aim(&cache, &scene.object.tag)?;
+        if entry.source.audio.is_none()
+            && matches!(scene.object.tag.group.as_str(), "weap" | "vehi")
+        {
+            entry.source.audio = super::audio::defaults(&maps, &behavior)?;
         }
+        if let Some(audio) = &mut entry.source.audio
+            && audio.bank.as_os_str().is_empty()
+        {
+            let discovered = super::audio::defaults(&maps, &behavior)?
+                .context("Previously imported source audio is no longer available")?;
+            audio.bank = discovered.bank;
+            audio.additional_banks = discovered.additional_banks;
+            audio.decoder = discovered.decoder;
+        }
+        let (mut recipe, mut gameplay) = recipe(&entry, &scene, &behavior)?;
         let hud = super::hud::prepare(&cache, &mut pages, &scene, &mut recipe, &source)?;
         write_json(&source.join("behavior.json"), &behavior)?;
         let projectiles = super::projectile::export(&cache, &mut pages, &behavior, &source)?;
+        let mut projectile_import = super::projectile::select(&mut entry, &behavior, &projectiles)?;
         super::animation::export(&cache, &mut pages, &behavior, &scene, &source)?;
-        if let Some(options) = &entry.source.audio {
-            super::audio::export(options, &behavior, &mut pages, &source.join("audio"))?;
+        if entry.first_person.is_none() && entry.character.is_none() {
+            entry.first_person = super::animation::first_person::defaults(
+                &cache,
+                &scene,
+                &mut native,
+                hash(&entry.recipe["donor"], "item_hash")?,
+                &source,
+            )?;
+            if let Some(options) = &mut entry.first_person {
+                options.handling_audio = entry.source.audio.is_some();
+            }
         }
+        if scene.object.tag.group == "weap"
+            && (entry.first_person.is_some()
+                || scene.object.gameplay["zoom_levels"]
+                    .as_u64()
+                    .is_some_and(|levels| levels > 0))
+        {
+            gameplay["aim"] = super::hud::scope::aim(&cache, &scene.object.tag)?;
+        }
+        let source_audio = entry
+            .source
+            .audio
+            .as_ref()
+            .map(|options| {
+                super::audio::export(options, &behavior, &mut pages, &source.join("audio"))
+            })
+            .transpose()?;
         super::damage::expand(&cache, &mut pages, &mut scene, &entry.source)?;
         if let Some(damage) = &scene.damage {
             write_json(
@@ -1329,6 +1388,7 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
                     options,
                     &entry.bone_aliases,
                     &root.join("graph"),
+                    entry.source.audio.is_some(),
                 )
             })
             .transpose()?;
@@ -1346,6 +1406,13 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
                 .filter(|s| !s.is_null()),
         )
         .with_context(|| format!("Native Reach import {}", entry.slug))?;
+        if let Some(audio) = source_audio {
+            graph["source_audio"] = json!({
+                "decoded_samples":audio["samples"].as_array().map_or(0, Vec::len),
+                "unavailable":audio["unavailable"],
+                "playback":"Decoded recordings are source evidence. The audio routes describe native playback coverage."
+            });
+        }
         inspection::build(
             &cache,
             &mut pages,
@@ -1358,6 +1425,7 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
         graph["source_gameplay"] = gameplay;
         graph["source_scale"] =
             json!({"length":entry.scale,"mass":1.,"inertia":entry.scale * entry.scale});
+        graph["import_settings"] = settings::record(&entry)?;
         graph["source_hud"] = hud;
         if let Some(animation) = animation {
             graph["animation"] = animation;
@@ -1388,7 +1456,9 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
                 &root.join("graph"),
             )?;
             select_projectile(&mut recipe, &graph["projectile"])?;
+            projectile_import["status"] = json!("imported");
         }
+        graph["projectile_import"] = projectile_import;
         if let Some(audio) = &entry.source.audio
             && entry.runtime_entity.is_none()
         {
@@ -1405,13 +1475,13 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
                 audio,
             ) {
                 Ok(audio) => audio,
-                Err(error) if audio.firing.is_some() => {
+                Err(error) if audio.firing.is_some() || audio.require_firing => {
                     return Err(error)
                         .with_context(|| format!("Requested firing audio for {}", entry.slug));
                 }
                 Err(error) => json!({"status":"source_only","reason":format!("{error:#}")}),
             };
-            if audio.firing.is_some() {
+            if audio.firing.is_some() || audio.require_firing {
                 ensure!(
                     graph["audio"]["authoring_schema"] == 3,
                     "Requested firing audio was not linked for {}: {}",
@@ -1431,6 +1501,7 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
                 &mut graph,
                 &mut recipe,
                 &root.join("graph"),
+                entry.source.audio.is_some(),
             )?;
         }
         if entry
@@ -1456,20 +1527,18 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
         report::behavior(&mut graph);
         write_json(&root.join("graph/asset-graph.json"), &graph)?;
         crate::graph::record_converter_revision(&root.join("graph"))?;
-        if recipe["kind"] == "weapon" {
-            crate::artwork::prepare(
-                &root.join("graph"),
-                &native_packages,
-                entry.icon.unwrap_or_else(|| {
-                    if scene.object.gameplay["weapon_class"] == "sword" {
-                        crate::artwork::Settings::sword()
-                    } else {
-                        crate::artwork::Settings::for_recipe(&recipe)
-                    }
-                }),
-            )?;
-            crate::artwork::apply(&mut recipe, &root.join("graph"))?;
-        }
+        crate::artwork::prepare(
+            &root.join("graph"),
+            &native_packages,
+            entry.icon.unwrap_or_else(|| {
+                if recipe["kind"] == "weapon" && scene.object.gameplay["weapon_class"] == "sword" {
+                    crate::artwork::Settings::sword()
+                } else {
+                    crate::artwork::Settings::for_recipe(&recipe)
+                }
+            }),
+        )?;
+        crate::artwork::apply(&mut recipe, &root.join("graph"))?;
         report::compact(&root.join("graph/asset-graph.json"))?;
         let item = hash(&entry.recipe["identity"], "item_hash")?;
         let mut reference = crate::GraphReference::new(&root.join("graph"), item)?;

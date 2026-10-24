@@ -40,7 +40,7 @@ fn layer(r: &mut Reader, tag: u32) -> Result<Option<u32>> {
 }
 
 fn template(r: &mut Reader, hash: u32) -> Result<()> {
-    let tag = item::find_native(r, hash)?;
+    let tag = crate::tiger::shadowkeep::item_tag(r, hash)?;
     let definition = r.tag(tag, Some(0x80807BEA))?;
     ensure!(
         definition.u8(0xB8)? == 27,
@@ -199,9 +199,9 @@ pub(super) fn prepare(
     let (hash, donor) =
         selected.context("No native emblem template has all three matching image layouts")?;
     r.finish()?;
-    let namespace = crate::d2_mot::compatibility::namespace(source.hash);
+    let namespace = source.namespace();
     let recipe = json!({"schema":1,"kind":"emblem","collection_placement":"sunrise_badge",
-        "namespace":namespace,"identity":batch::identity(&namespace)?,"name":name,"type_name":source.weapon_type,
+        "namespace":namespace,"identity":crate::graph::import_identity(&namespace)?,"name":name,"type_name":source.weapon_type,
         "donor":{"item_hash":format!("0x{hash:08X}"),"expected_name":donor["name"]},
         "flavor":flavor,"source":"Source: Imported emblem",
         "overrides":{"rarity":rarity,"nameplate":nameplate,"stat_trackers":{"mode":"all"},"icon_edit":{"imported_image":{

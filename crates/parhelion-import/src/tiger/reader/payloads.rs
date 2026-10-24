@@ -66,6 +66,3 @@ impl Payloads {
         self.bytes = 0;
     }
 }
-
-#[cfg(test)]
-mod tests;

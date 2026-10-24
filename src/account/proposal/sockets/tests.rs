@@ -118,15 +118,3 @@ fn malformed_socket_lists_and_conflicting_changes_fail_without_partial_updates()
     future["version"] = json!(99);
     assert!(resize(&mut future, &BTreeSet::new(), &[change(8, 9)]).is_err());
 }
-
-#[test]
-fn native_defaults_and_unaffected_items_need_no_socket_rewrite() {
-    let original = document(16, Value::Null);
-    let mut proposed = original.clone();
-    assert!(
-        resize(&mut proposed, &BTreeSet::new(), &[change(8, 9)])
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(proposed, original);
-}

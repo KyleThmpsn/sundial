@@ -7,6 +7,7 @@ mod character;
 mod crosshair;
 mod dyes;
 mod gear;
+mod inspect;
 mod loading;
 mod ornament_collections;
 mod ornament_icon;
@@ -61,7 +62,7 @@ struct Kept {
 
 struct Region {
     selector: u64,
-    position: usize,
+    positions: Vec<usize>,
     native: bool,
 }
 
@@ -85,9 +86,28 @@ fn kept_region(part: &Value) -> AuthoringResult<Option<Region>> {
             .ok_or_else(|| invalid("Kept art position missing"))?,
     )
     .map_err(|_| invalid("Kept art position overflow"))?;
+    let positions = if let Some(values) = part.get("positions") {
+        let values = values
+            .as_array()
+            .ok_or_else(|| invalid("Kept art positions missing"))?;
+        let positions = values
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .and_then(|v| usize::try_from(v).ok())
+                    .ok_or_else(|| invalid("Kept art position overflow"))
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        if positions.first() != Some(&position) || positions.windows(2).any(|p| p[0] >= p[1]) {
+            return Err(invalid("Kept art positions are empty or unordered"));
+        }
+        positions
+    } else {
+        vec![position]
+    };
     Ok(Some(Region {
         selector,
-        position,
+        positions,
         native,
     }))
 }
@@ -138,10 +158,13 @@ fn place_regions(slots: &mut Vec<(u64, Vec<u32>)>, kept: &[Kept]) -> AuthoringRe
             native: region.native,
             positions: BTreeMap::new(),
         });
-        if group.native != region.native
-            || group.positions.insert(region.position, part.key).is_some()
-        {
+        if group.native != region.native {
             return Err(invalid("Conflicting kept art position"));
+        }
+        for &position in &region.positions {
+            if group.positions.insert(position, part.key).is_some() {
+                return Err(invalid("Conflicting kept art position"));
+            }
         }
     }
     for (selector, group) in regions {
@@ -379,6 +402,7 @@ fn graph_node(
     folder: &Path,
     n: &Value,
     model: bool,
+    single_detail: bool,
     spec: Option<&WeaponCloneSpec>,
     bound: &mut BTreeMap<String, Vec<u8>>,
     manager: &sundial::package_authoring::PackageManager,
@@ -406,6 +430,10 @@ fn graph_node(
     };
     if model {
         bounds::repair(manager, TagHash(template), &mut payload)?;
+        if single_detail {
+            parhelion_import::tiger::draws::cover_single_detail(&mut payload)
+                .map_err(|e| invalid(format!("Imported model detail coverage: {e}")))?;
+        }
         parhelion_import::d2_mot::audit::draws::declare_model_draw_indices(&mut payload)
             .map_err(|e| invalid(format!("Imported model draw indices: {e}")))?;
     }
@@ -503,7 +531,7 @@ fn apply_one(
                 == "trailing procedural range merged into its FK section")
     {
         return Err(invalid(
-            "Import this Reach weapon again. Its donor's moving parts lost their procedural bones, which draws nothing on the inspect screen",
+            "Import this Reach weapon again. Its donor's moving parts lost their procedural bones",
         ));
     }
     if graph["kind"] == "shader" {
@@ -583,7 +611,15 @@ fn apply_one(
                 let model = n["symbol"]
                     .as_str()
                     .is_some_and(|name| models.contains(name));
-                nodes.push(graph_node(folder, n, model, spec, &mut bound, manager)?);
+                nodes.push(graph_node(
+                    folder,
+                    n,
+                    model,
+                    graph["source"] == "halo_reach",
+                    spec,
+                    &mut bound,
+                    manager,
+                )?);
             }
             shared.timings.nodes += started.elapsed();
             let started = std::time::Instant::now();
@@ -774,11 +810,29 @@ fn apply_one(
     if let Some(replacement) = dyes::apply(manager, emission, &symbols, &graph, previous)? {
         result.push(replacement);
     }
-    if let Some(replacement) =
-        crosshair::apply(manager, emission, &symbols, &graph, previous, item)?
-    {
-        result.push(replacement);
-    }
+    let crosshairs = crosshair::apply(manager, emission, &symbols, &graph, previous, item)?;
+    // The inspect scene row joins the table as the crosshair step left it.
+    let table = crosshairs
+        .as_ref()
+        .map(|replacement| replacement.payload.as_slice())
+        .or_else(|| {
+            previous
+                .get(&crate::weapon::crosshair::TABLE.0)
+                .map(Vec::as_slice)
+        });
+    let inspect = if spec.is_some_and(|spec| spec.kind == ItemKind::Weapon) {
+        inspect::apply(
+            (directory, manager),
+            emission,
+            (&graph, folder),
+            table,
+            item,
+            &mut shared.companions,
+        )?
+    } else {
+        None
+    };
+    result.extend(inspect.or(crosshairs));
     let ordinal = definition_ordinal(emission, item)?;
     let definition = &mut emission.host_new_tags[ordinal].payload;
     arrays::add_array_markers(definition).map_err(invalid)?;

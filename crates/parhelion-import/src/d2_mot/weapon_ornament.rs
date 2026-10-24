@@ -230,8 +230,15 @@ pub fn prepare(request: &Request, progress: &mut dyn FnMut(String)) -> Result<Pa
         request.ordinal,
     )
     .context("ornament kept parts")?;
-    markers::author(&mut kept, &source_path, &template, &graph_dir, &mut graph)
-        .context("ornament part markers")?;
+    markers::author(
+        &mut kept,
+        &source_path,
+        &template,
+        &graph_dir,
+        &mut graph,
+        super::artwork::native_selector,
+    )
+    .context("ornament part markers")?;
     kept.finish()?;
     // A pinned graph holds its own files, so the inventory icon moves inside it.
     if let Some(icon) = graph["ornament_icon_png"].as_str().map(PathBuf::from)

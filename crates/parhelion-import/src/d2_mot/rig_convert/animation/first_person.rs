@@ -361,6 +361,7 @@ pub(super) fn events(
     for &(tag, _) in native_clips {
         event_library.add_native(nr.tag(tag, Some(0x80808F49))?.as_ref());
     }
+    event_library.include_native_resources(nr)?;
     Ok(event_library)
 }
 
@@ -505,7 +506,12 @@ fn extra_clip(
         let Some(mode) = action_mode.or_else(|| extras.modes.get(native_tag).copied()) else {
             continue;
         };
-        if !static_pose && template.u16(0x142)? != source_clip.u16(0x142)? {
+        // A named action establishes playback independently of this event template.
+        // The slot table still checks the source clip's own calibrated rig shape.
+        if action_mode.is_none()
+            && !static_pose
+            && template.u16(0x142)? != source_clip.u16(0x142)?
+        {
             continue;
         }
         let attempt = if event_free {

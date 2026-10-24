@@ -10,6 +10,24 @@ fn write_payload(run: &StagedRun) {
     fs::write(run.directory.join(MANIFEST_FILE_NAME), b"{}").unwrap();
     fs::create_dir(run.directory.join("recipes")).unwrap();
     fs::write(run.directory.join("recipes/weapon.json"), b"{}").unwrap();
+    crate::merge_data::stage(
+        &run.directory,
+        &crate::merge_data::MergeData {
+            sidecars: vec![(
+                PARHELION_ASSET_PACKAGE.file_name.replace(".pkg", ".merge"),
+                b"synthetic merge data".to_vec(),
+            )],
+            report: b"{}".to_vec(),
+        },
+    )
+    .unwrap();
+    fs::write(
+        run.directory
+            .join(sundial::package_authoring::mod_content::map_diagnostics::FILE_NAME),
+        b"{}",
+    )
+    .unwrap();
+    fs::write(run.directory.join("mission_retention.lua"), b"return {}").unwrap();
 }
 
 fn completed(root: &Path, slug: &str) -> PathBuf {
@@ -78,12 +96,17 @@ fn unmarked_legacy_and_unknown_content_are_preserved() {
     fs::write(legacy.join(MANIFEST_FILE_NAME), b"{}").unwrap();
     let first = completed(root.path(), "owned");
     fs::write(first.join("personal-notes.txt"), b"keep this").unwrap();
+    fs::write(first.join("personal-notes.merge"), b"keep this too").unwrap();
     let second = completed(root.path(), "next");
     assert!(legacy.is_dir());
     assert!(lease_for_read(&legacy).unwrap().is_none());
     assert_eq!(
         fs::read(first.join("personal-notes.txt")).unwrap(),
         b"keep this"
+    );
+    assert_eq!(
+        fs::read(first.join("personal-notes.merge")).unwrap(),
+        b"keep this too"
     );
     assert!(second.is_dir());
 }

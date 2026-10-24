@@ -26,8 +26,8 @@ pub(super) fn compact(code: &[u8]) -> Result<Vec<u8>> {
     dxbc::rebuild(code, &tokens(code)?, None)
 }
 
-/// Only the transparent scope's depth coefficients retain the same producer.
-/// Other vectors and relative addressing need their own translation contract.
+/// Translate checked depth and ambient irradiance vectors in the named transparent scope.
+/// A declaration can include unused rows. Every actual read must have a qualified producer.
 pub(super) fn depth(code: &[u8], binding: &super::expression::Depth) -> Result<Vec<u8>> {
     let words = tokens(code)?;
     let mut used = false;
@@ -45,7 +45,11 @@ pub(super) fn depth(code: &[u8], binding: &super::expression::Depth) -> Result<V
             }
             let row = operand.indices[1].context("Relative transparent depth vector")?;
             ensure!(
-                words[row] == u32::from(instruction.opcode == 0x59),
+                if instruction.opcode == 0x59 {
+                    (1..=6).contains(&words[row])
+                } else {
+                    words[row] < 6 && binding.vectors & (1 << words[row]) != 0
+                },
                 "Unsupported transparent scope vector"
             );
             used = true;

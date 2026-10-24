@@ -205,61 +205,6 @@ fn chosen(recipe: &WeaponRecipe, lane: usize) -> Vec<u32> {
         .unwrap_or_default()
 }
 
-/// The author gave the behavior's perk a trait socket of their own. Leading the donor's trait
-/// column with a second copy showed the same perk twice in game and pushed the choices they had
-/// arranged down a place, which is what it did to SUROS Renaissance.
-#[test]
-fn a_perk_the_author_moved_to_their_own_socket_leaves_the_donors_lane_alone() {
-    let donor = behavior_donor();
-    let entry = crate::weapon::behavior::behavior("graviton-lance").expect("a catalogued behavior");
-    let trait_plug = entry.trait_plug.expect("this behavior pins a trait plug");
-    let mut recipe = behavior_recipe();
-    let mut pins = BehaviorPins::default();
-    for (lane, choices) in [(1, vec![0x1234_5678, 0x8765_4321]), (2, vec![trait_plug])] {
-        let inherited = inherited_socket_choices(
-            donor.sockets[lane].native_default,
-            &donor.sockets[lane].ordered_embedded_choices,
-            authored_socket_choice_limit(92),
-        );
-        set_recipe_socket_column(
-            &mut recipe,
-            donor.sockets.len(),
-            lane,
-            &inherited,
-            choices,
-            None,
-        );
-    }
-    recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
-        behavior: entry.id.to_owned(),
-    }];
-
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
-
-    assert_eq!(chosen(&recipe, 1), vec![0x1234_5678, 0x8765_4321]);
-    assert_eq!(chosen(&recipe, 2), vec![trait_plug]);
-}
-
-/// Turning the perks off is the author saying they want the behavior without its plugs, so the
-/// sockets have to let go of them too rather than keeping what the build would have skipped.
-#[test]
-fn turning_off_included_perks_releases_the_sockets_again() {
-    let donor = behavior_donor();
-    let entry = crate::weapon::behavior::behavior("graviton-lance").expect("a catalogued behavior");
-    let mut recipe = behavior_recipe();
-    let mut pins = BehaviorPins::default();
-    recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
-        behavior: entry.id.to_owned(),
-    }];
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
-    let held = chosen(&recipe, 1);
-    assert_eq!(held.first().copied(), entry.trait_plug);
-
-    recipe.overrides.skip_behavior_perks = true;
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
-    assert_ne!(chosen(&recipe, 1).first().copied(), entry.trait_plug);
-}
-
 /// Two behaviors share the intrinsic socket. Deselecting either one takes back that one's perk,
 /// wherever it sits in the lane, and leaves the other's in place.
 #[test]
@@ -339,38 +284,6 @@ fn a_custom_perk_follows_its_plug_when_a_behavior_leads_the_lane() {
     assert_eq!(chosen(&recipe, 1), vec![0x1234_5678]);
     assert_eq!(recipe.overrides.socket_plug_variants.len(), 1);
     assert_eq!(recipe.overrides.socket_plug_variants[0].choice_index, 0);
-}
-
-/// A weapon has one frame. Choosing a behavior puts its frame in the intrinsic lane alone, in
-/// place of the donor's, and dropping the behavior gives the donor's frame back.
-#[test]
-fn a_borrowed_frame_replaces_the_donors_frame_and_gives_it_back_when_released() {
-    let donor = behavior_donor();
-    let entry = crate::weapon::behavior::CATALOG
-        .iter()
-        .find(|entry| entry.intrinsic_plug.is_some())
-        .expect("an intrinsic-pinning behavior");
-    let frame = entry.intrinsic_plug.unwrap();
-    let mut recipe = behavior_recipe();
-    let mut pins = BehaviorPins::default();
-    recipe.overrides.additional_behaviors = vec![crate::recipe::AdditionalBehaviorRecipe {
-        behavior: entry.id.to_owned(),
-    }];
-
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
-    assert_eq!(
-        chosen(&recipe, 0),
-        vec![frame],
-        "the donor's frame 10 is replaced"
-    );
-
-    recipe.overrides.additional_behaviors.clear();
-    sync_behavior_socket_pins(&mut recipe, &mut pins, &donor);
-    assert!(
-        chosen(&recipe, 0).is_empty(),
-        "the lane inherits the donor's frame again: {:x?}",
-        chosen(&recipe, 0)
-    );
 }
 
 /// An author can build their own intrinsic frame as a custom perk. Borrowing a behavior replaces

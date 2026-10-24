@@ -51,8 +51,8 @@ pub(super) fn prepare(
     if choices.is_empty() {
         return Ok(Prepared::default());
     }
-    let context = crate::d2_mot::tfx::context(native, false)?;
-    let templates = crate::d2_mot::dyes::inspect(native, item_tag, false)?;
+    let context = crate::tiger::shader::globals::read(native, false)?;
+    let templates = crate::tiger::dye::inspect(native, item_tag, false)?;
     let mut result = Prepared::default();
     let mut scopes = BTreeMap::new();
     for (name, choice) in choices {

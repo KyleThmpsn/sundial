@@ -168,6 +168,10 @@ impl PackageAuthoringApp {
             .default_width(470.0)
             .resizable(false)
             .show(ctx, |ui| {
+                super::warning_bar(
+                    ui,
+                    "D2 perk importing does not work, these are experiments in development.",
+                );
                 egui::ComboBox::from_id_salt("modern-perk-source")
                     .selected_text(self.importer.perks.source.name())
                     .show_ui(ui, |ui| {

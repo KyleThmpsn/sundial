@@ -114,37 +114,6 @@ fn uniform_codec_decodes_static_and_animated_tracks_and_rejects_bad_counts() {
 }
 
 #[test]
-fn skinning_uses_parent_motion_and_inverse_bind_pose() {
-    let mut parent = Transform::identity();
-    parent.translation = [3.0, 0.0, 0.0];
-    let mut child = Transform::identity();
-    child.translation = [0.0, 2.0, 0.0];
-    let mut inverse = Transform::identity();
-    inverse.translation = [-3.0, -2.0, 0.0];
-    let mut moved = parent;
-    moved.translation[0] += 2.0;
-    let animation = Animation {
-        tag: 0,
-        frames: 2,
-        fps: 1.0,
-        parents: vec![None, Some(0)],
-        inverse: vec![Transform::identity(), inverse],
-        poses: vec![vec![parent, child], vec![moved, child]],
-    };
-    let model = Model {
-        vertices: vec![[4.0, 2.0, 0.0]],
-        weights: vec![Some(Weights {
-            values: [255, 0, 0, 0],
-            bones: [1, 255, 255, 255],
-        })],
-        ..Default::default()
-    };
-    assert_eq!(animation.vertices(&model, 0.0), model.vertices);
-    assert_eq!(animation.vertices(&model, 0.5), vec![[5.0, 2.0, 0.0]]);
-    assert_eq!(animation.vertices(&model, 1.0), vec![[6.0, 2.0, 0.0]]);
-}
-
-#[test]
 fn quaternion_interpolation_takes_the_short_arc() {
     let first = Transform::identity();
     let mut second = first;

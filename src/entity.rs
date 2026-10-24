@@ -31,6 +31,9 @@ pub const SANDBOX_PATTERN_ROW_SIZE: usize = 0x30;
 pub const SANDBOX_PATTERN_ROW_CLASS: u32 = 0x8080_5B7C;
 pub const SANDBOX_PATTERN_NESTED_OFFSET: usize = 0x20;
 pub const SANDBOX_PATTERN_NESTED_CLASS: u32 = 0x8080_5B7E;
+/// A row's pointer to an object after the rows, class `0x80802F26`, or zero. One stock row of
+/// Shadowkeep's 403 holds one.
+pub const SANDBOX_PATTERN_OBJECT_OFFSET: usize = 0x08;
 pub const SANDBOX_PATTERN_INDEX_ROW_SIZE: usize = 0x08;
 pub const SANDBOX_PATTERN_INDEX_ROW_CLASS: u32 = 0x8080_7A65;
 pub const SANDBOX_PATTERN_GLOBAL_ID_OFFSET: usize = 0x04;

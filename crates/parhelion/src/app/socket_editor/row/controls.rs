@@ -331,9 +331,22 @@ fn draw_choice(
                 && usize::from(variant.choice_index) == choice_index
                 && variant.source_plug_hash.parse_u32().ok() == Some(hash)
         });
-    let button_label = variant
+    let label = variant
         .and_then(|variant| variant.name.clone())
         .unwrap_or_else(|| catalog.plug_label(hash, false));
+    // A choice past a rolling column's swappable ones is only in its roll pool.
+    let rolled = recipe
+        .overrides
+        .socket_columns
+        .get(socket.index)
+        .and_then(Option::as_ref)
+        .and_then(|column| column.reusable_choices)
+        .is_some_and(|count| choice_index >= usize::from(count));
+    let button_label = if rolled {
+        format!("{} {label}", egui_phosphor::regular::DICE_FIVE)
+    } else {
+        label
+    };
     let removable = choice_index > 0;
     let tooltip = variant.map(|variant| sundial::investment::PlugTooltip {
         classification_hash: variant
@@ -383,7 +396,11 @@ fn draw_choice(
                     },
                 )
                 .response
-                .on_hover_text("Drag to reorder or move to another socket.");
+                .on_hover_text(if rolled {
+                    "Rolled, not swappable. Drag to reorder or move to another socket."
+                } else {
+                    "Drag to reorder or move to another socket."
+                });
                 // The grip alone is too small to follow, so the perk trails the pointer instead.
                 if ui.ctx().is_being_dragged(drag_id)
                     && let Some(pointer) = ui.ctx().pointer_interact_pos()

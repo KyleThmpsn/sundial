@@ -68,6 +68,16 @@ pub(super) struct Rows {
 }
 
 impl Rows {
+    pub(super) fn destinations(&self, data: &[u8]) -> AuthoringResult<BTreeSet<u8>> {
+        (0..self.count)
+            .map(|index| {
+                let record = self.record(data, index)?;
+                data.get(record + 0xe0)
+                    .copied()
+                    .ok_or_else(|| invalid("Activity destination leaves its table"))
+            })
+            .collect()
+    }
     pub(super) fn name(&self, data: &[u8], ordinal: usize) -> AuthoringResult<String> {
         if ordinal >= self.count {
             return Err(invalid("Activity image row is outside the activity table"));
@@ -406,6 +416,9 @@ pub(super) fn append(
                 &ACTIVITY_POINTERS,
             )?;
             write_u32(&mut activity, record, hash)?;
+            if let Some(destination) = map.destination {
+                activity[record + 0xe0] = destination;
+            }
             write_relative_pointer(&mut activity, record + ACTIVITY_NAME_FIELD, name)?;
             let narrow = |value: usize| {
                 u16::try_from(value).map_err(|_| invalid("Activity ordinals exceed 16 bits"))

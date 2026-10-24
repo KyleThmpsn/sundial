@@ -637,6 +637,7 @@ pub(super) fn append_keyed_auxiliary_pair_at(
         nested_targets.push(Some(nested_header));
     }
     let template_target = nested_targets[template_index];
+    let object_targets = object_targets(&data, rows, count, layout)?;
     let secondary_header = layout
         .secondary_class
         .map(|expected_class| {
@@ -662,6 +663,7 @@ pub(super) fn append_keyed_auxiliary_pair_at(
     }
     data[rows_end..rows_end + layout.row_size].copy_from_slice(&template);
     write_u32(&mut data, rows_end, authored_item_hash)?;
+    point_at_objects(&mut data, rows, &object_targets, template_index, layout)?;
     if let Some(template_target) = template_target {
         write_relative_pointer(
             &mut data,
@@ -689,6 +691,71 @@ pub(super) fn append_keyed_auxiliary_pair_at(
         )));
     }
     Ok((data, index))
+}
+
+/// Where each row's object will sit once a row is inserted after the rows: an object after them
+/// moves by one row. Empty when the layout's rows hold no object pointer.
+fn object_targets(
+    data: &[u8],
+    rows: usize,
+    count: usize,
+    layout: KeyedAuxiliaryLayout,
+) -> AuthoringResult<Vec<Option<usize>>> {
+    let Some(offset) = layout.object_offset else {
+        return Ok(Vec::new());
+    };
+    let rows_end = rows + count * layout.row_size;
+    (0..count)
+        .map(|row_index| {
+            let pointer = rows + row_index * layout.row_size + offset;
+            let relative = crate::tag_payload::read_i64(data, pointer)?;
+            if relative == 0 {
+                return Ok(None);
+            }
+            let target = isize::try_from(relative)
+                .ok()
+                .and_then(|relative| pointer.checked_add_signed(relative))
+                .filter(|target| *target < data.len())
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "{} row {row_index} points outside the table",
+                        layout.description
+                    ))
+                })?;
+            Ok(Some(if target >= rows_end {
+                target + layout.row_size
+            } else {
+                target
+            }))
+        })
+        .collect()
+}
+
+/// Points each row's object pointer at its object's place after the insertion. The inserted row
+/// at the end shares the template's object, counted from its own place.
+fn point_at_objects(
+    data: &mut [u8],
+    rows: usize,
+    targets: &[Option<usize>],
+    template_index: usize,
+    layout: KeyedAuxiliaryLayout,
+) -> AuthoringResult<()> {
+    let Some(offset) = layout.object_offset else {
+        return Ok(());
+    };
+    for (row_index, target) in targets.iter().enumerate() {
+        if let Some(target) = *target {
+            write_relative_pointer(data, rows + row_index * layout.row_size + offset, target)?;
+        }
+    }
+    if let Some(target) = targets[template_index] {
+        write_relative_pointer(
+            data,
+            rows + targets.len() * layout.row_size + offset,
+            target,
+        )?;
+    }
+    Ok(())
 }
 
 fn keyed_auxiliary_extents(

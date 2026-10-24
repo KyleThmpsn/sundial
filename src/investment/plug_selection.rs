@@ -1,5 +1,4 @@
 use crate::catalog::{Catalog, ItemDef};
-use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 const SOCKET_AND_GEAR_TYPE_WARNING: &str = "Shows only plugs that match the socket and item subtype. A few plugs may not work, or cause the item to behave unexpectedly.";
@@ -7,6 +6,13 @@ const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket
 const GEAR_TYPE_WARNING: &str = "High risk: this exposes plugs used anywhere on this item subtype, not just this socket. Incompatible choices may prevent the item or loadout from working correctly.";
 const GEAR_KIND_WARNING: &str = "High risk: this exposes plugs used anywhere on this item type, every weapon or every armor piece, not just this socket. Incompatible choices may prevent the item or loadout from working correctly.";
 const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
+
+/// How strongly a plug picker flags a scope beside its warning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Risk {
+    Caution,
+    High,
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +58,20 @@ impl PlugSelectionMode {
             Self::GearType => "Any plug this kind of item uses, in any socket",
             Self::GearKind => "Any plug every weapon or every armor piece uses",
             Self::AnyPlug => "Every plug. Some can stop the item from loading",
+        }
+    }
+
+    /// The warning a plug picker shows beside this scope, with how strongly it flags it. The
+    /// compatible scope has none.
+    #[must_use]
+    pub(crate) const fn warning(self) -> Option<(Risk, &'static str)> {
+        match self {
+            Self::Supported => None,
+            Self::SocketAndGearType => Some((Risk::Caution, SOCKET_AND_GEAR_TYPE_WARNING)),
+            Self::MatchingSocketType => Some((Risk::Caution, MATCHING_SOCKET_WARNING)),
+            Self::GearType => Some((Risk::High, GEAR_TYPE_WARNING)),
+            Self::GearKind => Some((Risk::High, GEAR_KIND_WARNING)),
+            Self::AnyPlug => Some((Risk::High, ANY_PLUG_WARNING)),
         }
     }
 
@@ -158,26 +178,5 @@ pub(crate) fn candidates_for_socket_type<'a>(
             catalog.gear_kind_options(item, socket_index)
         }),
         PlugSelectionMode::AnyPlug => Cow::Borrowed(catalog.all_plug_options()),
-    }
-}
-
-pub(crate) fn draw_plug_selection_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
-    match mode {
-        PlugSelectionMode::Supported => {}
-        PlugSelectionMode::SocketAndGearType => {
-            ui.colored_label(ui.visuals().warn_fg_color, SOCKET_AND_GEAR_TYPE_WARNING);
-        }
-        PlugSelectionMode::MatchingSocketType => {
-            ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
-        }
-        PlugSelectionMode::GearType => {
-            ui.colored_label(ui.visuals().error_fg_color, GEAR_TYPE_WARNING);
-        }
-        PlugSelectionMode::GearKind => {
-            ui.colored_label(ui.visuals().error_fg_color, GEAR_KIND_WARNING);
-        }
-        PlugSelectionMode::AnyPlug => {
-            ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
-        }
     }
 }

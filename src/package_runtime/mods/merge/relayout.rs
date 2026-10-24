@@ -15,7 +15,7 @@
 //! inserted them.
 use super::layout::{ARRAY_MARKER, HEADER_SIZE, MARKER_BACK, i64_at, put, u32_at, u64_at};
 use super::recipes::{Recipe, Shape};
-use super::sidecar::{FieldKind, OpKind};
+use super::sidecar::FieldKind;
 use std::collections::HashSet;
 
 /// Rows a build inserted at the end of one stock array.
@@ -118,9 +118,10 @@ fn arrays(stock: &[u8], built: &[u8], recipe: &Recipe) -> Option<Vec<[usize; 5]>
         ) else {
             return None;
         };
-        // A sorted array takes its rows in key order, so it never grows at its end alone.
-        let grows_at_end = built_count == stock_count || array.kind == OpKind::Append;
-        if built_count < stock_count || built_header < stock_header || !grows_at_end {
+        // A sorted array takes its rows in key order, so its stock rows move inside it. Its copy
+        // holds every row in that order, and the stock bytes under it return as they were, as
+        // for an appended array.
+        if built_count < stock_count || built_header < stock_header {
             return None;
         }
         let stock_end = stock_header

@@ -62,6 +62,19 @@ pub(crate) fn runtime_hud_key(
     crate::hud_icon::runtime::inherited_key(manager, &entity, content_group).map(Some)
 }
 
+/// Check a saved firing selection against the same prepared group the native build consumes.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn validate_imported_projectile(
+    graph: &parhelion_import::GraphReference,
+    symbol: &str,
+) -> AuthoringResult<()> {
+    let inputs = imports::Inputs::open(graph)?;
+    let assets = particles::load(&inputs)?
+        .ok_or_else(|| invalid("The imported model does not include projectile assets"))?;
+    assets.projectile(symbol)?;
+    Ok(())
+}
+
 /// Exercise the compiler's runtime mutation in memory. No package or account is written.
 pub(crate) fn preflight_runtime_edits(
     manager: &PackageManager,

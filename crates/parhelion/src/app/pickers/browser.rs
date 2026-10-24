@@ -80,6 +80,8 @@ pub(crate) fn browser_window<T>(
             ui.data(|data| data.get_temp::<String>(id.with("query")))
                 .unwrap_or_default()
         };
+        // A dropdown can close while the contents draw without consuming Escape.
+        let popup_was_open = egui::Popup::is_any_open(ui.ctx());
         egui::Window::new(title)
             .id(id.with("window"))
             .order(egui::Order::Foreground)
@@ -101,6 +103,7 @@ pub(crate) fn browser_window<T>(
         ui.data_mut(|data| data.insert_temp(id.with("query"), local_query));
         // Escape closes an open dropdown first, and the window only when none is open.
         let escaped = ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
+            && !popup_was_open
             && !egui::Popup::is_any_open(ui.ctx());
         if escaped || picked.is_some() {
             open = false;

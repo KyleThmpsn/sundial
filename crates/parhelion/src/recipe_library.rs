@@ -132,6 +132,8 @@ pub struct RecipeLibraryEntry {
     pub collection_position: Option<crate::collection::Position>,
     pub armor_class: Option<crate::ArmorClass>,
     pub(crate) armor_origin: Option<crate::collection::armor::Origin>,
+    /// Oldest imported graph revision, including portable appearance attachments.
+    pub import_revision: Option<u32>,
     pub badge: Option<LibraryBadge>,
     /// The release watermark's fingerprint. [`load_corner_icon`] reads the artwork.
     pub corner_icon: Option<u64>,
@@ -305,63 +307,65 @@ impl RecipeLibrary {
         let mut scan = RecipeLibraryScan::default();
         for path in paths {
             match WeaponRecipe::load_listing_details(&path) {
-                Ok((recipe, armor_origin)) => scan.entries.push(RecipeLibraryEntry {
-                    // Read first, while the fields below have not yet moved out of the recipe.
-                    art: crate::icon_art::Art::of(&recipe),
-                    armor_origin,
-                    kind: recipe.kind,
-                    collection_destination: recipe.overrides.collection_destination,
-                    collection_position: recipe.overrides.collection_position,
-                    armor_class: recipe.overrides.armor_class,
-                    badge: recipe.overrides.badge.as_ref().map(|badge| LibraryBadge {
-                        name: badge.name.clone(),
-                        description: badge.description.clone(),
-                        icon: badge
-                            .icon
+                Ok((recipe, armor_origin, import_revision)) => {
+                    scan.entries.push(RecipeLibraryEntry {
+                        // Read first, while the fields below have not yet moved out of the recipe.
+                        art: crate::icon_art::Art::of(&recipe),
+                        armor_origin,
+                        import_revision,
+                        kind: recipe.kind,
+                        collection_destination: recipe.overrides.collection_destination,
+                        collection_position: recipe.overrides.collection_position,
+                        armor_class: recipe.overrides.armor_class,
+                        badge: recipe.overrides.badge.as_ref().map(|badge| LibraryBadge {
+                            name: badge.name.clone(),
+                            description: badge.description.clone(),
+                            icon: badge
+                                .icon
+                                .as_ref()
+                                .map(crate::presentation::Artwork::fingerprint),
+                        }),
+                        corner_icon: recipe
+                            .overrides
+                            .corner_icon
                             .as_ref()
                             .map(crate::presentation::Artwork::fingerprint),
-                    }),
-                    corner_icon: recipe
-                        .overrides
-                        .corner_icon
-                        .as_ref()
-                        .map(crate::presentation::Artwork::fingerprint),
-                    bundled: path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| {
-                            BUNDLED_RECIPES
-                                .iter()
-                                .any(|(file_name, _)| name == *file_name)
-                        }),
-                    path,
-                    donor_hash: recipe.donor.item_hash.parse_u32().unwrap_or_default(),
-                    type_donor_hash: recipe.type_donor_hash(),
-                    identity_hash: recipe.identity.item_hash.parse_u32().unwrap_or_default(),
-                    type_name: recipe.type_name,
-                    class_type_name: (recipe.kind == crate::ItemKind::Subclass)
-                        .then(|| {
-                            crate::subclass::class_type_name(
-                                recipe.overrides.subclass_every_class,
-                                recipe.overrides.subclass_class,
-                            )
-                        })
-                        .flatten(),
-                    ammo_type: recipe.overrides.ammo_type,
-                    damage_type: recipe.overrides.modern_damage_type,
-                    rarity: recipe.overrides.rarity,
-                    icon_hash: recipe
-                        .icon_donor
-                        .as_ref()
-                        .or(recipe.presentation_donor.as_ref())
-                        .unwrap_or(&recipe.donor)
-                        .item_hash
-                        .parse_u32()
-                        .unwrap_or_default(),
-                    icon_edit: recipe.overrides.icon_edit,
-                    name: recipe.name,
-                    namespace: recipe.namespace,
-                }),
+                        bundled: path.file_name().and_then(|name| name.to_str()).is_some_and(
+                            |name| {
+                                BUNDLED_RECIPES
+                                    .iter()
+                                    .any(|(file_name, _)| name == *file_name)
+                            },
+                        ),
+                        path,
+                        donor_hash: recipe.donor.item_hash.parse_u32().unwrap_or_default(),
+                        type_donor_hash: recipe.type_donor_hash(),
+                        identity_hash: recipe.identity.item_hash.parse_u32().unwrap_or_default(),
+                        type_name: recipe.type_name,
+                        class_type_name: (recipe.kind == crate::ItemKind::Subclass)
+                            .then(|| {
+                                crate::subclass::class_type_name(
+                                    recipe.overrides.subclass_every_class,
+                                    recipe.overrides.subclass_class,
+                                )
+                            })
+                            .flatten(),
+                        ammo_type: recipe.overrides.ammo_type,
+                        damage_type: recipe.overrides.modern_damage_type,
+                        rarity: recipe.overrides.rarity,
+                        icon_hash: recipe
+                            .icon_donor
+                            .as_ref()
+                            .or(recipe.presentation_donor.as_ref())
+                            .unwrap_or(&recipe.donor)
+                            .item_hash
+                            .parse_u32()
+                            .unwrap_or_default(),
+                        icon_edit: recipe.overrides.icon_edit,
+                        name: recipe.name,
+                        namespace: recipe.namespace,
+                    })
+                }
                 Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
             }
         }

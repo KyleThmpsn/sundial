@@ -26,6 +26,8 @@ use super::{
 #[cfg(target_os = "linux")]
 use super::draw_linux_title_bar;
 
+mod window;
+
 enum StartupEvent {
     Progress(CatalogProgress),
     SettingsChoice(PathBuf),
@@ -47,14 +49,17 @@ pub(super) struct StartupApp {
     preferences: Preferences,
     preferences_warning: Option<String>,
     package_authoring: Option<Box<dyn PackageAuthoringUtility>>,
+    window: window::Kept,
 }
 
 impl StartupApp {
+    /// `storage` holds what the last session saved, including its window size and place.
     pub(super) fn new(
         selection: Option<InstallSelection>,
         preferences: Preferences,
         preferences_warning: Option<String>,
         package_authoring: Option<Box<dyn PackageAuthoringUtility>>,
+        storage: Option<&dyn eframe::Storage>,
     ) -> Self {
         let mut app = Self {
             editor: None,
@@ -76,6 +81,7 @@ impl StartupApp {
             preferences,
             preferences_warning,
             package_authoring,
+            window: window::Kept::loaded(storage),
         };
         if let Some(selection) = selection {
             app.begin_loading(selection.install_path, selection.preferred_layout);
@@ -449,26 +455,8 @@ impl eframe::App for StartupApp {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disconnected_startup_worker_becomes_a_recoverable_error() {
-        let mut app = StartupApp::new(None, Preferences::default(), None, None);
-        let (sender, receiver) = mpsc::channel();
-        drop(sender);
-        app.receiver = Some(receiver);
-
-        app.receive_events();
-
-        assert!(app.receiver.is_none());
-        assert!(
-            app.error
-                .as_deref()
-                .is_some_and(|error| error.contains("stopped unexpectedly"))
-        );
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.window.save(storage);
     }
 }

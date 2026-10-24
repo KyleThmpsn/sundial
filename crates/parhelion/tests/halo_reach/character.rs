@@ -1,12 +1,83 @@
 //! Follow the staged human pose into every descriptor-indexed correction table.
 use super::*;
+mod rider;
 
-pub(super) fn verify(staged: &mut Reader, stock: &mut Reader, request: &Value) -> Result<Value> {
-    let Some(character) = request.get("character").filter(|value| !value.is_null()) else {
+fn selected(owner: &Payload, content: u32) -> Result<Vec<usize>> {
+    let table = owner.pointer(24)? + 0x588;
+    let mut rows = Vec::new();
+    for row in owner.array(table, 0xE8, Some(0x80803E72))? {
+        if owner.u32(row)? == content {
+            rows.push(row);
+        }
+    }
+    if rows.is_empty() {
+        rows.push(table - 0xE8);
+    }
+    Ok(rows)
+}
+
+pub(super) fn verify(
+    staged: &mut Reader,
+    stock: &mut Reader,
+    graph: &Value,
+    runtime: &Value,
+) -> Result<Value> {
+    rider::verify(staged, stock, graph, runtime)?;
+    let Some(character) = graph["animation"]
+        .get("character")
+        .filter(|value| !value.is_null())
+    else {
         return Ok(Value::Null);
     };
+    let binding = &character["binding"];
+    let mut profiles = Vec::new();
+    if binding["builtin"] == 3 {
+        let entity_tag = u32::from_str_radix(
+            runtime["runtime_entity"]
+                .as_str()
+                .context("Authored runtime")?,
+            16,
+        )?;
+        let content = u32::from_str_radix(
+            runtime["content_key"]
+                .as_str()
+                .context("Authored content")?,
+            16,
+        )?;
+        let entity = staged.tag(entity_tag, Some(0x80809C0F))?;
+        let bindings =
+            sundial::package_authoring::entity::weapon_component_bindings(&entity.0, 0xD3A5500E)
+                .map_err(anyhow::Error::msg)?;
+        ensure!(
+            bindings.len() == 1,
+            "Authored character attachment ambiguous"
+        );
+        let owner = staged.tag(bindings[0].owner_tag, Some(0x80809C36))?;
+        for row in selected(&owner, content)? {
+            let profile = owner.u32(row + 0x6C)?;
+            ensure!(
+                Some(u64::from(profile)) == binding["private"].as_u64(),
+                "Weapon does not select its imported character profile"
+            );
+            profiles.push(profile);
+        }
+        ensure!(!profiles.is_empty(), "No selected character attachment row");
+        let owner = stock.tag(
+            u32::try_from(binding["owner"].as_u64().context("Stock attachment")?)?,
+            Some(0x80809C36),
+        )?;
+        for row in selected(
+            &owner,
+            u32::try_from(binding["content"].as_u64().context("Stock content")?)?,
+        )? {
+            ensure!(
+                Some(u64::from(owner.u32(row + 0x6C)?)) == binding["parent"].as_u64(),
+                "Stock donor character profile changed"
+            );
+        }
+    }
     let pose_tag = u32::try_from(
-        character["native"]["pose"]
+        character["pose"]
             .as_u64()
             .context("Requested character pose")?,
     )?;
@@ -59,6 +130,6 @@ pub(super) fn verify(staged: &mut Reader, stock: &mut Reader, request: &Value) -
     }
     Ok(
         json!({"pose":format!("{pose_tag:08X}"),"bank":format!("{bank_tag:08X}"),
-        "tables":tables,"gameplay_verified":false}),
+        "tables":tables,"attachment_profiles":profiles,"gameplay_verified":false}),
     )
 }

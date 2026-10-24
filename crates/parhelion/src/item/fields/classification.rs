@@ -138,7 +138,9 @@ pub(in crate::item) fn set_item_string_inventory_slot(
     )
 }
 
-/// The bucket and both type keys of the client tuple, which select the hip-fire crosshair.
+/// The bucket and both type keys of the client tuple. The bucket and first key choose the
+/// crosshair-table row whose scene the inspect screen shows. The hip-fire crosshair follows the
+/// runtime content's type key instead.
 #[cfg(feature = "d2-model-importer")]
 pub(in crate::item) fn item_string_type_keys(data: &[u8]) -> AuthoringResult<(u32, u32, u32)> {
     let (tuple, _) = item_string_client_tuple(data)?;

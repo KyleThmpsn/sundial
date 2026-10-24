@@ -90,15 +90,19 @@ pub(super) fn export(
     Ok(report)
 }
 
-fn primary<'a>(behavior: &'a Value, projectiles: &'a Value) -> Result<&'a Value> {
+fn primary_ids(behavior: &Value) -> Result<BTreeSet<u64>> {
     let root = &behavior["root"]["datum"];
-    let ids = behavior["edges"]
+    behavior["edges"]
         .as_array()
         .context("Behavior edges")?
         .iter()
         .filter(|e| e["owner"] == *root && e["role"] == "projectile")
         .map(|e| e["tag"]["datum"].as_u64().context("Projectile identity"))
-        .collect::<Result<BTreeSet<_>>>()?;
+        .collect()
+}
+
+fn primary<'a>(behavior: &Value, projectiles: &'a Value) -> Result<&'a Value> {
+    let ids = primary_ids(behavior)?;
     ensure!(
         ids.len() == 1,
         "Native projectile translation requires one primary source projectile"
@@ -107,6 +111,75 @@ fn primary<'a>(behavior: &'a Value, projectiles: &'a Value) -> Result<&'a Value>
     projectiles.as_array().context("Projectile presentations")?.iter()
         .find(|p| p["tag"]["datum"] == id && p["has_model"] == true)
         .context("Primary source projectile has no render model. Its effects require their own translator")
+}
+
+/// Automatic selection follows the source projectile relation and supported presentation shape.
+/// Explicit carriers require a successful translation. Unsupported automatic shapes keep their
+/// source receipt without claiming that a native projectile was imported.
+pub(super) fn select(
+    entry: &mut ImportRequest,
+    behavior: &Value,
+    projectiles: &Value,
+) -> Result<Value> {
+    if let Some(carrier) = entry.projectile_entity {
+        let source = primary(behavior, projectiles)?;
+        return Ok(json!({"status":"selected","selection":"explicit",
+            "source":source["tag"],"native_carrier":carrier}));
+    }
+    let ids = primary_ids(behavior)?;
+    if ids.is_empty() {
+        return Ok(
+            json!({"status":"not_applicable","reason":"The source declares no primary projectile."}),
+        );
+    }
+    let unsupported = |reason: &str| json!({"status":"source_only","reason":reason});
+    if entry.runtime_entity.is_some() || entry.source.group != "weap" {
+        return Ok(unsupported(
+            "Vehicle weapons require their own controller translation.",
+        ));
+    }
+    if ids.len() != 1 {
+        return Ok(unsupported(
+            "Multiple primary projectiles require a firing controller translation.",
+        ));
+    }
+    let source = projectiles
+        .as_array()
+        .context("Projectile presentations")?
+        .iter()
+        .find(|source| {
+            source["tag"]["datum"]
+                .as_u64()
+                .is_some_and(|id| ids.contains(&id))
+        })
+        .context("Primary projectile is absent from its source receipt")?;
+    if source["has_model"] != true {
+        return Ok(unsupported(
+            "The primary projectile has no render model. Its effects require their own translator.",
+        ));
+    }
+    let overrides = &entry.recipe["overrides"];
+    if !overrides["projectile"].is_null()
+        || (!overrides["fired_graph"].is_null()
+            && overrides["fired_graph"] != json!({"imported":"reach-projectile-entity"}))
+    {
+        return Ok(unsupported(
+            "The recipe explicitly selects another firing graph or projectile edit.",
+        ));
+    }
+    // Both Shadowkeep templates have checked object-type-18 render carriers. Shards and guided
+    // projectiles replace their mechanics through Assembly. Ordinary projectiles retain the
+    // impact-grenade controller, with supported source motion fields applied during conversion.
+    let carrier = if shard::Shards::read(&source["behavior"])?.is_some()
+        || tracking::enabled(&source["behavior"])?
+    {
+        0x8152_82e1
+    } else {
+        0x80bb_b917
+    };
+    entry.projectile_entity = Some(carrier);
+    Ok(json!({"status":"selected","selection":"automatic",
+        "source":source["tag"],"native_carrier":carrier}))
 }
 
 fn number(value: &Value) -> Result<u32> {

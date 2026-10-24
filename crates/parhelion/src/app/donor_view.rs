@@ -734,10 +734,26 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_render_gear_donor_picker(&mut self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        if imported_view::part(&self.recipe, ui, imported_view::Part::Colors) {
+            return;
+        }
+        #[cfg(feature = "d2-model-importer")]
+        let imported = self.recipe.overrides.imported_graph.is_some();
+        #[cfg(not(feature = "d2-model-importer"))]
+        let imported = false;
         draw_donor_section_label(
             ui,
-            "Colors & Materials",
-            Some("Changes only colors and materials."),
+            if imported {
+                "Base Colors"
+            } else {
+                "Colors & Materials"
+            },
+            Some(if imported {
+                "Changes the native base colors used when the model has no imported dyes."
+            } else {
+                "Changes only colors and materials."
+            }),
         );
         let inherited_hash = self.appearance_donor_hash();
         let inherits_appearance = self.recipe.render_gear_donor.is_none();
@@ -828,7 +844,10 @@ impl PackageAuthoringApp {
     ) -> String {
         let kind = self.recipe.kind;
         if imported_source && self.recipe.icon_donor.is_none() {
-            return "Source Item Icon".to_owned();
+            return format!("{} · Source Item Icon", self.recipe.name);
+        }
+        if self.recipe.overrides.icon_edit.imported_image.is_some() {
+            return format!("{} · Custom Image", self.recipe.name);
         }
         if kind.is_weapon() {
             return self.appearance_donor_label(
@@ -852,8 +871,10 @@ impl PackageAuthoringApp {
         let imported_source = {
             #[cfg(feature = "d2-model-importer")]
             {
-                crate::imported::kind(kind).is_some()
-                    && self.recipe.overrides.imported_graph.is_some()
+                self.recipe.overrides.imported_graph.is_some()
+                    && (crate::imported::kind(kind).is_some()
+                        || (kind.is_weapon()
+                            && self.recipe.overrides.icon_edit.imported_image.is_some()))
             }
             #[cfg(not(feature = "d2-model-importer"))]
             {
@@ -927,7 +948,9 @@ impl PackageAuthoringApp {
                 &mut self.icon_donor_query,
                 donors.iter(),
                 WeaponDonorPickerOptions {
-                    selected_hash: if imported_source && inherits_appearance {
+                    selected_hash: if (imported_source && inherits_appearance)
+                        || self.recipe.overrides.icon_edit.imported_image.is_some()
+                    {
                         None
                     } else {
                         displayed_hash
@@ -1132,6 +1155,13 @@ impl PackageAuthoringApp {
         ui: &mut egui::Ui,
         gameplay_donor: Option<&WeaponDonor>,
     ) {
+        #[cfg(feature = "d2-model-importer")]
+        if imported_view::show_as(self, ui, "Appearance") {
+            if ui.link("Open Appearance").clicked() {
+                self.open_page(WorkbenchPage::Appearance);
+            }
+            return;
+        }
         let effective_base = gameplay_donor.map(|donor| {
             let mut summary = donor.summary.clone();
             summary.weapon_translation_group =

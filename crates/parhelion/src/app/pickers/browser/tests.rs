@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
+fn browser_keeps_layout_and_closes_dropdown_before_window_on_escape() {
     for width in [640.0, 1320.0] {
         let ctx = egui::Context::default();
         let mut query = String::new();
@@ -25,6 +25,11 @@ fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
                             &mut query,
                             |ui, _, _, height| {
                                 ui.label("Asset Preview");
+                                egui::ComboBox::from_id_salt("test-browser-source")
+                                    .selected_text("All Sources")
+                                    .show_ui(ui, |ui| {
+                                        let _ = ui.selectable_label(false, "Other Source");
+                                    });
                                 assert!(height > 0.0);
                                 None::<u32>
                             },
@@ -57,6 +62,35 @@ fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
             let rect = label(&output, name);
             assert!(rect.min.x >= 0.0 && rect.max.x <= width, "{name}: {rect:?}");
         }
+        let position = label(&output, "All Sources").center();
+        for events in crate::test_support::driver::tap(position) {
+            frame(events);
+        }
+        for _ in 0..2 {
+            output = frame(vec![]);
+        }
+        let _ = label(&output, "Other Source");
+        sundial::test_support::capture::write(
+            &ctx,
+            &output,
+            &format!("picker-dropdown-open-{width}"),
+        );
+        for pressed in [true, false] {
+            output = frame(vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+        assert!(crate::test_support::driver::label(&output, "Other Source").is_none());
+        let _ = label(&output, "Asset Preview");
+        sundial::test_support::capture::write(
+            &ctx,
+            &output,
+            &format!("picker-dropdown-closed-{width}"),
+        );
         frame(vec![egui::Event::Key {
             key: egui::Key::Escape,
             physical_key: None,
@@ -66,6 +100,11 @@ fn browser_opens_with_search_and_closes_on_escape_without_a_selection() {
         }]);
         output = frame(vec![]);
         assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Asset Preview")));
+        sundial::test_support::capture::write(
+            &ctx,
+            &output,
+            &format!("picker-window-closed-{width}"),
+        );
     }
 }
 

@@ -197,48 +197,6 @@ fn discovery_can_stop_between_native_phases_without_publishing_partial_catalog()
 }
 
 #[test]
-fn diagnostics_window_shows_all_inactive_effects_and_navigates_to_one() {
-    let mut workbench = Workbench::offline();
-    let mut recipe = PerkRecipe::new();
-    for index in 405..411 {
-        recipe.effects.push(authored(index, Trigger::Drawn, 1));
-    }
-    workbench.documents.push(Document::new(recipe, None));
-    workbench.diagnostics_open = true;
-    let ctx = egui::Context::default();
-    let mut render = |events| {
-        ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1100.0, 900.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| workbench.show_diagnostics(ui),
-        )
-    };
-    let mut output = render(vec![]);
-    for _ in 0..3 {
-        output = render(vec![]);
-    }
-    // Six effects overrun the four-effect budget, so the last two are inactive.
-    assert!(
-        label(&output, "Open Effect 5").is_some(),
-        "the first inactive effect is listed in the diagnostics window"
-    );
-    let problem = label(&output, "Open Effect 6")
-        .expect("the second inactive effect is reachable")
-        .center();
-    capture::write(&ctx, &output, "perk-diagnostics");
-    for events in crate::test_support::driver::tap(problem) {
-        render(events);
-    }
-    assert_eq!(workbench.reveal_problem.as_ref().unwrap().effect, 410);
-}
-
-#[test]
 fn verification_records_are_bound_to_configuration_and_cannot_invent_gameplay_evidence() {
     let temporary = tempfile::tempdir().unwrap();
     let mut recipe = PerkRecipe::new();

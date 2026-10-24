@@ -158,7 +158,7 @@ fn private_plug(
     );
     // The private plug clones the base's plug for its item layout. Each program replaces the
     // runtime of one of that plug's finished perks, a different one for each program.
-    let tag = super::super::assets::item::find_native(native, base_plug)?;
+    let tag = crate::tiger::shadowkeep::item_tag(native, base_plug)?;
     let item = native.tag(tag, Some(0x8080_7BEA))?;
     let mut templates = sundial::package_authoring::native_weapon::base_sandbox_perks(&item.0)
         .map_err(anyhow::Error::msg)?;

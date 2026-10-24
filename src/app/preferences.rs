@@ -1,6 +1,5 @@
 pub(super) use crate::account::source::{SettingsLayout, SettingsPathResolution};
 pub use crate::investment::PlugSelectionMode;
-pub(super) use crate::investment::plug_selection::draw_plug_selection_warning;
 
 pub(super) mod store;
 
@@ -15,6 +14,19 @@ use serde::{Deserialize, Serialize};
 
 use super::ui::destiny_text_font_family;
 use crate::ui::ICON_FONT_FAMILY;
+
+/// Draws the warning a plug picker shows beside `mode`, in the warning color for caution and the
+/// error color for high risk.
+pub(super) fn draw_plug_selection_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
+    use crate::investment::plug_selection::Risk;
+    if let Some((risk, text)) = mode.warning() {
+        let color = match risk {
+            Risk::Caution => ui.visuals().warn_fg_color,
+            Risk::High => ui.visuals().error_fg_color,
+        };
+        ui.colored_label(color, text);
+    }
+}
 
 const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
     ("Destiny Symbols PC", "Destiny_Symbols_PC.otf"),

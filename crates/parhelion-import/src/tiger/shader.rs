@@ -2,6 +2,7 @@ pub mod buffer;
 mod cache;
 pub(crate) mod dxbc;
 pub mod dxil;
+pub mod globals;
 pub mod identity;
 pub mod inputs;
 pub mod packed;

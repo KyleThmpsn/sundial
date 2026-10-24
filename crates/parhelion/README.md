@@ -390,7 +390,11 @@ Installation also stops where Sunrise would refuse a mod:
 
 Sundial and Parhelion read the game the way Sunrise loads it, with Parhelion's mod and every other mod Sunrise would load, including their configuration values. A mod Sunrise would refuse is left out. Where several mods change the same entry, Sundial shows the entry Sunrise combines from them, or the version from the mod Sunrise loads later where it can't combine them. In Sundial, **Preferences > Installation > Troubleshooting > Copy Report** lists what was left out and why. Reading mods needs a game drive that supports hard links.
 
-You can switch the game between Sunrise 0.6 and Dawn or an earlier Sunrise version. Sunrise 0.6 loads builds from its mod folder, and the others load them from the game's `packages` folder, so after switching, build and install again for the runtime you're using. That install backs up and removes the packages installed for the other runtime, and uninstalling removes custom packages from either place. Each runtime keeps its own account, so items added on one aren't in the other.
+You can switch the game between Sunrise 0.6 and Dawn or an earlier Sunrise version. Sunrise 0.6 loads builds from its mod folder, and the others load them from the game's `packages` folder, so each build is made for one of them. Installing a build backs up and removes the build installed for the other runtime, so the two never load together, and uninstalling removes custom packages from either place.
+
+Parhelion keeps the build you last installed for each runtime. When Parhelion starts after you switch back, it offers that build in **Restore Your Sunrise 0.6 Build**, or **Restore Your Build for This Runtime** on Dawn or an earlier Sunrise. **Review Restore** opens the usual installation review, which checks the build against the game, your other mods, and your account before anything changes, and then installs it without a rebuild. It's the build as you installed it, so choose **Build & Stage** instead to include recipe changes made since then. If you never installed a build for this runtime, or the review says the kept build no longer fits, build and install again.
+
+Each runtime keeps its own account, so items added on one aren't in the other.
 
 ## Generated Packages
 

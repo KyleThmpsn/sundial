@@ -150,7 +150,6 @@ pub(in crate::d1_roi) fn prepare(
         return Ok(report);
     }
     let mut cues = BTreeSet::new();
-    let mut settings = BTreeMap::new();
     for event in events {
         let sources = event["sounds"].as_array().context("named source sounds")?;
         let targets = event["native_sounds"]
@@ -162,20 +161,10 @@ pub(in crate::d1_roi) fn prepare(
             sources.len() == 1 && targets.len() == 1,
             "named audio cue multiplicity needs translation"
         );
-        let cue = hex(&sources[0]["tag"])?;
-        let original = Cue::read(source, cue)?;
-        let native_cue = native.tag(hex(&targets[0]["tag"])?, Some(0x80809802))?;
-        let profile = native_cue.u32(0x10)?;
-        if let Some(previous) = settings.insert(original.settings, profile) {
-            ensure!(
-                previous == profile,
-                "source cue has conflicting native acoustic profiles"
-            );
-        }
-        cues.insert(cue);
+        cues.insert(hex(&sources[0]["tag"])?);
     }
     let directory = folder.join("named-audio");
-    let prepared = prepare_with_settings(source, native, &directory, &cues, Some(&settings))?;
+    let prepared = prepare_route(source, native, &directory, &cues, Route::Named)?;
     let owned = prepared["nodes"]
         .as_array()
         .context("prepared audio nodes")?

@@ -160,6 +160,7 @@ pub(crate) fn preview_replacement(
         slot_moves: Vec::new(),
     };
 
+    report.cleared_plugs += fall_back(&staged, hashes, changes)?;
     for hash in hashes {
         let plug = i64::from(*hash);
         report.cleared_plugs += staged
@@ -334,6 +335,46 @@ fn relocate(
         }
     }
     Ok(moves)
+}
+
+/// Replaces each saved plug the replacement removes from an item whose layout changed with its
+/// lane's incoming default, and returns how many it replaced. Emptying the lane instead would
+/// hide the socket in game. Removed plugs on other items are emptied after.
+fn fall_back(
+    staged: &Connection,
+    removed: &BTreeSet<u32>,
+    changes: &[AuthoredSocketChange],
+) -> Result<usize, String> {
+    let mut replaced = 0;
+    for change in changes {
+        let rows: Vec<(String, i64, i64)> = staged
+            .prepare(
+                "SELECT s.instance_soid,s.lane,s.plug_hash FROM item_sockets s \
+                 JOIN character_items i ON i.instance_soid=s.instance_soid \
+                 WHERE i.definition_hash=?1 AND i.socket_policy=1 AND s.plug_hash IS NOT NULL",
+            )
+            .map_err(err)?
+            .query_map([i64::from(change.definition_hash)], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(err)?
+            .collect::<Result<_, _>>()
+            .map_err(err)?;
+        for (soid, lane, plug) in rows {
+            if !u32::try_from(plug).is_ok_and(|plug| removed.contains(&plug)) {
+                continue;
+            }
+            if let Some(default) = change.fallback(usize::try_from(lane).map_err(err)?) {
+                replaced += staged
+                    .execute(
+                        "UPDATE item_sockets SET plug_hash=?1 WHERE instance_soid=?2 AND lane=?3",
+                        params![i64::from(default), soid, lane],
+                    )
+                    .map_err(err)?;
+            }
+        }
+    }
+    Ok(replaced)
 }
 
 /// Grows or shrinks the stored socket lanes of retained items whose definition changed shape,

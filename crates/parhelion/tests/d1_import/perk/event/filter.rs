@@ -1,0 +1,81 @@
+//! Read damage declarations and native ability masks through emitted references.
+use super::*;
+
+pub(super) fn damage(
+    stock: &mut Reader,
+    source: &Payload,
+    s: usize,
+    native: &Payload,
+    n: usize,
+) -> CheckResult<()> {
+    for operation in 0..2 {
+        let original = source.array(s + operation * 16, 1, None)?;
+        let emitted = native.array(n + operation * 16, 1, Some(0x80806B02))?;
+        let original = original
+            .into_iter()
+            .map(|r| source.u8(r))
+            .collect::<Result<Vec<_>>>()?;
+        let emitted = emitted
+            .into_iter()
+            .map(|r| native.u8(r))
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(original, emitted);
+        let mask = original
+            .iter()
+            .fold(0u32, |mask, &value| mask | (1 << value));
+        assert_eq!(source.u32(s + 0x40 + operation * 4)?, mask);
+        assert_eq!(native.u32(n + 0x70 + operation * 4)?, mask);
+        assert_eq!(
+            native.u8(n + 0x88 + operation)?,
+            u8::from(original.is_empty())
+        );
+    }
+    let dictionary = stock.tag(native.u32(n + 0x68)?, None)?;
+    let atoms = dictionary.array(8, 4, None)?;
+    let groups = dictionary.array(24, 44, None)?;
+    let mode = native.u8(n + 0x78)?;
+    assert!(matches!(mode, 0 | 255));
+    for (op, target_op) in [(0, 0), (1, 2)] {
+        let original = source
+            .array(s + 0x20 + op * 16, 24, Some(0x80800365))?
+            .into_iter()
+            .map(|r| source.u32(r))
+            .collect::<Result<Vec<_>>>()?;
+        let emitted = native
+            .array(n + 0x20 + target_op * 16, 24, Some(0x808094B3))?
+            .into_iter()
+            .map(|r| native.u32(r))
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(original, emitted);
+        let mut mask = [0u8; 40];
+        for name in &original {
+            if let Some(index) = atoms
+                .iter()
+                .position(|&r| dictionary.u32(r).ok() == Some(*name))
+            {
+                mask[index / 8] |= 1 << (index % 8);
+            } else {
+                let row = groups
+                    .iter()
+                    .find(|&&r| dictionary.u32(r).ok() == Some(*name))
+                    .ok_or("Emitted event label is unregistered")?;
+                for (out, bits) in mask.iter_mut().zip(dictionary.bytes::<40>(row + 4)?) {
+                    *out |= bits;
+                }
+            }
+        }
+        if mode == 255 {
+            assert!(original.is_empty());
+        } else {
+            let compiled = native.pointer(n + 0x80)?;
+            assert_eq!(native.bytes::<40>(compiled + op * 40)?, mask);
+            assert_eq!(
+                native.u8(compiled + 80 + op)?,
+                u8::from(original.is_empty())
+            );
+        }
+    }
+    assert_eq!(native.u64(n + 0x30)?, 0);
+    assert_eq!(native.u64(n + 0x50)?, 0);
+    Ok(())
+}

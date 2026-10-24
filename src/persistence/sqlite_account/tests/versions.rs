@@ -164,17 +164,16 @@ fn reset_and_recovery_keep_the_selected_schema() {
         let dir = TestDirectory::new("schema-reset");
         let path = dir.0.join("investment.sqlite3");
         fixture(&path, case);
-        let mut defaults = default_resources();
-        if case != "v2" {
-            defaults.schema = include_str!("../fixtures/v3/investment_schema.sql").into();
-            defaults.rows = include_str!("../fixtures/v3/investment_defaults.sql").into();
-            defaults.starter = Some(include_str!("../fixtures/v3/character_starter.sql").into());
-            assert!(ResetPlan::prepare(&path, &default_resources()).is_err());
-        } else {
+        // Each schema refuses the other's defaults and snapshots.
+        let defaults = if case == "v2" {
             let other = dir.0.join("v3.sqlite3");
             fixture(&other, "v3-fresh");
             assert!(snapshot::restore(&path, &snapshot::read(&path).unwrap(), &other).is_err());
-        }
+            default_resources()
+        } else {
+            assert!(ResetPlan::prepare(&path, &default_resources()).is_err());
+            v3_resources()
+        };
         let before = snapshot::read(&path).unwrap();
         let receipt = ResetPlan::prepare(&path, &defaults)
             .unwrap()

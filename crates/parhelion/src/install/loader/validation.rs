@@ -190,9 +190,10 @@ fn package_id(path: &Path) -> Option<u16> {
 
 /// Another mod may change the entries Parhelion changes only where Sunrise merges them intact:
 /// both mods describe the entries in merge data, no stock bytes they both change keep only one
-/// mod's value, and Parhelion's own rows keep their numbers. The loader is simulated with this
-/// build in place of the installed one, so a refusal comes before any content changes. Returns
-/// the shared entries Sunrise merges.
+/// mod's value, and Parhelion's merge data follows every row of its own the loader renumbers. The
+/// loader is simulated with this build in place of the installed one and without the earlier
+/// layout's `retired` packages, so a refusal comes before any content changes. Returns the shared
+/// entries Sunrise merges.
 pub(super) fn check_other_mods(
     target: &Path,
     sources: &[(ArtifactMetadata, PathBuf)],
@@ -458,6 +459,14 @@ pub(super) fn snapshot_folder(folder: &Path) -> Result<Folder, InstallError> {
     )
     .map_err(InstallError::validation)?;
     let mut files = BTreeMap::new();
+    for (relative, path) in
+        mod_content::mission_script::files(folder).map_err(InstallError::validation)?
+    {
+        files.insert(
+            relative,
+            TransactionDigest::from(&digest_file(&path).map_err(failure)?),
+        );
+    }
     for entry in fs::read_dir(folder).map_err(failure)? {
         let entry = entry.map_err(failure)?;
         mod_content::checked_path(folder, &entry.path()).map_err(InstallError::validation)?;
@@ -465,7 +474,10 @@ pub(super) fn snapshot_folder(folder: &Path) -> Result<Folder, InstallError> {
             .file_name()
             .into_string()
             .map_err(|_| InstallError::validation("Non-Unicode mod filename"))?;
-        if matches!(
+        if name == "scripts" && entry.file_type().map_err(failure)?.is_dir() {
+            // The bounded controller layout and every file were checked above.
+            continue;
+        } else if matches!(
             name.as_str(),
             mod_content::MANIFEST | mod_content::RECEIPT | mod_content::map_diagnostics::FILE_NAME
         ) && entry.file_type().map_err(failure)?.is_file()

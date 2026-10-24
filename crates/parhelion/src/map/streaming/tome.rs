@@ -1,14 +1,25 @@
-//! Legacy spatial tomes for point and connected-region queries. Neighboring regions have
-//! portals so native object-location caching observes crossings. No occluder or visibility
-//! targets are authored here. Shadowkeep's Umbra 3.3 runtime consumes format 0x12.
+//! Legacy spatial tomes for point, connected-region and visibility queries. Neighboring regions
+//! have portals in the cluster graph, so native object-location caching observes crossings, and
+//! the same faces as tile cell portals, so the portal culler reaches every cell from the
+//! camera's. No occluders are authored. Every cell shares the complete static object list so
+//! lighting and crossing partitions cannot hide a surface or a shadow caster. Native bounds
+//! and frustum tests still select the objects relevant to the query.
+//! Shadowkeep's Umbra 3.3 runtime consumes format 0x12.
 use super::Bounds;
 use crate::{AuthoringResult, error::invalid};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy)]
 pub(super) struct Region {
     pub bounds: Bounds,
     pub cluster: u32,
 }
+
+/// The most nodes a tome's partition tree may hold. The client's query (`destiny2.exe+0x1A78B60`
+/// in the Shadowkeep build) caches the tree's nodes by index in a per-query table of 2,048 entries
+/// and returns `0x3FFF` past it, which its caller does not check: a tome of about 3,200 clusters
+/// crashed the client at `+0x1A7CFA7` on entering the map.
+pub(super) const MAX_TREE_NODES: usize = 2048;
 
 enum Node {
     Leaf(u32),
@@ -28,9 +39,10 @@ fn partition(
     regions: &[&Region],
     depth: usize,
     count: &mut usize,
+    limit: usize,
 ) -> AuthoringResult<Node> {
     *count += 1;
-    if depth >= 60 || *count > 65_535 {
+    if depth >= 60 || *count > limit {
         return Err(invalid("Spatial transition tree exceeds native limits"));
     }
     let active = regions
@@ -68,8 +80,8 @@ fn partition(
     Ok(Node::Split(
         axis,
         value,
-        Box::new(partition(low, &active, depth + 1, count)?),
-        Box::new(partition(high, &active, depth + 1, count)?),
+        Box::new(partition(low, &active, depth + 1, count, limit)?),
+        Box::new(partition(high, &active, depth + 1, count, limit)?),
     ))
 }
 
@@ -237,21 +249,60 @@ fn portal(
 /// Portals describe the actual shared faces of partition leaves. A semantic cluster can have
 /// several leaves, so its bounds are their union and its graph contains every exposed face.
 /// Quantized rectangles conservatively cover their face in the legacy tome's coordinate space.
-fn connectivity(
-    root: &Node,
-    bounds: Bounds,
-    clusters: usize,
-) -> AuthoringResult<(Vec<u8>, Vec<u8>, Vec<Bounds>)> {
+/// Also returns the same faces as tile cell portals, one cell per cluster: the face in the link's
+/// top bits with tile 0 as its payload, so the portal is internal to the tome's only tile, and
+/// the target cell above the depth. Each cell's portals follow its cluster's order.
+fn connectivity(root: &Node, bounds: Bounds, clusters: usize) -> AuthoringResult<Connectivity> {
     let mut leaf_bounds = Vec::new();
     leaves(root, bounds, &mut leaf_bounds);
     let (faces, extents) = face_groups(&leaf_bounds, bounds, clusters);
     let mut portals = vec![BTreeSet::new(); clusters];
     let mut comparisons = 0usize;
     for ((axis, plane), sides) in faces {
+        // Only leaves whose faces can overlap are compared: the far sides' leaves are bucketed by
+        // their face's rectangle on a grid in the plane. A sparse lighting grid puts thousands of
+        // cells on one plane, and every pair of them was too many.
+        let x = (1 << axis) & 3;
+        let y = (1 << x) & 3;
+        let span = |leaf: Bounds| -> Option<[[i64; 2]; 2]> {
+            let cells = [x, y].map(|k| {
+                [
+                    (leaf.minimum[k] / PORTAL_BUCKET).floor() as i64,
+                    (leaf.maximum[k] / PORTAL_BUCKET).floor() as i64,
+                ]
+            });
+            let count = (cells[0][1] - cells[0][0] + 1) * (cells[1][1] - cells[1][0] + 1);
+            (count <= LARGE_FACE_BUCKETS).then_some(cells)
+        };
+        let mut buckets = BTreeMap::<[i64; 2], Vec<usize>>::new();
+        let mut large = Vec::new();
+        for &right in &sides[0] {
+            match span(leaf_bounds[right].1) {
+                Some([[x0, x1], [y0, y1]]) => {
+                    for bx in x0..=x1 {
+                        for by in y0..=y1 {
+                            buckets.entry([bx, by]).or_default().push(right);
+                        }
+                    }
+                }
+                None => large.push(right),
+            }
+        }
         for &left in &sides[1] {
-            for &right in &sides[0] {
+            let mut candidates = large.iter().copied().collect::<BTreeSet<_>>();
+            match span(leaf_bounds[left].1) {
+                Some([[x0, x1], [y0, y1]]) => {
+                    for bx in x0..=x1 {
+                        for by in y0..=y1 {
+                            candidates.extend(buckets.get(&[bx, by]).into_iter().flatten());
+                        }
+                    }
+                }
+                None => candidates.extend(sides[0].iter().copied()),
+            }
+            for right in candidates {
                 comparisons += 1;
-                if comparisons > 4_000_000 {
+                if comparisons > 40_000_000 {
                     return Err(invalid(
                         "Spatial connectivity exceeds the authoring work limit",
                     ));
@@ -273,19 +324,109 @@ fn connectivity(
     }
     let mut rows = Vec::new();
     let mut links = Vec::new();
+    let mut cell_links = Vec::new();
+    let mut spans = Vec::with_capacity(clusters);
     for (index, portals) in portals.into_iter().enumerate() {
-        rows.extend(words([links.len() as u32 / 16, portals.len() as u32]));
+        let start = links.len() as u32 / 16;
+        rows.extend(words([start, portals.len() as u32]));
         rows.extend(words(packed_bounds(bounds, extents[index])));
-        links.extend(words(portals.into_iter().flatten()));
+        spans.push([start, portals.len() as u32]);
+        for [link, depth, x, y] in portals {
+            let target = link & PAYLOAD_MASK;
+            cell_links.extend(words([link & !PAYLOAD_MASK, (target << 16) | depth, x, y]));
+            links.extend(words([link, depth, x, y]));
+        }
     }
-    Ok((rows, links, extents))
+    Ok(Connectivity {
+        rows,
+        links,
+        cell_links,
+        spans,
+        extents,
+    })
+}
+
+/// The cluster graph's rows and portals, the tile's cell portals, each cell's portal slice and
+/// each cluster's extent.
+struct Connectivity {
+    rows: Vec<u8>,
+    links: Vec<u8>,
+    cell_links: Vec<u8>,
+    spans: Vec<[u32; 2]>,
+    extents: Vec<Bounds>,
+}
+
+/// The grid, in meters, a face plane's leaves are bucketed on to find the pairs that share a face,
+/// and the most buckets a leaf's face takes before it is compared with every leaf instead.
+const PORTAL_BUCKET: f32 = 32.;
+const LARGE_FACE_BUCKETS: i64 = 4096;
+
+/// A portal link's target cluster or tile, below its face and kind bits.
+const PAYLOAD_MASK: u32 = 0x01FF_FFFF;
+
+/// The bits that hold every value up to `max`, at least one.
+fn width(max: u32) -> u32 {
+    (32 - max.leading_zeros()).max(1)
+}
+
+/// Each cell's objects, packed as Umbra's range iterator reads them.
+struct ObjectLists {
+    /// Runs of consecutive object indices, the first index in the low `elem` bits and the run
+    /// length above it, entries back to back from bit 0 of each little-endian word.
+    words: Vec<u32>,
+    entries: usize,
+    elem: u32,
+    count: u32,
+    /// Each cell's first entry and object count.
+    cells: Vec<[u32; 2]>,
+}
+
+fn object_lists(clusters: usize, objects: &[Bounds]) -> AuthoringResult<ObjectLists> {
+    let length =
+        u32::try_from(objects.len()).map_err(|_| invalid("Too many visibility objects"))?;
+    let elem = width(objects.len().saturating_sub(1) as u32);
+    let count = width(length);
+    if elem + count > 32 {
+        return Err(invalid(
+            "Visibility object lists exceed the legacy entry width",
+        ));
+    }
+    // A single compressed range is shared by every cell. Filtering by cell overlap would
+    // turn disconnected lighting regions into unintended occluders. In native queries that
+    // discarded visible geometry even though these tomes contain no occlusion geometry.
+    Ok(ObjectLists {
+        words: if length == 0 {
+            Vec::new()
+        } else {
+            vec![length << elem]
+        },
+        entries: usize::from(length != 0),
+        elem,
+        count,
+        cells: vec![[0, length]; clusters],
+    })
 }
 
 /// Region order is priority order. Cluster zero covers the remainder of the supplied bounds.
+/// `objects` are the Umbra objects' world boxes, whose indices the visibility record names.
+/// Whether the partition tree of `regions` in `bounds` stays within `limit` nodes and the
+/// native depth.
+pub(super) fn fits(bounds: Bounds, regions: &[Region], limit: usize) -> bool {
+    partition(
+        bounds,
+        &regions.iter().collect::<Vec<_>>(),
+        0,
+        &mut 0,
+        limit,
+    )
+    .is_ok()
+}
+
 pub(super) fn encode(
     bounds: Bounds,
     regions: &[Region],
     clusters: usize,
+    objects: &[Bounds],
 ) -> AuthoringResult<Vec<u8>> {
     if clusters == 0
         || clusters > u16::MAX as usize
@@ -298,8 +439,30 @@ pub(super) fn encode(
     {
         return Err(invalid("Invalid spatial transition bounds or clusters"));
     }
-    let root = partition(bounds, &regions.iter().collect::<Vec<_>>(), 0, &mut 0)?;
-    let (cluster_rows, portals, cluster_bounds) = connectivity(&root, bounds, clusters)?;
+    if objects.iter().any(|object| {
+        (0..3).any(|k| {
+            !object.minimum[k].is_finite()
+                || !object.maximum[k].is_finite()
+                || object.minimum[k] > object.maximum[k]
+        })
+    }) {
+        return Err(invalid("Invalid visibility object bounds"));
+    }
+    let root = partition(
+        bounds,
+        &regions.iter().collect::<Vec<_>>(),
+        0,
+        &mut 0,
+        MAX_TREE_NODES,
+    )?;
+    let Connectivity {
+        rows: cluster_rows,
+        links: portals,
+        cell_links,
+        spans,
+        extents: cluster_bounds,
+    } = connectivity(&root, bounds, clusters)?;
+    let lists = object_lists(clusters, objects)?;
     let (nodes, splits, leaves, count) = tree(&root);
     let width = (32 - (clusters as u32 - 1).leading_zeros() + 1).max(1) as usize;
     let mut mapping = vec![0u32; (leaves.len() * width).div_ceil(32)];
@@ -318,10 +481,15 @@ pub(super) fn encode(
     word(&mut tile, 36, count as u32);
     reference(&mut tile, 40, &splits);
     word(&mut tile, 52, clusters as u32 | ((clusters as u32) << 16));
+    // Cell nodes: portal slice, object slice, cluster and packed bounds. A leaf tile's cell
+    // holds its cluster directly with a cluster count of 0, as the legacy generator asserts.
     let mut cells = vec![0u8; clusters * 36];
     for (i, &cluster_extent) in cluster_bounds.iter().enumerate() {
+        word(&mut cells, i * 36, spans[i][0]);
+        word(&mut cells, i * 36 + 4, spans[i][1]);
+        word(&mut cells, i * 36 + 8, lists.cells[i][0]);
+        word(&mut cells, i * 36 + 12, lists.cells[i][1]);
         word(&mut cells, i * 36 + 16, i as u32);
-        word(&mut cells, i * 36 + 20, 1);
         for (field, value) in packed_bounds(bounds, cluster_extent)
             .into_iter()
             .enumerate()
@@ -330,6 +498,9 @@ pub(super) fn encode(
         }
     }
     reference(&mut tile, 56, &cells);
+    if !cell_links.is_empty() {
+        reference(&mut tile, 60, &cell_links);
+    }
     append(&mut tile, &[]);
     let tile_size = tile.len() as u32;
     word(&mut tile, 44, (tile_size << 8) | 1);
@@ -340,6 +511,27 @@ pub(super) fn encode(
     extent(&mut tome, 20, bounds);
     word(&mut tome, 44, 32);
     reference(&mut tome, 48, &words([3]));
+    if !objects.is_empty() {
+        let count = objects.len() as u32;
+        word(&mut tome, 64, count);
+        let mut boxes = Vec::with_capacity(objects.len() * 24);
+        for object in objects {
+            boxes.extend(words(
+                object
+                    .minimum
+                    .into_iter()
+                    .chain(object.maximum)
+                    .map(f32::to_bits),
+            ));
+        }
+        reference(&mut tome, 68, &boxes);
+        // One user identifier per object, its own index, grouped as stock tomes group them.
+        reference(&mut tome, 76, &words(0..=count));
+        reference(&mut tome, 80, &words(0..count));
+        word(&mut tome, 84, lists.elem | (lists.count << 5));
+        reference(&mut tome, 88, &words(lists.words));
+        word(&mut tome, 92, lists.entries as u32);
+    }
     word(&mut tome, 124, clusters as u32);
     reference(&mut tome, 128, &cluster_rows);
     reference(&mut tome, 132, &portals);

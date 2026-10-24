@@ -209,11 +209,21 @@ fn operand(words: &[u32], at: &mut usize, depth: usize) -> Result<Operand, Strin
     })
 }
 
+/// The most vectors a constant buffer declares. The vertex object scope, slot 11, holds eight
+/// placement vectors followed by three matrix rows for each of 256 bones.
+fn buffer_limit(stage: u32, slot: usize) -> usize {
+    if stage == 1 && slot == 11 {
+        8 + 256 * 3
+    } else {
+        256
+    }
+}
+
 pub(super) fn arity(code: u16) -> Option<usize> {
     Some(match code {
         0 | 1 | 14..=17 | 29 | 30 | 41 | 49 | 51 | 52 | 56 | 57 => 3,
         13 | 31 => 1,
-        32 | 60 | 61 | 80 | 85 => 3,
+        32 | 60 | 61 | 79 | 80 | 85 => 3,
         18 | 21 | 62 => 0,
         25..=28 | 43 | 47 | 54 | 64..=68 | 75 | 86 | 122..=125 => 2,
         35 | 38 | 50 | 55 | 78 | 108 => 4,
@@ -413,7 +423,7 @@ impl Program {
                                     return Err("Invalid shader constant buffer declaration".into());
                                 }
                                 let count = value.indices[1].base as usize;
-                                if slot > 13 || count == 0 || count > 256 {
+                                if slot > 13 || count == 0 || count > buffer_limit(stage, slot) {
                                     return Err("Shader constant buffer exceeds limits".into());
                                 }
                                 program.buffers.push((slot, count));

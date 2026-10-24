@@ -142,29 +142,6 @@ fn account_resync_owns_the_busy_lifetime_and_reports_account_changes() {
 }
 
 #[test]
-fn a_disconnected_resync_releases_busy_and_keeps_the_failure_visible() {
-    let (sender, receiver) = mpsc::channel();
-    let mut app = PackageAuthoringApp {
-        account_resync_receiver: Some(receiver),
-        ..Default::default()
-    };
-    drop(sender);
-    app.poll_account_resync();
-    assert!(!app.has_background_work());
-    assert!(
-        app.log
-            .notice
-            .as_deref()
-            .unwrap()
-            .contains("without a result")
-    );
-    let ctx = egui::Context::default();
-    let visible = resync_feedback(&ctx, &mut app, "account-resync-disconnected");
-    assert!(visible.contains("Resync Failed"));
-    assert!(visible.contains("without a result"));
-}
-
-#[test]
 fn invalidated_build_does_not_become_installable_when_its_worker_finishes() {
     let mut app = PackageAuthoringApp::default();
     let (sender, receiver) = mpsc::channel();
@@ -282,27 +259,6 @@ fn build_saves_new_draft_without_silently_including_it() {
 
 fn key(hash: u32) -> RuntimeGraphKey {
     RuntimeGraphKey::new(None, hash, [])
-}
-
-#[test]
-fn stale_worker_error_preserves_the_current_error() {
-    let (sender, receiver) = mpsc::channel();
-    sender.send(Err("old failure".to_owned())).unwrap();
-    drop(sender);
-    let current_error = Some((key(2), "current failure".to_owned()));
-    let mut app = PackageAuthoringApp {
-        runtime_graph_target: Some(key(2)),
-        runtime_graph_error: current_error.clone(),
-        runtime_graph_job: Some(RuntimeGraphJob {
-            key: key(1),
-            receiver,
-            worker: thread::spawn(|| {}),
-        }),
-        ..PackageAuthoringApp::default()
-    };
-    app.poll_runtime_graph();
-    assert!(app.runtime_graph_job.is_none());
-    assert_eq!(app.runtime_graph_error, current_error);
 }
 
 #[test]

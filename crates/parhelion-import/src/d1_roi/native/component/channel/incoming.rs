@@ -1,4 +1,4 @@
-//! Checked optic getter inputs, including their mutable bank storage and entity links.
+//! Checked scalar getter inputs, including their mutable bank storage and entity links.
 use super::*;
 
 pub(super) struct Input {
@@ -22,8 +22,6 @@ fn empty_state(source: &Payload, at: usize) -> Result<()> {
         0,
         u32::MAX,
         0,
-        0,
-        0,
     ];
     for (index, value) in expected.into_iter().enumerate() {
         ensure!(
@@ -37,7 +35,7 @@ fn empty_state(source: &Payload, at: usize) -> Result<()> {
 pub(super) fn read(source: &Payload, names: &[u32]) -> Result<Vec<Input>> {
     let instance = source.pointer(16)?;
     let schema = source.pointer(24)?;
-    let inputs = source.array(instance + 0x30, 88, Some(0x80800895))?;
+    let inputs = source.array(instance + 0x30, 80, Some(0x80800895))?;
     let definitions = source.array(schema + 0xC8, 40, Some(0x80800668))?;
     let incoming = source.array(schema + 0x118, 12, Some(0x8080087B))?;
     let cache = source.array(instance + 0x60, 16, Some(0x80800090))?;
@@ -238,7 +236,7 @@ pub(super) fn allocate_history(allocation: &mut Payload, count: usize) -> Result
 }
 
 impl Assembly<'_> {
-    fn optic_output(
+    fn scalar_output(
         &mut self,
         source_tag: u32,
         offset: u64,
@@ -246,6 +244,9 @@ impl Assembly<'_> {
     ) -> Result<usize> {
         let source = self.source.read(source_tag)?;
         let s = source.pointer(24)?;
+        if source.u32(s - 4)? == 0x80800610 {
+            return super::super::sequence::output::provider(self, &source, offset, component);
+        }
         let p = &component.payload;
         let n = usize::try_from(p.u64(p.pointer(16)? + 8)?)?;
         ensure!(
@@ -281,7 +282,7 @@ impl Assembly<'_> {
         &mut self,
         entity: &Payload,
         components: &[Component],
-        owners: &BTreeMap<u32, usize>,
+        owners: &BTreeMap<usize, usize>,
     ) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for (index, component) in components.iter().enumerate() {
@@ -306,10 +307,19 @@ impl Assembly<'_> {
                     "Incoming channel connection requires translation"
                 );
                 let provider = entity.u32(*at + 48)?;
+                let ordinal = usize::try_from(entity.u64(*at + 72)?)?;
+                let listed = entity.array(0x20, 12, Some(0x80800715))?;
+                let entry = *listed
+                    .get(ordinal)
+                    .context("Incoming channel provider ordinal")?;
+                ensure!(
+                    entity.u32(entry)? == provider,
+                    "Incoming channel provider ordinal names another component"
+                );
                 let provider_index = *owners
-                    .get(&provider)
+                    .get(&ordinal)
                     .context("Incoming channel provider is not translated")?;
-                let output = self.optic_output(
+                let output = self.scalar_output(
                     provider,
                     entity.u64(*at + 56)?,
                     &components[provider_index],

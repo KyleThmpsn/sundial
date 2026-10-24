@@ -53,6 +53,10 @@ pub struct Entry {
     /// The cosmetic entity, whose models join the body.
     pub cosmetic: Option<u32>,
     pub models: usize,
+    /// A saved recipe's namespace that a reimport keeps, so the authored item retains its
+    /// identity and edits whichever naming scheme made it. Unset for a new import.
+    #[serde(skip)]
+    pub saved_namespace: Option<String>,
 }
 
 impl Entry {
@@ -64,13 +68,15 @@ impl Entry {
     }
 
     fn namespace(&self) -> String {
-        format!("parhelion.marathon.{:08x}", self.item)
+        self.saved_namespace
+            .clone()
+            .unwrap_or_else(|| crate::graph::import_namespace("marathon", &self.name, self.item))
     }
 
     /// The authored item hash an import of this entry receives.
     pub fn destination(&self) -> Result<u32> {
         crate::graph::hash(
-            &crate::d2_mot::batch::identity(&self.namespace())?,
+            &crate::graph::import_identity(&self.namespace())?,
             "item_hash",
         )
     }
@@ -124,20 +130,48 @@ fn resource(b: &Payload, o: usize) -> Result<Option<(usize, u32)>> {
     )))
 }
 
-fn cancelled(error: anyhow::Error) -> Result<()> {
-    if crate::cancellation::is_cancelled(&error) {
-        Err(error)
-    } else {
+/// A label in a string bank that could not be read. Every bank of the inspected build parses,
+/// so such a bank is an unreadable package.
+#[derive(Debug)]
+struct StringBank(usize);
+
+impl std::fmt::Display for StringBank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Could not read Marathon string bank {}", self.0)
+    }
+}
+
+impl std::error::Error for StringBank {}
+
+/// Skipped item failures by root cause. Records outside the listing's layout fail in a healthy
+/// read too, so these only explain a listing that found nothing.
+#[derive(Default)]
+struct Failures(BTreeMap<String, (usize, anyhow::Error)>);
+
+impl Failures {
+    fn skip(&mut self, error: anyhow::Error) -> Result<()> {
+        if crate::cancellation::is_cancelled(&error) {
+            return Err(error);
+        }
+        let cause = error.root_cause().to_string();
+        self.0.entry(cause).or_insert_with(|| (0, error)).0 += 1;
         Ok(())
+    }
+
+    fn most_common(self) -> Option<(usize, anyhow::Error)> {
+        self.0.into_values().max_by_key(|(count, _)| *count)
     }
 }
 
 /// Localized string banks, read on first use.
 struct Strings {
     banks: Vec<u32>,
-    loaded: BTreeMap<usize, BTreeMap<u32, String>>,
+    /// Read banks, `None` for one that could not be read.
+    loaded: BTreeMap<usize, Option<BTreeMap<u32, String>>>,
     /// The weapon type most strings of each read bank name.
     types: BTreeMap<usize, Option<&'static str>>,
+    /// The first bank read failure.
+    failure: Option<anyhow::Error>,
 }
 
 impl Strings {
@@ -152,6 +186,7 @@ impl Strings {
             banks,
             loaded: BTreeMap::new(),
             types: BTreeMap::new(),
+            failure: None,
         })
     }
 
@@ -162,7 +197,7 @@ impl Strings {
         let Ok(index) = usize::try_from(strings.u32(field)? as i32) else {
             return Ok(None);
         };
-        let Some(values) = self.loaded.get(&index) else {
+        let Some(Some(values)) = self.loaded.get(&index) else {
             return Ok(None);
         };
         Ok(*self.types.entry(index).or_insert_with(|| {
@@ -206,6 +241,8 @@ impl Strings {
     }
 
     /// The label at `field` of an item strings record. Empty when its bank does not resolve.
+    /// A bank that resolves but cannot be read fails with `StringBank` and keeps the first read
+    /// error in `failure`.
     fn label(&mut self, r: &mut Reader, strings: &Payload, field: usize) -> Result<Option<String>> {
         let Ok(index) = usize::try_from(strings.u32(field)? as i32) else {
             return Ok(None);
@@ -216,21 +253,23 @@ impl Strings {
         let hash = strings.u32(field + 4)?;
         if let std::collections::btree_map::Entry::Vacant(entry) = self.loaded.entry(index) {
             let values = if bank == u32::MAX {
-                BTreeMap::new()
+                Some(BTreeMap::new())
             } else {
                 match Self::bank(r, bank) {
-                    Ok(values) => values,
+                    Ok(values) => Some(values),
+                    Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
                     Err(error) => {
-                        cancelled(error)?;
-                        BTreeMap::new()
+                        self.failure.get_or_insert(error.context(StringBank(index)));
+                        None
                     }
                 }
             };
             entry.insert(values);
         }
-        Ok(Some(
-            self.loaded[&index].get(&hash).cloned().unwrap_or_default(),
-        ))
+        let Some(values) = &self.loaded[&index] else {
+            return Err(StringBank(index).into());
+        };
+        Ok(Some(values.get(&hash).cloned().unwrap_or_default()))
     }
 }
 
@@ -357,6 +396,7 @@ fn read_item(
         entity,
         cosmetic,
         models: count,
+        saved_namespace: None,
     }))
 }
 
@@ -369,13 +409,19 @@ struct Tables {
     assignments: BTreeMap<u32, u32>,
 }
 
+/// The listed items, with a warning when unreadable string banks left some out.
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    pub warning: Option<String>,
+}
+
 /// Every typed item with a modeled pattern, sorted by name. `progress` receives the items read
 /// so far and the total.
 pub fn browse(
     packages: &Path,
     scratch: &Path,
     mut progress: impl FnMut(usize, usize),
-) -> Result<Vec<Entry>> {
+) -> Result<Listing> {
     let mut r = Reader::marathon_discovery(packages, scratch)?;
     let mut strings = Strings::new(&mut r)?;
     let table = r.tag(single(&r, ITEM_STRINGS)?, None)?;
@@ -408,6 +454,8 @@ pub fn browse(
     let definitions = r.tag(single(&r, ITEM_DEFINITIONS)?, None)?;
     let rows = definitions.array(8, 32, None)?;
     let mut entries = Vec::new();
+    let mut failures = Failures::default();
+    let mut unnamed = 0;
     for (done, o) in rows.iter().enumerate() {
         if done % 64 == 0 {
             progress(done, rows.len());
@@ -418,12 +466,27 @@ pub fn browse(
         match read_item(&mut r, &mut strings, &tables, item, definition) {
             Ok(Some(entry)) => entries.push(entry),
             Ok(None) => {}
-            Err(error) => cancelled(error)?,
+            Err(error) if error.is::<StringBank>() => unnamed += 1,
+            Err(error) => failures.skip(error)?,
         }
     }
     progress(rows.len(), rows.len());
+    let warning = match strings.failure {
+        // Nearly every bank sits in one package, so this is the cause when nothing listed.
+        Some(error) if entries.is_empty() => return Err(error),
+        Some(error) => Some(format!(
+            "{unnamed} {} left out. {error:#}",
+            if unnamed == 1 { "item" } else { "items" }
+        )),
+        None => None,
+    };
+    if entries.is_empty()
+        && let Some((count, error)) = failures.most_common()
+    {
+        return Err(error.context(format!("Could not read {count} Marathon items")));
+    }
     entries.sort_by_key(|entry| (entry.name.to_lowercase(), entry.item));
-    Ok(entries)
+    Ok(Listing { entries, warning })
 }
 
 #[derive(Deserialize, Serialize)]
@@ -433,13 +496,13 @@ struct Stored {
 }
 
 /// `browse` through a listing stored in `cache_dir`, read again when a package changes or
-/// `refresh` is set.
+/// `refresh` is set. A listing with a warning is not stored, so the next open reads again.
 pub fn browse_cached(
     packages: &Path,
     cache_dir: &Path,
     refresh: bool,
     progress: impl FnMut(usize, usize),
-) -> Result<Vec<Entry>> {
+) -> Result<Listing> {
     let packages = packages
         .canonicalize()
         .context("Marathon packages folder")?;
@@ -454,23 +517,28 @@ pub fn browse_cached(
             .and_then(|bytes| serde_json::from_slice::<Stored>(&bytes).ok())
             .filter(|stored| stored.stamp == stamp)
     {
-        return Ok(stored.entries);
+        return Ok(Listing {
+            entries: stored.entries,
+            warning: None,
+        });
     }
     fs::create_dir_all(cache_dir)?;
     let scratch = tempfile::Builder::new()
         .prefix("marathon-listing-")
         .tempdir_in(cache_dir)?;
-    let entries = browse(&packages, scratch.path(), progress)?;
-    ensure!(!entries.is_empty(), "No importable Marathon items");
-    // A failed write only costs the next listing a reread.
-    let _ = crate::cache::write_json(
-        &path,
-        &Stored {
-            stamp,
-            entries: entries.clone(),
-        },
-    );
-    Ok(entries)
+    let listing = browse(&packages, scratch.path(), progress)?;
+    ensure!(!listing.entries.is_empty(), "No importable Marathon items");
+    if listing.warning.is_none() {
+        // A failed write only costs the next listing a reread.
+        let _ = crate::cache::write_json(
+            &path,
+            &Stored {
+                stamp,
+                entries: listing.entries.clone(),
+            },
+        );
+    }
+    Ok(listing)
 }
 
 fn four(b: &Payload, o: usize) -> Result<[f64; 4]> {
@@ -517,9 +585,11 @@ fn multiply(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
 }
 
 /// The body models and every attachment's models, placed by the entity's attachment points.
-fn assembly(r: &mut Reader, entry: &Entry) -> Result<Vec<Value>> {
+fn assembly(r: &mut Reader, entry: &Entry) -> Result<(Vec<Value>, Vec<Value>)> {
     let mut placed = Vec::new();
+    let mut parts = Vec::new();
     for entity in [Some(entry.entity), entry.cosmetic].into_iter().flatten() {
+        parts.push(json!({"entity":format!("{entity:08X}"),"transform":IDENTITY}));
         for mut model in models(r, entity)? {
             model["transform"] = json!(IDENTITY);
             placed.push(model);
@@ -563,7 +633,11 @@ fn assembly(r: &mut Reader, entry: &Entry) -> Result<Vec<Value>> {
     }
     for attachment in attachments {
         let found = models(r, attachment)?;
-        if found.is_empty() {
+        if found.is_empty()
+            && !components(r, attachment)?
+                .iter()
+                .any(|c| c.class == 0x80803E3C)
+        {
             continue;
         }
         let mut point = None;
@@ -589,25 +663,31 @@ fn assembly(r: &mut Reader, entry: &Entry) -> Result<Vec<Value>> {
                 .with_context(|| format!("Attachment bone {bone} is outside the skeleton"))?;
             transform = multiply(&matrix(*rotation, *translation), &transform);
         }
+        // A sight can supply aim defaults without any model of its own.
+        parts.push(json!({"entity":format!("{attachment:08X}"),"transform":transform}));
         for mut model in found {
             model["transform"] = json!(transform);
             placed.push(model);
         }
     }
-    Ok(placed)
+    Ok((placed, parts))
 }
 
-/// Translate one entry onto `donor` into `output`, which must not exist. Returns the
-/// prepared recipe.
+/// Translate one entry into `output`, which must not exist. `donors` lists native weapons of the
+/// entry's type in the caller's order of preference. With `source_animation`, the source
+/// controller plays on the first donor whose first-person states request the source's own
+/// magazine reloads, else the first. Otherwise the first donor's own animation plays. Returns
+/// the prepared recipe.
 pub fn import(
     entry: &Entry,
-    donor: u32,
-    donor_name: &str,
+    donors: &[(u32, String)],
+    source_animation: bool,
     packages: &Path,
     native_packages: &Path,
     output: &Path,
     progress: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
+    ensure!(!donors.is_empty(), "{} has no native donor", entry.name);
     let parent = output.parent().context("Marathon import folder")?;
     fs::create_dir_all(parent)?;
     let work = tempfile::Builder::new()
@@ -615,16 +695,25 @@ pub fn import(
         .tempdir_in(parent)?;
     progress("Assembling source model…".into());
     let mut source = Reader::marathon_discovery(packages, &work.path().join("source"))?;
-    let models = assembly(&mut source, entry)?;
+    let (models, parts) = assembly(&mut source, entry)?;
     ensure!(!models.is_empty(), "{} has no models", entry.name);
     progress("Reading native weapon…".into());
     let template_dir = work.path().join("native");
     let mut native = Reader::new(native_packages, &template_dir, false)?;
+    let (chosen, mut donor_choice) = if source_animation {
+        super::animation::choose_donor(&mut source, &mut native, entry.entity, donors)?
+    } else {
+        (0, json!({"chosen_by":"order"}))
+    };
+    donor_choice["source_animation"] = json!(source_animation);
+    let (donor, donor_name) = (donors[chosen].0, donors[chosen].1.as_str());
+    donor_choice["donor"] = json!(format!("{donor:08X}"));
+    donor_choice["candidates"] = json!(donors.len());
     let template = crate::tiger::shadowkeep::extract(&mut native, donor)?;
     crate::io::write_json(&template_dir.join("template-report.json"), &template)?;
     native.finish()?;
     let namespace = entry.namespace();
-    let identity = crate::d2_mot::batch::identity(&namespace)?;
+    let identity = crate::graph::import_identity(&namespace)?;
     let target = identity["item_hash"].clone();
     let art_key = format!("parhelion/{namespace}/art_key")
         .bytes()
@@ -645,17 +734,21 @@ pub fn import(
     });
     let plan = json!([{
         "slug": slug,
+        "source_item_identity": entry.item,
         "name": entry.name,
         "models": models,
+        "parts": parts,
         "native_item": format!("{donor:08X}"),
         "target_item": target,
         "art_key": format!("{art_key:08X}"),
         "native_template": template_dir,
+        "source_animation": source_animation,
         "recipe": recipe,
     }]);
     let plan_path = work.path().join("plan.json");
     crate::io::write_json(&plan_path, &plan)?;
     progress("Translating model…".into());
     super::prepare(&plan_path, packages, native_packages, output)?;
+    crate::io::write_json(&output.join(&slug).join("donor-choice.json"), &donor_choice)?;
     Ok(output.join(slug).join("weapon.parhelion.json"))
 }

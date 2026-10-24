@@ -1,6 +1,75 @@
 //! Uniform lengths across native geometry, attachments and source motion.
-use crate::halo_reach::{Scene, rig::Bone};
-use anyhow::{Result, ensure};
+use crate::{
+    graph::GraphReference,
+    halo_reach::{ImportRequest, Scene, rig::Bone},
+};
+use anyhow::{Context, Result, ensure};
+use serde_json::Value;
+
+pub(in crate::halo_reach) const VEHICLE_WORLD: f32 = 0.8;
+pub(in crate::halo_reach) const VEHICLE_INSPECTION: f32 = 2.;
+
+impl ImportRequest {
+    /// Keep authored dimensions through portable vehicle reimports. Older graphs
+    /// did not distinguish explicit one from the browser's implicit one defaults.
+    pub fn retain_vehicle_scale(&mut self, reference: &GraphReference) -> Result<()> {
+        ensure!(
+            self.recipe["kind"] == "sparrow",
+            "Scale retention requires a vehicle"
+        );
+        reference.validate_reusable("sparrow")?;
+        let graph: Value = serde_json::from_slice(&std::fs::read(
+            reference.directory.join("asset-graph.json"),
+        )?)?;
+        ensure!(
+            graph["source"] == "halo_reach",
+            "Saved vehicle assets are not from Halo: Reach"
+        );
+        let settings = graph.get("import_settings");
+        let read = |key: &str, legacy: &Value, fallback: f32| -> Result<f32> {
+            let value = if let Some(settings) = settings {
+                settings[key]
+                    .as_f64()
+                    .with_context(|| format!("Saved vehicle {key} is missing or invalid"))?
+                    as f32
+            } else if legacy.is_null() {
+                fallback
+            } else {
+                let value = legacy
+                    .as_f64()
+                    .with_context(|| format!("Saved vehicle {key} is invalid"))?
+                    as f32;
+                if value == 1. { fallback } else { value }
+            };
+            validate(value)?;
+            Ok(value)
+        };
+        let world = read("scale", &graph["source_scale"]["length"], VEHICLE_WORLD)?;
+        let inspection = read(
+            "inspection_scale",
+            &graph["inspection"]["fit"]["display_scale"],
+            VEHICLE_INSPECTION,
+        )?;
+        self.scale = world;
+        self.inspection_scale = inspection;
+        Ok(())
+    }
+}
+
+/// Resolve omitted batch fields before deserialization so explicit one is retained.
+pub(super) fn request_defaults(entry: &mut Value) -> Result<()> {
+    let vehicle = entry["source"]["group"] == "vehi" || entry["recipe"]["kind"] == "sparrow";
+    let entry = entry
+        .as_object_mut()
+        .context("Reach import entry must be an object")?;
+    entry
+        .entry("scale")
+        .or_insert_with(|| serde_json::json!(if vehicle { VEHICLE_WORLD } else { 1. }));
+    entry
+        .entry("inspection_scale")
+        .or_insert_with(|| serde_json::json!(if vehicle { VEHICLE_INSPECTION } else { 1. }));
+    Ok(())
+}
 
 pub(super) fn one() -> f32 {
     1.

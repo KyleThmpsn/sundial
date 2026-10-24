@@ -79,6 +79,26 @@ fn factor(code: &Code, value: &Operand, at: usize, vector: &Operand) -> bool {
 }
 
 pub(super) fn packed(code: &Code, at: usize, row: &Instruction) -> bool {
+    packed_through_copy(code, at, row, 0)
+}
+
+fn packed_through_copy(code: &Code, at: usize, row: &Instruction, copies: usize) -> bool {
+    // Output adapters may retain the original packed normal in a temporary. Follow only
+    // whole, unmodified RGB copies whose producer is shared by every lane and unconditional.
+    if row.code == 54 && !row.saturate && copies < 4 {
+        let source = &row.operands[1];
+        if source.lanes[..3] != [0, 1, 2] || row.operands[0].mask != 7 {
+            return false;
+        }
+        let Some((before, produced, _)) = producer(code, source, 0, at) else {
+            return false;
+        };
+        return straight(code, before, at)
+            && (1..3).all(|lane| {
+                producer(code, source, lane, at).is_some_and(|(other, _, _)| other == before)
+            })
+            && packed_through_copy(code, before, produced, copies + 1);
+    }
     // The final packing is unconditional even when material equations branch earlier.
     let depth: i32 = code.instructions[..at]
         .iter()

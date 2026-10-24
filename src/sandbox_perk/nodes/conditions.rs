@@ -140,7 +140,7 @@ pub const CONDITIONS: [NodeKind; 45] = [
         occurrences: 8,
         name: "Weapon Event Filter",
         summary: "Fires when the trigger is released on a weapon and checks the weapon labels.",
-        evidence: "Reads the owning-weapon flag at +8, the slot mask at +B and the source label filter at +10, which the checker compiles into its object-label test. Handles an invalid event slot explicitly. The event is the trigger release: Dynamic Sway Reduction, Spinning Up and Lightning Rounds, which act while the trigger is held, all end on it.",
+        evidence: "Reads the owning-weapon flag at +8, the slot mask at +9 and the source label filter at +10, which the checker compiles into its object-label test. Handles an invalid event slot explicitly. The event is the trigger release: Dynamic Sway Reduction, Spinning Up and Lightning Rounds, which act while the trigger is held, all end on it.",
         support: Support::Authorable,
     },
     NodeKind {

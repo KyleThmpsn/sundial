@@ -388,7 +388,7 @@ const SAMPLERS: [&str; 9] = [
 
 fn vertex_source(model: &Model, text: &mut String) {
     text.push_str("void nativeVertex(inout vec3 position,inout vec3 normal){\n");
-    text.push_str("vNative[0]=vec4(normal,1.0);vNative[1]=aTangent;vNative[2]=vec4(cross(normal,aTangent.xyz)*aTangent.w,0.0);vNative[3]=vec4(aUv,aDetailUv);vNative[4]=vec4(position,1.0);vNative[5]=aColor;vNative[6]=vec4(0.0);vNative[7]=vec4(0.0);vNative[8]=aColor;\n");
+    text.push_str("vNative[0]=vec4(normal,1.0);vNative[1]=aTangent;vNative[2]=vec4(cross(normal,aTangent.xyz)*aTangent.w,0.0);vNative[3]=vec4(aUv,aDetailUv);vNative[4]=vec4(position,1.0);vNative[5]=aColor;vNative[6]=vec4(0.0);vNative[7]=vec4(0.0);vNative[8]=aColor;vNative[9]=vec4(0.0);\n");
     for (index, material) in model.effects.iter().enumerate() {
         if let Some(uv) = material.native.as_ref().and_then(|n| n.opaque_uv) {
             writeln!(
@@ -442,7 +442,7 @@ fn vertex_source(model: &Model, text: &mut String) {
         }
         writeln!(text, "nProgram{index}(v,o);").unwrap();
         for semantic in &vertex.code.outputs {
-            if semantic.name == "TEXCOORD" && semantic.index < 9 {
+            if semantic.name == "TEXCOORD" && semantic.index < 10 {
                 writeln!(
                     text,
                     "vNative[{}]=o[{}];",
@@ -589,7 +589,7 @@ fn surface_source(model: &Model, text: &mut String) {
 
 fn pixel_inputs(text: &mut String, program: &program::Program) {
     if program.inputs.is_empty() {
-        text.push_str("for(int i=0;i<9;i++)v[i]=vNative[i];\n");
+        text.push_str("for(int i=0;i<10;i++)v[i]=vNative[i];\n");
     }
     for semantic in &program.inputs {
         let value = match semantic.system {

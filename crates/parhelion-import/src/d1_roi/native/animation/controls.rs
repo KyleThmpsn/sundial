@@ -2,6 +2,16 @@
 use super::*;
 
 pub(super) fn owner(rig: &Value, first_person: bool, class: u32, source: bool) -> Result<u32> {
+    optional_owner(rig, first_person, class, source)?
+        .with_context(|| format!("Animation role has no unique {class:08X} owner"))
+}
+
+pub(super) fn optional_owner(
+    rig: &Value,
+    first_person: bool,
+    class: u32,
+    source: bool,
+) -> Result<Option<u32>> {
     let root = u32::from_str_radix(
         rig["runtime_entity"].as_str().context("Runtime entity")?,
         16,
@@ -23,10 +33,10 @@ pub(super) fn owner(rig: &Value, first_person: bool, class: u32, source: bool) -
         }
     }
     ensure!(
-        matches.len() == 1,
-        "Animation role has no unique {class:08X} owner"
+        matches.len() <= 1,
+        "Animation role has multiple {class:08X} owners"
     );
-    Ok(matches[0])
+    Ok(matches.first().copied())
 }
 
 fn groups(p: &Payload, field: usize, source: bool) -> Result<Vec<(u32, u32)>> {
@@ -43,6 +53,9 @@ pub(super) struct Mapping {
     groups: Vec<(u32, u32)>,
     target: Payload,
     defaults: Vec<[f32; 8]>,
+    source_defaults: Vec<[f32; 8]>,
+    first_person: bool,
+    source_slots: Vec<u16>,
 }
 
 impl Mapping {
@@ -62,7 +75,7 @@ impl Mapping {
                 Some(0x80809C36),
             )?
         };
-        crate::d2_mot::rig_convert::animation::first_person::controls::validate(&to.0)?;
+        crate::tiger::animation::rig::controls::validate(&to.0)?;
         let skeleton = |r: &Value| -> Result<Vec<Value>> {
             let matches = r["skeletons"]
                 .as_array()
@@ -149,14 +162,6 @@ impl Mapping {
                 operation == to.bytes::<48>(no[usize::from(target)] + 4)?,
                 "Source and native control operations differ"
             );
-            for lane in 0..8 {
-                let a = from.f32(sp[slot] + lane * 4)?;
-                let b = to.f32(np[usize::from(target)] + lane * 4)?;
-                ensure!(
-                    a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-5,
-                    "Source and native control default poses differ"
-                );
-            }
             map.push(target);
         }
         ensure!(
@@ -177,6 +182,17 @@ impl Mapping {
             sa = se;
             na = ne;
         }
+        let source_defaults = sp
+            .into_iter()
+            .map(|at| {
+                let mut pose = [0.; 8];
+                for (i, value) in pose.iter_mut().enumerate() {
+                    *value = from.f32(at + i * 4)?;
+                }
+                crate::tiger::animation::pose::Pose::checked(pose)?;
+                Ok(pose)
+            })
+            .collect::<Result<Vec<_>>>()?;
         let defaults = np
             .into_iter()
             .map(|at| {
@@ -194,17 +210,111 @@ impl Mapping {
             groups: source_groups,
             target: to.as_ref().clone(),
             defaults,
+            source_defaults,
+            first_person,
+            source_slots: si.iter().map(|&r| from.u16(r)).collect::<Result<_>>()?,
         })
     }
 
     pub fn apply(&self, source: &Payload, converted: &Payload) -> Result<(Payload, Value)> {
+        let source_groups = groups(source, 0x150, true)?;
+        let default_policy = if converted.u8(0x181)? == 0 {
+            "source_absolute_channels"
+        } else {
+            "authored_additive_or_sparse_masks"
+        };
+        if self.first_person
+            && (usize::from(source.u8(0x12A)?) != self.bone_map.len()
+                || source_groups != self.groups)
+        {
+            let target_groups = groups(&self.target, self.target.pointer(24)? + 0x90, false)?;
+            let matched = source_groups
+                .iter()
+                .zip(&self.groups)
+                .zip(&target_groups)
+                .take_while(|((clip, own), native)| clip == own && clip == native)
+                .count();
+            let common = source_groups[..matched]
+                .iter()
+                .map(|g| g.1 as usize)
+                .sum::<usize>();
+            ensure!(
+                common > 0
+                    && converted.u8(0x181)? <= 2
+                    && source_groups
+                        .get(matched)
+                        .zip(self.groups.get(matched))
+                        .is_some_and(|(clip, own)| clip.0 != own.0)
+                    && source_groups
+                        .get(matched)
+                        .zip(target_groups.get(matched))
+                        .is_some_and(|(clip, native)| clip.0 != native.0)
+                    && common < source.u8(0x12B)? as usize
+                    && source_groups.iter().map(|g| g.1 as usize).sum::<usize>()
+                        == source.u8(0x12B)? as usize
+                    && self.map.get(..common).is_some_and(|map| map
+                        .iter()
+                        .enumerate()
+                        .all(|(slot, &target)| slot == usize::from(target))),
+                "Borrowed source clip has no identical leading control groups"
+            );
+            let bones = usize::from(
+                *self
+                    .source_slots
+                    .get(..common)
+                    .context("Borrowed arm slots")?
+                    .iter()
+                    .max()
+                    .context("Borrowed arm bones")?,
+            ) + 1;
+            ensure!(
+                self.bone_map.get(..bones).is_some_and(|map| map
+                    .iter()
+                    .enumerate()
+                    .all(|(bone, &target)| bone == usize::from(target))),
+                "Borrowed source clip remaps shared arm bones"
+            );
+            if source.u64(0x30)? != 0 {
+                for row in source.array(source.pointer(0x30)?, 64, Some(0x8080081F))? {
+                    for offset in [0, 2, 16] {
+                        let bone = source.u16(row + offset)?;
+                        ensure!(
+                            bone == u16::MAX || usize::from(bone) < bones,
+                            "Borrowed source constraint addresses its foreign weapon"
+                        );
+                    }
+                }
+            }
+            // The original mixer stops at the first differing group. Keep the
+            // foreign suffix and its encoded samples intact, outside that span.
+            let payload = if converted.u8(0x181)? == 0 {
+                crate::tiger::animation::clip::bind_defaults_prefix(
+                    converted,
+                    &self.source_defaults[..common],
+                )?
+            } else {
+                converted.clone()
+            };
+            return Ok((
+                payload,
+                json!({"shared_controls":common,"shared_bones":bones,
+                "control_mapping":"identical_leading_groups","foreign_weapon_controls":"excluded_by_native_group_matching",
+                "default_poses":default_policy}),
+            ));
+        }
         ensure!(
-            usize::from(source.u8(0x12A)?) == self.bone_map.len()
-                && groups(source, 0x150, true)? == self.groups,
+            usize::from(source.u8(0x12A)?) == self.bone_map.len() && source_groups == self.groups,
             "Source clip uses another control rig"
         );
+        // Absent absolute channels use the source controller's pose. Additive
+        // deltas and sparse replacements must retain their authored masks.
+        let bound = if converted.u8(0x181)? == 0 {
+            crate::tiger::animation::clip::bind_defaults(converted, &self.source_defaults)?
+        } else {
+            converted.clone()
+        };
         let payload = crate::tiger::animation::clip::remap_controls(
-            converted,
+            &bound,
             &self.map,
             self.bones,
             &self.target,
@@ -213,7 +323,7 @@ impl Mapping {
         Ok((
             payload,
             json!({"slot_map":self.map,"source_bones":self.bone_map.len(),"native_bones":self.bones,
-            "native_slots":self.defaults.len(),"control_operations":"mapped_equal","default_poses":"equal_within_rounding"}),
+            "native_slots":self.defaults.len(),"control_operations":"mapped_equal","default_poses":default_policy}),
         ))
     }
 }

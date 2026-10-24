@@ -30,7 +30,7 @@ struct Reference {
     value: u32,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Kind {
     Object,
     Bank,

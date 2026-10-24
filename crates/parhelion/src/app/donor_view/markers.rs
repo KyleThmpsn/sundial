@@ -288,9 +288,8 @@ impl PackageAuthoringApp {
         ui.label("In Hand");
         #[cfg(feature = "d2-model-importer")]
         if self.recipe.overrides.imported_graph.is_some() {
-            ui.weak("Imported models keep their own place.");
-            ui.add_space(12.0);
-            self.draw_appearance_markers(ui);
+            ui.weak("Imported models use their prepared placement and markers.");
+            self.draw_weapon_preview(ui, None);
             return;
         }
         let current = self

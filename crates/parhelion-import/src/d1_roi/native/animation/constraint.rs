@@ -1,5 +1,6 @@
-//! Source hand constraints with equal native bindings and a neutral native secondary weight.
+//! Source hand constraints with witnessed bone shapes and named targets.
 use super::*;
+mod secondary;
 
 pub(super) fn convert(
     source: &Payload,
@@ -20,14 +21,30 @@ pub(super) fn convert(
     let a = source.array(at, 64, Some(0x8080081F))?;
     let b = template.array(counterpart, 64, Some(0x80808F5C))?;
     ensure!(
-        !a.is_empty() && a.len() == b.len(),
-        "Constraint binding count differs"
+        !a.is_empty() && !b.is_empty(),
+        "Constraint binding witness is empty"
     );
-    for (&s, &n) in a.iter().zip(&b) {
-        ensure!(
-            source.bytes::<64>(s)? == template.bytes::<64>(n)?,
-            "Source hand binding differs from its native action"
-        );
+    let identical = a.len() == b.len()
+        && a.iter()
+            .zip(&b)
+            .all(|(&s, &n)| source.0[s..s + 64] == template.0[n..n + 64]);
+    for &s in &a {
+        if !identical {
+            // Materialization maps the three bone indices separately from the target
+            // mode/name. Mode 3 resolves that name independently through the target table.
+            // Admit only bone/rest shapes and complete target tuples already witnessed
+            // in this native action, preserving source row order and target identity.
+            ensure!(
+                source.u16(s + 16)? == u16::MAX
+                    && source.u16(s + 18)? == 3
+                    && b.iter()
+                        .any(|&n| source.0[s..s + 20] == template.0[n..n + 20]
+                            && source.0[s + 24..s + 64] == template.0[n + 24..n + 64])
+                    && b.iter()
+                        .any(|&n| source.0[s + 16..s + 24] == template.0[n + 16..n + 24]),
+                "Source constraint bone shape or named target has no native witness"
+            );
+        }
         for offset in [0, 2, 16] {
             let bone = source.u16(s + offset)?;
             ensure!(
@@ -60,15 +77,44 @@ pub(super) fn convert(
         source.u16(transform + 4)? as usize,
         source.u16(transform + 6)? as usize,
     ];
+    let encoding = source.u16(transform)?;
+    let frames = usize::from(source.u16(0x128)?);
     ensure!(
         counts.iter().all(|&n| n == a.len())
-            && matches!(source.u16(transform)?, 2 | 3)
-            && source.u32(transform + 0x10)? == u32::from(source.u16(0x128)?),
+            && matches!(encoding, 1..=3)
+            && (encoding == 1 || source.u32(transform + 0x10)? as usize == frames),
         "Constraint transforms do not cover their binding rows"
     );
     let report = codec(source, native, 0x40, 0x48, counts)?;
+    if encoding == 1 {
+        use sundial::package_authoring::animation_curve::{Channel, Decoder};
+        let decoder =
+            Decoder::read(native, transform + SHIFT, counts, frames).map_err(anyhow::Error::msg)?;
+        for (kind, count) in [Channel::Scale, Channel::Rotation, Channel::Position]
+            .into_iter()
+            .zip(counts)
+        {
+            for track in 0..count {
+                decoder.samples(kind, track).map_err(anyhow::Error::msg)?;
+            }
+        }
+    }
     put(native, 0x130, &source.u32(0x120)?.to_le_bytes());
     put(native, 0x138, &source.u32(0x124)?.to_le_bytes());
+
+    if !identical {
+        // Shadowkeep's constraint sampler explicitly supplies one when +0x40 is null.
+        // D1 has no secondary stream, so no donor track count or timing is borrowed.
+        put(native, 0x40, &0u64.to_le_bytes());
+        put(native, 0x134, &0u32.to_le_bytes());
+        return Ok(vec![
+            report,
+            json!({"field":0x30,"bindings":a.len(),
+            "binding_rows":"source_rows_with_witnessed_bone_shapes_and_named_targets",
+            "secondary_weight":"native_absent_stream_unit_default",
+            "source_weight_and_transform_samples_preserved":true}),
+        ]);
+    }
 
     // The added native channel is admitted only with a captured constant-unit witness.
     // Its own frame count follows the source clip even when the paired action is longer.
@@ -77,6 +123,14 @@ pub(super) fn convert(
         "Native action has no secondary constraint witness"
     );
     let w = template.pointer(0x40)?;
+    if template.u32(w - 4)? == 0x80808F7E && template.u16(w)? == 1 {
+        secondary::curve(template, native, w, a.len(), frames)?;
+        return Ok(vec![
+            report,
+            json!({"field":0x30,"bindings":a.len(),"binding_rows":"byte_identical_to_native_action",
+            "secondary_weight":"constant_unit_curve","source_weight_and_transform_samples_preserved":true}),
+        ]);
+    }
     ensure!(
         template.u32(w - 4)? == 0x80808F7C
             && template.u16(w)? == 2

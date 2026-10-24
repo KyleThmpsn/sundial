@@ -8,6 +8,7 @@ pub(super) fn prepare(
     graph: &mut Value,
     recipe: &mut Value,
     root: &Path,
+    source_audio: bool,
 ) -> Result<Value> {
     let strikes = graph["animation"]["first_person"]["melee"]["strikes"]
         .as_array()
@@ -17,16 +18,33 @@ pub(super) fn prepare(
         !strikes.is_empty(),
         "Translated melee strike corpus is empty"
     );
+    if !source_audio {
+        ensure!(
+            graph["audio"].is_null(),
+            "Unconfigured melee audio already has a route"
+        );
+        let runtime = u32::try_from(
+            graph["animation"]["runtime_entity"]
+                .as_u64()
+                .context("Melee runtime entity")?,
+        )?;
+        graph["audio"] = json!({"authoring_schema":3,"runtime_entity":format!("{runtime:08X}"),
+            "transcoded_media":[],"routing":"native_melee_contacts"});
+    }
     let audio = &mut graph["audio"];
     ensure!(
         audio["authoring_schema"] == 3 && audio.get("impact_key").is_none(),
         "Weapon melee requires unambiguous source audio routing: {audio}"
     );
-    let bus = u32::try_from(
-        audio["output_bus"]
-            .as_u64()
-            .context("Melee source audio bus")?,
-    )?;
+    let bus = if source_audio {
+        Some(u32::try_from(
+            audio["output_bus"]
+                .as_u64()
+                .context("Melee source audio bus")?,
+        )?)
+    } else {
+        None
+    };
     let recordings = root
         .parent()
         .context("Melee import root")?
@@ -37,6 +55,11 @@ pub(super) fn prepare(
         Some(rows) => rows.as_array().context("Clip event rows")?.clone(),
     };
     for strike in &strikes {
+        let Some(bus) = bus else { continue };
+        ensure!(
+            strike["source_audio"] == true,
+            "Melee sound timing differs from its configured source audio"
+        );
         let source_id = strike["source_sound"]["datum"]
             .as_u64()
             .context("Strike source sound")?;
@@ -58,7 +81,7 @@ pub(super) fn prepare(
                 .context("Strike native sound")?,
             16,
         )?;
-        let native_sound = crate::d2_mot::sound_assets(native, native_sound, false)?;
+        let native_sound = crate::tiger::audio::sound_assets(native, native_sound, false)?;
         let row = json!({"clip_name":strike["clip_name"],"event_index":strike["sound_event_index"],
             "sounds":[source],"native_sounds":[native_sound],"source_clip":strike["source_clip"]});
         ensure!(
@@ -123,7 +146,8 @@ pub(super) fn prepare(
     Ok(
         json!({"activation":activation,"strikes":strikes.len(),"source_sounds":converted.len(),"source_damage":source_damage,
         "authored_contact_damage":amount,"damage_policy":"Source constant amount in a private absolute native profile",
+        "swing_audio":if source_audio {"source_recording"} else {"native_punch_at_contact"},
         "retained_native_behavior":["Native surface feedback", "Native lunge, hit acceptance and attack input handling", "Post-melee weapon ready transition"],
-        "limits":["Source strike motion, primary keyframe, constant contact damage and swing recordings are translated. Target resistance, power and difficulty multipliers remain native. Melee clash, source hit effects, sound preemption fades and environment routing are not translated. The private attack requires repeated hit, miss, selection and subclass-bank gameplay checks."]}),
+        "limits":["Source strike motion, primary keyframe and constant contact damage are translated. Source swing recordings require configured audio banks and a decoder. Target resistance, power and difficulty multipliers remain native. Melee clash, source hit effects, sound preemption fades and environment routing are not translated. The private attack requires repeated hit, miss, selection and subclass-bank gameplay checks."]}),
     )
 }

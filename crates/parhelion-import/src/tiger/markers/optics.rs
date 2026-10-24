@@ -5,7 +5,7 @@ use crate::{graph::add, tiger::reader::Reader};
 use anyhow::Context;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
-mod connections;
+pub(crate) mod connections;
 
 /// Source model input endpoints keyed by the source component tag and input hash,
 /// holding the composed model's symbol, its native input hash and its component index.
@@ -63,7 +63,8 @@ struct Source {
     parents: [u32; 2],
 }
 
-fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Source>> {
+/// Source optics by native placement.
+fn source_parts(source: &Path, selector: Selector) -> Result<BTreeMap<(u64, u64), Source>> {
     let report: Value = serde_json::from_slice(&fs::read(source.join("report.json"))?)?;
     let mut result = BTreeMap::new();
     for part in report["art_parts"].as_array().into_iter().flatten() {
@@ -97,10 +98,9 @@ fn source_parts(source: &Path) -> Result<BTreeMap<(u64, u64), Source>> {
                 .with_context(|| format!("source optic on entity {tag}"))?;
             let source = Source { owner, parents };
             for placement in part["placements"].as_array().context("optic placements")? {
-                let key = (
-                    placement["selector"].as_u64().context("optic selector")?,
-                    placement["position"].as_u64().context("optic position")?,
-                );
+                let Some(key) = native_placement(placement, selector)? else {
+                    continue;
+                };
                 if let Some(previous) = result.insert(key, source.clone()) {
                     ensure!(
                         previous.owner.0 == source.owner.0 && previous.parents == source.parents,
@@ -392,8 +392,9 @@ pub(super) fn author(
     directory: &Path,
     graph: &mut Value,
     parts: &[(String, Value)],
+    selector: Selector,
 ) -> Result<()> {
-    let sources = source_parts(source)?;
+    let sources = source_parts(source, selector)?;
     let mut report = Vec::new();
     for (entity_symbol, placement) in parts {
         let (Some(selector), Some(position)) = (

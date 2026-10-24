@@ -138,10 +138,31 @@ pub(super) fn cue_symbol(tag: u32) -> String {
     symbol("cue", tag)
 }
 
+/// How prepared banks reach the game. Graph banks are bound into one shared namespace, so
+/// every object they share must agree. A named cue's bank is instantiated privately beside
+/// its selected native cue, so only the closure of that cue's own bank must be consistent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    Graph,
+    Named,
+}
+
+fn reachable(root: u32, dependencies: &BTreeMap<u32, BTreeSet<u32>>) -> BTreeSet<u32> {
+    let mut found = BTreeSet::new();
+    let mut pending = vec![root];
+    while let Some(tag) = pending.pop() {
+        if found.insert(tag) {
+            pending.extend(dependencies.get(&tag).into_iter().flatten().copied());
+        }
+    }
+    found
+}
+
 fn prepare_banks(
     source: &Source,
     native: &mut Reader,
     cues: &BTreeMap<u32, Cue>,
+    route: Route,
 ) -> Result<BTreeMap<u32, bank::Bank>> {
     let source_init = source.read(source_bank(source, bank::hash("init"))?)?;
     let source_settings = bank::settings::Settings::read(&source_init.0, 89)?;
@@ -168,6 +189,7 @@ fn prepare_banks(
     let (native_settings, native_objects) = native_init.context("native Init bank missing")?;
     let mut pending = cues.values().map(|cue| cue.bank).collect::<BTreeSet<_>>();
     let mut banks = BTreeMap::new();
+    let mut dependencies = BTreeMap::new();
     while let Some(tag) = pending.pop_first() {
         if banks.contains_key(&tag) {
             continue;
@@ -181,28 +203,45 @@ fn prepare_banks(
             converted.bank_id == source.reference(tag)?,
             "source bank storage identity differs"
         );
+        let mut needed = BTreeSet::new();
         for id in converted.bank_dependencies() {
-            pending.insert(source_bank(source, id)?);
+            needed.insert(source_bank(source, id)?);
         }
+        pending.extend(needed.iter().copied());
+        dependencies.insert(tag, needed);
         banks.insert(tag, converted);
     }
-    let owned = banks
-        .values()
-        .flat_map(|b| b.objects.iter().copied())
-        .collect::<BTreeSet<_>>();
-    for bank in banks.values() {
-        ensure!(
-            bank.external_objects()
-                .iter()
-                .all(|id| owned.contains(id) || native_objects.contains(id)),
-            "source bank references unavailable native global objects"
-        );
-    }
-    let closure = banks.values().cloned().collect::<Vec<_>>();
-    let namespace = bank::Namespace::new("source-audio-validation", &closure)?;
-    for cue in cues.values() {
-        for id in cue.events.into_iter().filter(|id| present(*id)) {
-            namespace.object(id)?;
+    // Source banks repeat parent containers with only their own children, so separately
+    // instantiated banks may disagree on an object that a shared namespace would merge.
+    let groups: Vec<(BTreeSet<u32>, Vec<&Cue>)> = match route {
+        Route::Graph => vec![(banks.keys().copied().collect(), cues.values().collect())],
+        Route::Named => cues
+            .values()
+            .map(|cue| (reachable(cue.bank, &dependencies), vec![cue]))
+            .collect(),
+    };
+    for (tags, members) in groups {
+        let closure = tags
+            .iter()
+            .map(|tag| banks[tag].clone())
+            .collect::<Vec<_>>();
+        let owned = closure
+            .iter()
+            .flat_map(|b| b.objects.iter().copied())
+            .collect::<BTreeSet<_>>();
+        for bank in &closure {
+            ensure!(
+                bank.external_objects()
+                    .iter()
+                    .all(|id| owned.contains(id) || native_objects.contains(id)),
+                "source bank references unavailable native global objects"
+            );
+        }
+        let namespace = bank::Namespace::new("source-audio-validation", &closure)?;
+        for cue in members {
+            for id in cue.events.into_iter().filter(|id| present(*id)) {
+                namespace.object(id)?;
+            }
         }
     }
     Ok(banks)
@@ -262,83 +301,60 @@ pub(super) fn prepare(
     folder: &Path,
     tags: &BTreeSet<u32>,
 ) -> Result<Value> {
-    prepare_with_settings(source, native, folder, tags, None)
+    prepare_route(source, native, folder, tags, Route::Graph)
 }
 
-fn prepare_with_settings(
+/// Graph routes emit cues with an identical native acoustic profile. Named routes emit only
+/// banks and media, because install clones each selected native cue with its own profile.
+fn prepare_route(
     source: &Source,
     native: &mut Reader,
     folder: &Path,
     tags: &BTreeSet<u32>,
-    overrides: Option<&BTreeMap<u32, u32>>,
+    route: Route,
 ) -> Result<Value> {
     ensure!(!tags.is_empty(), "source audio cue set is empty");
     let cues = tags
         .iter()
         .map(|&tag| Ok((tag, Cue::read(source, tag)?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let banks = prepare_banks(source, native, &cues)?;
+    let banks = prepare_banks(source, native, &cues, route)?;
     let converted_media = prepare_media(source, &cues, &banks)?;
     let mut settings = BTreeMap::new();
-    let mut profiles = Vec::new();
-    let profile_tags = overrides.map_or_else(
-        || {
-            native
-                .classes(0x80808E68)
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-        },
-        |rows| rows.values().copied().collect(),
-    );
-    for tag in profile_tags {
-        profiles.push((tag, native.tag(tag, Some(0x80808E68))?));
-    }
-    for cue in cues.values() {
-        if settings.contains_key(&cue.settings) {
-            continue;
+    if route == Route::Graph {
+        let mut profiles = Vec::new();
+        for tag in native
+            .classes(0x80808E68)
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        {
+            profiles.push((tag, native.tag(tag, Some(0x80808E68))?));
         }
-        ensure!(
-            source.reference(cue.settings)? == 0x80800714,
-            "source cue settings class differs"
-        );
-        let p = source.read(cue.settings)?;
-        ensure!(
-            p.0.len() == 24 && p.u64(0)? == 24,
-            "source cue settings envelope differs"
-        );
-        let (tag, profile) = if let Some(overrides) = overrides {
-            let tag = overrides
-                .get(&cue.settings)
-                .context("named cue has no selected native settings")?;
-            profiles
-                .iter()
-                .find(|(candidate, _)| candidate == tag)
-                .context("selected native acoustic profile is absent")?
-        } else {
-            profiles
+        for cue in cues.values() {
+            if settings.contains_key(&cue.settings) {
+                continue;
+            }
+            ensure!(
+                source.reference(cue.settings)? == 0x80800714,
+                "source cue settings class differs"
+            );
+            let p = source.read(cue.settings)?;
+            ensure!(
+                p.0.len() == 24 && p.u64(0)? == 24,
+                "source cue settings envelope differs"
+            );
+            let (tag, profile) = profiles
                 .iter()
                 .find(|(_, native)| native.0 == p.0)
-                .context("source acoustic settings have no identical native profile")?
-        };
-        settings.insert(cue.settings, (*tag, profile.clone()));
+                .context("source acoustic settings have no identical native profile")?;
+            settings.insert(cue.settings, (*tag, profile.clone()));
+        }
     }
     // All data conversion is complete before nodes become visible to the graph assembler.
     fs::create_dir_all(folder)?;
     let mut nodes = Vec::new();
     let media_template = template(native, 26, 6)?;
     let bank_template = template(native, 26, 5)?;
-    let cue_template = class_template(native, 0x80809802)?;
-    let auxiliary_template = class_template(native, 0x80808E69)?;
-    let mut auxiliary = vec![0; 40];
-    auxiliary[..8].copy_from_slice(&40u64.to_le_bytes());
-    save(
-        folder,
-        &mut nodes,
-        "audio-auxiliary".into(),
-        auxiliary_template,
-        &auxiliary,
-        Vec::new(),
-    )?;
     for (&id, (tag, bytes)) in &converted_media {
         let index = save(
             folder,
@@ -374,17 +390,56 @@ fn prepare_with_settings(
                 .collect::<Vec<_>>()
         );
     }
-    for (&tag, (template, p)) in &settings {
-        save(
+    if route == Route::Graph {
+        emit_cues(
+            source,
+            native,
             folder,
             &mut nodes,
+            &cues,
+            &settings,
+            &converted_media,
+        )?;
+    }
+    Ok(
+        json!({"nodes":nodes,"cues":tags,"banks":banks.len(),"media":converted_media.len(),
+        "source_builds":source.report.builds,"source_stamp":source.report.stamp,"gameplay_verified":false}),
+    )
+}
+
+/// Graph cues reference their emitted settings, bank, auxiliary record and media by symbol.
+fn emit_cues(
+    source: &Source,
+    native: &mut Reader,
+    folder: &Path,
+    nodes: &mut Vec<Value>,
+    cues: &BTreeMap<u32, Cue>,
+    settings: &BTreeMap<u32, (u32, Arc<Payload>)>,
+    converted_media: &Media,
+) -> Result<()> {
+    let cue_template = class_template(native, 0x80809802)?;
+    let auxiliary_template = class_template(native, 0x80808E69)?;
+    let mut auxiliary = vec![0; 40];
+    auxiliary[..8].copy_from_slice(&40u64.to_le_bytes());
+    save(
+        folder,
+        nodes,
+        "audio-auxiliary".into(),
+        auxiliary_template,
+        &auxiliary,
+        Vec::new(),
+    )?;
+    for (&tag, (template, p)) in settings {
+        save(
+            folder,
+            nodes,
             symbol("settings", tag),
             *template,
             &p.0,
             Vec::new(),
         )?;
     }
-    for (&tag, cue) in &cues {
+    for (&tag, cue) in cues {
         let mut bytes = vec![0u8; 0x50 + cue.media.len() * 4];
         let length = bytes.len() as u64;
         bytes[..8].copy_from_slice(&length.to_le_bytes());
@@ -419,7 +474,7 @@ fn prepare_with_settings(
         }
         let index = save(
             folder,
-            &mut nodes,
+            nodes,
             cue_symbol(tag),
             cue_template,
             &bytes,
@@ -435,10 +490,7 @@ fn prepare_with_settings(
                 .collect::<Vec<_>>()
         );
     }
-    Ok(
-        json!({"nodes":nodes,"cues":tags,"banks":banks.len(),"media":converted_media.len(),
-        "source_builds":source.report.builds,"source_stamp":source.report.stamp,"gameplay_verified":false}),
-    )
+    Ok(())
 }
 
 impl Source {

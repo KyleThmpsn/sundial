@@ -119,7 +119,7 @@ fn item(r: &mut Reader, hash: u32) -> Result<(u32, std::sync::Arc<Payload>)> {
     Ok((tag, r.tag(tag, Some(0x8080799D))?))
 }
 
-fn action(r: &mut Reader, key: u32) -> Result<Option<u32>> {
+pub(crate) fn action(r: &mut Reader, key: u32) -> Result<Option<u32>> {
     if [0, u32::MAX, 0x811C9DC5].contains(&key) {
         return Ok(None);
     }
@@ -193,7 +193,7 @@ fn modifiers(
     Ok(json!(result))
 }
 
-fn entity(r: &mut Reader, tag: u32) -> Result<Value> {
+pub(crate) fn entity(r: &mut Reader, tag: u32) -> Result<Value> {
     let p = r.tag(tag, Some(0x80809AD8))?;
     let mut components = Vec::new();
     for row in rows(&p, 8, 12, 0x80809ACD)? {
@@ -283,6 +283,19 @@ fn node(r: &mut Reader, p: &Payload, row: usize, condition: bool) -> Result<Valu
         } else if class == 0x80803061 {
             record_lowering(&mut value, lower::state_value_condition(p, at));
         }
+    } else if class == 0x80803126 {
+        ensure!(kind == 6, "unexpected source damage-type dispatch");
+        value["source_damage_type"] = json!(p.u8(at + 2)?);
+        value["source_record"] = json!(hex::encode(p.bytes::<4>(at)?));
+    } else if class == 0x80803128 {
+        ensure!(kind == 3, "unexpected source spawn dispatch");
+        // Source dependency capture does not impose the narrower native spawn policy.
+        // Keep its full prefix and positioning fields even when native lowering refuses it.
+        value["source_record"] = json!(hex::encode(p.bytes::<144>(at)?));
+        value["source_record_complete"] = json!(false);
+        value["position"] = json!(p.u8(at + 56)?);
+        let target = r.ref64(p, at + 40)?;
+        value["entity"] = entity(r, target)?;
     } else if class == 0x808022E5 {
         record_lowering(&mut value, lower::component_value(p, at));
     } else if class == 0x808030F3 {

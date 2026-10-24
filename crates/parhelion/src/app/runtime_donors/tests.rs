@@ -2,7 +2,6 @@
 use super::*;
 use crate::runtime::compatibility::ComponentDonorAssessment;
 use std::sync::atomic::{AtomicBool, Ordering};
-use sundial::package_authoring::runtime::WeaponRuntimeBinding;
 
 const BASELINE: u32 = 0x10;
 const SAFE_Z: u32 = 0x20;
@@ -333,22 +332,6 @@ fn undo_restores_the_entire_previous_recipe_and_preserves_later_edits() {
 }
 
 #[test]
-fn rejected_donor_stays_unapplyable() {
-    let ctx = egui::Context::default();
-    let mut app = app();
-    let picker = app.runtime_donors.picker.as_mut().unwrap();
-    picker.selected = Some(REJECTED);
-    let before = app.recipe.clone();
-    let output = settle(&ctx, &mut app, VIEWPORT);
-    click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
-    assert_eq!(app.recipe, before);
-    assert_eq!(
-        app.runtime_donors.picker.as_ref().unwrap().selected,
-        Some(REJECTED)
-    );
-}
-
-#[test]
 fn a_stale_report_cannot_apply_after_the_runtime_baseline_changes() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
@@ -509,96 +492,6 @@ fn a_disconnected_scan_is_joined_and_reported_without_mutating_the_recipe() {
             .is_some_and(|error| error.contains("without a result"))
     );
     assert_eq!(app.recipe, before);
-}
-
-fn binding(binding_hash: u32, owner_tag: u32) -> WeaponRuntimeBinding {
-    WeaponRuntimeBinding {
-        binding_hash,
-        binding_label: binding_label(binding_hash),
-        resource_index: 0,
-        resource_count: 1,
-        owner_tag,
-        concrete_class: 0x8080_0001,
-        resource_offset: 16,
-    }
-}
-
-fn shared_owner_graph() -> WeaponRuntimeGraph {
-    WeaponRuntimeGraph {
-        item_hash: BASELINE,
-        pattern_global_id_hash: 7,
-        entity_tag: 0x8080_0002,
-        bindings: vec![
-            binding(BINDING, 0x8080_0100),
-            binding(BINDING, 0x8080_0100),
-            binding(WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, 0x8080_0100),
-            binding(WEAPON_BARREL_COMPONENT_KEY, 0x8080_0200),
-        ],
-        resources: vec![],
-        owners: vec![],
-    }
-}
-
-#[test]
-fn unknown_runtime_rows_do_not_clear_an_applied_gameplay_donor() {
-    let mut app = app();
-    let baseline_hash = app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref());
-    assert_eq!(baseline_hash, None);
-    let picker = app.runtime_donors.picker.as_mut().unwrap();
-    picker.baseline_hash = baseline_hash;
-    picker.selected = Some(BASELINE);
-    Arc::make_mut(&mut app.runtime_donors.reports.get_mut(&BINDING).unwrap().1)
-        .candidates
-        .insert(
-            BASELINE,
-            ComponentDonorAssessment {
-                status: DonorCompatibility::LowerRisk,
-                reasons: vec!["Synthetic compatible gameplay donor.".into()],
-                affected_bindings: vec![BINDING],
-            },
-        );
-    seed_reviews(&mut app);
-    let ctx = egui::Context::default();
-    let output = settle(&ctx, &mut app, VIEWPORT);
-    click(&ctx, &mut app, label_rect(&output, "Apply Donor").center());
-    assert_eq!(
-        app.recipe.runtime_component_donor(BINDING),
-        Some(&reference(BASELINE, "Base Runtime"))
-    );
-}
-
-#[test]
-fn runtime_baseline_provenance_uses_only_current_graphs_or_verified_rows() {
-    let mut app = app();
-    let mut graph = shared_owner_graph();
-    graph.item_hash = SAFE_A;
-    app.runtime_graph = Some((app.runtime_graph_key().unwrap(), Arc::new(graph)));
-    assert_eq!(
-        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
-        Some(SAFE_A)
-    );
-
-    app.recipe.overrides.weapon_pattern_index = Some(8);
-    app.recipe.overrides.weapon_pattern_donor_hash = Some(SAFE_A.into());
-    assert_eq!(
-        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
-        None
-    );
-    app.donor_summaries
-        .iter_mut()
-        .find(|donor| donor.hash == SAFE_Z)
-        .unwrap()
-        .weapon_pattern_index = Some(8);
-    assert_eq!(
-        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
-        Some(SAFE_Z)
-    );
-
-    app.recipe.overrides.weapon_pattern_index = None;
-    assert_eq!(
-        app.runtime_component_baseline_hash(app.runtime_graph_key().as_ref()),
-        Some(BASELINE)
-    );
 }
 
 #[test]

@@ -26,6 +26,7 @@ fn fresh_d1_and_d2_imports_carry_bundled_projectiles_into_staged_weapons() {
             &output.join("d1"),
             &NativeOptions {
                 xg_library: Some(configured("PARHELION_D1_XG")),
+                ..Default::default()
             },
             &mut |message| eprintln!("{message}"),
         )

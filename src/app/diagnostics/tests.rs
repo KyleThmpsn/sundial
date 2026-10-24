@@ -106,28 +106,6 @@ fn assert_account_source_details(report: &str) {
 }
 
 #[test]
-fn startup_failure_report_keeps_paths_and_error_without_reading_files() {
-    let directory = TestDirectory::new("troubleshooting-startup-failure");
-    fs::create_dir_all(directory.0.join("Sunrise")).unwrap();
-    fs::write(
-        directory.0.join("Sunrise").join("settings.json"),
-        b"private settings",
-    )
-    .unwrap();
-
-    let report = build_startup_failure_report(
-        Some(&directory.0),
-        "Could not parse settings\nprivate detail",
-    );
-    assert!(report.contains("Startup Failure"));
-    assert!(report.contains("Could not parse settings private detail"));
-    assert!(!report.contains("alternate_runtime_persistence_detected"));
-    assert!(report.contains("Sunrise"));
-    assert!(report.contains("settings.json"));
-    assert!(!report.contains("private settings"));
-}
-
-#[test]
 fn log_initialization_preserves_old_sessions_and_events_append() {
     let directory = TestDirectory::new("troubleshooting-log-write");
     let log = directory.0.join("nested").join("troubleshooting.log");

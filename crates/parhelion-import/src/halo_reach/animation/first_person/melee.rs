@@ -5,6 +5,56 @@ use crate::{presentation::put, tiger::animation::control::Rig};
 pub(super) const STATES: [u32; 2] = [0xFDCA54D9, 0xFDCA54DB];
 const PUNCH: u32 = 0x80C12945;
 
+pub(super) fn defaults(
+    source: &source::Source,
+    root: &Path,
+    native: &mut Reader,
+    carrier: &carrier::Carrier,
+) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for name in ["first_person:melee_strike_1", "first_person:melee_strike_2"] {
+        if source.supports(root, name)? {
+            timing(source, name)?;
+            names.push(name.to_owned());
+        }
+    }
+    if names.is_empty() {
+        return Ok(names);
+    }
+    let states = carrier
+        .states
+        .array(8, 8, Some(0x8080342E))?
+        .into_iter()
+        .map(|row| carrier.states.u32(row))
+        .collect::<Result<BTreeSet<_>>>()?;
+    if !STATES.iter().all(|state| states.contains(state)) {
+        return Ok(Vec::new());
+    }
+    let clips = carrier.bank.array(8, 4, Some(0x80808F48))?;
+    for state in STATES {
+        for descriptor in animation::state::descriptors(&carrier.states, state)? {
+            let row = *carrier
+                .descriptors
+                .get(descriptor)
+                .context("Native strike descriptor")?;
+            if carrier.bank.u16(row + 26)? != 1 {
+                return Ok(Vec::new());
+            }
+            let slot = usize::from(carrier.bank.u16(row + 24)?);
+            let clip = native.tag(
+                carrier
+                    .bank
+                    .u32(*clips.get(slot).context("Native strike clip")?)?,
+                Some(0x80808F49),
+            )?;
+            // Validate the existing attack envelope before selecting source motion.
+            let (frames, primary, sound_frame, _) = timing(source, &names[0])?;
+            envelope(&clip, frames, primary, sound_frame, 1)?;
+        }
+    }
+    Ok(names)
+}
+
 pub(super) struct Strike {
     pub state: u32,
     pub descriptor: usize,
@@ -212,6 +262,7 @@ pub(super) fn prepare(
     controls: &Payload,
     calibration: &motion::Calibration,
     names: &[String],
+    source_audio: bool,
 ) -> Result<Vec<Strike>> {
     ensure!(
         !names.is_empty()
@@ -240,22 +291,29 @@ pub(super) fn prepare(
             for name in names {
                 let (frames, primary, sound_frame, source_sound) = timing(source, name)?;
                 let marker = hash(&format!("reach/melee/{state:08X}/{descriptor}/{name}"));
-                let (envelope, sound_index, timing) =
-                    envelope(&clip, frames, primary, sound_frame, marker)?;
+                let playback_frame = if source_audio { sound_frame } else { primary };
+                let (envelope, sound_index, mut timing) =
+                    envelope(&clip, frames, primary, playback_frame, marker)?;
+                timing["source_sound_frame"] = json!(sound_frame);
+                timing["translated_sound_frame"] = json!(playback_frame);
                 let source_frames = source.clip(source_root, name, frames)?;
                 let translated = calibration.translate(&source_frames, rig)?;
-                let payload = animation::clip::replace_for(
+                let mut payload = animation::clip::replace_for(
                     &envelope,
                     &translated.poses,
                     rig.bind.len(),
                     controls,
                 )?;
+                let released_constraints = constraint::release(&mut payload, rig)
+                    .with_context(|| format!("Source strike {name}, native clip {template:08X}"))?;
                 strikes.push(Strike { state, descriptor, template, marker, payload,
                     hands:translated.hand_slots,
                     report:json!({"state":format!("{state:08X}"),"native_descriptor":descriptor,
                         "source_clip":name,"source_sound":source_sound,"frames":frames,
                         "clip_name":format!("{marker:08X}"),"sound_event_index":sound_index,
+                        "source_audio":source_audio,"source_sound_frame":sound_frame,
                         "native_sound":format!("{PUNCH:08X}"),"timing":timing,
+                        "released_hand_constraints":released_constraints,
                         "maximum_shoulder_reach_adjustment_metres":translated.shoulder_reach_adjustment}) });
             }
         }

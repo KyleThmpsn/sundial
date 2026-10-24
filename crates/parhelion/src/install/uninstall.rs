@@ -14,35 +14,6 @@ pub struct UninstallPlan {
 }
 
 impl UninstallPlan {
-    #[cfg(test)]
-    pub(crate) fn preview_fixture() -> Self {
-        Self {
-            mod_folder: None,
-            mod_family: BTreeMap::new(),
-            target: PathBuf::from("C:/Example Game/packages"),
-            artifacts: AUTHORED_PACKAGES
-                .iter()
-                .map(|profile| ArtifactMetadata {
-                    file_name: profile.file_name.into(),
-                    byte_length: 100,
-                    sha256: "0".repeat(64),
-                })
-                .collect(),
-            stock: vec![],
-            cleanup: Some(AuthoredAccountCleanup {
-                settings_path: PathBuf::from("C:/Example Game/Sunrise/settings.json"),
-                original_bytes: vec![],
-                cleaned_bytes: vec![],
-                removed_items: BTreeMap::from([(100, 2)]),
-                resized_items: BTreeMap::new(),
-                slot_moves: vec![],
-                cleared_plugs: 1,
-                cleared_unlocks: 3,
-                removed_reward_rules: 0,
-            }),
-            cleanup_error: None,
-        }
-    }
     pub fn target(&self) -> &Path {
         &self.target
     }

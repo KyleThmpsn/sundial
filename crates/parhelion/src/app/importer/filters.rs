@@ -127,12 +127,14 @@ fn choice<T: Clone + PartialEq>(
     changed
 }
 
-/// Halo: Reach and Marathon rows carry a kind and a source type only.
+/// Halo: Reach and Marathon rows carry a kind and a source type only. Marathon also shows its
+/// animation preference, which changes `animations` without counting as a filter change.
 fn draw_source(
     ui: &mut egui::Ui,
     browser: &mut browser::Browser,
     items: &[Weapon],
     source: Source,
+    animations: &mut bool,
 ) -> bool {
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
@@ -178,15 +180,13 @@ fn draw_source(
         changed |= ui
             .checkbox(&mut browser.show_installed, "Show Installed")
             .changed();
-        changed |= supported_only(ui, browser);
+        if source == Source::Marathon {
+            ui.checkbox(animations, "Marathon Animations").on_hover_text(
+                "Experimental. Imports play the weapon's own Marathon animations instead of the donor's.",
+            );
+        }
     });
     changed
-}
-
-fn supported_only(ui: &mut egui::Ui, browser: &mut browser::Browser) -> bool {
-    ui.checkbox(&mut browser.supported_only, "Supported Only")
-        .on_hover_text("Hide items with no donor.")
-        .changed()
 }
 
 pub(super) fn draw(
@@ -194,9 +194,10 @@ pub(super) fn draw(
     browser: &mut browser::Browser,
     items: &[Weapon],
     source: Source,
+    animations: &mut bool,
 ) -> bool {
     if !matches!(source, Source::Modern | Source::Roi) {
-        return draw_source(ui, browser, items, source);
+        return draw_source(ui, browser, items, source, animations);
     }
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
@@ -338,7 +339,6 @@ pub(super) fn draw(
                 )
                 .changed();
         }
-        changed |= supported_only(ui, browser);
     });
     changed
 }

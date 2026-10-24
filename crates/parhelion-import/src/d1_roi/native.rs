@@ -10,6 +10,7 @@ mod dye;
 mod geometry;
 mod icon;
 mod material;
+mod perk;
 mod plate;
 mod recipe;
 mod resource;
@@ -20,6 +21,9 @@ mod weapon;
 pub struct NativeOptions {
     /// Retained for existing callers. Texture conversion is built in and ignores this path.
     pub xg_library: Option<PathBuf>,
+    /// A saved recipe's namespace that a reimport keeps, so the authored item retains its
+    /// identity and edits whichever naming scheme made it. Unset for a new import.
+    pub namespace: Option<String>,
 }
 
 struct Assembly<'a> {

@@ -47,7 +47,8 @@ impl AuthoredAccountCleanup {
 
 /// Verified native socket layouts for a retained definition in a replacement generation.
 /// Account proposals preserve existing selections and use new defaults only for added sockets,
-/// and for lanes whose default changed when a saved selection still holds the old default.
+/// for lanes whose default changed when a saved selection still holds the old default, and for
+/// saved selections the replacement removes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthoredSocketChange {
     pub definition_hash: u32,
@@ -70,6 +71,14 @@ impl AuthoredSocketChange {
             .iter()
             .find(|(replaced, _)| *replaced == lane)?;
         (saved == Some(*old)).then(|| self.default_plugs.get(lane).copied().flatten())
+    }
+
+    /// The plug a saved selection in `lane` falls back to when the replacement removes the plug
+    /// it holds: the lane's incoming default, so the kept item's socket is not left empty. `None`
+    /// is an empty lane, where the incoming default is empty or the lane is gone.
+    #[must_use]
+    pub fn fallback(&self, lane: usize) -> Option<u32> {
+        self.default_plugs.get(lane).copied().flatten()
     }
 }
 

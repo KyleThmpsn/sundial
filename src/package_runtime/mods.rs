@@ -15,6 +15,7 @@ pub use family::{
 };
 pub mod map_diagnostics;
 pub mod merge;
+pub mod mission_script;
 pub mod plaintext;
 mod view;
 pub use content::{Coexistence, Incoming};
@@ -198,6 +199,17 @@ impl Receipt {
         let mut names = BTreeSet::new();
         let mut packages = BTreeSet::new();
         for artifact in &self.artifacts {
+            if mission_script::valid_path(&artifact.path) {
+                if self.mod_id != ID
+                    || !names.insert(artifact.path.clone())
+                    || artifact.byte_length == 0
+                    || artifact.byte_length > mission_script::BYTE_LIMIT
+                    || !valid_sha256(&artifact.sha256)
+                {
+                    return Err("Invalid managed mission controller receipt".into());
+                }
+                continue;
+            }
             if artifact.path == map_diagnostics::FILE_NAME {
                 if self.mod_id != ID
                     || !names.insert(artifact.path.clone())
@@ -443,6 +455,11 @@ fn member_files(install: &Path, id: &str, folder: &Path) -> Result<Vec<PathBuf>,
         .map(|a| a.path.clone())
         .collect::<BTreeSet<_>>();
     let mut actual = BTreeSet::new();
+    actual.extend(
+        mission_script::files(folder)?
+            .into_iter()
+            .map(|(relative, _)| relative),
+    );
     let diagnostics = folder.join(map_diagnostics::FILE_NAME);
     checked_path(install, &diagnostics)?;
     if diagnostics.try_exists().map_err(|e| e.to_string())? {
@@ -484,9 +501,7 @@ fn member_files(install: &Path, id: &str, folder: &Path) -> Result<Vec<PathBuf>,
             ));
         }
         let name = path.file_name().ok_or("Mod package has no filename")?;
-        if artifact.path != map_diagnostics::FILE_NAME
-            && install.join("packages").join(name).exists()
-        {
+        if artifact.path.ends_with(".pkg") && install.join("packages").join(name).exists() {
             return Err("Both legacy and mod-folder Parhelion packages are present. Recover or review the upgrade before reading content.".into());
         }
         files.push(path);

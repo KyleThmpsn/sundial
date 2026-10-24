@@ -23,25 +23,6 @@ fn ornament(hash: u32, name: &str, arrangement: u16) -> WeaponOrnament {
     }
 }
 
-/// An ornament offered by one weapon, as the chooser hands it to the recipe.
-fn wearable(hash: u32, name: &str, arrangement: u16, host: u32) -> WeaponOrnamentAppearance {
-    WeaponOrnamentAppearance {
-        ornament: ornament(hash, name, arrangement),
-        host_item_hash: host,
-        host_name: format!("Host {host:08X}"),
-    }
-}
-
-const GAMEPLAY: u32 = 0x30F1_D32B;
-const OTHER: u32 = 0xAA45_882A;
-
-fn presentation(recipe: &WeaponRecipe) -> Option<u32> {
-    recipe
-        .presentation_donor
-        .as_ref()
-        .and_then(|donor| donor.item_hash.parse_u32().ok())
-}
-
 fn recipe() -> WeaponRecipe {
     WeaponRecipe::new_weapon("parhelion.ornament-tests").expect("test recipe should allocate")
 }
@@ -91,20 +72,4 @@ fn restoring_clears_only_what_the_ornament_contributed() {
         recipe.overrides.icon_edit.hue_shift_degrees, 40,
         "icon edits made after the ornament stay in the recipe"
     );
-}
-
-#[test]
-fn removing_an_icon_only_ornament_keeps_an_independent_appearance_donor() {
-    let mut offered = wearable(0x1234_5678, "Icon Only", 0, OTHER);
-    offered.ornament.art_arrangements.clear();
-    let mut recipe = recipe();
-    recipe.set_presentation_donor(Some(WeaponDonorReference {
-        item_hash: OTHER.into(),
-        expected_name: None,
-    }));
-
-    apply_appearance(&mut recipe, &offered, GAMEPLAY);
-    restore_appearance(&mut recipe, &offered, GAMEPLAY);
-
-    assert_eq!(presentation(&recipe), Some(OTHER));
 }

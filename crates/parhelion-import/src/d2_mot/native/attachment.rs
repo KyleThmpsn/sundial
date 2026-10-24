@@ -13,7 +13,6 @@ use crate::d2_mot::{
     particles,
     payload::Payload,
     reader::{Reader, write_json},
-    tfx,
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -189,7 +188,7 @@ pub fn convert(source: &mut Reader, native: &mut Reader, request: &Request<'_>) 
         let mut reader = Reader::new(packages, &folder, modern)?;
         write_json(
             &folder.join("context.json"),
-            &tfx::context(&mut reader, modern)?,
+            &crate::tiger::shader::globals::read(&mut reader, modern)?,
         )?;
         reader.finish()?;
     }

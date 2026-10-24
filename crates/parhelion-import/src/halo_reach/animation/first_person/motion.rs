@@ -58,7 +58,7 @@ impl Calibration {
             defaults[grip_slot][4 + axis] += offset;
         }
         let baseline = rig.objects(&defaults)?;
-        let source_gun = index("b_gun")?;
+        let source_gun = source.root;
         let align = baseline[gun].then(source_reference[source_gun].inverse());
         let source_bind = source.bind_objects();
         let mut selected = BTreeMap::new();
@@ -117,11 +117,7 @@ impl Calibration {
             let role = aliases
                 .get(name)
                 .map(String::as_str)
-                .unwrap_or(match name.as_str() {
-                    "b_gun" | "b_weapon" => "b_handle",
-                    "b_mag" => "b_magazine",
-                    other => other,
-                });
+                .unwrap_or_else(|| source.weapon_role(name));
             let Some(bone) = rig.names.iter().position(|&value| value == hash(role)) else {
                 parts.push(json!({"source":name,"native_role":role,"status":"unmapped"}));
                 continue;

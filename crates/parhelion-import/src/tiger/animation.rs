@@ -7,6 +7,7 @@ pub mod motion_table;
 pub mod pose;
 pub mod rig;
 pub mod runtime;
+pub mod sections;
 pub mod state;
 
 pub fn bank_field(payload: &crate::tiger::payload::Payload) -> anyhow::Result<usize> {

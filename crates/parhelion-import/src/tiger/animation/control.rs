@@ -72,6 +72,8 @@ pub struct Rig {
     pub defaults: Vec<[f32; 8]>,
     pub bind: Vec<Pose>,
     pub names: Vec<u32>,
+    /// Hierarchy parents, which uncontrolled bones and weapon sections follow.
+    pub parents: Vec<Option<usize>>,
 }
 
 fn poses(p: &Payload, at: usize) -> Result<Vec<[f32; 8]>> {
@@ -113,6 +115,13 @@ impl Rig {
         let names = hierarchy
             .iter()
             .map(|&at| skeleton.u32(at))
+            .collect::<Result<Vec<_>>>()?;
+        let parents = hierarchy
+            .iter()
+            .map(|&at| {
+                let parent = skeleton.u32(at + 4)? as i32;
+                Ok((parent >= 0).then_some(parent as usize))
+            })
             .collect::<Result<Vec<_>>>()?;
         let defaults = poses(controls, c + 0xB0)?;
         let inverse = controls.array(c + 0xD8, 2, None)?;
@@ -183,6 +192,7 @@ impl Rig {
             defaults,
             bind,
             names,
+            parents,
         })
     }
 

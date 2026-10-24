@@ -72,7 +72,7 @@ pub(super) fn refresh(g: &mut Graph, draws: &Draws) -> Result<()> {
 
 /// A source part's attachment slot: selector, position, assignment, models and
 /// whether the slot is a source art region.
-type Group = (u64, usize, u32, BTreeSet<String>, bool);
+type Group = (u64, Vec<usize>, u32, BTreeSet<String>, bool);
 
 /// Promote source parts an older graph already split with donor slots into the
 /// new source array.
@@ -110,6 +110,15 @@ fn promote(g: &mut Graph, source_parts: &[Value], regions: &BTreeSet<u64>) -> Re
         );
         part["assignment"] = json!(tag(&matches[0]["assignment"])?);
         part["source_region"] = json!(true);
+        part["positions"] = json!(
+            matches[0]["placements"]
+                .as_array()
+                .context("source placements")?
+                .iter()
+                .filter(|p| p["selector"] == part["selector"])
+                .map(|p| number(&p["position"]))
+                .collect::<Result<BTreeSet<_>>>()?
+        );
     }
     Ok(())
 }
@@ -164,10 +173,17 @@ fn slot(
             ))
         })
         .collect::<BTreeSet<_>>();
-    if slots.len() != 1 {
+    let Some(&(selector, position)) = slots.first() else {
+        return Ok(None);
+    };
+    // One assignment can occur repeatedly in a source region. It owns one
+    // model and channel bank, with every original alternative pointing to it.
+    // Placements spanning unrelated selectors still require composition.
+    if slots.len() != 1
+        && (!regions.contains(&selector) || slots.iter().any(|(other, _)| *other != selector))
+    {
         return Ok(None);
     }
-    let (selector, position) = *slots.first().context("source slot")?;
     // Selector zero is the weapon body. Keep it on the chosen marker host,
     // including swords whose native body and marker-bearing slots differ.
     if selector == 0 {
@@ -197,7 +213,7 @@ fn slot(
     }
     Ok(Some((
         selector,
-        position,
+        slots.into_iter().map(|(_, position)| position).collect(),
         assignment,
         models,
         source_region,
@@ -376,9 +392,10 @@ pub(super) fn separate(
         );
     }
     let mut selected_count = 0;
-    for (index, (selector, position, assignment, models, source_region)) in
+    for (index, (selector, positions, assignment, models, source_region)) in
         groups.into_iter().enumerate()
     {
+        let position = *positions.first().context("source part positions")?;
         let prefix = format!("part-{}", first_index + index);
         let names = core
             .iter()
@@ -405,7 +422,7 @@ pub(super) fn separate(
         );
         description.push(
             json!({"assignment":assignment,"key":art_key,"selector":selector,
-            "position":position,"source_region":source_region,"source_models":models,"parent":names["parent"],
+            "position":position,"positions":positions,"source_region":source_region,"source_models":models,"parent":names["parent"],
             "entity":names["entity"],"owner":names["owner"],"model":names["model"],
             "draw_count":count,"gameplay_verified":false}),
         );

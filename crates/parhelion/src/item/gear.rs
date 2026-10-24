@@ -95,7 +95,13 @@ fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
             overrides.hud_icon.is_some() && spec.kind != ItemKind::Sparrow,
             "an ammo HUD icon",
         ),
-        (overrides.base_sandbox_perks.is_some(), "base perks"),
+        (
+            overrides
+                .base_sandbox_perks
+                .as_ref()
+                .is_some_and(|perks| spec.kind != ItemKind::Armor || !perks.is_empty()),
+            "base perks other than clearing armor's inherited perks",
+        ),
         (overrides.trait_indices.is_some(), "item traits"),
         (overrides.max_stack_size.is_some(), "a stack size"),
         (
@@ -1200,6 +1206,14 @@ pub(super) fn validate_payloads(
 ) -> AuthoringResult<()> {
     validate_item_root_holder_bounds(definition)?;
     native_slot(definition, spec.kind)?;
+    if let Some(perks) = &spec.overrides.base_sandbox_perks
+        && (weapon_sandbox_perks(definition)? != *perks
+            || item_string_sandbox_perk_count(strings)? != perks.len())
+    {
+        return Err(validation(
+            "Authored armor retained inherited base perks or their display rows",
+        ));
+    }
     if let Some(selected) = spec.overrides.armor_class {
         let actual =
             sundial::package_authoring::investment_schema::armor_equipment_class(definition)

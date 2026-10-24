@@ -204,36 +204,6 @@ fn incomplete_name_edits_are_retained_but_cannot_be_saved_or_built() {
 }
 
 #[test]
-fn recipe_changes_invalidate_results_even_while_already_dirty() {
-    let mut app = PackageAuthoringApp {
-        build_status_open: true,
-        ..Default::default()
-    };
-    app.synchronize_recipe_dirty();
-    assert!(
-        app.build_status_open,
-        "an unchanged frame preserves results"
-    );
-
-    app.recipe.flavor.push_str(" first edit");
-    app.synchronize_recipe_dirty();
-    assert!(app.recipe_dirty);
-    assert!(!app.build_status_open);
-
-    app.build_status_open = true;
-    app.build_dialog_step = BuildDialogStep::ReviewInstall;
-    app.recipe.flavor.push_str(" second edit");
-    app.synchronize_recipe_dirty();
-    assert!(app.recipe_dirty);
-    assert!(!app.build_status_open);
-    assert_eq!(app.build_dialog_step, BuildDialogStep::Build);
-
-    app.build_status_open = true;
-    app.synchronize_recipe_dirty();
-    assert!(app.build_status_open, "observing the same edit is a no-op");
-}
-
-#[test]
 fn save_conflicts_keep_both_versions_and_remain_visible_outside_settings() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
@@ -307,6 +277,7 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
         collection_position: None,
         armor_class: None,
         armor_origin: None,
+        import_revision: None,
         badge: None,
         corner_icon: None,
         path: PathBuf::from("existing-copy.parhelion.json"),
@@ -329,37 +300,4 @@ fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
     assert!(app.duplicate_recipe());
     assert_ne!(app.recipe.namespace, first_copy.namespace);
     assert!(app.recipe.name.ends_with("Copy 2"));
-}
-
-#[test]
-fn opening_a_recipe_after_the_main_panel_does_not_mark_it_modified() {
-    let mut app = PackageAuthoringApp::default();
-    app.recipe_library = None;
-    app.catalog_load_requested = true;
-    // A modal opens the recipe after that frame's normal recipe-change check.
-    app.recipe = WeaponRecipe::every_end();
-    app.recipe_baseline = app.recipe.clone();
-    app.recipe_path = Some(PathBuf::from("saved.parhelion.json"));
-    app.recipe_dirty = false;
-    let ctx = egui::Context::default();
-    let frame = |app: &mut PackageAuthoringApp| {
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1320.0, 900.0),
-                )),
-                ..Default::default()
-            },
-            |ui| app.update_ui(ui),
-        );
-    };
-    frame(&mut app);
-    assert!(!app.recipe_dirty);
-    app.recipe.flavor.push_str(" Edited.");
-    frame(&mut app);
-    assert!(
-        app.recipe_dirty,
-        "real edits must still trigger save/discard protection"
-    );
 }

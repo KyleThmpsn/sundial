@@ -90,17 +90,20 @@ pub(super) fn native(
         !matches!(stop, 0 | u32::MAX | 0x811c9dc5),
         "Native loop has no stop event"
     );
-    let output_bus = options
-        .fire_bus
-        .context("Configure the native firing loop bus")?;
-    verify_bus(
+    let output_bus = selection::output_bus(
         &reader
             .tag(
                 u32::from_str_radix(native["bank"].as_str().context("Native loop bank")?, 16)?,
                 None,
             )?
             .0,
-        output_bus,
+        options.fire_bus,
+        u32::from_str_radix(
+            native["event_id"]
+                .as_str()
+                .context("Native loop start event")?,
+            16,
+        )?,
     )?;
     let mut layers = Vec::new();
     let mut ids = BTreeSet::<u32>::new();

@@ -147,6 +147,12 @@ impl Program {
                 0x3C => match (arg()?, arg()?) {
                     (FRAME, 0 | 1) => Op::Time,
                     (FRAME, _) => Op::Value([0.0; 4]),
+                    // The native view scope combines these scalars into
+                    // (width, height, 1/width, 1/height). Stored material
+                    // evaluation has no render target yet. Use the square
+                    // 768-pixel inventory studio, without treating it as a
+                    // closed constant or a capture of the game's viewport.
+                    (2, 0 | 1) if surface.is_some() => Op::Value([768.0; 4]),
                     (source, element) => {
                         return Err(format!(
                             "Shader animation requires game state unavailable in the preview ({source}:{element})"

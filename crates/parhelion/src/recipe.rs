@@ -358,6 +358,12 @@ pub struct WeaponSocketColumnRecipe {
     pub reusable_plug_set_index: Option<u16>,
     pub randomized_plug_set_index: Option<u16>,
     pub randomized_selection_program: Vec<WeaponNumericInstructionRecipe>,
+    /// How many leading `choices` stay freely swappable in the socket's own list. When set, every
+    /// choice also joins a private randomized plug set the socket rolls from, the way a stock
+    /// random-roll perk column keeps its curated perks beside its randomized pool. Omitted keeps
+    /// every choice swappable and adds no pool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reusable_choices: Option<u16>,
 }
 
 /// Runtime edits applied through a private clone of one finished sandbox perk on a socket plug.

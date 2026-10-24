@@ -270,7 +270,7 @@ fn inline_label_arrays_offer_all_four_operations_even_when_stock_lists_are_empty
     for entry in nodes::CONDITIONS
         .iter()
         .chain(&nodes::EFFECTS)
-        .filter(|entry| entry.observed())
+        .filter(|entry| entry.has_layout())
     {
         for (offset, class, _) in schema::inline(entry.class).unwrap() {
             if class != labels::SOURCE_CLASS {
@@ -299,7 +299,7 @@ fn typed_references_reject_wrong_rows_and_allow_new_condition_kinds() {
     graph.create_target(0, 16, 0x80803E32, true).unwrap();
     let rows = graph.blocks[0].links[&16];
     graph.resize_array(rows, 1).unwrap();
-    for entry in nodes::CONDITIONS.iter().filter(|entry| entry.observed()) {
+    for entry in nodes::CONDITIONS.iter().filter(|entry| entry.has_layout()) {
         graph.create_target(rows, 0, entry.class, false).unwrap();
     }
     assert!(

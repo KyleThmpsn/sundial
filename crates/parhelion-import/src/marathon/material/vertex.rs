@@ -1,4 +1,4 @@
-//! Native rigid motion with checked source-local material varyings.
+//! Native weighted motion with checked source-local material varyings.
 use super::*;
 use crate::tiger::shader::dxil::{arguments, id, number};
 mod flow;
@@ -32,6 +32,22 @@ struct Source<'a> {
 }
 
 impl Source<'_> {
+    fn literal_position(
+        &self,
+        outputs: &[dxil::Field],
+        writes: &BTreeMap<(u32, u32), &str>,
+    ) -> Result<Option<String>> {
+        let Some((ordinal, field)) = outputs
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.semantic.eq_ignore_ascii_case("SV_Position"))
+        else {
+            return Ok(None);
+        };
+        ensure!(field.width == 4, "Source projected position width");
+        self.literal_output(writes, ordinal, 4)
+    }
+
     fn selected<'a>(&'a self, value: &'a str, depth: usize) -> Result<&'a str> {
         ensure!(depth < 32, "Source varying phi exceeds budget");
         if !value
@@ -334,12 +350,36 @@ fn inverse(m: &[f32; 16]) -> Result<[[f32; 4]; 3]> {
     Ok(result)
 }
 
+fn validate_projection(source: &Source<'_>, projection: Option<reticle::Projection>) -> Result<()> {
+    let Some(projection) = projection else {
+        return Ok(());
+    };
+    let mut rows = BTreeSet::new();
+    for definition in source
+        .definitions
+        .values()
+        .filter(|definition| definition.contains("@dx.op.cbufferLoadLegacy.f32("))
+    {
+        let (_, args) = call(definition)?;
+        if source.binding(args[1])? == (2, 0) {
+            rows.insert(number(args[2])?);
+        }
+    }
+    ensure!(
+        rows == (u32::from(projection.matrix)..=u32::from(projection.depth)).collect(),
+        "Reticle vertex reads a different projection layout"
+    );
+    Ok(())
+}
+
 pub(super) fn hlsl(
     listing: &str,
     pixel: &[u8],
     surface: &geometry::Surface,
     constants: &[[u8; 16]],
     dynamic: &BTreeSet<usize>,
+    motion: (&str, u32),
+    projection: Option<reticle::Projection>,
 ) -> Result<(String, bool)> {
     let inputs = dxil::signature(listing, true)?;
     let outputs = dxil::signature(listing, false)?;
@@ -352,6 +392,7 @@ pub(super) fn hlsl(
         flow: flow::Flow::default(),
     };
     let writes = read_entry(listing, &mut source)?;
+    validate_projection(&source, projection)?;
     // Read/write masks come from FXC's optimized input signature. Velocity
     // inputs removed with their render target need no native producer.
     let range =
@@ -362,16 +403,18 @@ pub(super) fn hlsl(
     let mut assignments = Vec::new();
     let mut colors = false;
     let mut position = false;
-    if let Some((ordinal, field)) = outputs
-        .iter()
-        .enumerate()
-        .find(|(_, f)| f.semantic.eq_ignore_ascii_case("SV_Position"))
-    {
-        ensure!(field.width == 4, "Source projected position width");
-        if let Some(value) = source.literal_output(&writes, ordinal, 4)? {
-            assignments.push(format!("projected={value};"));
-        }
+    if let Some(value) = source.literal_position(&outputs, &writes)? {
+        assignments.push(format!("projected={value};"));
     }
+    // A scope cutout adds its aperture point above every source varying, so it is the highest
+    // pixel varying.
+    let aperture = surface.cutout.as_ref().and_then(|_| {
+        pixel_fields
+            .iter()
+            .filter(|(semantic, ..)| semantic == "TEXCOORD")
+            .map(|(_, index, ..)| *index)
+            .max()
+    });
     for (pixel_ordinal, (semantic, index, _, mask)) in pixel_fields.iter().enumerate() {
         if semantic.eq_ignore_ascii_case("SV_Position") {
             parameters.push("out float4 projected:SV_POSITION0".into());
@@ -383,9 +426,20 @@ pub(super) fn hlsl(
         }
         ensure!(
             semantic == "TEXCOORD" && matches!(*mask, 1 | 3 | 7 | 15),
-            "Unsupported pixel varying signature"
+            "Unsupported pixel varying signature {semantic}{index} with mask {mask:X}"
         );
         let width = mask.count_ones() as usize;
+        if aperture == Some(*index)
+            && let Some(lens) = &surface.cutout
+        {
+            ensure!(width == 4, "Scope aperture varying width differs");
+            let vector = |v: &[f32; 3]| v.iter().map(|v| float(*v)).collect::<Vec<_>>().join(",");
+            parameters.push(format!("out float4 aperturePoint:TEXCOORD{index}"));
+            assignments.push(format!(
+                "float3 apertureLocal=p.xyz-float3({});\naperturePoint=float4(dot(apertureLocal,float3({})),dot(apertureLocal,float3({})),0,0);",
+                vector(&lens.center), vector(&lens.axes[0]), vector(&lens.axes[1])));
+            continue;
+        }
         let (ordinal, field) = outputs
             .iter()
             .enumerate()
@@ -414,6 +468,8 @@ pub(super) fn hlsl(
                 1 => "float4(t,p.z)".into(),
                 2 => "cross(n,t)*tangent.w".into(),
                 3 => "tex.xyxy".into(),
+                4 if surface.stage == 17 => "reticleView".into(),
+                4 | 7 if surface.stage == 17 => "world".into(),
                 4 => "world".into(),
                 _ => {
                     let components = (0..width)
@@ -441,7 +497,17 @@ pub(super) fn hlsl(
     if !position {
         parameters.push("out float4 projected:SV_POSITION0".into());
     }
-    Ok((program(surface, &parameters, &assignments, colors)?, colors))
+    Ok((
+        program(
+            surface,
+            &parameters,
+            &assignments,
+            colors,
+            motion,
+            projection,
+        )?,
+        colors,
+    ))
 }
 
 fn read_entry<'a>(
@@ -451,21 +517,7 @@ fn read_entry<'a>(
     let mut writes = BTreeMap::new();
     // DXC also emits intrinsic declarations. Only the executable body owns
     // SSA definitions and output writes, and each function has its own SSA IDs.
-    let mut functions = listing.split("define void @").skip(1);
-    let function = functions
-        .next()
-        .context("Missing source vertex entry point")?;
-    ensure!(
-        functions.next().is_none(),
-        "Multiple source vertex entry points"
-    );
-    let body = function
-        .split_once("() {")
-        .context("Unsupported source vertex entry point")?
-        .1
-        .split_once("\n}")
-        .context("Unterminated source vertex entry point")?
-        .0;
+    let body = dxil::entry(listing)?;
     for line in body.lines().map(str::trim) {
         let line = line.split(';').next().unwrap().trim();
         if let Some((name, code)) = line.strip_prefix('%').and_then(|s| s.split_once(" = ")) {
@@ -487,36 +539,64 @@ fn program(
     parameters: &[String],
     assignments: &[String],
     colors: bool,
+    motion: (&str, u32),
+    projection: Option<reticle::Projection>,
 ) -> Result<String> {
     let inv = inverse(&surface.transform)?;
     let vector = |row: &[f32]| row.iter().map(|v| float(*v)).collect::<Vec<_>>().join(",");
     Ok(format!(
         r#"
-cbuffer Object:register(b11) {{float4 objectData[776];}};
+cbuffer Object:register(b11) {{float4 objectData[{object_rows}];}};
 cbuffer View:register(b12) {{float4 viewData[14];}};
+{reticle_buffer}
 {color_texture}
-void main(float4 position:POSITION0,float2 uv:TEXCOORD0,float4 normal:NORMAL0,float4 tangent:TANGENT0,uint vertexId:SV_VertexID,
+{motion}
+void main(float4 position:POSITION0,float4 weight:BLENDWEIGHT0,uint4 bone:BLENDINDICES0,float2 uv:TEXCOORD0,float4 normal:NORMAL0,float4 tangent:TANGENT0,uint vertexId:SV_VertexID,
 {parameters}) {{
 float4 p=float4(position.xyz*objectData[5].w+objectData[5].xyz,1);
-float4 r0=objectData[8],r1=objectData[9],r2=objectData[10];
-float3 world=float3(dot(r0,p),dot(r1,p),dot(r2,p));
-float3 n=normalize(float3(dot(r0.xyz,normal.xyz),dot(r1.xyz,normal.xyz),dot(r2.xyz,normal.xyz)));
-float3 t=normalize(float3(dot(r0.xyz,tangent.xyz),dot(r1.xyz,tangent.xyz),dot(r2.xyz,tangent.xyz)));
+float3 world,n,t;
+deform(p,normal.xyz,tangent.xyz,weight,bone,world,n,t);
 float3 relative=world-viewData[7].xyz;
 projected=viewData[0]*relative.x+viewData[1]*relative.y+viewData[2]*relative.z+viewData[13];
 float2 tex=uv*objectData[6].xy+objectData[6].zw;
 float4 inverse0=float4({inverse0}),inverse1=float4({inverse1}),inverse2=float4({inverse2});
 float3 local=float3(dot(inverse0,p),dot(inverse1,p),dot(inverse2,p));
+{reticle_projection}
 float3 sourcePosition=(local-float3({offset}))/float3({scale});
 float3 sourceNormal=float3(dot(inverse0.xyz,normal.xyz),dot(inverse1.xyz,normal.xyz),dot(inverse2.xyz,normal.xyz));
 {color_load}
 {assignments}
 }}
 "#,
+        object_rows = 8 + motion.1 * 3,
+        motion = motion.0,
         color_texture = if colors {
             "Texture2D<float4> colors:register(t0);"
         } else {
             ""
+        },
+        reticle_buffer = if let Some(projection) = projection {
+            format!(
+                "cbuffer Reticle:register(b0){{float4 reticleData[{}];}};",
+                projection.vectors
+            )
+        } else {
+            String::new()
+        },
+        reticle_projection = if let Some(projection) = projection {
+            // Reticle vertices are camera-relative artwork, unlike the physical lens.
+            // Undo attachment placement before the native scope projection consumes them.
+            format!(
+                "float3 reticlePosition=local-float3(0,0,reticleData[{depth}].x);\nfloat4 q=reticleData[{m}]*reticlePosition.x+reticleData[{m1}]*reticlePosition.y+reticleData[{m2}]*reticlePosition.z+reticleData[{m3}];\nprojected=float4(q.xy/q.w+reticleData[{offset}].xy,q.z/q.w,1);\nfloat3 reticleView=viewData[4].xyz*reticlePosition.x+viewData[5].xyz*reticlePosition.y+viewData[6].xyz*reticlePosition.z+viewData[7].xyz;",
+                depth = projection.depth,
+                m = projection.matrix,
+                m1 = projection.matrix + 1,
+                m2 = projection.matrix + 2,
+                m3 = projection.matrix + 3,
+                offset = projection.offset
+            )
+        } else {
+            String::new()
         },
         parameters = parameters.join(","),
         inverse0 = vector(&inv[0]),

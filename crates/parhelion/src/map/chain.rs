@@ -14,8 +14,9 @@
 //! copies of its sun record and direction track. One container of
 //! the map's own places each converted piece's entity, copied from the donor's first prop: an
 //! entity-only placement whose entity has a render model and a fixed physical body in the world's
-//! collision layer. The same container places the map's ambience, a copy of the donor's first sound
-//! point table, when the map has one. The map root also names a bubble layout that lists the
+//! collision layer. The same container places the map's ambience using a native sound point
+//! table, preferring the donor's and finding a compatible stock table when it has none.
+//! The map root also names a bubble layout that lists the
 //! bubble by name, and its copy and the bubble parent's name the map's bubble.
 use std::path::Path;
 
@@ -92,6 +93,8 @@ const ROW_ROTATION: usize = 0x10;
 const ROW_TRANSLATION: usize = 0x20;
 const ROW_SCALE: usize = 0x2C;
 const ROW_RESOURCE: usize = 0x78;
+/// A row's 64-bit placement identity, which spawn rules name their points by.
+const ROW_IDENTITY: usize = 0x70;
 /// Both pointer fields declared by the native `808099D8` layout. The second is often null.
 const ROW_POINTERS: [usize; 2] = [ROW_RESOURCE, 0x80];
 /// Entries the chain takes before any filtered container: four owners with their companions,
@@ -510,6 +513,8 @@ pub(super) struct SkyObject {
 #[derive(Clone, Copy)]
 pub(super) struct Prop {
     pub model: u32,
+    pub entity: u32,
+    pub render: u32,
 }
 
 /// The map's own world collision: its static compound and the mesh packfiles its instances name.
@@ -532,10 +537,11 @@ pub(super) struct Chain {
     /// The donor's first prop: its placement table and tags. The map's static instance group's
     /// table takes the table's place.
     prop_table: TagHash,
+    prop_row: Vec<u8>,
     prop: Prop,
     /// The donor's static instance group, whose table and records the map's statics copy.
     statics: StaticGroup,
-    /// The donor's first table whose rows all place sound points.
+    /// A native sound point table, preferring one placed by the donor.
     sound_points: Option<u32>,
     /// The direction the map's baked light mostly comes from, toward the light with z up.
     light: Option<[f32; 3]>,
@@ -619,7 +625,61 @@ fn empty_table(manager: &PackageManager, containers: &[TagHash]) -> AuthoringRes
     Ok(None)
 }
 
-/// The first table among those `containers` list whose rows all place sound points.
+/// A nonempty table containing only points with the native ambience cue envelope.
+fn sound_table(manager: &PackageManager, table: TagHash) -> AuthoringResult<bool> {
+    if class(manager, table) != Some(TABLE_CLASS) {
+        return Ok(false);
+    }
+    let bytes = read_tag(manager, table, "sound point placement template")?;
+    if read_u64(&bytes, TABLE_ROWS)? == 0 {
+        return Ok(false);
+    }
+    let (count, _, rows, row_class) = array_at(&bytes, TABLE_ROWS)?;
+    if row_class != TABLE_ROW_CLASS
+        || rows
+            .checked_add(count.saturating_mul(ROW_SIZE))
+            .is_none_or(|end| end > bytes.len())
+    {
+        return Ok(false);
+    }
+    let mut first = None;
+    for row in (0..count).map(|i| rows + i * ROW_SIZE) {
+        let relative = read_i64(&bytes, row + ROW_RESOURCE)?;
+        let Some(point) = (row + ROW_RESOURCE)
+            .checked_add_signed(relative as isize)
+            .filter(|&at| relative != 0 && at >= 4 && at <= bytes.len().saturating_sub(0x20))
+        else {
+            return Ok(false);
+        };
+        if read_u32(&bytes, point - 4)? != SOUND_POINT {
+            return Ok(false);
+        }
+        first.get_or_insert(read_u32(&bytes, point + 0x10)?);
+    }
+    let Some(sound) = first.filter(|&tag| class(manager, TagHash(tag)) == Some(0x8080_9802)) else {
+        return Ok(false);
+    };
+    let cue = read_tag(manager, TagHash(sound), "sound point cue template")?;
+    if cue.len() < 0x54
+        || read_i64(&cue, 0x20)? != 0x20
+        || read_u64(&cue, 0x18)? == 0
+        || read_u64(&cue, 0x18)? != read_u64(&cue, 0x40)?
+        || read_u64(&cue, 0x18)? > ((cue.len() - 0x50) / 4) as u64
+        || class(manager, TagHash(read_u32(&cue, 0x10)?)) != Some(0x8080_8E68)
+        || manager.get_entry(TagHash(read_u32(&cue, 0x50)?)).is_none()
+    {
+        return Ok(false);
+    }
+    let bank = read_tag(
+        manager,
+        TagHash(read_u32(&cue, 0x14)?),
+        "sound point bank template",
+    )?;
+    Ok(bank.len() >= 12 && bank.starts_with(b"BKHD") && read_u32(&bank, 8)? == 113)
+}
+
+/// Prefer a donor point table, then a compatible stock table ordered by size and identity.
+/// Geometry donors need not place ambience, so absence there does not disable source audio.
 fn sound_points(manager: &PackageManager, containers: &[TagHash]) -> AuthoringResult<Option<u32>> {
     for &container in containers {
         if class(manager, container) != Some(CONTAINER_CLASS) {
@@ -632,27 +692,26 @@ fn sound_points(manager: &PackageManager, containers: &[TagHash]) -> AuthoringRe
         let (count, _, rows, _) = array_at(&payload, CONTAINER_TABLES)?;
         for index in 0..count {
             let table = read_u32(&payload, rows + index * 4)?;
-            if class(manager, TagHash(table)) != Some(TABLE_CLASS) {
-                continue;
-            }
-            let bytes = read_tag(manager, TagHash(table), "placement table")?;
-            if read_u64(&bytes, TABLE_ROWS)? == 0 {
-                continue;
-            }
-            let (count, _, table_rows, _) = array_at(&bytes, TABLE_ROWS)?;
-            let mut points = true;
-            for row in (0..count).map(|i| table_rows + i * ROW_SIZE) {
-                let relative = read_i64(&bytes, row + ROW_RESOURCE)?;
-                let kind = (row + ROW_RESOURCE)
-                    .checked_add_signed(relative as isize)
-                    .filter(|&at| relative != 0 && at >= 4 && at <= bytes.len())
-                    .map(|at| read_u32(&bytes, at - 4))
-                    .transpose()?;
-                points &= kind == Some(SOUND_POINT);
-            }
-            if points {
+            if sound_table(manager, TagHash(table))? {
                 return Ok(Some(table));
             }
+        }
+    }
+    let mut candidates = Vec::new();
+    for (&package, entries) in &manager.lookup.tag32_entries_by_pkg {
+        for (index, entry) in entries.iter().enumerate() {
+            // A header, one 144-byte placement and its 32-byte point require 232 bytes.
+            if entry.reference == TABLE_CLASS && entry.file_size >= 232 {
+                let index = u16::try_from(index)
+                    .map_err(|_| invalid("Sound table index exceeds native tag capacity"))?;
+                candidates.push((entry.file_size, TagHash::new(package, index).0));
+            }
+        }
+    }
+    candidates.sort_unstable();
+    for (_, table) in candidates {
+        if sound_table(manager, TagHash(table))? {
+            return Ok(Some(table));
         }
     }
     Ok(None)
@@ -1512,6 +1571,82 @@ pub(super) fn leftover_entity(manager: &PackageManager, entity: u32) -> Authorin
     Ok(false)
 }
 
+/// Gives placement table `payload` a new row array of copies of its rows at `sources`, in that
+/// order and repeats allowed, and returns their offsets. Each copy's relative pointers keep their
+/// source row's targets, the inline resources that stay where they are.
+pub(super) fn rebuild_rows(
+    payload: &mut Vec<u8>,
+    sources: &[usize],
+) -> AuthoringResult<Vec<usize>> {
+    let mut rows = Vec::with_capacity(sources.len() * ROW_SIZE);
+    let mut pointers = Vec::with_capacity(sources.len() * ROW_POINTERS.len());
+    for &row in sources {
+        rows.extend_from_slice(
+            payload
+                .get(row..row + ROW_SIZE)
+                .ok_or_else(|| invalid("A placement row leaves its table"))?,
+        );
+        for offset in ROW_POINTERS {
+            let field = row + offset;
+            let relative = read_i64(payload, field)?;
+            let target = if relative == 0 {
+                None
+            } else {
+                Some(
+                    field
+                        .checked_add_signed(relative as isize)
+                        .filter(|&at| at < payload.len())
+                        .ok_or_else(|| {
+                            invalid("The donor placement pointer is outside its table")
+                        })?,
+                )
+            };
+            pointers.push((offset, target));
+        }
+    }
+    append_native_array(payload, TABLE_ROWS, TABLE_ROW_CLASS, sources.len(), &rows)?;
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table_rows = array_at(payload, TABLE_ROWS)?.2;
+    for (index, (offset, target)) in pointers.into_iter().enumerate() {
+        if let Some(target) = target {
+            write_relative_pointer(
+                payload,
+                table_rows + index / ROW_POINTERS.len() * ROW_SIZE + offset,
+                target,
+            )?;
+        }
+    }
+    *payload = synchronize_payload_size(std::mem::take(payload))?;
+    Ok((0..sources.len())
+        .map(|index| table_rows + index * ROW_SIZE)
+        .collect())
+}
+
+/// Sets placement row `row`'s placement identity, the 64-bit value a spawn rule names it by.
+pub(super) fn set_row_identity(
+    payload: &mut [u8],
+    row: usize,
+    identity: u64,
+) -> AuthoringResult<()> {
+    crate::tag_payload::write_u64(payload, row + ROW_IDENTITY, identity)
+}
+
+/// Placement row `row`'s placement identity.
+pub(super) fn row_identity(payload: &[u8], row: usize) -> AuthoringResult<u64> {
+    read_u64(payload, row + ROW_IDENTITY)
+}
+
+/// The offsets of the rows of placement table `payload`, none when it has no rows.
+pub(super) fn table_rows(payload: &[u8]) -> AuthoringResult<Vec<usize>> {
+    if read_u64(payload, TABLE_ROWS)? == 0 {
+        return Ok(Vec::new());
+    }
+    let (count, _, rows, _) = array_at(payload, TABLE_ROWS)?;
+    Ok((0..count).map(|index| rows + index * ROW_SIZE).collect())
+}
+
 /// Moves placement row `row` far below the map.
 pub(super) fn bury(payload: &mut [u8], row: usize) {
     payload[row + ROW_TRANSLATION + 8..row + ROW_TRANSLATION + 12]
@@ -1588,7 +1723,11 @@ fn prop(manager: &PackageManager, entity: u32) -> AuthoringResult<Option<Prop>> 
         if let Some((RENDER_CLASS, resource, owner_payload)) = component(manager, owner)? {
             let model = read_u32(&owner_payload, resource + RENDER_MODEL)?;
             if class(manager, TagHash(model)) == Some(MODEL_CLASS) {
-                return Ok(Some(Prop { model }));
+                return Ok(Some(Prop {
+                    model,
+                    entity,
+                    render: owner,
+                }));
             }
         }
     }
@@ -1861,7 +2000,7 @@ impl Chain {
                         continue;
                     }
                     if let Some(prop) = prop(manager, read_u32(&table, row)?)? {
-                        found = Some((container, tag, prop));
+                        found = Some((container, tag, prop, table[row..row + ROW_SIZE].to_vec()));
                         break;
                     }
                 }
@@ -1889,7 +2028,7 @@ impl Chain {
                 }
             }
         }
-        let (container, prop_table, prop) = found.ok_or_else(|| {
+        let (container, prop_table, prop, prop_row) = found.ok_or_else(|| {
             invalid(format!(
                 "Donor {donor} places no prop with a render model whose buffers the statics copy"
             ))
@@ -1917,6 +2056,7 @@ impl Chain {
             kept,
             container,
             prop_table,
+            prop_row,
             prop,
             statics,
             sound_points,
@@ -2129,9 +2269,55 @@ impl Chain {
     /// The placement table: a copy of the donor's static instance group table, whose one row
     /// places the map's static instance group with preheader `preheader`, as a stock bubble's
     /// table places its statics.
-    fn table(&self, preheader: TagHash) -> AuthoringResult<Vec<u8>> {
+    fn table(&self, preheader: TagHash, props: &[(TagHash, [f32; 3])]) -> AuthoringResult<Vec<u8>> {
         let mut payload = self.statics.table.clone();
         write_u32(&mut payload, self.statics.preheader, preheader.0)?;
+        if !props.is_empty() {
+            let (count, _, rows, _) = array_at(&payload, TABLE_ROWS)?;
+            let mut placements = payload[rows..rows + count * ROW_SIZE].to_vec();
+            for (index, &(entity, position)) in props.iter().enumerate() {
+                let mut row = self.prop_row.clone();
+                write_u32(&mut row, 0, entity.0)?;
+                for (axis, value) in [0f32, 0., 0., 1.].into_iter().enumerate() {
+                    write_u32(&mut row, ROW_ROTATION + axis * 4, value.to_bits())?;
+                }
+                for (axis, value) in position.into_iter().enumerate() {
+                    write_u32(&mut row, ROW_TRANSLATION + axis * 4, value.to_bits())?;
+                }
+                write_u32(&mut row, ROW_SCALE, 1f32.to_bits())?;
+                row[ROW_IDENTITY..ROW_IDENTITY + 8]
+                    .copy_from_slice(&(0x504F_5345_0000_0000u64 | index as u64).to_le_bytes());
+                for at in ROW_POINTERS {
+                    row[at..at + 8].fill(0);
+                }
+                placements.extend(row);
+            }
+            append_native_array(
+                &mut payload,
+                TABLE_ROWS,
+                TABLE_ROW_CLASS,
+                count + props.len(),
+                &placements,
+            )?;
+            // Relocating the original static rows also relocates their resource pointers.
+            let (_, _, relocated, _) = array_at(&payload, TABLE_ROWS)?;
+            for index in 0..count {
+                for at in ROW_POINTERS {
+                    let old = rows + index * ROW_SIZE + at;
+                    let delta = read_i64(&payload, old)?;
+                    if delta != 0 {
+                        let target = usize::try_from(old as i64 + delta)
+                            .map_err(|_| invalid("Static placement pointer"))?;
+                        write_relative_pointer(
+                            &mut payload,
+                            relocated + index * ROW_SIZE + at,
+                            target,
+                        )?;
+                    }
+                }
+            }
+            payload = synchronize_payload_size(payload)?;
+        }
         Ok(payload)
     }
 
@@ -2149,6 +2335,7 @@ impl Chain {
         first: TagHash,
         statics: TagHash,
         pieces: &[Piece],
+        props: &[(TagHash, [f32; 3])],
         spawns: &[Spawn],
         world: &World,
         sky: &[SkyObject],
@@ -2573,7 +2760,7 @@ impl Chain {
                 self.container
                     .companion_with(container_companion, container, &loads[6..])?,
             ),
-            spec(self.prop_table, self.table(statics)?),
+            spec(self.prop_table, self.table(statics, props)?),
             spec(self.layout, self.layout_payload.clone()),
         ];
         let mut tags = tags;

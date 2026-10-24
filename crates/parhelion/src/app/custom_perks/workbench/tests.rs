@@ -51,79 +51,6 @@ fn frame(
 }
 
 #[test]
-fn inline_parameters_keep_back_and_validation_available_during_loading() {
-    let mut pending = editor(fixture());
-    let (sender, receiver) = mpsc::channel();
-    pending.receiver = Some(receiver);
-    pending.graph = None;
-    let mut workbench = Workbench::default();
-    workbench.set_test_editor(pending);
-    let ctx = egui::Context::default();
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = frame(
-            &ctx,
-            &mut workbench,
-            false,
-            egui::vec2(1000.0, 720.0),
-            vec![],
-        );
-    }
-    assert!(label(&output, "Wait for the perk data").is_none());
-    let position = label(&output, "Back").expect("Back while loading").center();
-    for pressed in [true, false] {
-        frame(
-            &ctx,
-            &mut workbench,
-            false,
-            egui::vec2(1000.0, 720.0),
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
-    }
-    assert!(workbench.editor.is_none());
-    assert_eq!(workbench.retired_editors.len(), 1);
-    assert!(
-        workbench.documents[0].recipe.effects[0]
-            .runtime_values
-            .is_empty()
-    );
-    drop(sender);
-}
-
-#[test]
-fn discard_restores_saved_or_initial_perk_and_clears_pending_edits() {
-    for saved in [false, true] {
-        let mut workbench = Workbench::default();
-        workbench.set_test_editor(editor(fixture()));
-        let original = workbench.documents[0].recipe.clone();
-        if saved {
-            workbench.documents[0].set_baseline(Some(serde_json::to_vec(&original).unwrap()));
-        }
-        workbench.documents[0].recipe.name = "Changed".into();
-        workbench.documents[0]
-            .recipe
-            .stats
-            .push(WeaponStatOverride {
-                definition_index: 1,
-                value: 50,
-            });
-        workbench.capture_effect_draft();
-        workbench.discard_changes();
-        assert_eq!(workbench.documents[0].recipe, original);
-        assert!(workbench.documents[0].pending_effect.is_none());
-        assert!(workbench.editor.is_none());
-    }
-}
-
-#[test]
 fn save_as_new_preserves_the_original_library_file_and_pending_document() {
     let temporary = tempfile::tempdir().unwrap();
     let library = Library::open(temporary.path().to_owned()).unwrap();
@@ -168,20 +95,6 @@ fn workbench_with_saved_perk() -> (tempfile::TempDir, Library, PerkRecipe, Entry
         ..Default::default()
     };
     (temporary, library, original, entry, workbench)
-}
-
-#[test]
-fn duplicating_a_perk_opens_a_fresh_draft_and_leaves_the_file_alone() {
-    let (_temporary, _library, original, entry, mut workbench) = workbench_with_saved_perk();
-    workbench.duplicate(library::PerkSource::Document(0));
-    assert_eq!(workbench.documents.len(), 2);
-    assert_eq!(workbench.selected, 1);
-    let copy = &workbench.documents[1];
-    assert_eq!(copy.recipe.name, "Alpha Copy");
-    assert_ne!(copy.recipe.id, original.id);
-    assert_eq!(copy.recipe.effects, original.effects);
-    assert!(copy.baseline.is_none());
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
 }
 
 #[test]

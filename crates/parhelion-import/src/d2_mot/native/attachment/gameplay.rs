@@ -41,7 +41,7 @@ fn particles(source: &closure::Closure, request: &Request<'_>) -> Result<Value> 
         let mut reader = Reader::new(packages, &folder, modern)?;
         write_json(
             &folder.join("context.json"),
-            &tfx::context(&mut reader, modern)?,
+            &crate::tiger::shader::globals::read(&mut reader, modern)?,
         )?;
         reader.finish()?;
     }

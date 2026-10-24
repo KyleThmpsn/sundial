@@ -1564,6 +1564,7 @@ pub(super) fn append_sockets(out: &mut String, recipe: &WeaponRecipe, donor: Opt
         for (name, index) in [
             ("reusable plug set", column.reusable_plug_set_index),
             ("randomized plug set", column.randomized_plug_set_index),
+            ("rolls from its choices, swappable", column.reusable_choices),
         ] {
             if let Some(index) = index {
                 let _ = writeln!(out, "                    {name} {index}");

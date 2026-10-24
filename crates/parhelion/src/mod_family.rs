@@ -53,6 +53,7 @@ pub(crate) fn validate(
     artifacts: &[ArtifactMetadata],
     merge_data: &[ArtifactMetadata],
     diagnostics: Option<&ArtifactMetadata>,
+    scripts: &[ArtifactMetadata],
 ) -> Result<(), String> {
     if members.is_empty() {
         return Ok(());
@@ -90,7 +91,12 @@ pub(crate) fn validate(
     if ids != dependencies {
         return Err("The main mod must depend on every importer in the staged family".into());
     }
-    for expected in artifacts.iter().chain(merge_data).chain(diagnostics) {
+    for expected in artifacts
+        .iter()
+        .chain(merge_data)
+        .chain(diagnostics)
+        .chain(scripts)
+    {
         let actual = listed
             .remove(expected.file_name.as_str())
             .ok_or_else(|| format!("No managed mod owns {}", expected.file_name))?;

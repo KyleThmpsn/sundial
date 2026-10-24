@@ -132,6 +132,17 @@ pub(in crate::item::build) fn author(
         &mut weapon_runtime_new_tags,
         progress,
     )?;
+    #[cfg(feature = "d2-model-importer")]
+    super::attachments::author_subclasses(
+        &sources.manager,
+        resolved,
+        &mut super::RuntimeAssets {
+            packages: &mut asset_packages,
+            placed: &mut runtime_asset_tags,
+            impacts: &mut impacts,
+            particle_symbols: &mut particle_symbols,
+        },
+    )?;
     // Cache replay has already placed and linked every weapon's imported assets.
     // Perk actions can live in a different package from their label dictionary.
     let label_dictionaries = label_dictionaries(&sources.manager, &asset_packages)?;
@@ -173,7 +184,9 @@ pub(in crate::item::build) fn author(
     let subclass_entries = resolved
         .iter()
         .zip(entry_plans)
-        .map(|(donor, plans)| {
+        .enumerate()
+        .map(|(ordinal, (donor, plans))| {
+            catalog.weapon = Some(ordinal);
             let mut compiler = custom_plugs::RecordCompiler {
                 manager: &sources.manager,
                 catalog: &mut catalog,

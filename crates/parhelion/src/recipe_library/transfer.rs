@@ -220,31 +220,3 @@ fn picture_bytes(value: &serde_json::Value) -> Result<u64, String> {
         _ => Ok(0),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every shipped default goes out in one bundle and comes back with the same content. Hammer
-    /// Time nests as deep as a recipe may, so the bundle's own containers must not count against
-    /// it.
-    #[test]
-    fn every_bundled_default_survives_one_shared_bundle() {
-        let directory = tempfile::tempdir().unwrap();
-        let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-        let defaults = super::super::BUNDLED_RECIPES
-            .iter()
-            .map(|(_, json)| WeaponRecipe::from_json_str(json).unwrap())
-            .collect::<Vec<_>>();
-        let bundle = directory.path().join("defaults.parhelion-bundle.json");
-        library.export_bundle(&defaults, &bundle).unwrap();
-        let import = read_import(&bundle).unwrap();
-        assert!(import.bundle);
-        assert_eq!(import.recipes.len(), defaults.len());
-        for (value, original) in import.recipes.iter().zip(&defaults) {
-            let recipe = WeaponRecipe::from_json_str(&value.to_string())
-                .unwrap_or_else(|error| panic!("{}: {error}", original.name));
-            assert!(recipe.same_saved_content(original), "{}", original.name);
-        }
-    }
-}

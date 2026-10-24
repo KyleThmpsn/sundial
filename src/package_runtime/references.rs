@@ -3,6 +3,8 @@
 //! The client layout distinguishes raw pointers (2) from typed pointers (3). Only the
 //! latter carry a concrete class header that permits checked traversal. Layouts include
 //! inherited fields, so following the reflected base a second time is unnecessary.
+//! Component owners also identify their runtime definition through a checked reciprocal
+//! prefix. It can precede the typed schema view when mutable instance storage is extended.
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::package_runtime::reader::PackageManager;
@@ -243,6 +245,11 @@ fn visit(
     mut found: impl FnMut(u32, usize, bool),
 ) -> Result<(), String> {
     let mut pending = vec![(0usize, root)];
+    if root == 0x8080_9C36
+        && let Some(definition) = component_definition(data)?
+    {
+        pending.push(definition);
+    }
     let mut visited = BTreeSet::new();
     while let Some((offset, class)) = pending.pop() {
         if !visited.insert((offset, class)) {
@@ -280,6 +287,40 @@ fn visit(
         }
     }
     Ok(())
+}
+
+/// A sealed owner retains the original definition because its instance uses an
+/// owner-relative address. Header +24 instead names a second typed view beyond
+/// mutable storage. Both views contain live reference fields. This is a checked
+/// component-prefix contract, not permission to traverse arbitrary raw pointers.
+fn component_definition(data: &[u8]) -> Result<Option<(usize, u32)>, String> {
+    let instance_relative = i64_at(data, 16)?;
+    let schema_relative = i64_at(data, 24)?;
+    if instance_relative == 0 || schema_relative == 0 {
+        return Ok(None);
+    }
+    let instance = relative_offset(16, 0, instance_relative)?;
+    let schema = relative_offset(24, 0, schema_relative)?;
+    bytes_at::<16>(data, instance)?;
+    let definition = usize::try_from(u64_at(data, instance + 8)?)
+        .map_err(|_| "Component definition offset is too large")?;
+    if definition == schema {
+        return Ok(None);
+    }
+    if instance < 0x60 || definition < 0x60 || definition >= schema {
+        return Err("Component runtime definition is outside its original record stream".into());
+    }
+    bytes_at::<16>(data, definition)?;
+    let class = u32_at(data, definition - 4)?;
+    if class != u32_at(data, instance + 4)?
+        || class != u32_at(data, schema - 4)?
+        || u32_at(data, definition + 4)? != u32_at(data, instance - 4)?
+        || u64_at(data, definition + 8)? != instance as u64
+        || u32_at(data, definition)? != u32_at(data, instance)?
+    {
+        return Err("Component runtime definition has an invalid reciprocal prefix".into());
+    }
+    Ok(Some((definition, class)))
 }
 
 fn follow(

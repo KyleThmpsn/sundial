@@ -2,6 +2,8 @@
 use super::*;
 use crate::vehicle::{Driving, Projectile, Sparrow, Summon, Weapons};
 mod controls;
+#[cfg(feature = "d2-model-importer")]
+mod imported;
 mod picker;
 mod sections;
 
@@ -146,11 +148,11 @@ impl PackageAuthoringApp {
                 }
             }
             #[cfg(feature = "d2-model-importer")]
-            if let Some(graph) = &self.recipe.overrides.imported_graph
-                && let Ok(Some(entity)) = edited.summon.entity()
-                && let Err(error) = graph.validate_vehicle(entity) {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-            }
+            imported::show(
+                ui,
+                self.recipe.overrides.imported_graph.as_ref()
+                    .zip(edited.summon.entity().ok().flatten()),
+            );
         });
         if edited != original {
             self.recipe.overrides.sparrow = edited.has_changes().then_some(edited);

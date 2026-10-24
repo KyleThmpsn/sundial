@@ -26,7 +26,7 @@ fn private_key(item: u32, role: &str) -> u32 {
 }
 
 fn validate_donor(reader: &mut Reader, source: &Weapon, donor: u32) -> Result<()> {
-    let tag = crate::d2_mot::assets::item::find_native(reader, donor)?;
+    let tag = crate::tiger::shadowkeep::item_tag(reader, donor)?;
     let item = reader.tag(tag, Some(0x80807BEA))?;
     let native_bucket = match item.u8(0xB8)? {
         3 => 3448274439,
@@ -190,11 +190,11 @@ fn convert(
         progress,
     )?;
     write_json(&output.join("asset-graph.json"), &graph)?;
-    let namespace = crate::d2_mot::compatibility::namespace(source.hash);
+    let namespace = source.namespace();
     let reference = GraphReference::new(&output, item)?;
     let icon = STANDARD.encode(fs::read(source_path.join("item-icon.png"))?);
     let mut recipe = json!({"schema":1,"kind":source.family(),"collection_placement":"sunrise_badge",
-        "namespace":namespace,"identity":batch::identity(&namespace)?,"name":source.name,"type_name":source.weapon_type,
+        "namespace":namespace,"identity":crate::graph::import_identity(&namespace)?,"name":source.name,"type_name":source.weapon_type,
         "donor":{"item_hash":format!("0x{donor_hash:08X}"),"expected_name":donor["name"]},
         "flavor":source_report["flavor"].as_str().unwrap_or(""),"source":"Source: Imported gear",
         "overrides":{"imported_graph":reference,"icon_edit":{"imported_image":{"png_base64":icon}}}});
@@ -345,7 +345,7 @@ pub(super) fn prepare(
         .map_err(crate::d2_mot::source_limit)?;
     // Keep one native package index for all structural compatibility checks.
     let _native_index = crate::d2_mot::reader::package_index(&native.canonicalize()?, false)?;
-    let item = destination_hash(source.hash)?;
+    let item = source.destination()?;
     let mut failures = Vec::new();
     let paths = SourcePaths {
         modern,

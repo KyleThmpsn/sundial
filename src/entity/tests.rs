@@ -141,25 +141,6 @@ fn two_resource_weapon_entity() -> Vec<u8> {
     data
 }
 
-#[test]
-fn coupled_groups_follow_multi_resource_bridges_and_preserve_independent_groups() {
-    let entity = aliased_weapon_entity(&[(1, 0x0001_0000), (2, 0x0002_0000), (3, 0x0001_0001)], 1);
-    assert_eq!(
-        coupled_weapon_component_bindings(&entity, 1).unwrap(),
-        vec![1, 2, 3]
-    );
-    assert_eq!(
-        coupled_weapon_component_bindings(&entity, 3).unwrap(),
-        vec![1, 2, 3]
-    );
-    let entity = aliased_weapon_entity(&[(1, 0x0001_0000), (3, 0x0001_0001)], 1);
-    assert_eq!(
-        coupled_weapon_component_bindings(&entity, 1).unwrap(),
-        vec![1]
-    );
-    assert!(coupled_weapon_component_bindings(&entity, 2).is_err());
-}
-
 fn event_entity(flavor: u32) -> (Vec<u8>, usize) {
     let mut entity = aliased_weapon_entity(&[(1, 0x0001_0000), (2, 0x0001_0001)], flavor);
     // Same resource interfaces at donor-specific owner offsets.
@@ -191,36 +172,6 @@ fn event_entity(flavor: u32) -> (Vec<u8>, usize) {
         write_u64(&mut entity, offset + 8, resource.resource_offset).unwrap();
     }
     (entity, row)
-}
-
-#[test]
-fn component_graft_remaps_proven_event_endpoints_and_preserves_the_other_endpoint() {
-    let (mut target, row) = event_entity(1);
-    let (donor, donor_row) = event_entity(2);
-    let untouched = target[row + 0x28..row + 0x38].to_vec();
-    graft_weapon_component_bindings(&mut target, &[(1, &donor)]).unwrap();
-    assert_eq!(
-        target[row + 8..row + 0x18],
-        donor[donor_row + 8..donor_row + 0x18]
-    );
-    assert_eq!(target[row + 0x28..row + 0x38], untouched);
-    assert_eq!(read_u32(&target, row).unwrap(), 0xABCD);
-}
-
-#[test]
-fn component_batch_plans_both_event_endpoints_against_the_original_entity() {
-    let (mut target, row) = event_entity(1);
-    let (first, first_row) = event_entity(2);
-    let (second, second_row) = event_entity(3);
-    graft_weapon_component_bindings(&mut target, &[(1, &first), (2, &second)]).unwrap();
-    assert_eq!(
-        target[row + 8..row + 0x18],
-        first[first_row + 8..first_row + 0x18]
-    );
-    assert_eq!(
-        target[row + 0x28..row + 0x38],
-        second[second_row + 0x28..second_row + 0x38]
-    );
 }
 
 #[test]

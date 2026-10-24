@@ -43,6 +43,30 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// Native upper and lower arm lengths at the baseline's upper-arm scale.
+pub(super) fn segments(rig: &Rig, side: &str, baseline: &[Pose]) -> Result<[f32; 2]> {
+    let native = |role: &str| {
+        rig.names
+            .iter()
+            .position(|&h| h == hash(&format!("b_{side}_{role}")))
+            .context("Native arm joint missing")
+    };
+    let upper = native("upperarm")?;
+    let elbow = native("forearm")?;
+    let hand = native("hand")?;
+    let scale = baseline[upper].0[7] / rig.bind[upper].0[7];
+    Ok([
+        length(subtract(
+            position(rig.bind[elbow]),
+            position(rig.bind[upper]),
+        )) * scale,
+        length(subtract(
+            position(rig.bind[hand]),
+            position(rig.bind[elbow]),
+        )) * scale,
+    ])
+}
+
 impl Arm {
     pub fn new(
         side: &str,
@@ -84,16 +108,7 @@ impl Arm {
             "Native upper-arm segment is not aligned with its X axis"
         );
         let scale = baseline[upper].0[7];
-        let upper_length = length(subtract(
-            position(rig.bind[elbow]),
-            position(rig.bind[upper]),
-        )) * scale
-            / rig.bind[upper].0[7];
-        let lower_length = length(subtract(
-            position(rig.bind[hand]),
-            position(rig.bind[elbow]),
-        )) * scale
-            / rig.bind[upper].0[7];
+        let [upper_length, lower_length] = segments(rig, side, baseline)?;
         let margin = (upper_length + lower_length) * 0.001;
         let maximum = upper_length + lower_length - margin;
         let minimum = (upper_length - lower_length).abs() + margin;

@@ -3,6 +3,7 @@
 pub mod perks;
 
 use super::{localization, ornaments, payload::Payload, reader::Reader};
+pub(crate) use crate::tiger::shadowkeep::{resource, stat_definitions};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -14,16 +15,6 @@ fn table(r: &mut Reader, class: u32) -> Result<std::sync::Arc<Payload>> {
     let tags = r.classes(class);
     ensure!(tags.len() == 1, "ambiguous investment table {class:08X}");
     r.tag(tags[0], Some(class))
-}
-
-fn resource(p: &Payload, at: usize, class: u32) -> Result<usize> {
-    ensure!(p.u64(at)? != 0, "missing investment resource at {at:X}");
-    let target = p.pointer(at)?;
-    ensure!(
-        target >= 4 && p.u32(target - 4)? == class,
-        "unexpected investment resource at {at:X}"
-    );
-    Ok(target)
 }
 
 fn stat_values(item: &Payload, block: usize, stats: &Payload) -> Result<Vec<Value>> {
@@ -262,9 +253,9 @@ fn reset_planned_damage(recipe: &mut Value) -> Result<()> {
     Ok(())
 }
 
-pub(crate) mod limits;
 pub(crate) mod private;
 pub(crate) mod stat_group;
+use crate::stat_group::limits;
 
 /// Older plug-driven elemental sockets cannot be made Kinetic by changing a
 /// parent damage marker. Select another gameplay donor before conversion.
@@ -360,6 +351,11 @@ fn default_hash(socket: &Value) -> Option<u64> {
 const INTRINSIC_CATEGORY: u64 = 0x67FB_A961;
 /// Weapon perk plugs, as opposed to shaders (14), masterworks and trackers (13) and mods (37).
 const PERK_ITEM_KIND: u64 = 15;
+/// The most source plugs a column offers freely, as few as a random-roll column's curated perks.
+const REUSABLE_CHOICES: usize = 4;
+/// The most plugs a column rolls from: the rows one 64-bit ownership mask covers, also the
+/// largest Shadowkeep randomized set.
+const ROLL_POOL: usize = 64;
 
 /// A base lane whose default plug is a weapon perk other than the frame.
 fn perk_lane(target: &Value) -> bool {
@@ -415,18 +411,57 @@ fn columns(
             choices.push(hash);
             fallbacks.push(json!({"socket":lane,"source_socket":source_index,"source_default":default_hash(socket),"retained_default":hash}));
         }
-        for plug in plugs.iter().filter(supported) {
+        // Preserve the entire donor column only when none of the source choices survived.
+        if !plugs.iter().any(|p| supported(&p)) {
+            continue;
+        }
+        // The source's curated plugs, its initial plug, own entries and reusable set in that
+        // order, stay freely swappable, up to four. Every supported plug joins the roll pool after
+        // them. An export without curated positions offers its default alone, and a socket that
+        // only rolls offers its first supported plug.
+        let curated = |plug: &Value| {
+            plug["curated"]
+                .as_u64()
+                .or_else(|| (plug["default"] == true).then_some(0))
+        };
+        let mut offered = plugs
+            .iter()
+            .filter(supported)
+            .filter_map(|plug| Some((curated(plug)?, plug)))
+            .collect::<Vec<_>>();
+        offered.sort_by_key(|(position, _)| *position);
+        for (_, plug) in offered {
             let hash = plug["hash"].as_u64().context("plug hash")?;
-            if !choices.contains(&hash) {
+            if choices.len() < REUSABLE_CHOICES && !choices.contains(&hash) {
                 choices.push(hash);
             }
         }
-        // Preserve the entire donor column only when none of the source choices survived.
-        if choices.is_empty() || !plugs.iter().any(|p| supported(&p)) {
-            continue;
+        if choices.is_empty()
+            && let Some(plug) = plugs.iter().find(supported)
+        {
+            choices.push(plug["hash"].as_u64().context("plug hash")?);
+        }
+        let reusable = choices.len();
+        for plug in plugs.iter().filter(supported) {
+            let hash = plug["hash"].as_u64().context("plug hash")?;
+            if choices.contains(&hash) {
+                continue;
+            }
+            if choices.len() < ROLL_POOL {
+                choices.push(hash);
+            } else {
+                fallbacks.push(
+                    json!({"socket":lane,"source_socket":source_index,"omitted_plug":hash,
+                    "reason":"the socket's roll pool is full"}),
+                );
+            }
         }
         result[lane] =
             json!({"choices":choices.iter().map(|h|format!("0x{h:08X}")).collect::<Vec<_>>()});
+        if reusable < choices.len() {
+            result[lane]["reusable_choices"] = json!(reusable);
+            result[lane]["randomized_selection_program"] = json!([{"opcode":11,"operand":1}]);
+        }
     }
     // A source socket no base lane shares a category with, such as a stock on a base without a
     // stock socket, keeps its default plug when Shadowkeep has that same perk plug. It takes a
@@ -489,36 +524,6 @@ fn fill_native_defaults(
     Ok(())
 }
 
-/// Shadowkeep stat definition indices by stat hash, from the installed investment globals.
-pub(crate) fn stat_definitions(r: &mut Reader) -> Result<BTreeMap<u32, u16>> {
-    let tag = r
-        .manager
-        .lookup
-        .named_tags
-        .iter()
-        .find(|t| t.name == "investment_globals")
-        .context("native globals")?
-        .hash
-        .0;
-    let globals = r.tag(tag, None)?;
-    let root = r.tag(globals.u32(16)?, Some(0x80807D84))?;
-    let stats = r.tag(root.u32(8 + 95 * 16)?, None)?;
-    let mut definitions = BTreeMap::new();
-    for (index, at) in stats
-        .array(8, 32, Some(0x80807D09))?
-        .into_iter()
-        .enumerate()
-    {
-        ensure!(
-            definitions
-                .insert(stats.u32(at)?, u16::try_from(index)?)
-                .is_none(),
-            "duplicate native stat hash"
-        );
-    }
-    Ok(definitions)
-}
-
 /// Resolve against the actual gameplay donor after compatibility defaults have been applied.
 #[allow(clippy::cognitive_complexity)]
 pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -> Result<Value> {
@@ -536,7 +541,7 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
     let globals = r.tag(tag, None)?;
     let root = r.tag(globals.u32(16)?, Some(0x80807D84))?;
     let definitions = stat_definitions(&mut r)?;
-    let native_sockets = ornaments::native(&mut r, donor)?;
+    let native_sockets = crate::tiger::shadowkeep::sockets(&mut r, donor)?;
     let items = r.tag(root.u32(8 + 48 * 16)?, None)?;
     let rows = items.array(8, 24, Some(0x80807BE8))?;
     let donor_row = *rows
@@ -635,7 +640,7 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
             .as_object_mut()
             .context("recipe overrides")?
             .remove("stat_group_index");
-        mapped["custom_stat_group"] = stat_group::recipe(*maximum, rows);
+        mapped["custom_stat_group"] = crate::stat_group::recipe(*maximum, rows);
         limits::Limits::of(Some(*maximum), rows)
     } else {
         let group = limits::read(&mut r, &globals, donor, recipe)?;

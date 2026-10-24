@@ -19,7 +19,7 @@ pub enum Tool {
 pub const MONUMENT: &[Tool] = &[Tool::Ffmpeg, Tool::Decompiler];
 /// Destiny 1: Rise of Iron decompresses Oodle 3 blocks and untiles Xbox One textures.
 pub const RISE_OF_IRON: &[Tool] = &[Tool::Oodle];
-/// Halo: Reach decodes FMOD banks only for map sounds.
+/// Halo: Reach decodes FMOD banks for imported weapons, vehicles and maps.
 pub const REACH: &[Tool] = &[Tool::Vgmstream];
 /// Marathon disassembles DXIL shaders.
 pub const MARATHON: &[Tool] = &[Tool::Dxc];
@@ -40,7 +40,7 @@ impl Tool {
             Tool::Ffmpeg => "Audio",
             Tool::Decompiler | Tool::Dxc => "Shaders",
             Tool::Oodle => "Packages",
-            Tool::Vgmstream => "Map sounds",
+            Tool::Vgmstream => "Source Audio",
         }
     }
 

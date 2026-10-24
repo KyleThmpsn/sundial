@@ -1,6 +1,8 @@
 use super::*;
 
-pub(in crate::model_preview) type Varyings = [[f32; 4]; 9];
+// TEXCOORD9 carries translated source projection and view-dependent coordinates.
+// CPU interpolation and the GPU vNative array must retain the same ten channels.
+pub(in crate::model_preview) type Varyings = [[f32; 4]; 10];
 
 pub(in crate::model_preview) struct Input {
     pub vertex_id: u32,
@@ -31,6 +33,7 @@ impl Input {
             [0.0; 4],
             [0.0; 4],
             self.color,
+            [0.0; 4],
         ]
     }
 }
@@ -105,7 +108,7 @@ impl Native {
         })?;
         let mut varyings = input.default_varyings();
         for semantic in &vertex.code.outputs {
-            if semantic.name == "TEXCOORD" && semantic.index < 9 {
+            if semantic.name == "TEXCOORD" && semantic.index < 10 {
                 varyings[semantic.index as usize] = outputs[semantic.register];
             }
         }
@@ -247,7 +250,7 @@ impl evaluate::Context for Context<'_> {
             .and_then(|images| images.at(resource))
             .map_or([0; 4], |image| image.load(position, offset))
     }
-    fn lod(&self, _: usize, _: usize, _: [f32; 4]) -> [f32; 4] {
+    fn lod(&self, _: usize, _: usize, _: usize, _: [f32; 4]) -> [f32; 4] {
         [0.0; 4]
     }
     fn derivative(&self, _: &program::Operand, _: bool) -> [f32; 4] {

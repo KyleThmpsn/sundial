@@ -29,15 +29,6 @@ use requirements::requirements;
 use timers::*;
 use weapon_values::{WEAPON_VALUES_CLASS, weapon_values};
 
-#[cfg(test)]
-pub(super) fn draw_node(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result<(), String> {
-    if graph.blocks[index].class == trigger::CLASS {
-        let chance = chance_leads(&graph.blocks[index], FieldView::Primary, false, false);
-        trigger::draw(ui, graph, index, chance)?;
-    }
-    controls(ui, graph, index, FieldView::Primary, false, false)
-}
-
 pub(super) fn draw(
     ui: &mut egui::Ui,
     graph: &mut Graph,

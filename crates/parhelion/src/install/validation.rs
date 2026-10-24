@@ -141,6 +141,7 @@ pub(super) fn validate_request_with_progress(
         artifacts: manifest.artifacts,
         merge_data: manifest.merge_data,
         map_diagnostics: manifest.map_diagnostics,
+        mission_scripts: manifest.mission_scripts,
         mods: manifest.mods,
         obsolete_artifacts,
         selected_recipe_files: manifest.selected_recipe_files,
@@ -287,6 +288,11 @@ pub(super) fn validate_manifest_and_staged_files(
         &manifest.mods,
     )?;
     let map_diagnostics = validate_map_diagnostics(staged_run_directory, manifest.map_diagnostics)?;
+    let mission_scripts = validate_mission_scripts(
+        staged_run_directory,
+        manifest.mission_scripts,
+        target_packages_directory,
+    )?;
     Ok(ValidatedManifest {
         inputs,
         packages,
@@ -294,6 +300,7 @@ pub(super) fn validate_manifest_and_staged_files(
         artifacts,
         merge_data,
         map_diagnostics,
+        mission_scripts,
         mods: manifest.mods,
         selected_recipe_files,
         authored_unlocks,
@@ -332,6 +339,39 @@ fn validate_map_diagnostics(
     catalog.validate().map_err(InstallError::validation)?;
     metadata.sha256 = digest.sha256;
     Ok(Some(metadata))
+}
+
+fn validate_mission_scripts(
+    directory: &Path,
+    scripts: Vec<ArtifactMetadata>,
+    target: &Path,
+) -> Result<Vec<ArtifactMetadata>, InstallError> {
+    use sundial::package_authoring::mod_content::{self, mission_script};
+    if !scripts.is_empty() && !uses_mod_loader(target) {
+        return Err(InstallError::validation(
+            "Mission controllers require Sunrise 0.6 or later",
+        ));
+    }
+    for script in &scripts {
+        if mission_script::path(&script.file_name).is_none()
+            || script.byte_length == 0
+            || script.byte_length > mission_script::BYTE_LIMIT
+        {
+            return Err(InstallError::validation(
+                "Invalid mission controller artifact",
+            ));
+        }
+        let path = directory.join(&script.file_name);
+        mod_content::checked_path(directory, &path).map_err(InstallError::validation)?;
+        loader::verify_file(&path, &TransactionDigest::from(script))?;
+        let bytes = fs::read(&path).map_err(|error| InstallError::validation(error.to_string()))?;
+        if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+            return Err(InstallError::validation(
+                "Mission controller is not UTF-8 Lua source",
+            ));
+        }
+    }
+    Ok(scripts)
 }
 
 /// Merge data matches its manifest digest and describes the package beside it, since Sunrise binds

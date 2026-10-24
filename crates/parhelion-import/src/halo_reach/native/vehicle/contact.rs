@@ -149,9 +149,8 @@ pub(super) fn build(
     let mut output = original.clone();
     put(&mut output.0, i + 0x30, &[0; 16])?;
     put(&mut output.0, d + 0x120, &[0; 16])?;
-    // Reach ground friction is not a measured native Coulomb coefficient.
-    // Bound the authored lateral grip below the static tipping threshold of
-    // the selected support geometry. Keep the native directional ratios.
+    // Source friction is an input to a progressive force curve, not a native
+    // Coulomb coefficient. Preserve it as an upper bound for this adaptation.
     let source_grip = number(controls, "ground_friction")?;
     let maximum_wheel_mass = wheels.iter().try_fold(0f32, |maximum, wheel| {
         Ok::<_, anyhow::Error>(maximum.max(number(wheel, "mass_source")?))
@@ -178,6 +177,10 @@ pub(super) fn build(
         "Source wheeled body has no supported lateral balance"
     );
     let tipping_grip = half_track / height;
+    // Native static friction reaches full strength at very small slip. Bound
+    // that plateau below the selected body's flat-ground tipping threshold so
+    // its tires can yield before lateral load transfer lifts the inner wheels.
+    // This is a stability adaptation, not the Reach tire-force equation.
     let lateral_grip = source_grip.min(tipping_grip * 0.95);
     let template_grip = template.f32(td + 0xa8)?
         * template.f32(settings + 0x1c)?
@@ -195,7 +198,7 @@ pub(super) fn build(
         put(
             &mut output.0,
             d + field,
-            &(template.f32(td + field)? * grip_scale).to_le_bytes(),
+            &template.f32(td + field)?.to_le_bytes(),
         )?;
     }
     let slopes = [
@@ -285,10 +288,9 @@ pub(super) fn build(
         put(&mut output.0, settings_at - 4, &0x80803d52u32.to_le_bytes())?;
         output.0[settings_at..settings_at + 0x58]
             .copy_from_slice(&template.0[settings..settings + 0x58]);
-        // Reach weights tire response by individual wheel mass. Preserve its
-        // relative lateral weighting without increasing the calibrated maximum
-        // grip or changing rolling traction. This remains a native force-curve
-        // adaptation, not an absolute source force or mass-unit conversion.
+        // Scale only lateral ratios. The common owner multipliers also affect
+        // rolling and braking, so scaling those would couple unrelated forces.
+        // Reach wheel masses retain their relative lateral weighting.
         let wheel_mass = number(wheel, "mass_source")?;
         let lateral_scale = wheel_mass / maximum_wheel_mass;
         for field in [0x20, 0x28, 0x34, 0x3c] {
@@ -300,7 +302,7 @@ pub(super) fn build(
             put(
                 &mut output.0,
                 settings_at + field,
-                &(ratio * lateral_scale).to_le_bytes(),
+                &(ratio * grip_scale * lateral_scale).to_le_bytes(),
             )?;
         }
         put(
@@ -385,9 +387,9 @@ pub(super) fn build(
             "friction":{"source_ground_friction":source_grip,"native_template_lateral_static":template_grip,"multiplier":grip_scale,
                 "lateral_static":lateral_grip,"static_tipping_coefficient":tipping_grip,"support_half_width_metres":half_track,"center_height_metres":height,
                 "lateral_weighting":"source_wheel_mass_relative_to_maximum","maximum_source_wheel_mass":maximum_wheel_mass,
-                "slope_attenuation_cosines":slopes,"source_force_curve_translated":false},
+                "slope_attenuation_cosines":slopes,"grip_policy":"balance_bounded_lateral_only","tipping_reserve":0.95,"rolling_policy":"native_template_unchanged","source_force_curve_translated":false},
             "source_ground_damping":source_damping,"maximum_static_normal_weight_multiple":maximum_normal,
-            "limits":["Support loads balance the selected center of mass at the visible tire height. Travel follows source geometry. Wheel slip thresholds and slope attenuation follow source controls. Lateral friction ratios use relative source wheel mass without increasing the calibrated maximum. Rolling friction retains the native adaptation. Absolute force magnitudes, square-root coefficients and the source low-speed response are not translated, so this calibration does not establish handling parity. Maximum normal static lateral grip is limited to 95 percent of the flat static tipping threshold. Source damping is adapted to a native corner damping ratio capped at 0.85, using the equilibrium branch slope and supported corner mass. Whole-body coupling is not a set of independent corners. The normal-force bound applies to the static spring curve, not dynamic damping forces. Terrain, airborne recovery and damaged wheels require gameplay acceptance."]
+            "limits":["Support loads balance the selected center of mass at the visible tire height. Travel follows source geometry. Wheel slip thresholds and slope attenuation follow source controls. Normal lateral grip is bounded by source ground friction and 95 percent of the flat-ground tipping coefficient, with relative source wheel-mass weighting. Only lateral ratios are scaled. Rolling friction retains the native template. Absolute source force magnitudes, square-root coefficients and the progressive low-speed response are not translated, so this stability adaptation does not establish handling parity. Source damping is adapted to a native corner damping ratio capped at 0.85, using the equilibrium branch slope and supported corner mass. Whole-body coupling is not a set of independent corners. The tipping estimate does not bound dynamic terrain or suspension impulses. The normal-force bound applies to the static spring curve, not dynamic damping forces. Terrain, turning, braking, rollover, airborne recovery and damaged wheels require gameplay acceptance."]
         }),
     )
 }

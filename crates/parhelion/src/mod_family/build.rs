@@ -97,8 +97,12 @@ struct Session {
     imports: BTreeMap<Importer, Import>,
     reserved: BTreeSet<u16>,
     native: BTreeSet<u16>,
+    /// The packages that hold the build's private runtime copies, in order.
+    private: Vec<u16>,
     #[cfg(feature = "d2-model-importer")]
     maps: Vec<(crate::map::MapRecipe, serde_json::Value)>,
+    /// Controllers are generated after activity tags have their final addresses.
+    mission_scripts: BTreeMap<String, String>,
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -109,6 +113,30 @@ fn session() -> MutexGuard<'static, Option<Session>> {
 }
 pub(crate) fn clear() {
     *session() = None;
+}
+
+pub(crate) fn mission_script(name: &str, source: String) -> Result<(), String> {
+    let mut guard = session();
+    let session = guard
+        .as_mut()
+        .ok_or("Mission controller has no active build")?;
+    if session
+        .mission_scripts
+        .insert(name.to_owned(), source)
+        .is_some()
+    {
+        return Err(format!(
+            "Mission controller {name} was generated more than once"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn mission_scripts() -> BTreeMap<String, String> {
+    session()
+        .as_ref()
+        .map(|s| s.mission_scripts.clone())
+        .unwrap_or_default()
 }
 pub(crate) fn reserved(id: u16) -> bool {
     session()
@@ -280,6 +308,8 @@ pub(crate) fn begin(
     #[cfg(not(feature = "d2-model-importer"))]
     let _ = (weapons, maps);
     if inputs.is_empty() {
+        // The private runtime's packages still take their ids from the session.
+        *session() = Some(Session::default());
         return Ok(());
     }
     let install = target.parent().ok_or("Missing game root")?;
@@ -644,6 +674,31 @@ pub(crate) fn allocate(owner: Importer, index: usize) -> Result<u16, String> {
     Ok(id)
 }
 
+/// The package that holds the build's private runtime copies `index` packages past their first.
+/// Each takes the highest id of the window that no package of the build or an importer holds, as
+/// importer packages do, and asset and map packages count past it. Every package a build adds
+/// then sits at the top of the window, clear of the ids Sunrise Studio gives a mod's new packages
+/// from `0x0AA0` up without reading other mods.
+pub(crate) fn private_runtime(index: usize) -> Result<u16, String> {
+    let mut guard = session();
+    let current = guard
+        .as_mut()
+        .ok_or("Private runtime allocation has no build session")?;
+    let window = crate::package_profile::window();
+    let host = crate::package_profile::host().id;
+    while current.private.len() <= index {
+        let id = (window.base..=window.top)
+            .rev()
+            .find(|id| {
+                *id != host && !current.reserved.contains(id) && !current.native.contains(id)
+            })
+            .ok_or("No free package ID remains for the build's private runtime")?;
+        current.private.push(id);
+        current.reserved.insert(id);
+    }
+    Ok(current.private[index])
+}
+
 pub(crate) fn use_id(owner: Importer, id: u16) {
     if let Some(import) = session().as_mut().and_then(|s| s.imports.get_mut(&owner)) {
         import.used.insert(id);
@@ -851,6 +906,7 @@ pub(crate) fn members(
     artifacts: &[ArtifactMetadata],
     merge: &[ArtifactMetadata],
     diagnostics: Option<&ArtifactMetadata>,
+    scripts: &[ArtifactMetadata],
 ) -> Result<Vec<Member>, String> {
     let guard = session();
     let Some(current) = guard.as_ref() else {
@@ -901,7 +957,12 @@ pub(crate) fn members(
             kept: import.kept,
         });
     }
-    for artifact in artifacts.iter().chain(merge).chain(diagnostics) {
+    for artifact in artifacts
+        .iter()
+        .chain(merge)
+        .chain(diagnostics)
+        .chain(scripts)
+    {
         let package_name = artifact
             .file_name
             .strip_suffix(".merge")
@@ -914,7 +975,9 @@ pub(crate) fn members(
                 .find(|(_, i)| i.used.contains(&profile.package_id))
                 .map(|(owner, _)| **owner)
         });
-        let path = if artifact.file_name == mod_content::map_diagnostics::FILE_NAME {
+        let path = if let Some(path) = mod_content::mission_script::path(&artifact.file_name) {
+            path
+        } else if artifact.file_name == mod_content::map_diagnostics::FILE_NAME {
             artifact.file_name.clone()
         } else {
             format!(

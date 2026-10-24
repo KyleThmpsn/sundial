@@ -7,7 +7,7 @@
 //! when a matching reader accepts it. The configured native consumer runs all
 //! eleven states with moving transforms and retains its complete frame output.
 use anyhow::{Context, Result, ensure};
-use parhelion_import::d2_mot::{cloth, reader};
+use parhelion_import::{d2_mot::reader, tiger::physics::cloth};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::PathBuf, process::Command};

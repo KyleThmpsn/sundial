@@ -60,7 +60,7 @@ impl Program {
         for (&(class, slot), &(kind, size)) in &emitter.resources {
             result.push(match class {
                 0 => format!(
-                    "{}<float4> t{slot}:register(t{});",
+                    "{}<{}4> t{slot}:register(t{});",
                     match options
                         .samples
                         .get(&slot)
@@ -71,6 +71,7 @@ impl Program {
                         5 => "TextureCube",
                         _ => bail!("Unsupported DXIL texture kind"),
                     },
+                    if size & 0xFF == 5 { "uint" } else { "float" },
                     options.texture_registers.get(&slot).unwrap_or(&slot)
                 ),
                 2 => {

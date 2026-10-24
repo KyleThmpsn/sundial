@@ -140,9 +140,40 @@ impl PackageAuthoringApp {
                 self.upgrade.open = false;
                 self.start_build_checked(ctx);
             }
+            view::Action::Restore => self.start_restore(),
             view::Action::Review => self.start_upgrade_review(false),
             view::Action::Recover => self.start_upgrade_review(true),
             view::Action::Close => self.upgrade.open = false,
+        }
+    }
+}
+
+impl PackageAuthoringApp {
+    /// Opens the installation review for the build kept for this runtime, in place of a new
+    /// build. The install it leads to is an ordinary one.
+    fn start_restore(&mut self) {
+        if self.build_receiver.is_some() || self.install_receiver.is_some() {
+            self.log.push(LogEntry::error(
+                "Wait for the build or install to finish before restoring",
+            ));
+            return;
+        }
+        let Some(kept) = self.upgrade.plan.as_ref().and_then(|plan| plan.kept()) else {
+            return;
+        };
+        match BuildReport::kept(&kept.run_directory) {
+            Ok(report) => {
+                self.upgrade.open = false;
+                self.restore = Some(report);
+                self.build_status_open = true;
+                self.build_dialog_step = BuildDialogStep::ReviewInstall;
+                self.start_replacement_review();
+            }
+            Err(error) => {
+                self.upgrade.error = Some(format!(
+                    "The kept build can't be read: {error}. Build & Stage instead."
+                ));
+            }
         }
     }
 }

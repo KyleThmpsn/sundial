@@ -61,21 +61,19 @@ fn visibility_contract(code: &Code) -> bool {
     let Some((_, y)) = output(code, 2, 1) else {
         return false;
     };
-    let Some((_, z)) = output(code, 2, 2) else {
-        return false;
-    };
-    z.code == 54
-        && literal(&z.operands[1], 2, 0.0)
-        && ((y.code == 54
-            && y.operands[1].kind == 4
-            && y.operands[1].modifier == 0
-            && (0.0..=0.5).contains(&f32::from_bits(
-                y.operands[1].literal[y.operands[1].lanes[1]],
-            )))
-            || (y.code == 56
-                && !y.saturate
-                && (literal(&y.operands[1], 1, 0.5) || literal(&y.operands[2], 1, 0.5)))
-            || opaque::intensity::recover_surface(code))
+    // Target-two blue is a separate material input. It need not be zero to establish
+    // the retained native color, packed normal, visibility and emission consumers.
+    (y.code == 54
+        && y.operands[1].kind == 4
+        && y.operands[1].modifier == 0
+        && (0.0..=0.5).contains(&f32::from_bits(
+            y.operands[1].literal[y.operands[1].lanes[1]],
+        )))
+        || (y.code == 56
+            && !y.saturate
+            && (literal(&y.operands[1], 1, 0.5) || literal(&y.operands[2], 1, 0.5)))
+        || opaque::intensity::recover_surface(code)
+        || opaque::intensity::recover_translated(code)
 }
 
 fn supported(code: &Code, decal: bool) -> bool {
@@ -85,12 +83,17 @@ fn supported(code: &Code, decal: bool) -> bool {
                 s.name == "SV_TARGET" && s.index == target && s.register == target as usize
             })
         })
-        && code.buffers.iter().all(|&(slot, _)| matches!(slot, 0 | 12))
+        && code
+            .buffers
+            .iter()
+            // Frame and exposure inputs are already bounded and supplied by
+            // load_program. Animated deferred materials use them too.
+            .all(|&(slot, _)| matches!(slot, 0 | 5..=7 | 12 | 13))
         && code.resources.len() <= 9
         && code
             .resources
             .iter()
-            .all(|r| r.dimension == 3 && !r.integer)
+            .all(|r| matches!(r.dimension, 3 | 6) && !r.integer)
         && !code.instructions.iter().any(|i| {
             (!decal && matches!(i.code, 22 | 48))
                 || i.operands
@@ -231,7 +234,9 @@ pub(in crate::model_preview) fn load(
         };
         Some(uv)
     };
-    let intensity = opaque::intensity::recover_surface(&code);
+    let intensity = opaque::intensity::recover_surface(&code)
+        || opaque::intensity::recover(&code)
+        || opaque::intensity::recover_translated(&code);
     let mut material = load_program(
         manager,
         tag,
@@ -316,8 +321,8 @@ fn trace(tag: u32, material: &Material, model: &mut Model) {
         }
         let pixel = Pixel {
             varyings,
-            dx: [[0.0; 4]; 9],
-            dy: [[0.0; 4]; 9],
+            dx: [[0.0; 4]; 10],
+            dy: [[0.0; 4]; 10],
             screen: [0.0; 3],
             direction: [0.0, 0.0, 1.0],
             distance: 1.0,
@@ -357,7 +362,11 @@ pub(in crate::model_preview) fn sample(
     pixel: Pixel<'_>,
 ) -> Option<Sample> {
     let native = material.native.as_ref().filter(|n| n.deferred)?;
-    let mut targets = shade::outputs(model, material, constants, gear, pixel)?;
+    let Some(mut targets) = shade::outputs(model, material, constants, gear, pixel) else {
+        // A shader discard removes the fragment, including its depth. It must not return
+        // to the basic opaque material path with a zero color and solid coverage.
+        return Some(decal::empty());
+    };
     if targets[..3].iter().flatten().any(|v| !v.is_finite()) {
         return None;
     }

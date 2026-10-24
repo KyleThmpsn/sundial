@@ -1,7 +1,10 @@
 //! Explicit source character actions selected through a private native parameter.
 mod binding;
+mod grip;
 mod motion;
+mod rider;
 mod source;
+mod weapon;
 use super::first_person::Action;
 use crate::{
     halo_reach::{cache::Cache, native::ImportRequest, resource::Pages},
@@ -12,6 +15,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::{fs, path::Path};
+
+pub(in crate::halo_reach) fn defaults(
+    cache: &Cache,
+    scene: &crate::halo_reach::Scene,
+    native: &mut Reader,
+    donor: u32,
+) -> Result<Option<Options>> {
+    if scene.object.tag.group == "vehi" {
+        rider::defaults(cache, scene)
+    } else {
+        weapon::defaults(scene, native, donor)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -100,7 +116,14 @@ pub(in crate::halo_reach) fn prepare(
     let skeleton = native.tag(options.native.skeleton, Some(0x80809C36))?;
     let controls = native.tag(options.native.controls, Some(0x80809C36))?;
     let rig = animation::control::Rig::read_character(&skeleton, &controls)?;
-    let calibration = motion::Calibration::new(&source, &rig, &skeleton, &controls, options)?;
+    let calibration = motion::Calibration::new(
+        &source,
+        &rig,
+        &skeleton,
+        &controls,
+        options,
+        (recipe["kind"].as_str().unwrap_or("weapon") == "weapon").then_some(entry.scale),
+    )?;
     let lookup = native.tag(options.native.lookup, Some(0x80809C36))?;
     let lookup_at = lookup.pointer(24)?;
     ensure!(
@@ -309,6 +332,7 @@ pub(in crate::halo_reach) fn prepare(
         "skeleton":options.native.skeleton,"controls":options.native.controls,
         "files":files,"clips":converted,"actions":actions,"tables":tables,"binding":binding,"private":private,
         "source_graph":source.graph["tag"],"source_reference":options.reference,
+        "weapon_grip":recipe["kind"] == "weapon",
         "retained_native_behavior":["Character geometry and segment lengths", "Native action timing and events", "Native dynamic aim parents", "Native limb and torso constraints", "Native walking and running"],
         "gameplay_verified":false}),
     )

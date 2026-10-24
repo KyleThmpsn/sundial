@@ -19,7 +19,8 @@ pub use address::{BindingHash, GraphTag, SchemaHandle};
 pub use item::load as load_weapon_runtime_entity_for_item_with_manager;
 mod invisibility;
 pub use identity::{
-    NativeMember, native_holders, native_member_names, native_members, native_type_name,
+    NativeMember, native_holders, native_member_names, native_members, native_pointer_layout,
+    native_type_name,
 };
 pub mod modifiers;
 
@@ -438,8 +439,7 @@ struct RegistryMember {
 
 #[derive(Clone, Debug, Deserialize)]
 struct NativeLayoutEntry {
-    #[serde(rename = "byte_offset")]
-    _byte_offset: u32,
+    byte_offset: u32,
     type_code: u32,
 }
 

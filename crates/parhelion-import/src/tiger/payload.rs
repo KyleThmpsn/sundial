@@ -1,6 +1,8 @@
 //! Checked payload access. The app's package_payload module is private; this
 //! standalone experiment keeps the same bounds/pointer contracts without changing it.
 use anyhow::{Result, bail, ensure};
+mod compact;
+pub use compact::{Compacted, compact};
 #[derive(Clone)]
 pub struct Payload(pub Vec<u8>);
 impl Payload {

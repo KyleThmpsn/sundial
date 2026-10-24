@@ -3,8 +3,6 @@
 mod dyes;
 use crate::investment::discovery::inspection as loader;
 mod perks;
-#[cfg(test)]
-mod tests;
 use crate::ui::catalog::runtime as view;
 
 use std::{

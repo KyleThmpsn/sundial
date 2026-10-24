@@ -770,7 +770,7 @@ fn edits_two_mods_make_to_different_words_of_one_entry_are_merged() {
     assert_eq!(
         install.mod_overlaps,
         [format!(
-            "Sunrise merges 1 entry of package 058C that Parhelion and {WORDS} both change."
+            "Sunrise merges 1 entry that Parhelion and {WORDS} both change, in package 058C."
         )]
     );
     let own = mod_content::directory(&root);

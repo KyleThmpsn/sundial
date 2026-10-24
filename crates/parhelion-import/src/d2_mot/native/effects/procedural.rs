@@ -81,10 +81,9 @@ impl Declaration {
                 .unwrap_or(false);
             // Constant channels have no writable storage or reverse dependency
             // mask. They remain valid procedure inputs without dirty propagation.
-            let constant = deps.is_empty() && constant_input(p, output, rows)?;
             let computed = dependency::computed(p, rows, input, ordinal)?;
             ensure!(
-                (p.u64(output + 8)? == 0 && (reciprocal || constant)) || computed,
+                (p.u64(output + 8)? == 0 && (reciprocal || constant(p, output, rows)?)) || computed,
                 "procedure input {input} for declaration {ordinal} lacks a qualified dependency"
             );
             outputs.push(format!("{:08X}", p.u32(output)?));
@@ -213,11 +212,16 @@ impl Declaration {
     }
 }
 
-fn constant_input(p: &Payload, row: usize, rows: &[usize]) -> Result<bool> {
+/// A source declaration with no code, storage, dependency mask, parameters or
+/// public name. Nothing writes its cached vector, so it keeps its initial
+/// value. Native output refresh recognizes storage `FFFF` and skips zero-code
+/// declarations, so the same row shape keeps that value in a native bank.
+pub(super) fn constant(p: &Payload, row: usize, rows: &[usize]) -> Result<bool> {
     if p.u64(row + 8)? != 0
         || p.0[row + 16..row + 72].iter().any(|v| *v != 0)
         || p.u16(row + 72)? != u16::MAX
         || p.u16(row + 74)? != 0
+        || p.u64(row + 80)? != 0
         || p.u64(row + 96)? != 0
         || p.u16(row + 106)? != u16::MAX
     {
@@ -226,12 +230,12 @@ fn constant_input(p: &Payload, row: usize, rows: &[usize]) -> Result<bool> {
     let definition = p.pointer(24)?;
     ensure!(
         p.u32(definition - 4)? == 0x80809597,
-        "constant input bank type differs"
+        "constant channel bank type differs"
     );
     let index = rows
         .iter()
         .position(|at| *at == row)
-        .context("constant input ordinal")?;
+        .context("constant channel ordinal")?;
     for field in [0x168, 0x178, 0x188] {
         for name in p.array(definition + field, 12, Some(0x808095A8))? {
             if p.u32(name + 8)? as usize == index {

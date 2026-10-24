@@ -238,6 +238,7 @@ pub(in crate::halo_reach::level) fn export(
         additional_banks: banks.into_iter().skip(1).collect(),
         record_missing_samples: false,
         fire_bus: None,
+        require_firing: false,
         firing: None,
         decoder: options.decoder.clone(),
     };

@@ -34,6 +34,7 @@ pub use progress::{InstallPhase, InstallProgress};
 mod account;
 mod identities;
 pub(crate) use identities::SHADER_STACK;
+mod kept;
 mod preparation;
 use preparation::*;
 mod replacement;
@@ -244,6 +245,11 @@ pub struct InstallReport {
     /// The backup of the mod folder an install on Dawn or Sunrise before 0.6 removed, since those
     /// runtimes don't load it.
     pub retired_mod_backup: Option<PathBuf>,
+    /// Why the installed run couldn't be kept for a switch back to this runtime. The install
+    /// itself committed.
+    pub kept_build_warning: Option<String>,
+    /// Whether a build is kept for the other runtime, which Parhelion offers after a switch back.
+    pub other_build_kept: bool,
     /// Account updated as part of this backed-up replacement transaction.
     pub cleaned_account: Option<PathBuf>,
 }
@@ -327,6 +333,7 @@ struct ValidatedRun {
     /// The merge data beside each package of a mod-folder build.
     merge_data: Vec<ArtifactMetadata>,
     map_diagnostics: Option<ArtifactMetadata>,
+    mission_scripts: Vec<ArtifactMetadata>,
     mods: Vec<crate::mod_family::Member>,
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
@@ -566,13 +573,27 @@ pub fn install_staged_packages_with_progress(
         game_running_check: request.game_running_check,
         runtime_snapshot_check: request.runtime_snapshot_check,
     })?;
-    let report = install_with_progress(
+    let mut report = install_with_progress(
         request,
         None,
         DEFAULT_CACHE_INVALIDATION_OPS,
         publish_package,
         &mut progress,
     )?;
+    // Kept while the installation is still locked, so the installed importer folders it reads
+    // are the ones just published.
+    report.kept_build_warning = kept::keep(
+        &report.staged_run_directory,
+        &report.target_packages_directory,
+        report.mod_directory.is_some(),
+    )
+    .err()
+    .map(|error| format!("Packages installed, but this build couldn't be kept for a switch back to this runtime: {error}"));
+    report.other_build_kept = kept::find(
+        &report.target_packages_directory,
+        report.mod_directory.is_none(),
+    )
+    .is_ok_and(|kept| kept.is_some());
     lock.finish(request.game_running_check, request.runtime_snapshot_check)?;
     Ok(report)
 }
@@ -917,6 +938,7 @@ struct ValidatedManifest {
     artifacts: Vec<ArtifactMetadata>,
     merge_data: Vec<ArtifactMetadata>,
     map_diagnostics: Option<ArtifactMetadata>,
+    mission_scripts: Vec<ArtifactMetadata>,
     mods: Vec<crate::mod_family::Member>,
     selected_recipe_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
@@ -1316,6 +1338,8 @@ fn build_install_report(
         item_grants,
         mod_overlaps: Vec::new(),
         retired_mod_backup: None,
+        kept_build_warning: None,
+        other_build_kept: false,
     }
 }
 

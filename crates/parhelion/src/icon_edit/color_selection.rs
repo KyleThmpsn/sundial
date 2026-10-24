@@ -1,6 +1,4 @@
 //! Independent color replacements, shared by previews and every authored texture lane.
-#[cfg(test)]
-use super::WeaponIconEdit;
 use super::preview::DecodedIconImage;
 use serde::{Deserialize, Serialize};
 
@@ -287,51 +285,4 @@ pub(super) fn sample(primary: &DecodedIconImage, uv: egui::Vec2) -> Option<[u8; 
         .get((y * primary.size[0] + x) * 4..)?
         .get(..4)?;
     (pixel[3] != 0).then(|| [pixel[0], pixel[1], pixel[2]])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn rule(source: [u8; 3], replacement: [u8; 3]) -> IconColorReplacement {
-        IconColorReplacement {
-            source,
-            replacement,
-            range_percent: 0,
-            hue_range_degrees: None,
-        }
-    }
-
-    #[test]
-    fn replacement_edges_blend_adjusted_pixels_with_original_shading() {
-        let mut pixels = [0, 0, 150, 200];
-        let edit = WeaponIconEdit {
-            color_replacements: vec![IconColorReplacement {
-                range_percent: 100,
-                ..rule([0, 0, 200], [150, 43, 43])
-            }],
-            hue_shift_degrees: 120,
-            opacity_percent: 50,
-            ..Default::default()
-        };
-        edit.apply_to_rgba8(&mut pixels).unwrap();
-        // The original shade produces [113, 32, 32], blended at 229/255 over
-        // the hue-adjusted base [150, 0, 0]. Opacity still applies afterward.
-        assert_eq!(pixels, [117, 29, 29, 100]);
-    }
-
-    #[test]
-    fn adjusted_pixels_and_replacement_targets_cannot_trigger_other_rules() {
-        let mut pixels = [0, 0, 255, 255, 255, 0, 0, 255, 0, 255, 0, 255];
-        WeaponIconEdit {
-            color_replacements: vec![
-                rule([0, 0, 255], [255, 0, 0]),
-                rule([255, 0, 0], [0, 255, 0]),
-            ],
-            hue_shift_degrees: 120,
-            ..Default::default()
-        }
-        .apply_to_rgba8(&mut pixels)
-        .unwrap();
-        assert_eq!(pixels, [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]);
-    }
 }

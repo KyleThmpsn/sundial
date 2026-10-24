@@ -3,7 +3,9 @@
 //! points, the donor's kill volumes refilled with the map's own, its out-of-bounds volumes left
 //! out, and the donor's barriers, props and effects in its object lists moved far below the map.
 //! The donor's music sensor is left out, and objective records that place something on the map
-//! with no role move far below it.
+//! with no role move far below it. The donor's AI spawners are left out too, and when the level
+//! has squads, the copy adds an encounter object of its own whose squads stand where the level's
+//! do, built from the donor's ([`super::encounters`]).
 //!
 //! A slice set names a registry at `+0x14`, whose three arrays list objects. Each object lists,
 //! per bubble, handles whose redirects name placed records. A placed record's descriptors each
@@ -21,7 +23,9 @@ use std::path::Path;
 
 use std::collections::BTreeMap;
 
-use parhelion_import::halo_reach::level::{objectives::Objective, spawn::Spawn, volumes::Volume};
+use parhelion_import::halo_reach::level::{
+    objectives::Objective, spawn::Spawn, squads::Squad, volumes::Volume,
+};
 use sundial::package_authoring::PackageManager;
 use tiger_pkg::TagHash;
 
@@ -37,6 +41,7 @@ use crate::{
 
 use super::{
     chain,
+    encounters::{Encounter, Templates},
     world::{BubbleName, Owner},
 };
 
@@ -80,8 +85,8 @@ const OBJECTIVE: u32 = 0x8080_9927;
 /// Lone Wolf and Tip of the Spear played The Other Side's music over Reach's sound.
 const MUSIC_SENSOR: u32 = 0x8080_4E8E;
 /// The component class of an AI spawner, which spawns the donor's combatants as its encounter
-/// script asks. The Other Side's registry places 112, which no map's own level drives, and
-/// every one is an object the client creates, so the copy leaves them out.
+/// script asks. The Other Side's registry places 112 at its own rooms, and every one is an object
+/// the client creates, so the copy leaves them out and builds its own squads from them.
 const AI_SPAWNER: u32 = 0x8080_9A3B;
 /// An objective record embeds one placement row, the row class of an object list, behind an
 /// array marker and a 16-byte header.
@@ -224,6 +229,9 @@ pub(super) struct Registry {
     spawns: Vec<Spawn>,
     volumes: Vec<Volume>,
     bubble: BubbleName,
+    /// The copy's own squads, when the level has squads the donor's can stand in for.
+    encounter: Option<Encounter>,
+    triggers: Option<super::triggers::Triggers>,
 }
 
 fn class(manager: &PackageManager, tag: u32) -> Option<u32> {
@@ -534,9 +542,20 @@ fn assign(
 }
 
 impl Registry {
+    pub(super) fn encounter(&self) -> Option<super::mission::Encounter> {
+        self.encounter.as_ref().map(Encounter::bindings)
+    }
+
+    pub(super) fn triggers(&self) -> Option<super::mission::Triggers> {
+        self.triggers
+            .as_ref()
+            .map(super::triggers::Triggers::bindings)
+    }
+
     /// The registry the donor slice set `slice_set` names at `field`, with its points placed on
     /// `spawns`, its objectives on the level's labelled `objectives`, its kill volumes refilled
-    /// with `volumes`, or left out when there are none, and the map's name for its `bubble`.
+    /// with `volumes`, or left out when there are none, the map's name for its `bubble`, and an
+    /// encounter of the level's `squads` named after the area `area`.
     #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     pub(super) fn load(
         directory: &Path,
@@ -545,9 +564,12 @@ impl Registry {
         slice_set: &[u8],
         field: usize,
         spawns: &[Spawn],
+        squads: &[Squad],
         objectives: &[Objective],
         volumes: &[Volume],
+        trigger_volumes: &[Volume],
         bubble: BubbleName,
+        area: &str,
     ) -> AuthoringResult<Self> {
         let tag = TagHash(read_u32(slice_set, field)?);
         let owner = Owner::load_tag(
@@ -559,6 +581,8 @@ impl Registry {
             "object registry",
         )?;
         let mut objects: [Vec<Object>; 3] = Default::default();
+        let mut templates: Option<Templates> = None;
+        let mut triggers = None;
         for (list, &descriptor) in objects.iter_mut().zip(&REGISTRY_OBJECTS) {
             for object in words(&owner.payload, descriptor)? {
                 if class(manager, object) != Some(OBJECT_CLASS) {
@@ -567,6 +591,23 @@ impl Registry {
                     )));
                 }
                 let payload = read_tag(manager, TagHash(object), "registry object")?;
+                if triggers.is_none() && !trigger_volumes.is_empty() {
+                    triggers = super::triggers::Triggers::find(
+                        manager,
+                        TagHash(object),
+                        &payload,
+                        trigger_volumes,
+                        area,
+                    )?;
+                }
+                if !squads.is_empty()
+                    && let Some(found) = Templates::find(manager, object, &payload)?
+                {
+                    match &mut templates {
+                        Some(templates) => templates.merge(found),
+                        None => templates = Some(found),
+                    }
+                }
                 let key = read_u32(&payload, OBJECT_KEY)?;
                 let mut bubbles = Vec::new();
                 let mut changed = bubble.named(&payload);
@@ -721,12 +762,28 @@ impl Registry {
                 }
             }
         }
+        if !squads.is_empty()
+            && let Some(templates) = &mut templates
+        {
+            templates.supplement(manager)?;
+        }
+        let encounter = match &templates {
+            Some(templates) => Encounter::new(templates, squads, area)?,
+            None => None,
+        };
+        if !trigger_volumes.is_empty() && triggers.is_none() {
+            return Err(invalid(
+                "Mission donor has no paired neutral volume and player sensor",
+            ));
+        }
         Ok(Self {
             owner,
             objects,
             spawns: spawns.to_vec(),
             volumes: volumes.to_vec(),
             bubble,
+            encounter,
+            triggers,
         })
     }
 
@@ -885,6 +942,36 @@ impl Registry {
                 content.push(spec(object.tag, synchronize_payload_size(payload)?));
                 content.extend(points);
             }
+        }
+        let rename = |payload: &mut Vec<u8>| {
+            self.bubble.rename(payload);
+        };
+        let mut authored = Vec::new();
+        if let Some(encounter) = &self.encounter {
+            authored.push(encounter.tags(&at, &mut next, &rename)?);
+        }
+        if let Some(triggers) = &self.triggers {
+            authored.push(triggers.tags(&at, &mut next, &rename)?);
+        }
+        for (specs, object, dependencies) in authored {
+            let descriptor = REGISTRY_OBJECTS[1];
+            let (_, _, _, row_class) = array_at(&registry_payload, descriptor)?;
+            let mut listed = words(&registry_payload, descriptor)?;
+            listed.push(object.0);
+            let rows = listed
+                .iter()
+                .flat_map(|tag| tag.to_le_bytes())
+                .collect::<Vec<_>>();
+            append_native_array(
+                &mut registry_payload,
+                descriptor,
+                row_class,
+                listed.len(),
+                &rows,
+            )?;
+            registry_payload = synchronize_payload_size(registry_payload)?;
+            added.extend(dependencies);
+            content.extend(specs);
         }
         let mut tags = vec![
             spec(self.owner.tag, registry_payload),

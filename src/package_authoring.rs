@@ -267,15 +267,15 @@ pub mod ability_bank {
     pub use crate::ability::bank::{
         AbilityTarget, CHARGE_DEFINITION_CLASS, CHARGE_INSTANCE_CLASS, CHARGE_ROWS,
         CLASS_ABILITY_CHARGE_KEY, CLASS_ABILITY_SLOT, ChargeRow, DEFINITION_ROW_CLASS,
-        GRENADE_SLOT, HandlerIndex, INSTANCE_ROW_CLASS, JUMP_SLOT, MELEE_CHARGE_KEY,
-        MELEE_DAMAGE_PROFILE, MELEE_SLOT, MOVEMENT_SLOT, Modifier, PARAMETER_NAMES,
-        PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
+        FixedModifier, GRENADE_SLOT, GroupEntry, GroupModifier, HandlerIndex, INSTANCE_ROW_CLASS,
+        JUMP_SLOT, MELEE_CHARGE_KEY, MELEE_DAMAGE_PROFILE, MELEE_SLOT, MOVEMENT_SLOT, Modifier,
+        PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
         SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS, SLOT_PARAMETERS, SUPER_SLOT,
         StockParameter, UNPLACED_BANKS, bank_name, bank_names, bank_owner, block_count,
         handler_slot, instance_shift, parameter_abilities, parameter_kind, parameter_label,
         parameter_meaning, parameter_name, parameters, property_rows, register_bank_names,
         retarget_references, row_modifiers, slot_banks, slot_name, slot_parameters, tuning_key,
-        validate, with_charge_row, with_property_row,
+        validate, with_charge_row, with_property_row, with_property_row_mode,
     };
 }
 
@@ -314,13 +314,13 @@ pub mod entity {
         SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
         SANDBOX_PATTERN_GLOBAL_ID_OFFSET, SANDBOX_PATTERN_INDEX_ROW_CLASS,
         SANDBOX_PATTERN_INDEX_ROW_SIZE, SANDBOX_PATTERN_NESTED_CLASS,
-        SANDBOX_PATTERN_NESTED_OFFSET, SANDBOX_PATTERN_ROW_CLASS, SANDBOX_PATTERN_ROW_SIZE,
-        SandboxPatternIdentity, WEAPON_BARREL_COMPONENT_KEY, WEAPON_CONTROLLER_COMPONENT_KEY,
-        WEAPON_ENTITY_CLASS, WEAPON_ENTITY_COMPONENT_ROW_CLASS, WEAPON_ENTITY_COMPONENT_ROW_SIZE,
-        WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS, WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_CLASS,
-        WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_SIZE, WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS,
-        WEAPON_ENTITY_RESOURCE_MAP_ROW_SIZE, WEAPON_INPUT_COMPONENT_KEY,
-        WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
+        SANDBOX_PATTERN_NESTED_OFFSET, SANDBOX_PATTERN_OBJECT_OFFSET, SANDBOX_PATTERN_ROW_CLASS,
+        SANDBOX_PATTERN_ROW_SIZE, SandboxPatternIdentity, WEAPON_BARREL_COMPONENT_KEY,
+        WEAPON_CONTROLLER_COMPONENT_KEY, WEAPON_ENTITY_CLASS, WEAPON_ENTITY_COMPONENT_ROW_CLASS,
+        WEAPON_ENTITY_COMPONENT_ROW_SIZE, WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS,
+        WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_CLASS, WEAPON_ENTITY_RESOURCE_DESCRIPTOR_ROW_SIZE,
+        WEAPON_ENTITY_RESOURCE_MAP_ROW_CLASS, WEAPON_ENTITY_RESOURCE_MAP_ROW_SIZE,
+        WEAPON_INPUT_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
         WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding, append_weapon_entity_assignment,
         barrel, barrel_pellets, coupled_weapon_component_bindings, extend_weapon_components,
@@ -350,8 +350,8 @@ pub mod runtime {
         load_weapon_runtime_entity_for_item_with_manager, load_weapon_runtime_entity_with_manager,
         load_weapon_runtime_graph, load_weapon_runtime_graph_for_entity,
         load_weapon_runtime_graph_with_manager, load_weapon_runtime_resource_shape, native_holders,
-        native_member_names, native_members, native_type_name, resolve_weapon_runtime_field,
-        runtime_fields_share_semantics,
+        native_member_names, native_members, native_pointer_layout, native_type_name,
+        resolve_weapon_runtime_field, runtime_fields_share_semantics,
     };
     pub use crate::runtime::{modifiers, presentation};
 }

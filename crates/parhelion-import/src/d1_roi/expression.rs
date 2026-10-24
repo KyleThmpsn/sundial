@@ -14,6 +14,7 @@ pub(super) struct Depth {
     pub index: u32,
     pub source: u32,
     pub native: u32,
+    pub vectors: u8,
 }
 
 // Only vector zero has an equivalent producer in both transparent scopes.
@@ -42,6 +43,29 @@ fn depth_producer(scope: &Payload, field: usize, write: u8) -> Result<()> {
         }
     }
     ensure!(found, "Transparent depth vector has no producer");
+    Ok(())
+}
+
+fn irradiance_producer(scope: &Payload, field: usize, source: bool) -> Result<()> {
+    let range = scope.array_range(field, 1, Some(0x80800009))?;
+    let code = &scope.0[range];
+    for row in 2..=4 {
+        let expected = [
+            0x3D,
+            if source { 41 } else { 39 },
+            row + if source { 1 } else { 4 },
+            if source { 0x42 } else { 0x43 },
+            row,
+        ];
+        let writes = code
+            .chunks_exact(5)
+            .filter(|pair| pair[3] == expected[3] && pair[4] == row)
+            .collect::<Vec<_>>();
+        ensure!(
+            writes.len() == 1 && writes[0] == expected,
+            "Transparent irradiance vector producer differs"
+        );
+    }
     Ok(())
 }
 
@@ -159,6 +183,8 @@ impl Globals {
         );
         depth_producer(&source_depth, 0x38, 0x42)?;
         depth_producer(&native_depth, 0x58, 0x43)?;
+        irradiance_producer(&source_depth, 0x38, true)?;
+        irradiance_producer(&native_depth, 0x58, false)?;
         for (scope, field, texture, bind) in [
             (&source_depth, 0x38, 2, 0x46),
             (native_depth.as_ref(), 0x58, 7, 0x47),
@@ -175,6 +201,7 @@ impl Globals {
             index: source_index as u32,
             source: source_depth.u32(0x90)?,
             native: native_depth.u32(0xB8)?,
+            vectors: 0b0001_1101,
         };
         ensure!(
             (1..=9).contains(&depth.source)

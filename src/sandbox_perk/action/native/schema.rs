@@ -154,7 +154,7 @@ pub fn choices(class: u32, field: usize) -> Vec<(u32, bool)> {
             choices.extend(
                 entries
                     .iter()
-                    .filter(|entry| entry.observed())
+                    .filter(|entry| entry.has_layout())
                     .map(|entry| (entry.class, false)),
             );
         }

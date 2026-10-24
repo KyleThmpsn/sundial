@@ -11,9 +11,9 @@ mod artwork;
 mod authoring_safety;
 mod barrel_controls;
 mod build_selection;
+#[cfg(feature = "d2-model-importer")]
+mod imported_appearance;
 mod library;
-mod operation_lock;
-mod preferences;
 mod recipe_editing;
 mod runtime_editing;
 

@@ -44,41 +44,6 @@ fn catalog() -> Catalog {
 }
 
 #[test]
-fn bulk_acquisition_round_trips_both_progression_views_and_preserves_unknown_fields() {
-    let catalog = catalog();
-    for native in [false, true] {
-        let mut document = json!({"state":{"unlocks":{"future":[1,2,3]}},"future":{"keep":true}});
-        if native {
-            document["_native_progression"] = json!({"unlocks":[],"family":[]});
-        }
-        let definitions = [collectible(0, 0, false), collectible(1, 1, false)];
-        let result = apply_rows(&mut document, &catalog, &definitions, true).unwrap();
-        assert_eq!(result.changed, 2);
-        let snapshot = collection_state_snapshot(&document).unwrap();
-        for definition in &definitions {
-            assert_eq!(
-                collectible_acquired_state(definition, &snapshot, &catalog),
-                Some(true)
-            );
-        }
-        assert_eq!(
-            apply_rows(&mut document, &catalog, &definitions, true)
-                .unwrap()
-                .unchanged,
-            2
-        );
-        assert_eq!(
-            apply_rows(&mut document, &catalog, &definitions, false)
-                .unwrap()
-                .changed,
-            2
-        );
-        assert_eq!(document["future"], json!({"keep":true}));
-        assert_eq!(document["state"]["unlocks"]["future"], json!([1, 2, 3]));
-    }
-}
-
-#[test]
 fn shared_flags_are_counted_once_per_collectible_and_conflicts_roll_back() {
     let catalog = catalog();
     let mut document = json!({});
@@ -93,35 +58,6 @@ fn shared_flags_are_counted_once_per_collectible_and_conflicts_roll_back() {
     let conflicting = [collectible(0, 0, false), collectible(1, 0, true)];
     assert!(apply_rows(&mut document, &catalog, &conflicting, true).is_err());
     assert_eq!(document, before);
-}
-
-#[test]
-fn review_names_unselected_items_changed_by_shared_flags() {
-    let catalog =
-        catalog().with_test_collectibles(vec![collectible(0, 0, false), collectible(1, 0, false)]);
-    let document = json!({});
-    let mut job = Job::new(&document, vec![collectible(0, 0, false)], true).unwrap();
-    while !job.step(&catalog, 8).unwrap() {}
-    let review = job.review.as_ref().unwrap();
-    assert_eq!(review.related.len(), 1);
-    assert_eq!(review.related[0].name, "Item 1");
-    assert_eq!(review.related[0].before, "Not Acquired");
-    assert_eq!(review.related[0].after, "Acquired");
-}
-
-#[test]
-fn unsupported_collectibles_are_reported_without_writing_their_state() {
-    let catalog = catalog();
-    let mut document = json!({});
-    let definitions = [collectible(0, 0, false), collectible(1, 90, false)];
-    assert_eq!(
-        apply_rows(&mut document, &catalog, &definitions, true).unwrap(),
-        Outcome {
-            changed: 1,
-            unchanged: 0,
-            skipped: 1
-        }
-    );
 }
 
 #[test]

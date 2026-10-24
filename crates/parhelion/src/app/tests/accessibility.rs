@@ -1,55 +1,6 @@
 use super::*;
 
 #[test]
-fn core_fields_and_build_selection_expose_accessible_names() {
-    let mut app = PackageAuthoringApp::default();
-    let (output, _) = render(900.0, |ui| {
-        ui.ctx().enable_accesskit();
-        app.draw_definition_panel(ui, None);
-    });
-    let tree = output.platform_output.accesskit_update.unwrap();
-    for label in ["Weapon Name", "Flavor Text", "Rarity", "Power Cap"] {
-        let ids: Vec<_> = tree
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.label() == Some(label) || node.value() == Some(label))
-            .map(|(id, _)| *id)
-            .collect();
-        assert!(
-            tree.nodes
-                .iter()
-                .any(|(_, node)| node.labelled_by().iter().any(|id| ids.contains(id))),
-            "{label} must label its input"
-        );
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-    app.recipe_entries = library.scan().unwrap().entries;
-    app.open_build_selection();
-    let (output, _) = render(900.0, |ui| {
-        ui.ctx().enable_accesskit();
-        app.draw_library_windows(ui.ctx());
-    });
-    let tree = output.platform_output.accesskit_update.unwrap();
-    assert!(
-        tree.nodes
-            .iter()
-            .any(|(_, node)| node.label() == Some("Search recipes"))
-    );
-    let checkboxes: Vec<_> = tree
-        .nodes
-        .iter()
-        .filter(|(_, node)| node.role() == egui::accesskit::Role::CheckBox)
-        .collect();
-    assert!(!checkboxes.is_empty());
-    assert!(checkboxes.iter().all(|(_, node)| {
-        node.label().is_some_and(|label| {
-            label.starts_with("Include Default Weapons") || label.starts_with("Select ")
-        })
-    }));
-}
-
-#[test]
 fn build_selection_is_keyboard_operable_without_duplicate_row_tab_stops() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();

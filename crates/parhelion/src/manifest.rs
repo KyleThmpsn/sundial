@@ -38,6 +38,9 @@ pub(crate) struct ManifestDocument {
     /// Optional source provenance installed with this package generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) map_diagnostics: Option<ArtifactMetadata>,
+    /// Executable mission sidecars published atomically with their activity packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) mission_scripts: Vec<ArtifactMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) mods: Vec<crate::mod_family::Member>,
 }
@@ -74,11 +77,23 @@ impl ManifestDocument {
         validate_artifact_metadata("artifact", &self.artifacts)?;
         validate_artifact_metadata("merge data", &self.merge_data)?;
         validate_merge_data(&self.artifacts, &self.merge_data)?;
+        validate_artifact_metadata("mission controller", &self.mission_scripts)?;
+        let mut scripts = BTreeSet::new();
+        for artifact in &self.mission_scripts {
+            use sundial::package_authoring::mod_content::mission_script;
+            if mission_script::path(&artifact.file_name).is_none()
+                || artifact.byte_length > mission_script::BYTE_LIMIT
+                || !scripts.insert(&artifact.file_name)
+            {
+                return Err("Invalid or repeated mission controller artifact".into());
+            }
+        }
         crate::mod_family::validate(
             &self.mods,
             &self.artifacts,
             &self.merge_data,
             self.map_diagnostics.as_ref(),
+            &self.mission_scripts,
         )?;
         if let Some(artifact) = &self.map_diagnostics {
             use sundial::package_authoring::mod_content::map_diagnostics;

@@ -506,6 +506,7 @@ fn numeric(code: u16, a: &[u32], saturate: bool) -> Option<u32> {
         57 => yes(f(0) != f(1)),
         59 => !a[0],
         60 => a[0] | a[1],
+        79 => yes(a[0] < a[1]),
         80 => yes(a[0] >= a[1]),
         85 => a[0].wrapping_shr(a[1] & 31),
         139 => {

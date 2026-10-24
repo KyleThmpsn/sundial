@@ -79,7 +79,7 @@ jobs:
         run: |
           rm -f target/cargo-timings/cargo-timing.html
           cargo test --release --workspace --locked --timings --lib --bins
-          cargo test --release --workspace --exclude parhelion --locked --test animation_clip
+          cargo test --release --workspace --exclude parhelion --locked --test animation_clip --test subclass_plan
 
       - name: Check Documentation
         env:
@@ -130,7 +130,7 @@ jobs:
           Remove-Item -LiteralPath target/cargo-timings/cargo-timing.html -ErrorAction SilentlyContinue
           cargo test --release --workspace --locked --timings --features sundial-suite/d2-model-importer --lib --bins
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --release --workspace --exclude parhelion --locked --features sundial-suite/d2-model-importer --test animation_clip
+          cargo test --release --workspace --exclude parhelion --locked --features sundial-suite/d2-model-importer --test animation_clip --test subclass_plan
 
       - name: Upload Build Timings
         if: always()

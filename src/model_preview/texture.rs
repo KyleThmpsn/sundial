@@ -292,6 +292,23 @@ pub(super) fn decode(
                 })
                 .collect());
         }
+        84 => {
+            // Inspection bytes use an unsigned normal visualization. Shader sampling
+            // keeps the signed channels in Texture::linear through filtering and upload.
+            let pixels =
+                float::decode(bytes, format, width, height)?.ok_or("Missing signed BC5 pixels")?;
+            return Ok(pixels
+                .iter()
+                .flat_map(|p| {
+                    [
+                        ((p[0] * 0.5 + 0.5) * 255.0).round() as u8,
+                        ((p[1] * 0.5 + 0.5) * 255.0).round() as u8,
+                        255,
+                        255,
+                    ]
+                })
+                .collect());
+        }
         71 | 72 => return crate::image_processing::decode_bc1(bytes, width, height),
         74 | 75 | 77 | 78 | 80 | 83 | 98 | 99 => {}
         _ => return Err(format!("Unsupported base-color texture format {format}")),

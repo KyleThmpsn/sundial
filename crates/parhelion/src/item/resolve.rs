@@ -115,6 +115,32 @@ pub(super) fn resolve_project_weapons_with_progress(
     Ok(resolved)
 }
 
+/// The native carrier an imported weapon's graph was prepared against, when it declares one.
+/// Legacy geometry-only graphs did not declare their carrier.
+#[cfg(feature = "d2-model-importer")]
+fn imported_carrier(
+    sources: &ProjectSources,
+    weapon: &WeaponCloneSpec,
+) -> AuthoringResult<Option<ResolvedSandboxPatternSource>> {
+    let Some(reference) = weapon
+        .overrides
+        .imported_graph
+        .as_ref()
+        .filter(|_| weapon.kind == ItemKind::Weapon)
+    else {
+        return Ok(None);
+    };
+    let inputs = custom_runtime::imports::Inputs::open(reference)?;
+    let Some(value) = inputs.value().get("native_item") else {
+        return Ok(None);
+    };
+    let item = value
+        .as_u64()
+        .and_then(|item| u32::try_from(item).ok())
+        .ok_or_else(|| invalid("Imported weapon carrier identity is invalid"))?;
+    resolve_part_donor(sources, item, "Imported weapon carrier").map(Some)
+}
+
 /// One weapon's donors, Collections placement and part sources, resolved against the stock tables.
 fn resolve_project_weapon(
     sources: &ProjectSources,
@@ -465,6 +491,13 @@ fn resolve_project_weapon(
     let gear_art_pattern_source = gear_art_pattern_index
         .map(|row_index| sandbox_pattern_source_at(stock_sandbox_patterns, row_index))
         .transpose()?;
+    // Imported geometry and runtime routes were prepared against one native carrier.
+    // A separately saved appearance can select a sibling content row in the same
+    // runtime and bypass the imported animation profile or firing presentation.
+    // Keep that carrier's selection. The gameplay base is still restored into it
+    // by the normal content-group composition below.
+    #[cfg(feature = "d2-model-importer")]
+    let gear_art_pattern_source = imported_carrier(sources, weapon)?.or(gear_art_pattern_source);
     if gear_art_pattern_source.is_none() && runtime_pattern_source.is_some() {
         return Err(invalid(
             "Runtime baseline cannot be attached because the appearance baseline has no gear-art/runtime row",

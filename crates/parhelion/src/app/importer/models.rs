@@ -35,9 +35,12 @@ struct PreparedModel {
 }
 
 fn source_hash(recipe: &WeaponRecipe) -> Option<u32> {
-    recipe
-        .namespace
-        .strip_prefix("parhelion.bulk.")
+    // A modern import's namespace ends with its source item's hash, in the earlier bulk
+    // scheme too.
+    ["parhelion.d2_mot.", "parhelion.bulk."]
+        .into_iter()
+        .find_map(|prefix| recipe.namespace.strip_prefix(prefix))
+        .and_then(|rest| rest.rsplit('-').next())
         .and_then(|hash| u32::from_str_radix(hash, 16).ok())
         .or_else(|| {
             let graph = recipe.overrides.imported_graph.as_ref()?;

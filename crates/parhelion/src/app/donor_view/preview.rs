@@ -88,7 +88,26 @@ pub(in crate::app) fn loadout(
 
 impl PackageAuthoringApp {
     pub(in crate::app) fn follow_appearance_preview(&self, ctx: &egui::Context) {
-        if !model_preview::weapon_is_open(ctx) {
+        let inline = egui::Id::new("weapon-preview");
+        if !model_preview::weapon_is_open(ctx) && !model_preview::popped_out(ctx, inline) {
+            return;
+        }
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(reference) = &self.recipe.overrides.imported_graph {
+            let appearance = crate::imported::preview::appearance(reference, self.recipe.kind);
+            model_preview::follow_local_weapon(
+                ctx,
+                &self.packages,
+                appearance.clone(),
+                &self.recipe.name,
+            );
+            model_preview::follow_pop_out_local(
+                ctx,
+                inline,
+                &self.packages,
+                appearance,
+                &self.recipe.name,
+            );
             return;
         }
         let Some(catalog) = &self.catalog else {
@@ -106,9 +125,26 @@ impl PackageAuthoringApp {
                 .as_ref()
                 .map_or("Current Appearance", |g| g.summary.name.as_str()),
         );
+        model_preview::follow_pop_out(
+            ctx,
+            inline,
+            &self.packages,
+            catalog.preview_appearance(&loadout),
+            &self.recipe.name,
+        );
     }
 
     pub(in crate::app) fn draw_appearance_preview(&self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(reference) = &self.recipe.overrides.imported_graph {
+            model_preview::local_weapon(
+                ui,
+                &self.packages,
+                crate::imported::preview::appearance(reference, self.recipe.kind),
+                &self.recipe.name,
+            );
+            return;
+        }
         let Some(catalog) = &self.catalog else {
             return;
         };
@@ -116,10 +152,6 @@ impl PackageAuthoringApp {
             ui.label("No model for this appearance.");
             return;
         };
-        #[cfg(feature = "d2-model-importer")]
-        let imported = self.recipe.overrides.imported_graph.is_some();
-        #[cfg(not(feature = "d2-model-importer"))]
-        let imported = false;
         let plug_names: Vec<_> = loadout
             .plugs
             .iter()
@@ -141,10 +173,6 @@ impl PackageAuthoringApp {
                 geometry.summary.name.as_str()
             }),
         );
-        if imported {
-            ui.label("Donor Preview")
-                .on_hover_text("The imported model applies at build time.");
-        }
         if !plug_names.is_empty() {
             ui.label(format!("Socket Colors: {}", plug_names.join(", ")));
         }

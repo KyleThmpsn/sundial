@@ -1,4 +1,5 @@
 use super::*;
+mod tooltips;
 
 #[test]
 fn power_conversions_preserve_native_scaling_and_floor() {

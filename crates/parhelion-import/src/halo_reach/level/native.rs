@@ -3,7 +3,7 @@
 //! (`statics`), so a piece takes no world object of its own. The level's collision is the
 //! world's: one compressed mesh per part, each placed at its own center by a static compound, as
 //! a stock world collision is. Objects that move or carry gameplay state stay entities, as native
-//! maps keep them, and none of the level's own is translated as one yet. Render and
+//! maps keep them. Scripted scenery poses use render entities with their own materials. Render and
 //! collision geometry inside the play area (the spawn points' bounds and `PLAY_MARGIN`) and
 //! outside it are each split by halving space at the median until each part fits one model or
 //! one mesh, so no piece or instance mixes the arena with distant scenery. Every collision
@@ -17,7 +17,7 @@ use super::{
     variant,
 };
 use crate::{
-    halo_reach::{cache::Cache, material::Material, native_material, resource::Pages},
+    halo_reach::{cache::Cache, material::Material, native, resource::Pages},
     presentation::{
         Graph,
         geometry::{self, Mesh},
@@ -42,9 +42,11 @@ mod cubemaps;
 mod fog;
 mod junctions;
 mod occlusion;
+mod props;
 pub mod sky;
 mod statics;
 pub use cubemaps::CubemapVolume;
+pub use props::{Prop, Templates as PropTemplates};
 pub use statics::Templates as StaticTemplates;
 
 const MODEL_CLASS: u32 = 0x8080_73A5;
@@ -107,6 +109,7 @@ const DETAIL_COORDINATES: usize = 20;
 #[derive(serde::Serialize)]
 pub struct Templates {
     pub model: u32,
+    pub props: PropTemplates,
     pub world_compound: u32,
     pub world_meshes: Vec<u32>,
     /// The donor sky's tags, which the level's sky objects copy, when the donor places a sky.
@@ -161,6 +164,8 @@ pub struct World {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Area {
     pub zone_sets: Vec<usize>,
+    #[serde(default)]
+    pub props: Vec<Prop>,
     /// Indices in [`Converted::pieces`].
     pub pieces: Vec<usize>,
     pub world: World,
@@ -170,12 +175,26 @@ pub struct Area {
     pub spawns: Vec<Spawn>,
     /// The sound point table that places the ambience of its structure BSPs, when they have any.
     pub ambience: Option<String>,
+    /// Its static group's instances in group order, which its tome's Umbra objects and its
+    /// visibility record list.
+    pub visibility: Vec<Visible>,
+}
+
+/// One static instance as the area's precomputed visibility sees it: the identifier its bounds
+/// row carries and its world box in the map's coordinates.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Visible {
+    pub id: u32,
+    pub minimum: [f32; 3],
+    pub maximum: [f32; 3],
 }
 
 /// The pieces' graph, written under the output folder.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Converted {
     pub nodes: Vec<Value>,
+    #[serde(default)]
+    pub props: Vec<Prop>,
     pub pieces: Vec<Piece>,
     pub spawns: Vec<Spawn>,
     pub world: World,
@@ -189,6 +208,10 @@ pub struct Converted {
     /// The symbol of the sound point table that places the level's ambience, the first area's
     /// when the level has connected areas, when it has any.
     pub ambience: Option<String>,
+    /// The first area's static instances, which its tome's Umbra objects and its visibility
+    /// record list.
+    #[serde(default)]
+    pub visibility: Vec<Visible>,
     /// The symbol of the atmosphere volume the map's atmosphere names in place of the donor's,
     /// when the donor names one and the level has baked light.
     pub atmosphere: Option<String>,
@@ -614,7 +637,7 @@ fn lightmap_coordinates(
 /// vertex's lightmap coordinates: its own, else its primitive's `ground` coordinates
 /// ([`ground_light`]), else `neutral`. A placed object's primitives, those from `placed` on, take
 /// their coordinates with the first negated, which marks them for the surfaces' lighting
-/// (`native_material::hybrid_lighting`) and keeps the half float's precision. Each
+/// (`native::material::hybrid_lighting`) and keeps the half float's precision. Each
 /// triangle's texture coordinates move by whole periods of its maps ([`triangle`]) toward zero, so
 /// the model's 16-bit coordinates keep their precision.
 fn mesh(
@@ -624,7 +647,7 @@ fn mesh(
     ground: &HashMap<u32, [f32; 2]>,
     neutral: [f32; 2],
     placed: u32,
-    vertex_data: Option<&native_material::vertex_data::Table>,
+    vertex_data: Option<&native::material::vertex_data::Table>,
 ) -> Result<(Mesh, Vec<[f32; 2]>)> {
     let mut mesh = Mesh {
         positions: Vec::new(),
@@ -927,12 +950,25 @@ pub fn convert_areas(
             polygon_areas.push(areas);
         }
     }
-    let placed = objects::read(&cache, &mut pages, variant.as_ref(), zone_sets)?;
+    let placed = objects::read(&cache, &mut pages, variant.as_ref(), zone_sets, &mission)?;
     // Placed objects' primitives follow the structure's, and the T-junction repair below only adds
     // vertices, so they keep these indices.
     let placed_from = u32::try_from(level.primitives.len())?;
     let base = level.materials.len();
     level.materials.extend(placed.materials);
+    let prop_primitives = placed
+        .props
+        .into_iter()
+        .map(|primitives| {
+            primitives
+                .into_iter()
+                .map(|mut primitive| {
+                    primitive.material = primitive.material.map(|material| base + material);
+                    primitive
+                })
+                .collect()
+        })
+        .collect::<Vec<Vec<_>>>();
     level
         .primitives
         .extend(placed.primitives.into_iter().map(|mut primitive| {
@@ -1052,15 +1088,25 @@ pub fn convert_areas(
     let analytical = super::lighting::materials(&cache, &mut level)?;
     let sun =
         Some(super::lighting::read(&cache, super::lighting::SKY)?).filter(|light| light.present());
-    let template = native.tag(templates.model, Some(MODEL_CLASS))?;
+    let template = native
+        .tag(templates.model, Some(MODEL_CLASS))
+        .context("Piece model template")?;
     let row = *template
         .array(16, 136, Some(MESH_CLASS))?
         .first()
         .context("Template model has no mesh")?;
-    let world_compound = native.tag(templates.world_compound, None)?.0.clone();
+    let world_compound = native
+        .tag(templates.world_compound, None)
+        .context("World compound template")?
+        .0
+        .clone();
     let mut world_mesh_template = None;
     for &tag in &templates.world_meshes {
-        let bytes = native.tag(tag, None)?.0.clone();
+        let bytes = native
+            .tag(tag, None)
+            .with_context(|| format!("Piece buffer {tag:08X}"))?
+            .0
+            .clone();
         if crate::tiger::physics::rooted(&bytes, "hkpBvCompressedMeshShape") {
             world_mesh_template = Some((tag, bytes));
             break;
@@ -1349,7 +1395,7 @@ pub fn convert_areas(
         .lightmap
         .as_ref()
         .map(|atlas| {
-            native_material::lightmap_textures(
+            native::material::lightmap_textures(
                 &mut native,
                 &mut graph,
                 atlas,
@@ -1365,7 +1411,7 @@ pub fn convert_areas(
         lightmap.radiance = radiance;
         lightmap
     });
-    let vertex_data = native_material::vertex_data::add(
+    let vertex_data = native::material::vertex_data::add(
         &mut native,
         &mut graph,
         &level.primitives,
@@ -1379,13 +1425,13 @@ pub fn convert_areas(
         "Converting Materials and Textures / {} Materials",
         used.len()
     ));
-    let material_report = native_material::build_with_progress(
+    let material_report = native::material::build_with_progress(
         &cache,
         &mut pages,
         &mut native,
         &mut graph,
         &used,
-        native_material::Binding {
+        native::material::Binding {
             palette: &[0],
             rigid: true,
             objects: &BTreeMap::new(),
@@ -1396,6 +1442,7 @@ pub fn convert_areas(
             vertex_data: vertex_data.as_ref().map(|table| table.symbol.as_str()),
             // Every level surface draws on the pieces' static meshes (`statics`).
             statics: true,
+            prefix: "",
         },
         report,
     )?;
@@ -1428,7 +1475,6 @@ pub fn convert_areas(
                 placed_from,
                 vertex_data.as_ref(),
             )?;
-            let (minimum, maximum) = bounds(mesh.positions.iter().copied());
             // Snap in shared world coordinates before subtracting the instances' origin. This
             // also removes half-step rounding differences between individual statics.
             for position in &mut mesh.positions {
@@ -1437,6 +1483,8 @@ pub fn convert_areas(
                 });
             }
             let mut streams = geometry::encode_static(&mesh, POSITION_STEP)?;
+            let minimum = std::array::from_fn(|k| streams.bounds.0[k] + arena[k]);
+            let maximum = std::array::from_fn(|k| streams.bounds.1[k] + arena[k]);
             ensure!(
                 streams.attributes.len() == coordinates.len() * ATTRIBUTE_STRIDE,
                 "Piece has {} attribute bytes for {} lightmap coordinates",
@@ -1629,6 +1677,7 @@ pub fn convert_areas(
                 .flatten()
                 .map(|spawn| sub(spawn.position, offset))
                 .collect::<Vec<_>>(),
+            &super::interior_boxes(&cache, &tags)?,
             count,
             offset,
         ),
@@ -1655,6 +1704,18 @@ pub fn convert_areas(
             json!({"reason": "The donor places no cubemap volumes or the level has no baked light"}),
         )
     };
+    report("Converting Posed Props");
+    let (props, prop_materials) = props::build(
+        &cache,
+        &mut pages,
+        &mut native,
+        &mut graph,
+        templates,
+        &prop_primitives,
+        &level.materials,
+        offset,
+        report,
+    )?;
     report("Binding Native Shaders");
     let document = json!({"nodes": graph.nodes});
     for (symbol, bytes) in crate::tiger::material::bind(&document, output)? {
@@ -1725,6 +1786,15 @@ pub fn convert_areas(
             format!("statics-{area}")
         };
         let statics = statics::group(&mut native, &mut graph, &templates.statics, &placed, &group)?;
+        let visibility = statics::identifiers(&group, placed.len())
+            .into_iter()
+            .zip(&placed)
+            .map(|(id, instance)| Visible {
+                id,
+                minimum: instance.minimum,
+                maximum: instance.maximum,
+            })
+            .collect();
         area_report.push(json!({
             "zone_sets": zone_sets,
             "bsps": groups[area].iter().map(|&bsp| tags[bsp].path.as_str()).collect::<Vec<_>>(),
@@ -1735,6 +1805,11 @@ pub fn convert_areas(
         }));
         area_rows.push(Area {
             zone_sets: zone_sets.clone(),
+            props: props
+                .iter()
+                .filter(|prop| membership(prop.bsps) & bit != 0)
+                .cloned()
+                .collect(),
             pieces: area_pieces,
             world: World {
                 compound: symbol,
@@ -1746,6 +1821,7 @@ pub fn convert_areas(
             statics,
             spawns: area_spawns[area].clone(),
             ambience: ambience[area].clone(),
+            visibility,
         });
     }
     let world = area_rows[0].world.clone();
@@ -1805,6 +1881,9 @@ pub fn convert_areas(
         "uv_bands": band_report,
         "objects_absent": placed.absent,
         "objects_untranslated_motion": placed.motion,
+        "objects_source_poses": placed.poses,
+        "posed_entities": props,
+        "prop_materials": prop_materials,
         "hidden_primitives": hidden_primitives,
         "hidden_materials": hidden_materials,
         "variant": variant.as_ref().map(|variant| json!({
@@ -1860,6 +1939,7 @@ pub fn convert_areas(
     )?;
     Ok(Converted {
         nodes: graph.nodes,
+        props,
         pieces,
         spawns,
         world,
@@ -1867,6 +1947,7 @@ pub fn convert_areas(
         sky,
         light,
         ambience: area_rows[0].ambience.clone(),
+        visibility: area_rows[0].visibility.clone(),
         atmosphere,
         atmosphere_lookup,
         occlusion,

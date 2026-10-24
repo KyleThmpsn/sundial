@@ -28,8 +28,6 @@ const ENERGY_TYPES: [&str; 3] = ["Arc", "Solar", "Void"];
 type PlugSets = Result<Vec<WeaponSupportedPlugSet>, String>;
 mod vehicle;
 
-#[cfg(feature = "d2-model-importer")]
-mod source;
 #[cfg(test)]
 mod tests;
 
@@ -490,7 +488,17 @@ impl PackageAuthoringApp {
         let plug_sets = donor
             .as_ref()
             .map(|donor| self.gear_plug_sets(donor.summary.hash));
-        let model = self.recipe.kind != ItemKind::Emblem && donor.is_some();
+        let imported = {
+            #[cfg(feature = "d2-model-importer")]
+            {
+                self.recipe.overrides.imported_graph.is_some()
+            }
+            #[cfg(not(feature = "d2-model-importer"))]
+            {
+                false
+            }
+        };
+        let model = self.recipe.kind != ItemKind::Emblem && (donor.is_some() || imported);
         let column = egui::Layout::top_down(egui::Align::Min);
         if let Some(base_width) = workbench_left_column_width(ui.available_width()) {
             let spacing = ui.spacing().item_spacing.x;
@@ -603,7 +611,28 @@ impl PackageAuthoringApp {
         let id = egui::Id::new("gear-preview");
         let width = ui.available_width();
         let height = preview_height(width, band);
-        // A Sparrow that summons another vehicle shows that vehicle.
+        // Imported presentation replaces the runtime template's geometry.
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(reference) = &self.recipe.overrides.imported_graph {
+            let appearance = crate::imported::preview::appearance(reference, self.recipe.kind);
+            sundial::ui::model_preview::still::placeholder(ui.ctx(), id, None);
+            let response = sundial::ui::model_preview::still::show_local(
+                ui,
+                id,
+                &self.packages,
+                appearance.clone(),
+                egui::vec2(width, height),
+            );
+            sundial::ui::model_preview::pop_out_local(
+                ui,
+                id,
+                response.rect,
+                &self.packages,
+                (appearance, &self.recipe.name),
+            );
+            return;
+        }
+        // A native Sparrow that summons another vehicle shows that vehicle.
         let summoned = self.recipe.overrides.sparrow.as_ref().and_then(|sparrow| {
             let tag = sparrow.summon.entity().ok().flatten()?;
             Some((tag, sparrow.summon.label()))
@@ -624,26 +653,6 @@ impl PackageAuthoringApp {
                 response.rect,
                 &self.packages,
                 (tag, name),
-            );
-            return;
-        }
-        #[cfg(feature = "d2-model-importer")]
-        if let Some(reference) = &self.recipe.overrides.imported_graph {
-            let appearance = crate::imported::preview::appearance(reference, self.recipe.kind);
-            sundial::ui::model_preview::still::placeholder(ui.ctx(), id, None);
-            let response = sundial::ui::model_preview::still::show_local(
-                ui,
-                id,
-                &self.packages,
-                appearance.clone(),
-                egui::vec2(width, height),
-            );
-            sundial::ui::model_preview::pop_out_local(
-                ui,
-                id,
-                response.rect,
-                &self.packages,
-                (appearance, &self.recipe.name),
             );
             return;
         }
@@ -684,7 +693,7 @@ impl PackageAuthoringApp {
 
     pub(super) fn draw_gear_base(&mut self, ui: &mut egui::Ui) {
         #[cfg(feature = "d2-model-importer")]
-        if source::show(self, ui) {
+        if imported_view::show(self, ui) {
             return;
         }
         let kind = self.recipe.kind;

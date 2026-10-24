@@ -1,9 +1,10 @@
 //! A reusable private dye bundle. Modern GPU programs are never relabeled as native.
 use crate::d2_mot::{
-    dye_bundle, dyes,
+    dye_bundle,
     profile::hash,
     reader::{Reader, write_json},
 };
+use crate::tiger::dye;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -41,8 +42,8 @@ pub fn export(p: &Value, modern: &Path, native: &Path, out: &Path) -> Result<Val
         &source.join("presentation.json"),
         &json!({"name":name["name"],"flavor":flavor["name"],"rarity":rarity}),
     )?;
-    let modern_dyes = dyes::inspect(&mut r, tag, true)?;
-    let modern_context = crate::d2_mot::tfx::context(&mut r, true)?;
+    let modern_dyes = dye::inspect(&mut r, tag, true)?;
+    let modern_context = crate::tiger::shader::globals::read(&mut r, true)?;
     write_json(&source.join("render-context.json"), &modern_context)?;
     r.finish()?;
     write_json(&source.join("dyes-all.json"), &modern_dyes)?;
@@ -51,7 +52,7 @@ pub fn export(p: &Value, modern: &Path, native: &Path, out: &Path) -> Result<Val
     let channels: Vec<_> = rows.iter().map(|r| r["channel"].clone()).collect();
     write_json(&source.join("dyes.json"), &json!(rows))?;
     let mut r = Reader::new(native, &carrier, false)?;
-    let native_tag = super::item::find_native(&mut r, hash(p, "native_item")?)?;
+    let native_tag = crate::tiger::shadowkeep::item_tag(&mut r, hash(p, "native_item")?)?;
     let native_item = r.tag(native_tag, Some(0x80807BEA))?;
     if p["kind"].as_str() == Some("shader") {
         ensure!(
@@ -59,8 +60,8 @@ pub fn export(p: &Value, modern: &Path, native: &Path, out: &Path) -> Result<Val
             "Native registration template is not a shader"
         );
     }
-    let native_dyes = dyes::inspect(&mut r, native_tag, false)?;
-    let native_context = crate::d2_mot::tfx::context(&mut r, false)?;
+    let native_dyes = dye::inspect(&mut r, native_tag, false)?;
+    let native_context = crate::tiger::shader::globals::read(&mut r, false)?;
     write_json(&carrier.join("render-context.json"), &native_context)?;
     let native_rows = native_dyes.as_array().context("native dyes")?;
     let fallback = native_rows

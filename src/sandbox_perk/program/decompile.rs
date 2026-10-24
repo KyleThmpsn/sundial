@@ -100,6 +100,7 @@ pub fn decompile(
             .collect::<Result<_, _>>()?,
         ability_tunings: Vec::new(),
         ability_inputs: Vec::new(),
+        ability_rows: Vec::new(),
     };
     // Shape only. Stock actions can ship with unfilled references (Sidearm Targeting leaves
     // a Create Entity slot empty), and build readiness is the workbench's job.

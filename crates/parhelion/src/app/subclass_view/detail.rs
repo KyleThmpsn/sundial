@@ -551,6 +551,7 @@ impl PackageAuthoringApp {
                     let search = choices_search(ui, &mut page.search, self.subclasses.len());
                     egui::ScrollArea::vertical()
                         .max_height(CHOICES_HEIGHT)
+                        .auto_shrink([false, true])
                         .show(ui, |ui| {
                             picked = match place {
                                 Place::Ability(entry) => self

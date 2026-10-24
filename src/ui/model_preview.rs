@@ -158,6 +158,21 @@ pub fn weapon(ui: &mut egui::Ui, packages: &Path, appearance: Appearance, name: 
     weapon_preview(ui, packages, appearance, name, id, None);
 }
 
+/// Opens the authored viewer on pinned assets before they have been built or installed.
+pub fn local_weapon(ui: &mut egui::Ui, packages: &Path, appearance: LocalAppearance, name: &str) {
+    window::launcher(
+        ui,
+        weapon_source(ui.ctx()),
+        Some(window::Request::new(
+            packages,
+            Target::Local(appearance, None),
+            name,
+            None,
+            false,
+        )),
+    );
+}
+
 /// Open an account item's saved appearance directly, retaining package inspection guards.
 pub(crate) fn open_inspected_weapon(
     ctx: &egui::Context,
@@ -246,6 +261,20 @@ pub fn follow_weapon(ctx: &egui::Context, packages: &Path, appearance: Appearanc
     );
 }
 
+/// Keeps the authored viewer on the imported source when another editor tab is active.
+pub fn follow_local_weapon(
+    ctx: &egui::Context,
+    packages: &Path,
+    appearance: LocalAppearance,
+    name: &str,
+) {
+    window::follow(
+        ctx,
+        weapon_source(ctx),
+        window::Request::new(packages, Target::Local(appearance, None), name, None, false),
+    );
+}
+
 /// Whether this viewport currently owns the shared authored preview.
 pub fn weapon_is_open(ctx: &egui::Context) -> bool {
     window::owned_by(ctx, weapon_source(ctx))
@@ -261,17 +290,41 @@ pub fn pop_out(
     packages: &Path,
     (appearance, name): (Appearance, &str),
 ) -> Option<egui::Response> {
+    pop_out_with_access(ui, id, over, packages, (appearance, name), None)
+}
+
+/// An Inspector corner launcher retains package access after its source view closes.
+pub(crate) fn inspected_pop_out(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    over: egui::Rect,
+    packages: &Path,
+    subject: (Appearance, &str),
+    access: Arc<crate::catalog::PackageInspectionAccess>,
+) -> Option<egui::Response> {
+    pop_out_with_access(ui, id, over, packages, subject, Some(access))
+}
+
+fn pop_out_with_access(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    over: egui::Rect,
+    packages: &Path,
+    (appearance, name): (Appearance, &str),
+    access: Option<Arc<crate::catalog::PackageInspectionAccess>>,
+) -> Option<egui::Response> {
     still::playback_control(ui, id, over);
     let owner = pop_out_source(ui.ctx(), id);
+    let generation = access.as_ref().map(|access| access.generation());
     window::corner_launcher(
         ui,
         owner,
         over,
         window::Request::new(
             packages,
-            Target::Weapon(appearance, None),
+            Target::Weapon(appearance, generation),
             name,
-            None,
+            access,
             false,
         ),
     )
@@ -313,6 +366,42 @@ pub fn pop_out_local(
     )
 }
 
+/// Updates an inline preview's separate viewer while the editor is on another tab.
+pub fn follow_pop_out(
+    ctx: &egui::Context,
+    id: egui::Id,
+    packages: &Path,
+    appearance: Appearance,
+    name: &str,
+) {
+    window::follow(
+        ctx,
+        pop_out_source(ctx, id),
+        window::Request::new(
+            packages,
+            Target::Weapon(appearance, None),
+            name,
+            None,
+            false,
+        ),
+    );
+}
+
+/// The imported counterpart of [`follow_pop_out`], retaining the source reader.
+pub fn follow_pop_out_local(
+    ctx: &egui::Context,
+    id: egui::Id,
+    packages: &Path,
+    appearance: LocalAppearance,
+    name: &str,
+) {
+    window::follow(
+        ctx,
+        pop_out_source(ctx, id),
+        window::Request::new(packages, Target::Local(appearance, None), name, None, false),
+    );
+}
+
 /// Whether the shared viewer is open on the preview `id` through its `pop_out`.
 pub fn popped_out(ctx: &egui::Context, id: egui::Id) -> bool {
     window::owned_by(ctx, pop_out_source(ctx, id))
@@ -348,11 +437,6 @@ fn preview_kind(model: &Model) -> &'static str {
 }
 
 impl Preview {
-    #[cfg(test)]
-    fn sync(&mut self, ctx: &egui::Context, selection: Selection) {
-        self.sync_with_access(ctx, selection, None);
-    }
-
     fn sync_with_access(
         &mut self,
         ctx: &egui::Context,

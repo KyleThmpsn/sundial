@@ -1270,6 +1270,7 @@ pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Resul
                 preferences,
                 preferences_warning,
                 Some(package_authoring),
+                cc.storage,
             );
             if let Some(startup) = update_startup {
                 startup.window_created().map_err(std::io::Error::other)?;

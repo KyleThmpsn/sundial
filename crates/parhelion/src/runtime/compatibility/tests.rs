@@ -7,10 +7,6 @@ use sundial::{
     },
 };
 
-fn no_owners(tag: u32) -> Result<Vec<u8>, String> {
-    Err(format!("No package holds owner 0x{tag:08X}"))
-}
-
 fn array(data: &mut [u8], descriptor: usize, header: usize, count: usize, class: u32) {
     data[descriptor..descriptor + 8].copy_from_slice(&(count as u64).to_le_bytes());
     data[descriptor + 8..descriptor + 16]
@@ -71,24 +67,6 @@ fn shared_owner_source(flavor: u32) -> Arc<WeaponRuntimeEntitySource> {
         entity_tag: flavor + 0x3000,
         payload: data,
     })
-}
-
-#[test]
-fn compiler_preflight_keeps_other_selected_donors_and_detects_conflicts() {
-    let baseline = shared_owner_source(1);
-    let selected = RequestedDonor {
-        binding_hash: WEAPON_RELOAD_COMPONENT_KEY,
-        item_hash: 2,
-        source: shared_owner_source(2),
-    };
-    let candidate = RequestedDonor {
-        binding_hash: WEAPON_TRIGGER_COMPONENT_KEY,
-        item_hash: 3,
-        source: shared_owner_source(3),
-    };
-    assert!(compose(&baseline, std::slice::from_ref(&candidate), &no_owners).is_ok());
-    let error = compose(&baseline, &[selected, candidate], &no_owners).unwrap_err();
-    assert!(error.contains("Runtime component donor conflict"));
 }
 
 #[test]

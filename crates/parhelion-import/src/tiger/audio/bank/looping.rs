@@ -338,7 +338,8 @@ impl Bank {
         Ok(Self {
             bytes: out.bytes,
             bank_id: 1,
-            objects: (1..next).collect(),
+            // Object 3 is reserved for attenuation and is absent from nonspatial banks.
+            objects: (1..next).filter(|id| *id != 3 || curve.is_some()).collect(),
             refs: out.refs,
         })
     }

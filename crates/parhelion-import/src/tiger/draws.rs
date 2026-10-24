@@ -105,6 +105,25 @@ pub fn declare_model_draw_indices(model: &mut [u8]) -> Result<()> {
     declare_draw_indices(model, records)
 }
 
+/// Extend the coverage of a converted model that contains one complete detail level.
+/// The caller identifies generated geometry. Native models with multiple detail sets
+/// must retain their authored selection, including an intentionally nearest-only set.
+pub fn cover_single_detail(model: &mut [u8]) -> Result<()> {
+    let payload = Payload(model.to_vec());
+    let meshes = payload.array(16, 136, Some(0x80807378))?;
+    if meshes.len() != 1 {
+        return Ok(());
+    }
+    let parts = payload.array(meshes[0] + 24, 32, Some(0x8080737e))?;
+    if parts.iter().any(|&part| payload.0[part + 27] != 0) {
+        return Ok(());
+    }
+    for part in parts {
+        model[part + 27] = 3;
+    }
+    Ok(())
+}
+
 pub(crate) fn validate(model: &Payload, mesh: usize, parts: &[usize]) -> Result<()> {
     validate_indices(model, parts)?;
     validate_stages(model, mesh, parts)

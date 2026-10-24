@@ -34,10 +34,12 @@ type Wanted = (
     PathBuf,
     Subject,
     Option<Arc<BTreeMap<usize, crate::dyes::DyeSource>>>,
+    Option<u64>,
 );
 
 #[derive(Default)]
 struct Still {
+    access: Option<Arc<crate::catalog::PackageInspectionAccess>>,
     /// The appearance the page asks for.
     wanted: Option<Wanted>,
     /// The appearance the model shows. An older one stays up while a newer one loads.
@@ -125,6 +127,27 @@ pub fn show(
     show_sources(ui, id, packages, appearance, overrides, size, None)
 }
 
+/// Draw an installed Inspector appearance with package suspension and generation invalidation.
+pub(crate) fn show_inspected(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    packages: &Path,
+    appearance: Appearance,
+    size: egui::Vec2,
+    access: Arc<crate::catalog::PackageInspectionAccess>,
+) -> egui::Response {
+    show_subject(
+        ui,
+        id,
+        packages,
+        Some(Subject::Appearance(appearance)),
+        &[],
+        size,
+        None,
+        Some(access),
+    )
+}
+
 /// Draw local shader materials on ordinary native preview geometry before the recipe is built.
 pub fn show_sources(
     ui: &mut egui::Ui,
@@ -143,6 +166,7 @@ pub fn show_sources(
         overrides,
         size,
         sources,
+        None,
     )
 }
 
@@ -155,7 +179,16 @@ pub fn show_object(
     tag: Option<u32>,
     size: egui::Vec2,
 ) -> egui::Response {
-    show_subject(ui, id, packages, tag.map(Subject::Object), &[], size, None)
+    show_subject(
+        ui,
+        id,
+        packages,
+        tag.map(Subject::Object),
+        &[],
+        size,
+        None,
+        None,
+    )
 }
 
 /// Draw an unbuilt imported appearance through the native model and material renderer.
@@ -174,9 +207,11 @@ pub fn show_local(
         &[],
         size,
         None,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_subject(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -185,6 +220,7 @@ fn show_subject(
     overrides: &[SurfaceOverride],
     size: egui::Vec2,
     sources: Option<Arc<BTreeMap<usize, crate::dyes::DyeSource>>>,
+    access: Option<Arc<crate::catalog::PackageInspectionAccess>>,
 ) -> egui::Response {
     let state = ui.ctx().data_mut(|data| {
         data.get_temp_mut_or_default::<Arc<Mutex<Still>>>(id)
@@ -196,11 +232,33 @@ fn show_subject(
     };
     let paused_id = paused_id(ui.ctx());
     let paused = !ui.is_enabled()
+        || access.as_ref().is_some_and(|access| access.is_suspended())
         || ui
             .ctx()
             .data(|data| data.get_temp::<bool>(paused_id))
             .unwrap_or(false);
-    still.wanted = subject.map(|subject| (packages.to_owned(), subject, sources));
+    let generation = access.as_ref().map(|access| access.generation());
+    let wanted = subject.map(|subject| (packages.to_owned(), subject, sources, generation));
+    if still
+        .wanted
+        .as_ref()
+        .zip(wanted.as_ref())
+        .is_some_and(|(old, new)| old.0 != new.0 || old.3 != new.3)
+    {
+        // No geometry or image from an older package snapshot may remain visible.
+        if let Some(load) = still.load.take() {
+            load.stop();
+        }
+        still.model = None;
+        still.bounds = None;
+        still.texture = None;
+        still.rendered = None;
+        still.rendered_seconds = None;
+        still.software = image_job::Job::default();
+        still.gpu = model_preview::gpu::Shared::default();
+    }
+    still.access = access;
+    still.wanted = wanted;
     still.receive();
     request_preview(&mut still, ui.ctx(), paused);
     still.interact(ui, &response);
@@ -300,24 +358,39 @@ impl Still {
         let load = model_preview::Load::default();
         self.pending = Some((wanted.clone(), receiver));
         self.load = Some(load.clone());
-        let (packages, subject, sources) = wanted.clone();
+        let (packages, subject, sources, generation) = wanted.clone();
+        let access = self.access.clone();
         let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
         let read = model_preview::PackageRead::start();
         std::thread::spawn(move || {
             let _read = read;
-            let model = match &subject {
-                Subject::Appearance(appearance) => {
-                    model_preview::appearance::load_reported(&packages, appearance, &load)
+            let read_model = || {
+                if access
+                    .as_ref()
+                    .is_some_and(|access| Some(access.generation()) != generation)
+                {
+                    return Err(model_preview::CANCELLED.into());
                 }
-                Subject::Object(tag) => model_preview::load_reported(&packages, *tag, &load, None),
-                Subject::Local(appearance) => appearance.load(&packages, &load, None, None),
+                let model = match &subject {
+                    Subject::Appearance(appearance) => {
+                        model_preview::appearance::load_reported(&packages, appearance, &load)
+                    }
+                    Subject::Object(tag) => {
+                        model_preview::load_reported(&packages, *tag, &load, None)
+                    }
+                    Subject::Local(appearance) => appearance.load(&packages, &load, None, None),
+                };
+                model.and_then(|mut model| {
+                    if let Some(sources) = sources {
+                        crate::dyes::source::apply(&packages, &sources, &mut model, &load)?;
+                    }
+                    Ok(model)
+                })
             };
-            let result = model.and_then(|mut model| {
-                if let Some(sources) = sources {
-                    crate::dyes::source::apply(&packages, &sources, &mut model, &load)?;
-                }
-                Ok(model)
-            });
+            let result = match &access {
+                Some(access) => access.read(read_model),
+                None => read_model(),
+            };
             let _ = sender.send(result);
             repaint.request_repaint_of(viewport);
         });
@@ -626,8 +699,14 @@ pub fn show_pins(
             .ctx()
             .data(|data| data.get_temp::<bool>(paused_id))
             .unwrap_or(false);
-    still.wanted =
-        appearance.map(|appearance| (packages.to_owned(), Subject::Appearance(appearance), None));
+    still.wanted = appearance.map(|appearance| {
+        (
+            packages.to_owned(),
+            Subject::Appearance(appearance),
+            None,
+            None,
+        )
+    });
     still.receive();
     request_preview(&mut still, ui.ctx(), paused);
     if let Some((yaw, pitch)) = view.angle() {

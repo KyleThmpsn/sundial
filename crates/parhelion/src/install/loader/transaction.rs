@@ -380,11 +380,18 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
                 }) {
                     continue;
                 }
-                let path = if artifact.file_name == mod_content::map_diagnostics::FILE_NAME {
-                    artifact.file_name.clone()
-                } else {
-                    package_path(artifact)?
-                };
+                let path =
+                    if let Some(path) = mod_content::mission_script::path(&artifact.file_name) {
+                        let parent = staging.join(&path).parent().unwrap().to_owned();
+                        fs::create_dir_all(&parent).map_err(failure)?;
+                        mod_content::checked_path(&staging, &parent)
+                            .map_err(InstallError::validation)?;
+                        path
+                    } else if artifact.file_name == mod_content::map_diagnostics::FILE_NAME {
+                        artifact.file_name.clone()
+                    } else {
+                        package_path(artifact)?
+                    };
                 let copied = copy_file_create_new(source, &staging.join(&path)).map_err(failure)?;
                 if TransactionDigest::from(artifact) != copied {
                     return Err(InstallError::validation(
@@ -858,6 +865,7 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
             if name != mod_content::MANIFEST
                 && name != mod_content::RECEIPT
                 && name != mod_content::map_diagnostics::FILE_NAME
+                && !mod_content::mission_script::valid_path(name)
             {
                 let file_name = name
                     .split_once('/')
@@ -1013,6 +1021,15 @@ fn remove_folder(path: &Path, expected: &Folder) -> Result<(), InstallError> {
         if sub.exists() {
             fs::remove_dir(sub).map_err(failure)?;
         }
+    }
+    let scripts = path.join("scripts");
+    if scripts.exists() {
+        for entry in fs::read_dir(&scripts).map_err(failure)? {
+            let entry = entry.map_err(failure)?;
+            mod_content::checked_path(path, &entry.path()).map_err(InstallError::validation)?;
+            fs::remove_dir(entry.path()).map_err(failure)?;
+        }
+        fs::remove_dir(scripts).map_err(failure)?;
     }
     fs::remove_dir(path).map_err(failure)
 }

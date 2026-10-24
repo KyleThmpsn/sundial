@@ -14,36 +14,6 @@ fn owner(rig: &Value, class: &str) -> Result<Option<u32>> {
     Ok(owners.first().copied())
 }
 
-fn component(p: &Payload) -> Result<()> {
-    let instance = p.pointer(16)?;
-    let resource = p.pointer(24)?;
-    ensure!(
-        p.u64(0)? == p.0.len() as u64
-            && instance >= 4
-            && resource >= 4
-            && p.u32(instance - 4)? == format::NATIVE_COMPONENT
-            && p.u32(resource - 4)? == 0x80808507,
-        "runtime marker component layout differs"
-    );
-    Ok(())
-}
-
-/// Check the native component and every marker before package allocation.
-pub fn validate(bytes: &[u8]) -> Result<()> {
-    let p = Payload(bytes.to_vec());
-    component(&p)?;
-    for marker in format::read_native(&p)? {
-        ensure!(
-            marker.binding[0] == 0
-                && marker.binding[1] <= 2
-                && marker.position.iter().all(|x| x.is_finite())
-                && marker.orientation.iter().all(|x| x.is_finite()),
-            "runtime marker transform or root binding differs"
-        );
-    }
-    Ok(())
-}
-
 pub(super) fn prepare(
     sr: &mut Reader,
     nr: &mut Reader,
@@ -60,7 +30,7 @@ pub(super) fn prepare(
     let original = nr.tag(to, Some(0x80809C36))?;
     // The carrier's rows are replaced in full. Validate its envelope here, and apply
     // supported binding checks to the emitted source rows below, not to discarded markers.
-    component(&original)?;
+    format::check_component(&original)?;
     let resource = modern.pointer(24)?;
     ensure!(
         resource >= 4 && modern.u32(resource - 4)? == 0x8080819D,
@@ -68,7 +38,7 @@ pub(super) fn prepare(
     );
     let rows = format::read(&modern, resource + 0xB8, format::SOURCE)?;
     let converted = format::replace(&original, &rows)?;
-    validate(&converted.0)?;
+    format::validate(&converted.0)?;
     let actual = format::read_native(&converted)?;
     ensure!(
         actual.len() == rows.len()

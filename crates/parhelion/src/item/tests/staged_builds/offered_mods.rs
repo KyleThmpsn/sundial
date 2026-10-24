@@ -10,7 +10,7 @@ use sundial::package_authoring::investment_schema::ROOT_REUSABLE_PLUG_SET_TABLE_
 const BREACHLIGHT: u32 = 0x4CE3_CE93;
 const BOSS_SPEC: u32 = 0xA63B_627D;
 
-fn investment_root(manager: &sundial::package_authoring::PackageManager) -> Vec<u8> {
+pub(super) fn investment_root(manager: &sundial::package_authoring::PackageManager) -> Vec<u8> {
     let globals = manager
         .read_tag(resolve_live_named_tag(manager, "investment_globals", None).unwrap())
         .unwrap();
@@ -19,7 +19,7 @@ fn investment_root(manager: &sundial::package_authoring::PackageManager) -> Vec<
         .unwrap()
 }
 
-fn item_index(manager: &sundial::package_authoring::PackageManager, hash: u32) -> u16 {
+pub(super) fn item_index(manager: &sundial::package_authoring::PackageManager, hash: u32) -> u16 {
     let items = manager
         .read_tag(
             root_child_tag(&investment_root(manager), ROOT_ITEM_DEFINITION_TABLE_SLOT).unwrap(),
@@ -34,7 +34,9 @@ fn item_index(manager: &sundial::package_authoring::PackageManager, hash: u32) -
 
 /// Each shared plug set's members in package order: the item index and the condition
 /// instructions, read straight from the table.
-fn plug_sets(manager: &sundial::package_authoring::PackageManager) -> Vec<Vec<(u16, Vec<u64>)>> {
+pub(super) fn plug_sets(
+    manager: &sundial::package_authoring::PackageManager,
+) -> Vec<Vec<(u16, Vec<u64>)>> {
     let tag = root_child_tag(&investment_root(manager), ROOT_REUSABLE_PLUG_SET_TABLE_SLOT).unwrap();
     let table = manager.read_tag(tag).unwrap();
     assert_eq!(read_u64(&table, 0).unwrap() as usize, table.len());

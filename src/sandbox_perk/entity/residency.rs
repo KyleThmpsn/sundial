@@ -4,7 +4,9 @@
 use super::catalog::Entry;
 
 mod requirements;
-pub use requirements::{Report, Requirement, additions, inspect, owner_requirements};
+pub use requirements::{
+    Report, Requirement, additions, inspect, owner_requirements, resource_additions,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Residency {

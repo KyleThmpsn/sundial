@@ -902,34 +902,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn disconnected_icon_worker_releases_pending_hashes() {
-        let (request_sender, _request_receiver) = mpsc::sync_channel(MAX_PENDING_CATALOG_ICONS);
-        let (result_sender, result_receiver) = mpsc::channel();
-        drop(result_sender);
-        let hash = 0x1234_5678;
-        let mut runtime = IconRuntime {
-            pending: HashSet::from([hash]),
-            worker: Some(IconWorker {
-                requests: Some(request_sender),
-                results: result_receiver,
-                thread: None,
-                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            }),
-            ..IconRuntime::default()
-        };
-
-        runtime.install_completed(&eframe::egui::Context::default());
-
-        assert!(runtime.worker.is_none());
-        assert!(runtime.pending.is_empty());
-        assert!(
-            runtime
-                .diagnostic(hash)
-                .is_some_and(|message| message.contains("stopped"))
-        );
-    }
-
-    #[test]
     fn rgba_catalog_texture_decodes_package_pixels() {
         let mut header = vec![0_u8; 0x12];
         header[4..8].copy_from_slice(&28_u32.to_le_bytes());

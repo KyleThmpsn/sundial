@@ -1,6 +1,7 @@
 //! A stat group of the recipe's own, built from the source weapon's, so the inspect screen
 //! shows the stats and numbers the source weapon shows.
-use super::{limits::Shown, *};
+use super::*;
+use crate::stat_group::{Shown, display};
 
 /// Shield Duration, the modern glaive guard's stat, has no Shadowkeep definition. Guard
 /// Endurance, the sword guard's duration, measures the same thing and stands in for it.
@@ -12,7 +13,6 @@ const REPURPOSED: [u32; 1] = [0x7323_05CC];
 /// them, so an import keeps their values but shows them only where its native base's group does.
 pub(super) const UNSHOWN: [u32; 3] = [0x5034_5F6F, 0xA1E0_6B6C, 0xD3E9_1ADA];
 const MAXIMUM_STATS: usize = 32;
-const MAXIMUM_POINTS: usize = 64;
 
 /// The Shadowkeep stat a source stat lands on, by hash, and whether it is a stand-in.
 pub(super) fn target(hash: u32) -> Option<(u32, bool)> {
@@ -25,27 +25,6 @@ pub(super) fn target(hash: u32) -> Option<(u32, bool)> {
             .find(|(source, _)| *source == hash)
             .map_or((hash, false), |(_, native)| (*native, true)),
     )
-}
-
-pub(crate) fn display(stat: &Value, maximum: i32) -> Option<Vec<[i32; 2]>> {
-    let points = stat["display"]
-        .as_array()?
-        .iter()
-        .map(|point| {
-            Some([
-                i32::try_from(point[0].as_i64()?).ok()?,
-                i32::try_from(point[1].as_i64()?).ok()?,
-            ])
-        })
-        .collect::<Option<Vec<_>>>()?;
-    // The table holds curves that rise within the group's range.
-    (!points.is_empty()
-        && points.len() <= MAXIMUM_POINTS
-        && points
-            .iter()
-            .all(|[value, _]| (0..=maximum).contains(value))
-        && points.windows(2).all(|pair| pair[0][0] < pair[1][0]))
-    .then_some(points)
 }
 
 /// The source group's stats that have a Shadowkeep definition, in source order, each with its
@@ -93,18 +72,4 @@ pub(super) fn plan(
         "source stat group shows more stats than a stat group holds"
     );
     Ok((!rows.is_empty()).then_some((maximum, rows)))
-}
-
-/// The recipe's `custom_stat_group`.
-pub(crate) fn recipe(maximum: i32, rows: &[Shown]) -> Value {
-    json!({"maximum_value":maximum,"stats":rows.iter().map(|row| {
-        let mut stat = json!({"definition_index":row.index,"display":row.display});
-        if row.numeric {
-            stat["display_as_numeric"] = json!(true);
-        }
-        if row.linear {
-            stat["is_linear"] = json!(true);
-        }
-        stat
-    }).collect::<Vec<_>>()})
 }

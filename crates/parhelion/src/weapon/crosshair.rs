@@ -16,6 +16,10 @@
 //! with its ancestors, in the weapon's first-person parameter dictionary, and the base's state
 //! selectors test the base's type. A weapon whose dictionary does not activate the base's type
 //! through the new key keeps the base's key, or those selectors stop matching.
+//!
+//! The inspect screen reads the table through the item strings instead: their bucket and first
+//! type key choose the row whose scene it shows the item in, and the key of the row's style row
+//! names the scene object that shows the weapon.
 // Only imported weapons add crosshair rows. Without the importer the build only keeps the
 // table's own package apart, through `TABLE`.
 #![cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
@@ -164,9 +168,18 @@ impl Table {
     }
 
     pub(crate) fn has(&self, bucket: u32, key: u32) -> bool {
+        self.row(bucket, key).is_some()
+    }
+
+    pub(crate) fn row(&self, bucket: u32, key: u32) -> Option<&Row> {
         self.rows
             .iter()
-            .any(|row| row.bucket == bucket && row.key == key)
+            .find(|row| row.bucket == bucket && row.key == key)
+    }
+
+    /// The rows in table order.
+    pub(crate) fn rows(&self) -> &[Row] {
+        &self.rows
     }
 
     /// Add a row unless the bucket and key already have one. A row hash may not repeat.

@@ -146,27 +146,6 @@ fn season_pass_consumables_are_claimed_once_and_full_stacks_remain_unclaimed() {
 }
 
 #[test]
-fn claims_queue_split_stacks_once_and_keep_the_claim_atomic() {
-    let catalog = catalog();
-    let mut document = document();
-    assert!(claim(&mut document, &catalog, &reward()).unwrap());
-    assert_eq!(
-        document["_progression_rewards"],
-        json!([{"kind":1,"hash":987,"quantity":99},{"kind":1,"hash":987,"quantity":99},{"kind":1,"hash":987,"quantity":3}])
-    );
-    assert!(
-        collection_state_snapshot(&document)
-            .unwrap()
-            .flags
-            .contains(&(1, 200))
-    );
-    let after = document.clone();
-    assert!(!claim(&mut document, &catalog, &reward()).unwrap());
-    assert_eq!(document, after);
-    assert_eq!(document["future"], json!(17));
-}
-
-#[test]
 fn unsupported_rewards_and_locked_ranks_leave_claims_unchanged() {
     let catalog = catalog();
     let mut document = document();

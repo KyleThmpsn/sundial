@@ -20,7 +20,7 @@ use crate::package_runtime::{
 };
 
 /// The shard format this build writes. Files of older formats are dead weight.
-const SHARD_PREFIX: &str = "references-v1-";
+const SHARD_PREFIX: &str = "references-v2-";
 
 type Answer = Result<BTreeMap<u32, usize>, String>;
 
@@ -71,7 +71,10 @@ fn persist(shard: &Shard) -> Result<(), String> {
         .persist(&shard.path)
         .map_err(|error| error.to_string())?;
     let family = format!("{SHARD_PREFIX}{:04x}-", shard.saved.package);
-    prune_siblings(parent, &shard.path, |name| name.starts_with(&family));
+    let previous = format!("references-v1-{:04x}-", shard.saved.package);
+    prune_siblings(parent, &shard.path, |name| {
+        name.starts_with(&family) || name.starts_with(&previous)
+    });
     Ok(())
 }
 

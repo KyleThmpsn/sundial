@@ -97,6 +97,49 @@ pub struct BuildReport {
     pub staged_recipe_paths: Vec<PathBuf>,
 }
 
+impl BuildReport {
+    /// The report of a run kept from an earlier install, read from its manifest for the
+    /// installation review. It names the run's items and files, without the compile details only
+    /// a build in this session has.
+    pub fn kept(run_directory: &Path) -> Result<Self, String> {
+        let manifest_path = run_directory.join(MANIFEST_FILE_NAME);
+        let file = File::open(&manifest_path)
+            .map_err(|error| format!("Could not open {}: {error}", manifest_path.display()))?;
+        let manifest: ManifestDocument =
+            sundial::package_authoring::read_json(file).map_err(|error| error.to_string())?;
+        manifest.validate()?;
+        Ok(Self {
+            mods: Vec::new(),
+            import_conversions: BTreeMap::new(),
+            weapons: manifest
+                .project
+                .weapons
+                .iter()
+                .map(|weapon| WeaponBuildReport {
+                    name: weapon.name.clone(),
+                    kind: weapon.kind,
+                    namespace: weapon.namespace.clone(),
+                    item_hash: weapon.item.hash.get(),
+                    item_definition_hash: weapon.item.definition_tag.get(),
+                    item_string_hash: weapon.item.string_tag.get(),
+                    icon_definition_hash: 0,
+                    item_index: weapon.item.index,
+                    collection: None,
+                    custom_plugs: Vec::new(),
+                    details: None,
+                    subclass: None,
+                    recipe_fingerprint: String::new(),
+                })
+                .collect(),
+            run_directory: run_directory.to_owned(),
+            manifest_path,
+            artifacts: manifest.artifacts,
+            selection_fingerprint: manifest.selection_fingerprint,
+            staged_recipe_paths: Vec::new(),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildPhase {
     InspectingSource,
@@ -527,15 +570,22 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
         &snapshot.request.package_directory,
         &snapshot.request.staging_root,
     )?;
+    inspect_source(
+        &snapshot.request.package_directory,
+        snapshot.request.ignore_installed_authored_overlays,
+    )
+}
+
+fn inspect_source(
+    package_directory: &Path,
+    ignore_installed_authored_overlays: bool,
+) -> Result<SourceInspection, String> {
     let mut stock_patches = BTreeMap::<u16, u16>::new();
     let mut authored = Vec::new();
 
-    for entry in fs::read_dir(&snapshot.request.package_directory).map_err(|error| {
-        format!(
-            "Could not list {}: {error}",
-            snapshot.request.package_directory.display()
-        )
-    })? {
+    for entry in fs::read_dir(package_directory)
+        .map_err(|error| format!("Could not list {}: {error}", package_directory.display()))?
+    {
         let entry = entry.map_err(|error| format!("Could not read a package entry: {error}"))?;
         let path = entry.path();
         if !entry
@@ -590,10 +640,7 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
 
     validate_stock_patches(&stock_patches)?;
     authored.sort();
-    validate_authored_set(
-        snapshot.request.ignore_installed_authored_overlays,
-        &authored,
-    )?;
+    validate_authored_set(ignore_installed_authored_overlays, &authored)?;
     Ok(SourceInspection {
         ignored_authored_files: authored,
     })
@@ -709,11 +756,13 @@ pub fn build_and_stage_snapshot_reporting(
                 &run_directory,
                 &snapshot.request.maps,
             )?,
+            mission_scripts: crate::map::mission::stage(&run_directory, &snapshot.request.maps)?,
         };
         manifest.mods = crate::mod_family::build::members(
             &manifest.artifacts,
             &manifest.merge_data,
             manifest.map_diagnostics.as_ref(),
+            &manifest.mission_scripts,
         )?;
         write_manifest(&manifest_path, &manifest)?;
         progress(BuildProgress::artifact(
@@ -1063,12 +1112,20 @@ fn create_unique_run_directory(root: &Path, slug: &str) -> Result<PathBuf, Strin
         .map_err(|error| format!("Could not allocate a unique staging run directory: {error}"))
 }
 
-enum PackageSource {
+pub(crate) enum PackageSource {
     Direct(PathBuf),
     Filtered(FilteredPackageView),
 }
 
 impl PackageSource {
+    /// Import preparation and compilation must resolve native tags to the same stock bytes.
+    /// Keep the authenticated view alive across the complete conversion batch.
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn stock(package_directory: &Path) -> Result<Self, String> {
+        let inspection = inspect_source(package_directory, true)?;
+        Self::prepare(package_directory, &inspection.ignored_authored_files)
+    }
+
     fn prepare(
         package_directory: &Path,
         ignored_authored_files: &[String],
@@ -1086,14 +1143,18 @@ impl PackageSource {
         FilteredPackageView::create(package_directory, ignored_authored_files).map(Self::Filtered)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         match self {
             Self::Direct(path) => path,
             Self::Filtered(view) => &view.package_directory,
         }
     }
 
-    fn finish<T>(self, result: Result<T, String>, warn: impl FnOnce(String)) -> Result<T, String> {
+    pub(crate) fn finish<T>(
+        self,
+        result: Result<T, String>,
+        warn: impl FnOnce(String),
+    ) -> Result<T, String> {
         let cleanup = match self {
             Self::Direct(_) => Ok(()),
             Self::Filtered(view) => view.close(),

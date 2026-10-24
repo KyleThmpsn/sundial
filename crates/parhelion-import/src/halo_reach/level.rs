@@ -31,6 +31,7 @@ pub mod objectives;
 mod objects;
 pub mod picture;
 pub mod spawn;
+pub mod squads;
 pub mod streaming;
 pub mod variant;
 pub mod volumes;
@@ -438,6 +439,33 @@ pub(super) fn cluster_boxes<'a>(
         }
     }
     Ok(boxes)
+}
+
+/// The boxes of the structure clusters of `tags`, in meters, leaving out each structure BSP's
+/// outside cluster, the one whose box holds every other cluster's of its BSP.
+pub(super) fn interior_boxes(cache: &Cache, tags: &[Tag]) -> Result<Vec<([f32; 3], [f32; 3])>> {
+    let mut interior = Vec::new();
+    for tag in tags {
+        let boxes = cache
+            .block(tag.address()? + CLUSTERS, CLUSTER_SIZE)?
+            .into_iter()
+            .map(|row| {
+                let bounds = cache.floats::<6>(row)?.map(|value| value * METRES_PER_UNIT);
+                Ok((
+                    [bounds[0], bounds[2], bounds[4]],
+                    [bounds[1], bounds[3], bounds[5]],
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let holds_all = |(low, high): ([f32; 3], [f32; 3])| {
+            boxes.len() > 1
+                && boxes
+                    .iter()
+                    .all(|(l, h)| (0..3).all(|k| low[k] <= l[k] && high[k] >= h[k]))
+        };
+        interior.extend(boxes.iter().copied().filter(|&b| !holds_all(b)));
+    }
+    Ok(interior)
 }
 
 /// One zone set of a scenario: its name, the structure BSPs it loads and the positions of the

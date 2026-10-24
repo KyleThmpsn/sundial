@@ -1,5 +1,5 @@
+use super::material::Lens;
 use super::*;
-use crate::halo_reach::native_material::Lens;
 mod bore;
 mod scope;
 
@@ -16,44 +16,134 @@ pub(super) struct Prepared {
     front: [f32; 3],
     bore: Option<Value>,
     separate: bool,
+    automatic: bool,
 }
 
-fn separate_eye(mesh: &Mesh, rear: [f32; 3], direction: [f32; 3], relief: f32) -> Result<[f32; 3]> {
-    let farthest = mesh
-        .positions
-        .iter()
-        .map(|p| (0..3).map(|a| (p[a] - rear[a]) * direction[a]).sum::<f32>())
-        .fold(f32::NEG_INFINITY, f32::max);
-    ensure!(farthest.is_finite(), "Separate scope has no source bounds");
+/// Distance behind the geometry for an automatically placed eye.
+const RELIEF: f32 = 0.08;
+/// Height of the sightline above the highest vertex.
+const CLEARANCE: f32 = 0.005;
+
+/// Aim from behind the geometry along the sight axis, clear of its top.
+///
+/// With a rear point beyond the muzzle, live aiming left the weapon between the
+/// camera and the target. A separate view therefore looks over the geometry, and
+/// the axis keeps the lateral position of `through`.
+fn separate_eye(
+    mesh: &Mesh,
+    through: [f32; 3],
+    direction: [f32; 3],
+    relief: f32,
+) -> Result<[f32; 3]> {
+    // Source models are Z up. Remove the part of it along a tilted sight axis.
+    let vertical = [0., 0., 1.];
+    let up = crate::halo_reach::rig::normalize(std::array::from_fn(|a| {
+        vertical[a] - direction[a] * direction[2]
+    }))?;
+    let dot = |a: [f32; 3], b: [f32; 3]| (0..3).map(|i| a[i] * b[i]).sum::<f32>();
+    let (nearest, highest) = mesh.positions.iter().fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(nearest, highest), p| {
+            let offset = std::array::from_fn(|a| p[a] - through[a]);
+            (
+                nearest.min(dot(offset, direction)),
+                highest.max(dot(offset, up)),
+            )
+        },
+    );
+    ensure!(
+        nearest.is_finite() && highest.is_finite(),
+        "Separate scope has no source bounds"
+    );
     Ok(std::array::from_fn(|a| {
-        rear[a] + direction[a] * (farthest + relief)
+        through[a] + direction[a] * (nearest - relief) + up[a] * (highest + CLEARANCE)
     }))
 }
 
 pub(super) fn select(
     entry: &ImportRequest,
+    scene: &Scene,
     mesh: &mut Mesh,
-    materials: &BTreeMap<u32, material::Material>,
+    materials: &BTreeMap<u32, crate::halo_reach::material::Material>,
 ) -> Result<Option<Prepared>> {
+    let scoped = scene.object.tag.group == "weap"
+        && scene.object.gameplay["zoom_levels"]
+            .as_u64()
+            .is_some_and(|levels| levels > 0);
     ensure!(
         entry.optic.is_none() || entry.sights.is_none(),
         "Choose a lens optic or iron sights, not both"
     );
     ensure!(
-        entry.optic_item.is_none() || entry.optic.is_some() || entry.sights.is_some(),
+        entry.optic_item.is_none() || entry.optic.is_some() || entry.sights.is_some() || scoped,
         "An explicit sight carrier requires configured sights"
     );
     match (&entry.optic, &entry.sights) {
         (Some(config), _) => prepare(config, mesh, materials).map(Some),
         (_, Some(config)) => sights(config, mesh).map(Some),
+        _ if scoped => {
+            // Reach hides a zoomed weapon behind its overlay. The overlay stays,
+            // and the eye clears the geometry like an unscoped firearm's.
+            let mut prepared = unscoped(mesh)?;
+            prepared.separate = true;
+            Ok(Some(prepared))
+        }
+        _ if scene.object.tag.group == "weap"
+            && !matches!(
+                scene.object.gameplay["weapon_class"].as_str(),
+                Some("sword" | "hammer")
+            ) =>
+        {
+            unscoped(mesh).map(Some)
+        }
         _ => Ok(None),
     }
+}
+
+fn unscoped(mesh: &Mesh) -> Result<Prepared> {
+    ensure!(
+        !mesh.positions.is_empty(),
+        "Unscoped aiming needs source geometry"
+    );
+    let low = std::array::from_fn::<_, 3, _>(|axis| {
+        mesh.positions
+            .iter()
+            .map(|p| p[axis])
+            .fold(f32::INFINITY, f32::min)
+    });
+    let high = std::array::from_fn::<_, 3, _>(|axis| {
+        mesh.positions
+            .iter()
+            .map(|p| p[axis])
+            .fold(f32::NEG_INFINITY, f32::max)
+    });
+    ensure!(
+        low.iter().chain(&high).all(|v| v.is_finite()) && high[0] > low[0],
+        "Invalid unscoped aiming bounds"
+    );
+    // Reach weapons without zoom do not supply an ADS camera. Keep a clear,
+    // horizontal view over their geometry instead of retaining the donor's aim
+    // markers. Explicit sights can place the eye against a particular rear post.
+    let rear = [
+        low[0] - RELIEF,
+        (low[1] + high[1]) * 0.5,
+        high[2] + CLEARANCE,
+    ];
+    Ok(Prepared {
+        lenses: BTreeMap::new(),
+        bounds: None,
+        rear,
+        front: [high[0], rear[1], rear[2]],
+        bore: None,
+        separate: false,
+        automatic: true,
+    })
 }
 
 pub(super) fn prepare(
     config: &Optic,
     mesh: &mut Mesh,
-    materials: &BTreeMap<u32, material::Material>,
+    materials: &BTreeMap<u32, crate::halo_reach::material::Material>,
 ) -> Result<Prepared> {
     ensure!(
         config.eye_relief.is_finite() && (0.01..=0.5).contains(&config.eye_relief),
@@ -150,6 +240,7 @@ pub(super) fn prepare(
             front: std::array::from_fn(|a| eye[a] + direction[a] * 0.2),
             bore: None,
             separate: true,
+            automatic: false,
         });
     }
     let opened = bore::open(
@@ -169,6 +260,7 @@ pub(super) fn prepare(
             json!({"rear_lens_bounds":rear_bounds,"front_lens_bounds":front_bounds,"rear_center":rear,"front_center":front,"radii":radii,"clearance":opened}),
         ),
         separate: false,
+        automatic: false,
     })
 }
 
@@ -222,6 +314,7 @@ pub(super) fn sights(config: &Sights, mesh: &Mesh) -> Result<Prepared> {
             front: std::array::from_fn(|a| eye[a] + direction[a] * 0.2),
             bore: None,
             separate: true,
+            automatic: false,
         });
     }
     Ok(Prepared {
@@ -231,6 +324,7 @@ pub(super) fn sights(config: &Sights, mesh: &Mesh) -> Result<Prepared> {
         front: config.front,
         bore: None,
         separate: false,
+        automatic: false,
     })
 }
 
@@ -300,6 +394,53 @@ fn components(native: &mut Reader, entity: &Payload) -> Result<Components> {
     Ok(components)
 }
 
+/// How the report names the aiming method.
+fn alignment(optic: &Prepared) -> &'static str {
+    if optic.separate {
+        "separate_view"
+    } else if optic.bounds.is_some() {
+        "lens_aperture"
+    } else if optic.automatic {
+        "source_bounds"
+    } else {
+        "iron_sights"
+    }
+}
+
+/// What the report says the aiming method leaves unverified.
+fn limits(optic: &Prepared) -> &'static str {
+    if optic.separate {
+        "The aiming camera looks over the weapon from behind along the sight axis, preserving the physical lens. Scoped weapons use their source HUD bitmap layers and neutral reticle artwork. Dynamic meter and reticle inputs are reported separately. Source magnification is recorded in source_gameplay.aim. Aim transitions and the final view require gameplay acceptance."
+    } else if optic.automatic {
+        "The aiming camera clears the selected source bounds along the forward axis. This is an adaptation for a source firearm without zoom, not recovered iron-sight alignment. Live aim transitions and eye relief require gameplay acceptance."
+    } else {
+        "Object-space sight alignment. Lens optics use a simple illuminated aiming mark. Source magnification is recorded separately for scoped weapons and first-person motion."
+    }
+}
+
+/// The imported weapon has one fixed sight, even when the native item exposes
+/// several plug-selected alternatives. A carrier's position only belongs to
+/// that carrier's own list and cannot select the host's active sight position.
+fn positions(art: &Value, placement: &Value) -> Result<Vec<usize>> {
+    let selector = placement["selector"].as_u64().context("Sight selector")?;
+    let mut width = usize::try_from(placement["position"].as_u64().context("Sight position")?)?
+        .checked_add(1)
+        .context("Sight position overflow")?;
+    for row in art["art_rows"].as_array().context("Native art rows")? {
+        for slot in row["slots"].as_array().context("Native art slots")? {
+            if slot["selector"].as_u64() == Some(selector) {
+                width = width.max(
+                    slot["assignments"]
+                        .as_array()
+                        .context("Native sight alternatives")?
+                        .len(),
+                );
+            }
+        }
+    }
+    Ok((0..width).collect())
+}
+
 pub(super) fn build(
     native: &mut Reader,
     g: &mut Graph,
@@ -314,11 +455,14 @@ pub(super) fn build(
     } else {
         None
     };
+    // Automatic sights use the qualified native carrier independently of firing behavior.
     let selected = source
+        .or(optic.automatic.then_some(0x4F5CCF1D))
         .map(|item| crate::tiger::shadowkeep::extract(native, item))
         .transpose()?;
-    let art = selected.as_ref().unwrap_or(art);
-    let (parent, entity_tag, original_entity) = template(native, art)?;
+    let carrier = selected.as_ref().unwrap_or(art);
+    let (parent, entity_tag, original_entity) = template(native, carrier)?;
+    let positions = positions(art, &parent["placement"])?;
     let components = components(native, &original_entity)?;
     let mut entity = original_entity.clone();
     let mut scope_report = None;
@@ -412,14 +556,14 @@ pub(super) fn build(
     node["source_parent"] = json!(parent_tag);
     let assignment = hash(&parent, "assignment")?;
     let kept = json!({"assignment":assignment,"key":name_hash(&format!("reach-{item:08X}-optic")),"parent":"optic-parent",
-        "native_region":true,"selector":parent["placement"]["selector"],"position":parent["placement"]["position"]});
+        "native_region":true,"selector":parent["placement"]["selector"],"position":0,"positions":positions});
     ensure!(
         overlay.is_none() || scope_report.is_some(),
         "Separate scope has no render component"
     );
-    let report = json!({"source_item":art["item"],"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"aperture_bounds":optic.bounds,"rear":optic.rear,"front":optic.front,"bore":optic.bore,"scope":scope_report,
-        "alignment":if optic.separate { "separate_view" } else if optic.bounds.is_some() { "lens_aperture" } else { "iron_sights" },
-        "lens_materials":optic.lenses.keys().map(|key|format!("{key:08X}")).collect::<Vec<_>>(),"gameplay_verified":false,
-        "limits":if optic.separate { "A separate aiming camera preserves the physical lens. Scoped weapons use their source HUD bitmap layers and neutral reticle artwork. Dynamic meter and reticle inputs are reported separately. Source magnification is recorded in source_gameplay.aim when first-person motion is requested. Aim transitions and the final view require gameplay acceptance." } else { "Object-space sight alignment. Lens optics use a simple illuminated aiming mark. Source magnification is recorded separately when first-person motion is requested." }});
+    let report = json!({"source_item":carrier["item"],"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"positions":positions,"aperture_bounds":optic.bounds,"rear":optic.rear,"front":optic.front,"bore":optic.bore,"scope":scope_report,
+        "alignment":alignment(optic),
+        "lens_materials":optic.lenses.keys().map(|key|format!("{key:08X}")).collect::<Vec<_>>(),"automatic":optic.automatic,"gameplay_verified":false,
+        "limits":limits(optic)});
     Ok((kept, report))
 }

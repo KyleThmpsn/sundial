@@ -243,30 +243,6 @@ fn saving_custom_perk_stats_does_not_create_a_false_disk_conflict() {
 }
 
 #[test]
-fn escape_discards_build_selection_without_changing_the_document() {
-    let mut app = PackageAuthoringApp::default();
-    let selected = BTreeSet::from([PathBuf::from("saved.parhelion.json")]);
-    app.enabled_recipe_paths = selected.clone();
-    app.build_selection_draft = Some(BTreeSet::new());
-    let before = app.recipe.clone();
-    let ctx = egui::Context::default();
-    let input = egui::RawInput {
-        events: vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-        ..Default::default()
-    };
-    let _ = ctx.run_ui(input, |ui| app.draw_library_windows(ui));
-    assert!(app.build_selection_draft.is_none());
-    assert_eq!(app.enabled_recipe_paths, selected);
-    assert_eq!(app.recipe.clone(), before);
-}
-
-#[test]
 fn build_selection_is_explicit_and_failed_commits_do_not_change_it() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();

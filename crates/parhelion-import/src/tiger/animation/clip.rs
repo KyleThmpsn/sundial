@@ -6,6 +6,7 @@ use crate::{
 use anyhow::{Result, ensure};
 mod envelope;
 mod local;
+pub mod lowering;
 mod translation;
 pub use envelope::grow as grow_static_envelope;
 pub use translation::translate;
@@ -242,13 +243,221 @@ fn write(
     Ok(())
 }
 
+/// A dynamic track whose every component stays within this of its first frame is stored once,
+/// in the static span. That is about 0.001 degrees of rotation or 0.01 mm of position.
+const STILL: f32 = 1e-5;
+
+/// Codec 2 (`80808F71`), as stock clips store it: 16-bit samples ordered by control, frame and
+/// component at `+0x18`, then one float range and one float bias per component at `+0x28` and
+/// `+0x38`. A sample decodes as `value / 65535 * range + bias`.
+fn write_quantized(
+    out: &mut Vec<u8>,
+    pointer: usize,
+    maps: usize,
+    frames: usize,
+    channels: &[Channel; 3],
+) -> Result<()> {
+    if channels.iter().all(|channel| channel.slots.is_empty()) {
+        return write(out, pointer, maps, frames, channels);
+    }
+    ensure!(
+        pointer == 0x18,
+        "Quantized samples belong to the animated span"
+    );
+    for (kind, channel) in channels.iter().enumerate() {
+        let map = channel
+            .slots
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>();
+        append(out, maps + kind * 16, 0x8080000A, &map, 2)?;
+    }
+    let base = (out.len() + 11) & !7;
+    out.resize(base - 4, 0);
+    out.extend(0x80808F71u32.to_le_bytes());
+    out.resize(base + 0x48, 0);
+    put(out, pointer, &(base as i64 - pointer as i64).to_le_bytes())?;
+    put(out, base, &2u16.to_le_bytes())?;
+    put(out, base + 0x10, &u32::try_from(frames)?.to_le_bytes())?;
+    let (mut samples, mut ranges, mut biases) = (Vec::new(), Vec::new(), Vec::new());
+    for (kind, channel) in channels.iter().enumerate() {
+        put(
+            out,
+            base + 2 + kind * 2,
+            &u16::try_from(channel.slots.len())?.to_le_bytes(),
+        )?;
+        let width = [1, 4, 3][kind];
+        ensure!(
+            channel.values.len() == channel.slots.len() * frames * width,
+            "Animated sample count differs from its controls"
+        );
+        for track in channel.values.chunks_exact(frames * width) {
+            ensure!(track.iter().all(|v| v.is_finite()), "Nonfinite clip sample");
+            let mut limits = Vec::with_capacity(width);
+            for axis in 0..width {
+                let values = track.iter().skip(axis).step_by(width);
+                let low = values.clone().fold(f32::INFINITY, |a, &b| a.min(b));
+                let high = values.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let range = high - low;
+                ranges.extend(range.to_le_bytes());
+                biases.extend(low.to_le_bytes());
+                limits.push((range, low));
+            }
+            for frame in track.chunks_exact(width) {
+                for (&value, &(range, low)) in frame.iter().zip(&limits) {
+                    let sample = if range > 0. {
+                        ((value - low) / range * 65535.).round().clamp(0., 65535.) as u16
+                    } else {
+                        0
+                    };
+                    samples.extend(sample.to_le_bytes());
+                }
+            }
+        }
+    }
+    append(out, base + 0x18, 0x8080000A, &samples, 2)?;
+    append(out, base + 0x28, 0x8080000F, &ranges, 4)?;
+    append(out, base + 0x38, 0x8080000F, &biases, 4)?;
+    let size = (out.len() - base + 11) & !7;
+    out.resize(base - 4 + size, 0);
+    put(out, 0x12C, &u32::try_from(size)?.to_le_bytes())?;
+    Ok(())
+}
+
+/// Order a channel's controls by slot, as every stock map is ordered.
+fn sort_channel(channel: &mut Channel, width: usize) {
+    let samples = if channel.slots.is_empty() {
+        0
+    } else {
+        channel.values.len() / channel.slots.len()
+    };
+    let mut tracks = channel
+        .slots
+        .iter()
+        .copied()
+        .zip(
+            channel
+                .values
+                .chunks_exact(samples.max(width))
+                .map(<[f32]>::to_vec),
+        )
+        .collect::<Vec<_>>();
+    tracks.sort_by_key(|(slot, _)| *slot);
+    channel.slots = tracks.iter().map(|(slot, _)| *slot).collect();
+    channel.values = tracks.into_iter().flat_map(|(_, values)| values).collect();
+}
+
+/// Write both pose spans the way stock clips store them: every dynamic track that never moves
+/// joins the static span as one float sample, and the moving tracks are quantized.
+fn write_spans(
+    out: &mut Vec<u8>,
+    mut fixed: [Channel; 3],
+    dynamic: [Channel; 3],
+    frames: usize,
+) -> Result<()> {
+    let mut moving: [Channel; 3] = Default::default();
+    for (kind, channel) in dynamic.into_iter().enumerate() {
+        let width = [1, 4, 3][kind];
+        ensure!(
+            channel.values.len() == channel.slots.len() * frames * width,
+            "Animated sample count differs from its controls"
+        );
+        for (&slot, track) in channel
+            .slots
+            .iter()
+            .zip(channel.values.chunks_exact(frames * width))
+        {
+            let first = &track[..width];
+            let still = track
+                .chunks_exact(width)
+                .all(|frame| frame.iter().zip(first).all(|(a, b)| (a - b).abs() <= STILL));
+            let target = if still {
+                &mut fixed[kind]
+            } else {
+                &mut moving[kind]
+            };
+            target.slots.push(slot);
+            target
+                .values
+                .extend_from_slice(if still { first } else { track });
+        }
+    }
+    for (kind, (fixed, moving)) in fixed.iter_mut().zip(&mut moving).enumerate() {
+        let width = [1, 4, 3][kind];
+        sort_channel(fixed, width);
+        sort_channel(moving, width);
+        ensure!(
+            !fixed.slots.iter().any(|slot| moving.slots.contains(slot))
+                && fixed.slots.windows(2).all(|pair| pair[0] < pair[1]),
+            "A control repeats within a channel's static and animated maps"
+        );
+    }
+    write(out, 0x10, 0xA8, 1, &fixed)?;
+    write_quantized(out, 0x18, 0xD8, frames, &moving)
+}
+
+/// Drop the bytes earlier spans and maps left unreachable, then restate each pose and
+/// auxiliary span's size from its rebuilt extent.
+fn finish(mut out: Vec<u8>) -> Result<Payload> {
+    let length = out.len() as u64;
+    put(&mut out, 0, &length.to_le_bytes())?;
+    let compacted = crate::tiger::payload::compact(&Payload(out), 0x80808F49)?;
+    let mut payload = compacted.payload;
+    for (pointer, size_field) in [
+        (0x10, 0x128),
+        (0x18, 0x12C),
+        (0x38, 0x130),
+        (0x40, 0x134),
+        (0x48, 0x138),
+    ] {
+        let size = if payload.u64(pointer)? == 0 {
+            0
+        } else {
+            let base = payload.pointer(pointer)?;
+            let end = *compacted
+                .extents
+                .get(&base)
+                .ok_or_else(|| anyhow::anyhow!("Clip span at {pointer:X} was not rebuilt"))?;
+            u32::try_from((end - base + 11) & !7)?
+        };
+        if pointer <= 0x18 || size != 0 {
+            put(&mut payload.0, size_field, &size.to_le_bytes())?;
+        }
+    }
+    Ok(payload)
+}
+
+/// Re-encode a clip whose animated span stores 32-bit floats, the form earlier converters
+/// wrote, as `write_spans` does. Other clips return unchanged.
+pub fn compact(original: &Payload) -> Result<Payload> {
+    if original.u64(0x18)? == 0 {
+        return Ok(original.clone());
+    }
+    let base = original.pointer(0x18)?;
+    if base < 4 || original.u32(base - 4)? != 0x80808F73 {
+        return Ok(original.clone());
+    }
+    let frames = usize::from(original.u16(0x13C)?);
+    let slots = usize::from(original.u16(0x140)?);
+    ensure!(
+        original.u64(0)? == original.0.len() as u64 && (1..=3600).contains(&frames),
+        "Clip dimensions differ from its envelope"
+    );
+    let fixed = read(original, 0x10, 0xA8, slots, 1)?;
+    let dynamic = read(original, 0x18, 0xD8, slots, frames)?;
+    let mut out = original.0.clone();
+    write_spans(&mut out, fixed, dynamic, frames)?;
+    finish(out)
+}
+
 /// Native weighted choices reserve the larger of the two pose codec spans.
 pub fn size(payload: &Payload) -> Result<u32> {
     Ok(payload.u32(0x128)?.max(payload.u32(0x12C)?))
 }
 
 /// Remap control slots after the caller verifies the controls and their default poses.
-/// Dynamic encoded samples stay intact. Native-only slots receive explicit constant poses.
+/// Dynamic encoded samples stay intact. Native-only absolute slots receive their
+/// default poses, additive slots receive neutral deltas, and sparse slots stay absent.
 pub fn remap_controls(
     original: &Payload,
     map: &[u16],
@@ -259,6 +468,7 @@ pub fn remap_controls(
     use std::collections::BTreeSet;
     let old = usize::from(original.u16(0x140)?);
     let total = defaults.len();
+    let mode = original.u8(0x181)?;
     ensure!(
         old == map.len()
             && old > 0
@@ -266,8 +476,8 @@ pub fn remap_controls(
             && total <= bones
             && map.iter().all(|&s| usize::from(s) < total)
             && map.iter().collect::<BTreeSet<_>>().len() == old
-            && original.u8(0x181)? == 0,
-        "Control remapping requires an absolute clip and unique complete slot mapping"
+            && mode <= 2,
+        "Control remapping requires a supported blend mode and unique complete slot mapping"
     );
     let mut fixed = read(original, 0x10, 0xA8, old, 1)?;
     for channel in &mut fixed {
@@ -276,9 +486,11 @@ pub fn remap_controls(
         }
     }
     for (slot, pose) in defaults.iter().enumerate() {
-        if map.contains(&(slot as u16)) {
+        if map.contains(&(slot as u16)) || mode == 2 {
             continue;
         }
+        let neutral = [0., 0., 0., 1., 0., 0., 0., 1.];
+        let pose = if mode == 1 { &neutral } else { pose };
         ensure!(
             pose.iter().all(|v| v.is_finite()),
             "Nonfinite default control pose"
@@ -312,6 +524,65 @@ pub fn remap_controls(
     let size = out.len() as u64;
     put(&mut out, 0, &size.to_le_bytes())?;
     Ok(Payload(out))
+}
+
+/// Materialize implicit absolute channels when compatible control rigs have different defaults.
+/// Authored constant channels and encoded dynamic streams retain their original values.
+pub fn bind_defaults(original: &Payload, defaults: &[[f32; 8]]) -> Result<Payload> {
+    ensure!(
+        usize::from(original.u16(0x140)?) == defaults.len(),
+        "Default binding requires the complete control pose"
+    );
+    bind_defaults_prefix(original, defaults)
+}
+
+/// Bind only the known leading controls of an absolute clip. Borrowed clips can
+/// share the arm groups while retaining an unknown, excluded weapon suffix.
+pub fn bind_defaults_prefix(original: &Payload, defaults: &[[f32; 8]]) -> Result<Payload> {
+    let slots = usize::from(original.u16(0x140)?);
+    ensure!(
+        original.u8(0x181)? == 0 && !defaults.is_empty() && defaults.len() <= slots,
+        "Default binding requires an absolute clip with a known control prefix"
+    );
+    let mut fixed = read(original, 0x10, 0xA8, slots, 1)?;
+    let mut last = u32::try_from(defaults.len() - 1)?;
+    for (kind, channel) in fixed.iter_mut().enumerate() {
+        let dynamic = original
+            .array(0xD8 + kind * 16, 2, Some(0x8080000A))?
+            .into_iter()
+            .map(|at| original.u16(at))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        ensure!(
+            dynamic.iter().all(|&slot| usize::from(slot) < slots),
+            "Dynamic control exceeds its clip"
+        );
+        for &slot in channel.slots.iter().chain(&dynamic) {
+            last = last.max(u32::from(slot));
+        }
+        for (slot, pose) in defaults.iter().enumerate() {
+            let slot = u16::try_from(slot)?;
+            if channel.slots.contains(&slot) || dynamic.contains(&slot) {
+                continue;
+            }
+            ensure!(
+                pose.iter().all(|v| v.is_finite()),
+                "Nonfinite source default pose"
+            );
+            channel.slots.push(slot);
+            channel.values.extend_from_slice(match kind {
+                0 => &pose[7..8],
+                1 => &pose[..4],
+                _ => &pose[4..7],
+            });
+        }
+    }
+    let mut output = original.0.clone();
+    write(&mut output, 0x10, 0xA8, 1, &fixed)?;
+    put(&mut output, 0xA0, &0u32.to_le_bytes())?;
+    put(&mut output, 0xA4, &last.to_le_bytes())?;
+    let size = output.len() as u64;
+    put(&mut output, 0, &size.to_le_bytes())?;
+    Ok(Payload(output))
 }
 
 /// Decode one control pose, retaining the rig's defaults for absent channels.
@@ -438,13 +709,40 @@ pub fn replace_for(
     groups(&mut output.0, controls, poses.len())?;
     let size = output.0.len() as u64;
     put(&mut output.0, 0, &size.to_le_bytes())?;
-    Ok(output)
+    finish(output.0)
+}
+
+/// Author complete additive control deltas for the selected rig while retaining the action's
+/// duration and events. A control without motion carries the identity delta, which the native
+/// additive mixer leaves unchanged.
+pub fn replace_deltas_for(
+    original: &Payload,
+    deltas: &[Vec<[f32; 8]>],
+    bones: usize,
+    controls: &Payload,
+) -> Result<Payload> {
+    ensure!(
+        original.u8(0x181)? == 1 && (1..=256).contains(&bones),
+        "Control deltas require an additive native action"
+    );
+    let mut envelope = original.clone();
+    put(&mut envelope.0, 0x13e, &u16::try_from(bones)?.to_le_bytes())?;
+    put(
+        &mut envelope.0,
+        0x140,
+        &u16::try_from(deltas.len())?.to_le_bytes(),
+    )?;
+    let mut output = replace_selected(&envelope, deltas, None)?;
+    groups(&mut output.0, controls, deltas.len())?;
+    let size = output.0.len() as u64;
+    put(&mut output.0, 0, &size.to_le_bytes())?;
+    finish(output.0)
 }
 
 /// Replace control motion while retaining the carrier's duration, events and
 /// bone count. `poses` is control-major, with one value for every native frame.
 pub fn replace(original: &Payload, poses: &[Vec<[f32; 8]>]) -> Result<Payload> {
-    replace_selected(original, poses, None)
+    finish(replace_selected(original, poses, None)?.0)
 }
 
 fn replace_selected(
@@ -487,8 +785,7 @@ fn replace_selected(
         }
     }
     let mut out = original.0.clone();
-    write(&mut out, 0x10, 0xA8, 1, &Default::default())?;
-    write(&mut out, 0x18, 0xD8, frames, &dynamic)?;
+    write_spans(&mut out, Default::default(), dynamic, frames)?;
     put(&mut out, 0xA4, &u32::try_from(slots - 1)?.to_le_bytes())?;
     let length = out.len() as u64;
     put(&mut out, 0, &length.to_le_bytes())?;
@@ -543,8 +840,7 @@ pub fn extend(
                 }
             }
         }
-        write(&mut out, 0x10, 0xA8, 1, &fixed)?;
-        write(&mut out, 0x18, 0xD8, frames, &dynamic)?;
+        write_spans(&mut out, fixed, dynamic, frames)?;
         put(&mut out, 0xA4, &((total - 1) as u32).to_le_bytes())?;
     }
     for at in [0x13E, 0x140] {
@@ -553,7 +849,11 @@ pub fn extend(
     groups(&mut out, controls, total)?;
     let size = out.len() as u64;
     put(&mut out, 0, &size.to_le_bytes())?;
-    Ok(Payload(out))
+    if poses.is_some() {
+        finish(out)
+    } else {
+        Ok(Payload(out))
+    }
 }
 
 /// Emit sparse local poses on an extended rig using the carrier's composition
@@ -601,8 +901,7 @@ pub fn rotations(
         }
     }
     let mut out = original.0.clone();
-    write(&mut out, 0x10, 0xA8, 1, &fixed)?;
-    write(&mut out, 0x18, 0xD8, frames, &dynamic)?;
+    write_spans(&mut out, fixed, dynamic, frames)?;
     put(&mut out, 0xA4, &u32::try_from(total - 1)?.to_le_bytes())?;
     for field in [0x13E, 0x140] {
         put(&mut out, field, &u16::try_from(total)?.to_le_bytes())?;
@@ -613,7 +912,7 @@ pub fn rotations(
     groups(&mut out, controls, total)?;
     let size = out.len() as u64;
     put(&mut out, 0, &size.to_le_bytes())?;
-    Ok(Payload(out))
+    finish(out)
 }
 
 fn groups(out: &mut Vec<u8>, controls: &Payload, total: usize) -> Result<()> {

@@ -75,6 +75,25 @@ pub fn additions(
         .collect())
 }
 
+/// Enroll non-entity resources and their declared native references. Entity callers still
+/// use `additions`, which also checks component layouts and generated schemas.
+pub fn resource_additions(
+    manager: &PackageManager,
+    resources: impl IntoIterator<Item = u32>,
+) -> Result<BTreeSet<u32>, String> {
+    let resources = resources.into_iter().collect::<BTreeSet<_>>();
+    if resources.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let loaded = loading::investment(manager)?;
+    let required = references::closure(manager, resources.iter().copied())?;
+    Ok(resources
+        .into_iter()
+        .chain(required.into_iter().map(|reference| reference.tag))
+        .filter(|tag| !loaded.contains(tag))
+        .collect())
+}
+
 fn requirements(
     manager: &PackageManager,
     graphs: &BTreeSet<u32>,

@@ -9,6 +9,7 @@ mod instruction;
 mod parse;
 
 pub(crate) use instruction::call;
+pub(crate) use parse::entry;
 
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,6 +58,10 @@ pub struct Options {
     /// Checked enum encodings at an output lane. Only literal leaves and
     /// selections between those leaves may be remapped. Keys are float bits.
     pub output_values: BTreeMap<(u32, usize), BTreeMap<u32, u32>>,
+    /// Native expressions replacing literal leaves (float bits) of an output
+    /// lane's sums and selections. A lane without such a leaf refuses
+    /// translation. The caller verifies the expression's producer.
+    pub output_leaves: BTreeMap<(u32, usize), (u32, String)>,
 }
 
 pub struct Sample {

@@ -208,6 +208,19 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
         kind: 11,
         fields: HOST_NUMERIC_MODIFIERS,
     },
+    // The registered callback consumes three pairs even though no stock action in
+    // the survey uses this kind. Activation adds the fields and cleanup subtracts them.
+    Layout {
+        kind: 12,
+        fields: &[
+            Field::new("Primary Ammo Value 1", 0x04, Float),
+            Field::new("Primary Ammo Value 2", 0x08, Float),
+            Field::new("Special Ammo Value 1", 0x0C, Float),
+            Field::new("Special Ammo Value 2", 0x10, Float),
+            Field::new("Heavy Ammo Value 1", 0x14, Float),
+            Field::new("Heavy Ammo Value 2", 0x18, Float),
+        ],
+    },
     // Long March writes 80 to the third float and Radar Booster 56, the only two stock uses,
     // both reading as radar detection range. The first two stay at -1, which the callback
     // leaves unchanged.

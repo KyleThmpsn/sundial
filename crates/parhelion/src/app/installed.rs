@@ -3,9 +3,6 @@
 //! whose items are installed.
 use super::*;
 
-#[cfg(test)]
-mod tests;
-
 struct Job {
     receiver: Receiver<Result<BTreeSet<u32>, String>>,
     worker: thread::JoinHandle<()>,

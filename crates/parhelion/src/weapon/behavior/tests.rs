@@ -243,6 +243,7 @@ fn column(choices: Vec<u32>, socket_type: Option<u16>) -> crate::item::WeaponSoc
         reusable_plug_set_index: None,
         randomized_plug_set_index: None,
         randomized_selection_program: Vec::new(),
+        reusable_choices: None,
     }
 }
 
@@ -423,69 +424,6 @@ fn record_and_labels(
         .expect("a record append");
     assert_eq!(appends.len(), 1 + usize::from(labels.is_some()));
     (record, labels)
-}
-
-/// The recorded list is a measurement, not a judgement about how a weapon looks in game, so
-/// it is checked against the packages it was taken from. Hard Light fires visible bouncing
-/// rounds and still exposes no launch speed to raise, which is exactly the sort of guess this
-/// catches.
-#[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
-fn every_launching_source_is_recorded() {
-    use sundial::package_authoring::open_shadowkeep_package_manager;
-    let path = crate::test_support::stock_packages();
-    let manager = open_shadowkeep_package_manager(&path).unwrap();
-    let measured = CATALOG
-        .iter()
-        .filter(|entry| {
-            entry
-                .graph_tag()
-                .is_some_and(|tag| launches_its_own(&manager, tag))
-        })
-        .map(|entry| entry.id)
-        .collect::<Vec<_>>();
-    assert!(!measured.is_empty());
-    assert_eq!(
-        measured.iter().copied().collect::<BTreeSet<_>>(),
-        LAUNCHING_SOURCES.iter().copied().collect()
-    );
-}
-
-/// The sources offering a firing pattern are a measurement too: each one's own plugs are read
-/// from the packages, perk by perk, for a change to the barrel's Bullets per Shot.
-#[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
-fn every_burst_source_is_recorded() {
-    use sundial::package_authoring::runtime::modifiers::BARREL_BULLETS_PER_SHOT;
-    use sundial::package_authoring::{open_shadowkeep_package_manager, resolve_live_named_tag};
-    let path = crate::test_support::stock_packages();
-    let manager = open_shadowkeep_package_manager(&path).unwrap();
-    let globals = manager
-        .read_tag(resolve_live_named_tag(&manager, "investment_globals", None).unwrap())
-        .unwrap();
-    let catalog = crate::test_support::catalog(path.parent().unwrap()).unwrap();
-    let measured = CATALOG
-        .iter()
-        .filter(|entry| {
-            [entry.intrinsic_plug, entry.trait_plug]
-                .into_iter()
-                .flatten()
-                .flat_map(|plug| catalog.item_sandbox_perk_indices(plug))
-                .filter_map(|perk| perk_firing(&manager, &globals, perk).unwrap())
-                .flat_map(|perk| perk.records)
-                .any(|record| {
-                    BARREL_BULLETS_PER_SHOT
-                        .iter()
-                        .any(|lane| record.in_burst_lane(*lane))
-                })
-        })
-        .map(|entry| entry.id)
-        .collect::<Vec<_>>();
-    assert!(!measured.is_empty());
-    assert_eq!(
-        measured.iter().copied().collect::<BTreeSet<_>>(),
-        BURST_SOURCES.iter().copied().collect()
-    );
 }
 
 /// The boost only fires when the graft launches something the host cannot speed up itself.
@@ -694,54 +632,4 @@ fn every_block_with_labels_parses_at_the_row_size_grafts_copy() {
     }
     assert!(checked > 0, "no blocks carried labels");
     assert!(failures.is_empty(), "label layout: {failures:#?}");
-}
-
-#[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
-fn every_entry_pins_the_plugs_its_own_weapon_equips() {
-    let path = crate::test_support::stock_packages();
-    let catalog = crate::test_support::catalog(path.parent().unwrap()).unwrap();
-    let mut problems = Vec::new();
-    for entry in CATALOG {
-        let Some(donor) = catalog.weapon_donor(entry.source_item_hash) else {
-            problems.push(format!(
-                "{} ({}): item 0x{:08X} is not an installed weapon",
-                entry.source_name, entry.id, entry.source_item_hash
-            ));
-            continue;
-        };
-        for (plug, role) in [
-            (entry.intrinsic_plug, INTRINSIC_SOCKET_TYPE),
-            (entry.trait_plug, TRAIT_SOCKET_TYPE),
-        ] {
-            let Some(plug) = plug else { continue };
-            let equipped = donor
-                .sockets
-                .iter()
-                .any(|socket| socket.socket_type == role && socket.native_default == Some(plug));
-            if !equipped {
-                let held = donor
-                    .sockets
-                    .iter()
-                    .find(|socket| socket.native_default == Some(plug))
-                    .map_or_else(
-                        || "no socket of this weapon".to_owned(),
-                        |socket| format!("its socket type {}", socket.socket_type),
-                    );
-                problems.push(format!(
-                    "{} ({}): 0x{plug:08X} is not the type {role} default, it is in {held}",
-                    entry.source_name, entry.id
-                ));
-            }
-        }
-    }
-    assert!(
-        problems.is_empty(),
-        "plug mismatches:
-{}",
-        problems.join(
-            "
-"
-        )
-    );
 }

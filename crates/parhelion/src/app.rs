@@ -139,6 +139,9 @@ struct PackageAuthoringApp {
     install_status: build_status::InstallStatus,
     build_started: Option<Instant>,
     latest_build: Option<Result<BuildReport, String>>,
+    /// A build kept from an earlier install for this runtime, under review to install again in
+    /// place of the latest build.
+    restore: Option<BuildReport>,
     /// The namespace of the recipe the latest build stopped on, when one recipe caused it.
     build_blocker: Option<String>,
     build_status_open: bool,
@@ -335,6 +338,7 @@ impl Default for PackageAuthoringApp {
             install_status: build_status::InstallStatus::default(),
             build_started: None,
             latest_build: None,
+            restore: None,
             build_blocker: None,
             build_status_open: false,
             backup_root: default_backup_root().display().to_string(),
@@ -868,6 +872,8 @@ mod editor_view;
 mod emblem_view;
 mod gear_view;
 mod image_files;
+#[cfg(feature = "d2-model-importer")]
+mod imported_view;
 mod installed;
 mod jobs;
 mod mod_view;

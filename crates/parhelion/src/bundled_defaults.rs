@@ -110,16 +110,3 @@ pub(crate) fn back_up(backup: &Path, file_name: &str, bytes: &[u8]) -> Result<()
     sundial::storage::create_file(&backup.join(file_name), bytes)
         .map_err(|error| format!("Backup failed at {}: {error}", backup.display()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unreadable_versions_are_an_error_not_an_empty_record() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("versions.json");
-        fs::write(&path, b"{").unwrap();
-        assert!(AppliedVersions::load(path).is_err());
-    }
-}

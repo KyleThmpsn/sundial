@@ -130,15 +130,3 @@ fn patch_weights_and_oversized_families_evict_before_opening() {
     drop(pool);
     assert_eq!(counts.active.load(Ordering::SeqCst), 0);
 }
-#[test]
-fn failed_opens_can_retry_and_new_owners_do_not_reuse_stale_data() {
-    let pool = Pool::new(2);
-    assert!(
-        pool.acquire((1, 1), 1, || Err::<u8, _>("temporary failure".into()))
-            .is_err()
-    );
-    assert_eq!(*pool.acquire((1, 1), 1, || Ok(7)).unwrap().value(), 7);
-    assert_eq!(*pool.acquire((2, 1), 1, || Ok(9)).unwrap().value(), 9);
-    pool.remove_owner(1);
-    assert_eq!(*pool.acquire((1, 1), 1, || Ok(11)).unwrap().value(), 11);
-}

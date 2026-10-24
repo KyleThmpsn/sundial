@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 
 mod runtime;
 mod stats;
-mod talent;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Weapon {
@@ -177,7 +176,7 @@ impl Source {
             assets.insert(tag, self.read(tag)?);
         }
         let art = self.weapon_art(&item, &mut assets)?;
-        let talents = self.weapon_talents(&item, &mut assets)?;
+        let talents = self.item_talents(item.definition, &mut assets)?;
         let stats = self.weapon_stats(&item, &mut assets)?;
         let runtime = self.weapon_runtime(&item, &mut assets)?;
         let dyes = self.dyes(item.definition, &mut assets)?;

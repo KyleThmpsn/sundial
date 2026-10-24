@@ -9,6 +9,25 @@ const SOCKET_ROW_ARRAY_DESCRIPTOR_OFFSETS: [usize; 3] = [
     ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET,
 ];
 
+/// The selection program of a private roll pool whose recipe states none: one instruction pushing
+/// the literal 1, the program the socket editor's Randomized Plug Set option starts with.
+const SINGLE_ROLL: WeaponNumericInstruction = WeaponNumericInstruction {
+    opcode: 11,
+    operand: 1,
+};
+
+impl ResolvedSocketColumn {
+    /// The choices the socket's embedded list holds: the leading reusable ones of a column that
+    /// rolls from a private pool, otherwise all of them.
+    pub(super) fn embedded(&self) -> &[u16] {
+        let count = self
+            .reusable_choices
+            .unwrap_or(self.choices.len())
+            .min(self.choices.len());
+        &self.choices[..count]
+    }
+}
+
 pub(super) fn resolve_socket_column_indices(
     item_rows_by_hash: &BTreeMap<u32, Vec<usize>>,
     donor_definition: &[u8],
@@ -93,8 +112,17 @@ pub(super) fn resolve_socket_column_indices(
                     randomized_plug_set_index: authored
                         .and_then(|column| column.randomized_plug_set_index),
                     randomized_selection_program: authored.map_or_else(Vec::new, |column| {
-                        column.randomized_selection_program.clone()
+                        if column.reusable_choices.is_some()
+                            && column.randomized_selection_program.is_empty()
+                        {
+                            vec![SINGLE_ROLL]
+                        } else {
+                            column.randomized_selection_program.clone()
+                        }
                     }),
+                    reusable_choices: authored
+                        .and_then(|column| column.reusable_choices)
+                        .map(usize::from),
                 }
             })
         })
@@ -612,6 +640,19 @@ pub(super) fn set_weapon_socket_columns(
                 "Socket lane {lane} contains disabled or duplicate plug choices"
             )));
         }
+        if let Some(reusable) = column.reusable_choices {
+            if !(1..=column.choices.len()).contains(&reusable) {
+                return Err(invalid(format!(
+                    "Socket lane {lane} offers {reusable} of its {} choices, but it must offer at least one and at most all",
+                    column.choices.len()
+                )));
+            }
+            if column.randomized_plug_set_index.is_none() {
+                return Err(validation(format!(
+                    "Socket lane {lane} rolls from a private plug set that was never planned"
+                )));
+            }
+        }
         if lane >= count {
             continue;
         }
@@ -679,14 +720,17 @@ pub(super) fn set_weapon_socket_columns(
         data.extend_from_slice(&[0; 8]);
         data.extend_from_slice(&NESTED_ARRAY_TRAILER);
         let member_header = data.len();
+        // A column that rolls from a private pool embeds only its reusable choices. The pool's
+        // set in the shared table holds every choice.
+        let embedded = column.embedded();
         let mut member_segment = vec![0_u8; 16];
-        write_u64(&mut member_segment, 0, column.choices.len() as u64)?;
+        write_u64(&mut member_segment, 0, embedded.len() as u64)?;
         write_u32(
             &mut member_segment,
             8,
             ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS,
         )?;
-        for (choice, &plug_index) in column.choices.iter().enumerate() {
+        for (choice, &plug_index) in embedded.iter().enumerate() {
             let mut member = [0_u8; ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE];
             write_u16(&mut member, 0, plug_index)?;
             let weight_bits = column
@@ -707,10 +751,10 @@ pub(super) fn set_weapon_socket_columns(
         member_segment.extend_from_slice(&NESTED_ARRAY_TRAILER);
         data.extend_from_slice(&member_segment);
         let embedded_descriptor = row + ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET;
-        write_u64(data, embedded_descriptor, column.choices.len() as u64)?;
+        write_u64(data, embedded_descriptor, embedded.len() as u64)?;
         write_relative_pointer(data, embedded_descriptor + 8, member_header)?;
         let member_rows = member_header + 16;
-        for choice in 0..column.choices.len() {
+        for choice in 0..embedded.len() {
             let condition = column
                 .choice_conditions
                 .get(choice)
@@ -776,7 +820,8 @@ pub(super) fn validate_weapon_socket_columns(
         }
         let embedded_descriptor = row + ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET;
         let (member_count, _, member_rows, member_class) = array_at(data, embedded_descriptor)?;
-        if member_count != column.choices.len()
+        let embedded = column.embedded();
+        if member_count != embedded.len()
             || member_class != ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS
         {
             return Err(validation(format!(
@@ -785,7 +830,7 @@ pub(super) fn validate_weapon_socket_columns(
         }
         validate_socket_member_segment(data, member_rows, member_count)
             .map_err(|error| validation(error.to_string()))?;
-        for (choice, expected_plug) in column.choices.iter().copied().enumerate() {
+        for (choice, expected_plug) in embedded.iter().copied().enumerate() {
             let member = member_rows + choice * ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE;
             let expected_weight = column
                 .choice_weight_bits

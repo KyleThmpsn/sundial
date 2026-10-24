@@ -102,14 +102,24 @@ fn registrations(
     let p = component.payload;
     let t = component.template;
     let entity = component.entity;
-    let (ti, td) = (t.pointer(16)?, t.pointer(24)?);
+    let ti = t.pointer(16)?;
+    let template_boundary = t.pointer(24)?;
+    let td = usize::try_from(t.u64(ti + 8)?)?;
     let ni = p.pointer(16)?;
-    // Sealed controllers keep their original reciprocal definitions while the
+    // Sealed templates and controllers keep their reciprocal definitions while the
     // header names a duplicate schema beyond appended mutable runtime arrays.
     // Registrations address those original records, not the loader's boundary.
     let nd = usize::try_from(p.u64(ni + 8)?)?;
     let boundary = p.pointer(24)?;
     let template_owner = t.u32(ti)?;
+    ensure!(
+        ti < td
+            && td <= template_boundary
+            && t.u32(td)? == template_owner
+            && t.u32(template_boundary)? == template_owner
+            && t.u32(td + 4)? == t.u32(template_boundary + 4)?,
+        "native registration template has inconsistent reciprocal definitions"
+    );
     ensure!(
         p.u64(0)? == p.0.len() as u64
             && p.u32(ni)? == component.owner

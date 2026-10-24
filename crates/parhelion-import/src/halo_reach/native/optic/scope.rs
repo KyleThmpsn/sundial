@@ -84,7 +84,7 @@ pub(super) fn build(
     let mut textures = Vec::new();
     let mut slots = Vec::new();
     for layer in &source.overlay.layers {
-        let texture = crate::halo_reach::native_material::texture(
+        let texture = crate::halo_reach::native::material::texture(
             source.cache,
             source.pages,
             native,
@@ -113,7 +113,7 @@ pub(super) fn build(
     append(&mut bytes, 0x2d0, 0x80807211, &fixed, 8)?;
     let vertex = "scope-vertex";
     let pixel = "scope-pixel";
-    crate::halo_reach::native_material::program(
+    crate::halo_reach::native::material::program(
         native,
         graph,
         vertex,
@@ -121,7 +121,7 @@ pub(super) fn build(
         VERTEX,
         true,
     )?;
-    crate::halo_reach::native_material::program(
+    crate::halo_reach::native::material::program(
         native,
         graph,
         pixel,

@@ -1,10 +1,11 @@
-//! Source contrail profiles on the checked native CPU beam presentation.
+//! Source contrail profiles on ordinary CPU samples with camera-facing presentation.
+mod simulation;
 use super::property::Property;
 use crate::{
     halo_reach::{
         cache::{Cache, Tag},
         material::{self, Material},
-        native_material,
+        native,
         resource::Pages,
     },
     presentation::{Graph, append, put},
@@ -77,9 +78,14 @@ pub(in crate::halo_reach) fn read(cache: &Cache, tag: &Tag) -> Result<Vec<Profil
                     && Property::read(cache, at + 0x110)?.constant()? == 0.,
                 "Source contrail requires profile acceleration, offset or rotation"
             );
+            // Secondary alpha must stay at one. A curve over another source input, such as a
+            // profile's input 7, needs that input's producer before it can be translated.
+            let secondary = Property::read(cache, at + 0x1e8)?;
             ensure!(
-                Property::read(cache, at + 0x1e8)?.constant()? == 1.,
-                "Source contrail requires secondary alpha"
+                secondary.constant().ok() == Some(1.),
+                "Source contrail {} requires secondary alpha from source input {}",
+                cache.string_id(cache.u32(at)?)?,
+                secondary.input()
             );
             let result = Profile {
                 source: tag.clone(),
@@ -124,7 +130,7 @@ const PIXEL: &str = r#"
 Texture2D<float4> Map : register(t0);
 Texture2D<float4> Palette : register(t1);
 Texture2D<float4> Alpha : register(t2);
-SamplerState SurfaceSampler : register(s1);
+$SAMPLERS$
 cbuffer TrailFrame : register(b0) { float4 trailFrame; };
 cbuffer Effect : register(b13) { float4 effectData[2]; };
 float4 main(float4 v0:TEXCOORD0,float3 v1:TEXCOORD1,float3 v2:TEXCOORD2,
@@ -162,8 +168,17 @@ fn material(
     metres: f32,
     length: f32,
     radius: f32,
-    profiles: f32,
+    emission: f32,
 ) -> Result<String> {
+    let shell = native.tag(template, Some(0x808071e8))?;
+    ensure!(
+        shell.u8(0x20)? == 0x88,
+        "Contrail material composition contract differs"
+    );
+    let sampler_rows = shell.array(0x308, 16, None)?;
+    let sampler_row = *sampler_rows.first().context("Contrail sampler table")?;
+    let sampler_template = shell.u32(sampler_row)?;
+    let sampler_class = shell.u32(sampler_row - 8)?;
     let map = profile
         .material
         .mapping(&["base_map"])
@@ -173,9 +188,15 @@ fn material(
         "Contrail bitmap requires animation"
     );
     let albedo = profile.material.options["albedo"].as_str();
+    let mut samplers = vec![native::material::texture_sampler(
+        native,
+        graph,
+        sampler_template,
+        map,
+    )?];
     let mut textures = vec![(
         0u32,
-        native_material::texture(
+        native::material::texture(
             cache,
             pages,
             native,
@@ -198,11 +219,17 @@ fn material(
         );
         textures.push((
             1,
-            native_material::texture(cache, pages, native, graph, palette, false, true)?,
+            native::material::texture(cache, pages, native, graph, palette, false, true)?,
         ));
         let [u, v, x, y] = palette.transform;
+        samplers.push(native::material::texture_sampler(
+            native,
+            graph,
+            sampler_template,
+            palette,
+        )?);
         let mut sample = format!(
-            "float index=Map.Sample(SurfaceSampler,uv).r;\nfloat4 texel=Palette.Sample(SurfaceSampler,float2(index,{})*float2({u:.9},{v:.9})+float2({x:.9},{y:.9}));",
+            "float index=Map.Sample(SurfaceSampler,uv).r;\nfloat4 texel=Palette.Sample(PaletteSampler,float2(index,{})*float2({u:.9},{v:.9})+float2({x:.9},{y:.9}));",
             profile.palette.expression()?
         );
         if albedo == "palettized_plus_alpha" {
@@ -216,11 +243,17 @@ fn material(
             );
             textures.push((
                 2,
-                native_material::texture(cache, pages, native, graph, alpha, false, false)?,
+                native::material::texture(cache, pages, native, graph, alpha, false, false)?,
             ));
             // Tiling and scrolling precede each texture's independent transform.
             let [u, v, x, y] = alpha.transform;
-            sample.push_str(&format!("\ntexel.a=Alpha.Sample(SurfaceSampler,sourceUv*float2({u:.9},{v:.9})+float2({x:.9},{y:.9})).a;"));
+            samplers.push(native::material::texture_sampler(
+                native,
+                graph,
+                sampler_template,
+                alpha,
+            )?);
+            sample.push_str(&format!("\ntexel.a=Alpha.Sample(AlphaSampler,sourceUv*float2({u:.9},{v:.9})+float2({x:.9},{y:.9})).a;"));
         }
         sample
     };
@@ -239,7 +272,14 @@ fn material(
         String::new()
     };
     let mut pixel = PIXEL.to_owned();
+    let declarations = ["SurfaceSampler", "PaletteSampler", "AlphaSampler"]
+        .iter()
+        .take(samplers.len())
+        .enumerate()
+        .map(|(index, name)| format!("SamplerState {name}:register(s{});", index + 1))
+        .collect::<String>();
     for (key, value) in [
+        ("$SAMPLERS$", declarations),
         ("$WIDTH$", profile.width.expression()?),
         ("$COLOR$", profile.color.expression()?),
         ("$ALPHA$", profile.alpha.expression()?),
@@ -266,22 +306,18 @@ fn material(
     ] {
         pixel = pixel.replace(key, &value);
     }
-    let shell = native.tag(template, Some(0x808071e8))?;
-    ensure!(
-        shell.u8(0x20)? == 0x88,
-        "Contrail material composition contract differs"
-    );
     let shader = format!("{prefix}-pixel");
-    native_material::program(native, graph, &shader, shell.u32(0x2c8)?, &pixel, false)?;
+    native::material::program(native, graph, &shader, shell.u32(0x2c8)?, &pixel, false)?;
     ensure!(
-        shell.u32(0x48)? == 0x80fe372b,
+        shell.u32(0x48)? == 0x80ff02af,
         "Contrail vertex input contract differs"
     );
     let vertex = format!("{prefix}-vertex");
-    let vertex_source = include_str!("trail/vertex.hlsl")
-        .replace("$LENGTH$", &format!("{length:.9}"))
-        .replace("$HALF_STEP$", &format!("{:.9}", 0.5 / (profiles - 1.)));
-    native_material::program(
+    let half_step = 0.75 / (emission * profile.life);
+    let vertex_source = include_str!("trail/billboard.hlsl")
+        .replace("$HALF_LENGTH$", &format!("{:.9}", length * half_step))
+        .replace("$HALF_STEP$", &format!("{half_step:.9}"));
+    native::material::program(
         native,
         graph,
         &vertex,
@@ -290,34 +326,36 @@ fn material(
         true,
     )?;
     let mut bytes = shell.0.clone();
-    // Preserve the envelope's vertex constant allocation with neutral values.
-    // Its donor expressions require effect-scale, flicker and distance inputs
-    // that source contrails do not supply. The ribbon shader handles native
-    // particle expiry, while the pixel shader evaluates source alpha.
-    let visibility = [
-        0x34, 0, 0x43, 1, 0x34, 0, 0x43, 76, 0x34, 1, 0x43, 105, 0x34, 0, 0x43, 111, 0x34, 2, 0x43,
-        115,
-    ];
-    let constants = [[1f32; 4], [0.; 4], [0., 1., 0., 0.]]
-        .into_iter()
-        .flatten()
-        .flat_map(f32::to_le_bytes)
-        .collect::<Vec<_>>();
-    append(&mut bytes, 0x68, 0x80800009, &visibility, 1)?;
-    append(&mut bytes, 0x78, 0x80800090, &constants, 16)?;
+    // Custom particle stages read object and view scopes directly. Drop the
+    // carrier's expressions and inactive shader stages before binding our own.
+    for stage in [0x48, 0xe8, 0x188, 0x228, 0x2c8, 0x368] {
+        bytes[stage..stage + 0xa0].fill(0);
+        for at in [stage, stage + 0x80, stage + 0x84] {
+            put(&mut bytes, at, &u32::MAX.to_le_bytes())?;
+        }
+    }
     // Frame extern one, scalar one is the native advancing game clock. The
-    // pixel stage has its own output buffer and register selection. Retain the
-    // carrier's sampler bindings before publishing the clock into row zero.
-    let mut expression = shell
-        .array(0x2e8, 1, Some(0x80800009))?
-        .into_iter()
-        .map(|at| shell.u8(at))
-        .collect::<Result<Vec<_>>>()?;
-    ensure!(
-        expression == [0x4c, 0, 0x49, 0x21, 0x4c, 1, 0x49, 0x22]
-            && shell.array(0x318, 16, Some(0x80800090))?.is_empty(),
-        "Contrail pixel output contract differs"
-    );
+    // pixel stage binds each source sampler independently before publishing time.
+    let mut expression = Vec::new();
+    let mut sampler_table = Vec::new();
+    for index in 0..samplers.len() {
+        expression.extend([
+            0x4c,
+            u8::try_from(index)?,
+            0x49,
+            0x21 + u8::try_from(index)?,
+        ]);
+        sampler_table.extend(u32::MAX.to_le_bytes());
+        sampler_table.extend(1u32.to_le_bytes());
+        sampler_table.extend(0u64.to_le_bytes());
+    }
+    append(
+        &mut bytes,
+        0x308,
+        u64::from(sampler_class),
+        &sampler_table,
+        16,
+    )?;
     expression.extend([0x3c, 1, 1, 0x43, 0]);
     append(&mut bytes, 0x2e8, 0x80800009, &expression, 1)?;
     append(&mut bytes, 0x318, 0x80800090, &[0; 16], 16)?;
@@ -342,6 +380,13 @@ fn material(
             .zip(textures)
             .map(|(row, (_, texture))| json!({"offset":row+4,"symbol":texture})),
     );
+    patches.extend(
+        Payload(bytes.clone())
+            .array(0x308, 16, None)?
+            .into_iter()
+            .zip(samplers)
+            .map(|(row, symbol)| json!({"offset":row,"symbol":symbol})),
+    );
     graph.add(&symbol, template, &bytes, None, patches)?;
     Ok(symbol)
 }
@@ -356,34 +401,33 @@ pub(in crate::halo_reach) fn emit(
     native: &mut Reader,
     graph: &mut Graph,
     profile: &Profile,
-    system_tag: u32,
     prefix: &str,
     metres: f32,
     speed: f32,
 ) -> Result<(String, Value)> {
-    let system = native.tag(system_tag, Some(0x80806e28))?;
+    // The caller's event carrier and the particle draw envelope are independent.
+    // Source contrails need ordinary births, not selector-5 line expansion.
+    let template = 0x80fc7e04;
+    let system = native.tag(template, Some(0x80806e28))?;
+    ensure!(
+        system.u32(0x18)? == 0x80c70b97
+            && [4, 8, 16]
+                .into_iter()
+                .all(|at| system.u32(at).ok() == Some(u32::MAX)),
+        "Contrail billboard system has an unsupported computational stage"
+    );
     let particle_tag = system.u32(0)?;
     let original = native.tag(particle_tag, Some(0x80806e2c))?;
-    ensure!(
-        original.u8(0x14b)? == 5
-            && (0..8)
-                .all(|i| original.u16(0x70 + i * 2).ok() == Some([0, 25, 8, 51, 24, 225, 10, 0][i]))
-            && original.array(0x60, 16, Some(0x80800090))?.len() == 41,
-        "Source contrail needs the checked native CPU beam layout"
-    );
     let length = speed * profile.life;
     let emission = profile.emission.emission(speed / metres)?;
-    let density = emission / speed;
-    // Match the native count consumer's float32 operation order. The vertex
-    // segments must meet at the actual expanded sample spacing.
-    let profiles = (density * length).ceil();
+    let profiles = (emission * profile.life).ceil();
     ensure!(
         speed.is_finite() && speed > 0. && (2.0..=96.).contains(&profiles),
-        "Source contrail exceeds native beam profile capacity"
+        "Source contrail exceeds native sample capacity"
     );
     let [a, b] = profile.width.bounds()?;
     ensure!(a > 0. && b > 0., "Source contrail width is not positive");
-    let radius = (a.max(b) * metres * 0.5).max(length / (profiles - 1.) * 0.5);
+    let radius = a.max(b) * metres * 0.5;
     let material = material(
         cache,
         pages,
@@ -395,67 +439,9 @@ pub(in crate::halo_reach) fn emit(
         metres,
         length,
         radius,
-        profiles,
+        emission,
     )?;
-    let mut payload = (*original).clone();
-    let defaults = payload.array(8, 16, Some(0x80800090))?;
-    for (route, value) in [(5, profile.life), (10, 1. / profile.life), (34, density)] {
-        ensure!(
-            payload.u8(0x80 + route * 2)? == 6,
-            "Native beam route is not a default"
-        );
-        let scalar = usize::from(payload.u8(0x81 + route * 2)?);
-        let at = *defaults.get(scalar / 4).context("Native beam default")? + (scalar % 4) * 4;
-        put(&mut payload.0, at, &value.to_le_bytes())?;
-    }
-    put(&mut payload.0, 0x11c, &length.to_le_bytes())?;
-    put(&mut payload.0, 0x120, &(profile.life + 0.05).to_le_bytes())?;
-    let rows = payload.array(0x60, 16, Some(0x80800090))?;
-    let mut constants = rows
-        .iter()
-        .map(|&at| payload.0[at..at + 16].to_vec())
-        .collect::<Vec<_>>();
-    for row in [16, 17] {
-        constants[row][..4].copy_from_slice(&length.to_le_bytes());
-    }
-    let one = u8::try_from(constants.len())?;
-    constants.push([1f32.to_le_bytes(); 4].concat());
-    let size = u8::try_from(constants.len())?;
-    constants.push([radius.to_le_bytes(); 4].concat());
-    let fields = payload.array(0x50, 1, Some(0x80800009))?;
-    let mut code = fields.iter().map(|&at| payload.0[at]).collect::<Vec<_>>();
-    let mut at = 0;
-    let mut replaced = 0;
-    while at < code.len() {
-        let width = match code[at] {
-            0x22 | 0x34..=0x3b | 0x40..=0x47 => 2,
-            0x3e | 0x3f => 4,
-            1..=0x21 | 0x23..=0x33 | 0x3d | 0x49..=0x52 => 1,
-            other => anyhow::bail!("Unsupported beam instruction {other:02X}"),
-        };
-        ensure!(at + width <= code.len(), "Truncated beam instruction");
-        if code[at] == 0x47 {
-            ensure!(code[at + 1] < 4, "Beam runtime input exceeds its table");
-            code[at] = 0x34;
-            code[at + 1] = one;
-            replaced += 1;
-        }
-        at += width;
-    }
-    ensure!(replaced == 4, "Native beam input count differs");
-    // The ribbon vertex shader retains the native input layout. Appearance
-    // 8 Y is its width envelope, and 6 X is the normalized sample distance.
-    // Vertex interpolation makes that distance continuous for the pixel curves.
-    let extra = [0x34, size, 0x3f, 1, 8, 5, 0x3e, 1, 2, 7, 0x3f, 1, 6, 4];
-    code.splice(333..333, extra);
-    put(
-        &mut payload.0,
-        0x7a,
-        &(225u16 + extra.len() as u16).to_le_bytes(),
-    )?;
-    append(&mut payload.0, 0x50, 0x80800009, &code, 1)?;
-    append(&mut payload.0, 0x60, 0x80800090, &constants.concat(), 16)?;
-    put(&mut payload.0, 0x100, &[0; 16])?;
+    let payload = simulation::build(&original, profile.life, emission, radius)?;
     let definition = format!("{prefix}-particle");
     graph.add(&definition, particle_tag, &payload.0, None, Vec::new())?;
     let mut bytes = system.0.clone();
@@ -465,7 +451,7 @@ pub(in crate::halo_reach) fn emit(
     let symbol = format!("{prefix}-system");
     graph.add(
         &symbol,
-        system_tag,
+        template,
         &bytes,
         None,
         vec![
@@ -475,12 +461,14 @@ pub(in crate::halo_reach) fn emit(
     )?;
     Ok((
         symbol,
-        json!({"source":profile,"length_metres":length,"profile_count":profiles,
-        "source_profiles_per_second":emission,"native_emissions_per_second":1./profile.life,"radius_metres":radius,
-        "vertex_visibility":"Joined camera-facing ribbon segments with native particle expiry. Source alpha is evaluated continuously along the trail.",
-        "geometry":"Each native sample covers the interval between neighboring midpoints. Endpoint intervals stop at the source trail bounds.",
-        "appearance":"Source tiling, game-time texture scrolling and flagged origin fading precede independent texture transforms.",
-        "composition":profile.material.options["blend_mode"],
-        "limits":["Source bitmaps, palette, color, width, alpha, black point and intensity use a straight ribbon. Profile age and speed-dependent emission use the declared reference speed. Historical bending, partial trail growth, source lightmap tint and atmospheric fog, randomized UV origin, edge fading and opacity from effect scale are not translated. Spline2 uses the GPU cubic basis without CPU input-bias behavior."]}),
+        json!({
+            "source":profile,"length_metres":length,"profile_count":profiles,
+            "source_profiles_per_second":emission,"native_emissions_per_second":emission,
+            "radius_metres":radius,
+            "geometry":"Stationary CPU particles born at successive marker positions, with linear within-frame placement and overlapping camera-facing quads.",
+            "appearance":"Source lifetime, width, color, alpha, tiling, scrolling and flagged origin fading. Each texture uses its source address and filter modes without mip bias.",
+            "composition":profile.material.options["blend_mode"],"gameplay_verified":false,
+            "limits":["Billboards approximate the source connected ribbon. Emission and longitudinal UV distance use reference speed. Source lightmap tint and atmospheric fog, randomized UV origin, edge fading and opacity from effect scale are not translated. Spline2 uses the GPU cubic basis without CPU input-bias behavior. Moving-host placement, visibility and lifecycle require gameplay acceptance."]
+        }),
     ))
 }

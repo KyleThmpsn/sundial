@@ -11,6 +11,13 @@
 //! - the records' package holds a different set of records than the earlier layout appended
 //! - Sundial's reader cannot find the authored item or its private perk in the packages
 //! - a build for Dawn or an earlier Sunrise stops appending its records to the stock host
+//!
+//! Failure inventory for reading the perk tables back, written before their readers changed:
+//! - the finished-perk catalog, its per-index metadata or the runtime map is refused because the
+//!   build left their stock bytes in place and copied each array it grew after them
+//! - a reader follows the stock rows left in place instead of the copies, so a private perk has no
+//!   row or the metadata and catalog counts disagree
+//! - a stock perk's detail row or runtime action resolves to other bytes than the stock packages'
 use super::*;
 use crate::perk::PerkRecipe;
 use crate::recipe::WeaponSocketColumnRecipe;
@@ -139,12 +146,14 @@ fn mod_loader_build_moves_its_records_to_their_own_registered_package() {
         .iter()
         .find(|socket| socket.label.ends_with("Weapon Mod"))
         .unwrap();
+    let stock_effects = baseline.item_sandbox_perk_indices(BOSS_SPEC);
+    assert!(!stock_effects.is_empty());
     let mut perk = PerkRecipe::new();
     perk.name = "Loader Spec".into();
     perk.classification = Some(BOSS_SPEC.into());
-    perk.effects = baseline
-        .item_sandbox_perk_indices(BOSS_SPEC)
-        .into_iter()
+    perk.effects = stock_effects
+        .iter()
+        .copied()
         .map(PerkRecipe::effect)
         .collect();
     perk.offer_everywhere = true;
@@ -253,6 +262,75 @@ fn mod_loader_build_moves_its_records_to_their_own_registered_package() {
     let plug_name = catalog.plug_label(plug.item_hash, false);
     assert_eq!(plug_name, "Loader Spec");
 
+    // The perk workbench opens a stock perk's effects, and the private perk's, from the same
+    // packages. Their tables keep every stock byte where the game put it, with each array the
+    // build grew copied after them, so the readers follow each descriptor to its copy.
+    let perk_tables = |manager: &sundial::package_authoring::PackageManager| {
+        let globals = manager
+            .read_tag(resolve_live_named_tag(manager, "investment_globals", None).unwrap())
+            .unwrap();
+        let root = manager
+            .read_tag(TagHash(read_u32(&globals, 16).unwrap()))
+            .unwrap();
+        let finished = manager
+            .read_tag(
+                globals_child_tag(&globals, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT).unwrap(),
+            )
+            .unwrap();
+        let metadata = manager
+            .read_tag(root_child_tag(&root, ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT).unwrap())
+            .unwrap();
+        (globals, finished, metadata)
+    };
+    let stock = open_manager(&packages).unwrap();
+    let (stock_globals, stock_finished, _) = perk_tables(&stock);
+    let manager = open_manager(loader.path()).unwrap();
+    let (globals, finished, metadata) = perk_tables(&manager);
+    // The rows descriptor at +8, a count and a pointer relative to +0x10, names the header right
+    // after the root at +0x30 in the stock catalog.
+    let rows_header = 0x10 + i64::from_le_bytes(finished[0x10..0x18].try_into().unwrap());
+    assert_ne!(
+        rows_header, 0x30,
+        "the loader build copies the grown catalog rows after the stock bytes"
+    );
+    let stock_count = finished_sandbox_perk_count(&stock_finished).unwrap();
+    let finished_count = finished_sandbox_perk_count(&finished).unwrap();
+    assert!(finished_count > stock_count);
+    assert_eq!(sandbox_perk_index_count(&metadata).unwrap(), finished_count);
+    let mut stock_actions = Vec::new();
+    for effect in stock_effects.iter().copied().map(usize::from) {
+        let action = load_sandbox_perk_runtime_action(&manager, &globals, effect).unwrap();
+        let source = load_sandbox_perk_runtime_action(&stock, &stock_globals, effect).unwrap();
+        assert_eq!(action.finished_perk, source.finished_perk);
+        assert_eq!(action.action_tag, source.action_tag);
+        assert!(
+            action.action_payload == source.action_payload,
+            "stock perk {effect} reads its stock action"
+        );
+        stock_actions.push(serde_json::json!({"index": effect,
+            "action": action.action_tag.to_string()}));
+    }
+    assert!(!plug.perks.is_empty());
+    let mut private_actions = Vec::new();
+    for private in &plug.perks {
+        let index = (0..finished_count)
+            .find(|&index| {
+                finished_sandbox_perk_at(&finished, index)
+                    .unwrap()
+                    .perk_hash
+                    == private.perk_hash
+            })
+            .expect("the private perk has a catalog row");
+        assert!(index >= stock_count);
+        let action = load_sandbox_perk_runtime_action(&manager, &globals, index).unwrap();
+        assert_eq!(action.finished_perk.runtime_key, private.runtime_key);
+        let source = finished_sandbox_perk_at(&stock_finished, private.source_perk_index).unwrap();
+        assert_eq!(action.finished_perk.trailing, source.trailing);
+        private_actions.push(serde_json::json!({"index": index,
+            "source": private.source_perk_index, "action": action.action_tag.to_string()}));
+    }
+    drop((manager, stock));
+
     if let Some(output) = crate::test_support::artifacts("mod-loader-layout") {
         fs::create_dir_all(&output).unwrap();
         for artifact in &loader_build.artifacts {
@@ -292,6 +370,9 @@ fn mod_loader_build_moves_its_records_to_their_own_registered_package() {
                 "records_package": format!("{records_id:04X}"), "records": records_count,
                 "enrolled": true, "packages": files(&loader_build, &loader_layout)},
             "catalog": {"item": authored.summary.name, "private_plug": plug_name},
+            "perks": {"rows_header": format!("0x{rows_header:X}"), "stock_rows": stock_count,
+                "rows": finished_count, "stock_effects": stock_actions,
+                "private_perks": private_actions},
             "installed": false,
             "limits": "Offline package readback. Whether Sunrise accepts the mod and the client loads the records in game is unverified."
         }),

@@ -4,7 +4,24 @@ use super::*;
 use crate::collection::armor::Origin;
 use std::{fs, path::Path};
 
-type Listing = (WeaponRecipe, Option<Origin>);
+type Listing = (WeaponRecipe, Option<Origin>, Option<u32>);
+
+#[cfg(feature = "d2-model-importer")]
+fn oldest_import_revision(reference: &serde_json::Value) -> Option<u32> {
+    reference.as_object()?;
+    let own = reference["converter_revision"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    Some(
+        reference["attachments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(oldest_import_revision)
+            .fold(own, u32::min),
+    )
+}
 
 impl WeaponRecipe {
     pub fn from_json_str(encoded: &str) -> Result<Self, RecipeError> {
@@ -14,26 +31,27 @@ impl WeaponRecipe {
     /// A gear recipe that embeds its imported model restores it to the local asset cache after
     /// checking its content pin. Without `restore_assets` the recipe reads with no imported model.
     fn parse(encoded: &str, restore_assets: bool) -> Result<Self, RecipeError> {
-        Self::parse_details(encoded, restore_assets).map(|(recipe, _)| recipe)
+        Self::parse_details(encoded, restore_assets).map(|(recipe, _, _)| recipe)
     }
 
     fn parse_details(encoded: &str, restore_assets: bool) -> Result<Listing, RecipeError> {
         use sundial::package_authoring::parse_json_envelope;
         #[cfg(feature = "d2-model-importer")]
-        let (mut recipe, origin): (Self, _) = {
+        let (mut recipe, origin, revision): (Self, _, _) = {
             let mut document = parse_json_envelope(encoded, RECIPE_NESTING)?;
             let origin = Origin::document(&document);
+            let revision = oldest_import_revision(&document["overrides"]["imported_graph"]);
             if restore_assets {
                 crate::imported::archive::expand(&mut document).map_err(RecipeError::Validation)?;
             } else {
                 crate::imported::archive::skip(&mut document);
             }
-            (serde_json::from_value(document)?, origin)
+            (serde_json::from_value(document)?, origin, revision)
         };
         #[cfg(not(feature = "d2-model-importer"))]
-        let (mut recipe, origin): (Self, Option<Origin>) = {
+        let (mut recipe, origin, revision): (Self, Option<Origin>, Option<u32>) = {
             let _ = restore_assets;
-            (parse_json_envelope(encoded, RECIPE_NESTING)?, None)
+            (parse_json_envelope(encoded, RECIPE_NESTING)?, None, None)
         };
         if recipe.schema != RECIPE_SCHEMA {
             return Err(RecipeError::Validation(format!(
@@ -46,7 +64,7 @@ impl WeaponRecipe {
         crate::imported::artwork::apply(&mut recipe).map_err(RecipeError::Validation)?;
         recipe.validate()?;
         let origin = origin.or_else(|| Origin::recipe(&recipe));
-        Ok((recipe, origin))
+        Ok((recipe, origin, revision))
     }
 
     pub fn to_json_pretty(&self) -> Result<String, RecipeError> {
@@ -101,7 +119,7 @@ impl WeaponRecipe {
     /// A large file is read once per version. Every save rescans the library, and an embedded
     /// model is tens of megabytes of text to parse again.
     pub(crate) fn load_listing(path: impl AsRef<Path>) -> Result<Self, RecipeError> {
-        Self::load_listing_details(path).map(|(recipe, _)| recipe)
+        Self::load_listing_details(path).map(|(recipe, _, _)| recipe)
     }
 
     pub(crate) fn load_listing_details(path: impl AsRef<Path>) -> Result<Listing, RecipeError> {

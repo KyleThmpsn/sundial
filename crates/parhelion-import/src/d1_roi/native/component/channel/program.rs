@@ -22,8 +22,8 @@ pub(in crate::d1_roi::native::component) fn validate(
         let opcode = code[at];
         at += 1;
         let operand = match opcode {
-            0x01 | 0x02 | 0x03 | 0x0F | 0x23 => None,
-            0x22 | 0x34 | 0x37 | 0x3C | 0x3E => {
+            0x01 | 0x02 | 0x03 | 0x04 | 0x0F | 0x23 => None,
+            0x22 | 0x34 | 0x35 | 0x37 | 0x38 | 0x3C | 0x3E => {
                 let operand = *code.get(at).context("Truncated channel instruction")?;
                 at += 1;
                 Some(operand)

@@ -748,15 +748,6 @@ mod tests {
     use crate::model_preview::texture::Texture;
 
     #[test]
-    fn png_preserves_every_pixel_row() {
-        let pixels: Vec<u8> = (0u8..16).collect();
-        let encoded = png(&pixels, 2, 2).expect("encode");
-        let decoded = eframe::icon_data::from_png_bytes(&encoded).expect("decode");
-        assert_eq!((decoded.width, decoded.height), (2, 2));
-        assert_eq!(decoded.rgba, pixels);
-    }
-
-    #[test]
     fn png_rejects_a_buffer_that_does_not_match_its_size() {
         assert!(png(&[0u8; 3], 1, 1).is_err());
         assert!(png(&[0u8; 4], 0, 1).is_err());

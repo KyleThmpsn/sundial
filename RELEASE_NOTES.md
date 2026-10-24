@@ -52,8 +52,8 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 - Backup folders use readable UTC timestamps. Mod backups keep every saved mod under `mods/<its-id>`, so the main mod and its companions have the same layout. Recovery still supports older backups.
 - Parhelion supports Project Sunrise 0.6's mods feature. Builds install to the mod folder, and Sunrise's **Mods** page lists them as **Parhelion**, with the version of Sundial that built them. Packages from earlier builds can't move there, so Parhelion offers to build them again, and installing backs up and removes the old ones. **Review Sunrise Mod Upgrade…** in **Preferences… > Builds & Backups** opens that review again.
-- You can switch between Sunrise 0.6 and Dawn or an earlier Sunrise. Sundial and Parhelion read whichever runtime is active, and installing there backs up and removes the packages installed for the other one. A build is made for one kind of runtime, so build again after switching.
-- On Sunrise 0.6, Parhelion installs alongside other mods, including Sunrise Studio mods. Builds include merge data, so Sunrise can combine the rows Parhelion and a Studio mod both add to item, Collections, and other shared tables. Installation stops and says why when Sunrise can't combine an entry both mods change, when both mods set the same values differently, or when a mod that loads before Parhelion adds rows to a table Parhelion adds to. Sunrise loads mods in order of their IDs. Builds avoid package IDs other mods use, and installation also stops if a mod declares Parhelion incompatible.
+- You can switch between Sunrise 0.6 and Dawn or an earlier Sunrise. Sundial and Parhelion read whichever runtime is active, and installing there backs up and removes the build installed for the other one, so the two never load together. A build is made for one kind of runtime. Parhelion keeps the build you last installed for each, and after you switch back it offers to install that build again without a rebuild.
+- On Sunrise 0.6, Parhelion installs alongside other mods, including Sunrise Studio mods. Builds include merge data, so Sunrise can combine the rows Parhelion and a Studio mod both add to item, weapon, perk, Collections, and other shared tables, whichever mod loads first. Installation stops and says why when Sunrise can't combine an entry both mods change, when both mods set the same values differently, or when a mod that loads before Parhelion adds Collections pages. Sunrise loads mods in order of their IDs. Builds avoid package IDs other mods use, and installation also stops if a mod declares Parhelion incompatible.
 - Items that join a game Collections page, such as weapons, Exotic armor, and items shown beside their base item, have a Collections **Position**. **Automatic** keeps them first on their page, as before, unless another installed Sunrise mod changes Collections. Then they go last, so both mods load. The Sunrise badge and added pages follow the same rule. **Build & Stage** asks before building items set to **First** beside such a mod.
 - Sundial and Parhelion also read content from other Sunrise mods, including their configuration values and the tables Sunrise combines from several mods, and refresh when a mod changes. A mod Sunrise would refuse is left out, and Sundial's **Copy Report** lists why.
 
@@ -105,6 +105,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Leaving a recipe with unsaved changes now offers to save them.
 - Builds and installs are faster. Unchanged weapons and Subclass abilities reuse their compiled data, recipes are read and packages are compressed on several cores at once, and installation reviews each package once.
 - When saved runtime data cannot be reused after resource allocations change, builds skip redundant cache checks and identify the resources that prevent reuse.
+- More unchanged items can reuse their compiled data when earlier items change in a build.
 - Installing a reviewed build reuses its package and recipe validation through account review, mod installation, and removal of inactive mods after switching runtimes, while still checking file contents, stock dependencies, and current account changes. A runtime changed since review is rejected before package processing.
 - Parhelion uses less memory when browsing artwork and the recipe library.
 - **Build & Install** is easier to follow, with a resizable window and clearer progress. The recipe library and **Items in This Build** mark recipes whose items are installed, and **Build & Stage** warns before a build would remove installed items and offers **Add to Build**.
@@ -137,6 +138,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed builds refusing some base perks and items the game records in more than one place.
 - Fixed Dawn installs and uninstalls sometimes bringing back removed items or changing account data they didn't list.
 - Fixed Dawn installs leaving saved rolls on sockets a weapon no longer has.
+- Fixed installs leaving a socket empty and hidden on a saved item when its selected perk no longer exists after a change to the item's sockets. The socket now gets its new default perk.
 - Fixed Dawn Collections sync sometimes adding a duplicate unlock row, which made Sundial refuse the account, or changing an account whose database layout Sundial doesn't support.
 - Fixed viewing a socket's plug set or other technical fields changing their saved value when the installed game has fewer rows.
 - Minor UI fixes and adjustments.
@@ -167,6 +169,7 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 - Iridescent paint now shifts color with viewing angle as it does in game, such as the purple sheen on Age-Old Bond.
 - Transparent and glowing effects, such as ornament sights and energy, blend more accurately over the model as the camera moves.
 - Finer detail survives, such as normal maps on mirrored parts, distant patterns, and partly filled texture sheets.
+- Cutout parts of materials, such as grate holes, no longer draw as solid black.
 - Glowing surfaces follow their material's brightness and have bloom halos. **View > Bloom** and **Filmic Output** control glow and highlights.
 - Default lighting keeps darker paint and midtones, and reflections follow the **Key** and **Fill** lights, so surfaces look less washed out. Rough surfaces no longer take a pale sheen at their edges.
 - Vehicle previews keep their full textures, lights, and damage markings, and long effect meshes no longer shrink them.

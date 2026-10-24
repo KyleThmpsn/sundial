@@ -26,6 +26,7 @@ const LAYOUT: KeyedAuxiliaryLayout = KeyedAuxiliaryLayout {
     row_class: ITEM_METADATA_ROW_CLASS,
     nested_offset: ITEM_METADATA_NESTED_OFFSET,
     nested_class: ITEM_METADATA_NESTED_CLASS,
+    object_offset: None,
     secondary_class: Some(ITEM_METADATA_SECONDARY_CLASS),
     index_row_size: ITEM_METADATA_INDEX_ROW_SIZE,
     index_row_class: ITEM_METADATA_INDEX_ROW_CLASS,

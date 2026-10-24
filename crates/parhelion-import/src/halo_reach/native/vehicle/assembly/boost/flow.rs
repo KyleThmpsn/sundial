@@ -6,7 +6,6 @@ use crate::tiger::{
 };
 
 pub(super) const OWNER: u32 = 0x80fc7ee1;
-pub(super) const SYSTEM: u32 = 0x80f2f261;
 const ENTITY: u32 = 0x80c0dc18;
 
 pub(super) struct Flow {

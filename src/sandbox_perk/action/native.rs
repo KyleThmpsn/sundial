@@ -173,7 +173,7 @@ impl Graph {
             let block = &self.blocks[index];
             if let Some(node) = nodes::CONDITIONS
                 .iter()
-                .find(|n| n.class == block.class && n.observed())
+                .find(|n| n.class == block.class && n.has_layout())
             {
                 if block.count.is_some() || block.bytes[5] != node.kind || block.bytes[6] > 1 {
                     return Err("Invalid native condition header.".into());
@@ -185,7 +185,7 @@ impl Graph {
                 }
             } else if let Some(node) = nodes::EFFECTS
                 .iter()
-                .find(|n| n.class == block.class && n.observed())
+                .find(|n| n.class == block.class && n.has_layout())
                 && (block.count.is_some() || block.bytes[0] != node.kind || block.bytes[1] > 1)
             {
                 return Err("Invalid native effect header.".into());

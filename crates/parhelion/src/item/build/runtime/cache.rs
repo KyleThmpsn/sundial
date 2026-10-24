@@ -67,6 +67,9 @@ struct Tag {
     span: [usize; 2],
     /// Every declared tag field. An unsupported layout keeps exact-allocation reuse only.
     fields: Option<Vec<(usize, u32)>>,
+    /// Validated loading-index memberships, including native package IDs outside authoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    loading: Option<BTreeSet<(u16, u16)>>,
 }
 
 #[derive(Serialize, Deserialize)]

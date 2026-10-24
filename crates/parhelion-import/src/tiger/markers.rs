@@ -2,7 +2,7 @@
 //!
 //! The runtime resolves named aim, muzzle and grip points through a part's marker
 //! component and its resource registrations. Final authoring selects the source
-//! set by art selector and position, writes its exact transforms, and relocates
+//! set by art selector and position, compared in native numbering, writes its exact transforms, and relocates
 //! the component's header, data, entity aliases and event connection together.
 //! Missing components acquire validated native registrations and lookup metadata.
 //!
@@ -16,6 +16,26 @@ pub(crate) mod bindings;
 pub(crate) mod optics;
 pub use author::author;
 pub use author::replace;
+
+/// Maps a source art selector to the native one. Source and native selectors are separate
+/// numberings, and a source selector without a validated native counterpart is an error.
+pub type Selector = fn(u64) -> Result<u64>;
+
+/// A source placement in native numbering, or `None` for a selector with no native counterpart,
+/// which no native part can share.
+fn native_placement(
+    placement: &serde_json::Value,
+    selector: Selector,
+) -> Result<Option<(u64, u64)>> {
+    use anyhow::Context;
+    let source = placement["selector"]
+        .as_u64()
+        .context("source placement selector")?;
+    let position = placement["position"]
+        .as_u64()
+        .context("source placement position")?;
+    Ok(selector(source).ok().map(|native| (native, position)))
+}
 
 /// Where a marker row keeps its transform and its name, and how far apart the rows are.
 #[derive(Clone, Copy, Debug)]
@@ -115,6 +135,38 @@ pub fn read_native(payload: &Payload) -> Result<Vec<Marker>> {
     let data = payload.pointer(0x18)?;
     ensure!(data >= 4, "marker component has no data struct");
     read(payload, data + NATIVE_DESCRIPTOR, NATIVE)
+}
+
+/// The native runtime marker component's envelope: its own length word, then an instance of
+/// [`NATIVE_COMPONENT`] and a runtime marker resource.
+pub(crate) fn check_component(p: &Payload) -> Result<()> {
+    let instance = p.pointer(16)?;
+    let resource = p.pointer(24)?;
+    ensure!(
+        p.u64(0)? == p.0.len() as u64
+            && instance >= 4
+            && resource >= 4
+            && p.u32(instance - 4)? == NATIVE_COMPONENT
+            && p.u32(resource - 4)? == 0x80808507,
+        "runtime marker component layout differs"
+    );
+    Ok(())
+}
+
+/// Check the native runtime marker component and every marker before package allocation.
+pub fn validate(bytes: &[u8]) -> Result<()> {
+    let p = Payload(bytes.to_vec());
+    check_component(&p)?;
+    for marker in read_native(&p)? {
+        ensure!(
+            marker.binding[0] == 0
+                && marker.binding[1] <= 2
+                && marker.position.iter().all(|x| x.is_finite())
+                && marker.orientation.iter().all(|x| x.is_finite()),
+            "runtime marker transform or root binding differs"
+        );
+    }
+    Ok(())
 }
 
 /// The markers of a source marker-set payload. Unlike the native component, the descriptor's

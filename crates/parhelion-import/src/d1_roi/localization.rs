@@ -122,3 +122,36 @@ fn decode(
     }
     Ok(text)
 }
+
+/// HUD identities omit the investment bank ordinal. Resolve the original English name
+/// across string headers, rejecting contradictory definitions rather than guessing a perk name.
+pub(super) fn hashed_text(source: &Source, name: u32) -> Result<String> {
+    let mut values = std::collections::BTreeSet::new();
+    for tag in source.classes(0x8080035A) {
+        let header = source.read(tag)?;
+        let hashes = header.array(8, 4, Some(0x80800070))?;
+        for (index, at) in hashes.iter().enumerate() {
+            if header.u32(*at)? != name {
+                continue;
+            }
+            let tag = header.u32(0x18)?;
+            ensure!(
+                source.reference(tag)? == 0x808008BE,
+                "Source HUD string data class differs"
+            );
+            let data = source.read(tag)?;
+            let combos = data.array(0x48, 16, Some(0x8080033E))?;
+            ensure!(
+                hashes.len() == combos.len(),
+                "Source HUD string counts differ"
+            );
+            let parts = data.array(8, 32, Some(0x8080058C))?;
+            let chars = data.array_range(0x38, 1, Some(0x80800005))?;
+            values.insert(decode(&data, &parts, &chars, combos[index])?);
+        }
+    }
+    ensure!(values.len() == 1, "Source HUD name is missing or ambiguous");
+    let value = values.into_iter().next().expect("one source name");
+    ensure!(!value.trim().is_empty(), "Source HUD name is empty");
+    Ok(value)
+}

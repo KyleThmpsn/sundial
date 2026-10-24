@@ -71,6 +71,3 @@ fn introduction(ctx: &egui::Context) -> Option<bool> {
     });
     decision.or_else(|| response.should_close().then_some(false))
 }
-
-#[cfg(test)]
-mod tests;

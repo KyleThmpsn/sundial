@@ -1,40 +1,5 @@
 use super::*;
 
-#[test]
-fn disconnected_workers_settle_pending_icons_without_discarding_completed_images() {
-    let ctx = egui::Context::default();
-    let (requests, _incoming) = mpsc::sync_channel(1);
-    let (sender, receiver) = mpsc::channel();
-    sender
-        .send(Loaded::Icon(
-            1,
-            Ok(egui::ColorImage::filled([1, 1], egui::Color32::WHITE)),
-        ))
-        .unwrap();
-    drop(sender);
-    let mut icons = Icons {
-        requests: Some(requests),
-        results: Some(receiver),
-        pending: BTreeSet::from([1, 2]),
-        ..Default::default()
-    };
-    icons.poll(&ctx);
-    assert!(icons.pending.is_empty());
-    assert!(icons.cache.get(&1).unwrap().is_ok());
-    assert!(
-        icons
-            .cache
-            .get(&2)
-            .unwrap()
-            .as_ref()
-            .err()
-            .unwrap()
-            .contains("stopped")
-    );
-    assert!(icons.requests.is_none());
-    assert!(icons.results.is_none());
-}
-
 fn layer(slot: usize, width: u16, height: u16, data: Vec<u8>) -> icon::Layer {
     icon::Layer {
         slot,

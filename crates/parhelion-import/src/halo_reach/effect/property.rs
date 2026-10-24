@@ -350,6 +350,11 @@ impl Property {
         Ok(value)
     }
 
+    /// The primary source input ordinal the mapping reads.
+    pub fn input(&self) -> u8 {
+        self.inputs[0]
+    }
+
     pub fn constant(&self) -> Result<f32> {
         ensure!(
             self.inputs[2] == 0

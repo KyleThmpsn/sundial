@@ -1,6 +1,6 @@
 //! Source inventory artwork shared by browsing and native recipe preparation.
 use super::*;
-use crate::d2_mot::icon::Layer;
+use crate::tiger::icon::Layer;
 
 pub struct Icon {
     pub texture: u32,
@@ -53,7 +53,7 @@ impl Source {
             texture,
             width: layer.width,
             height: layer.height,
-            rgba: crate::d2_mot::icon::decode(&layer)?,
+            rgba: crate::tiger::icon::decode(&layer)?,
         }))
     }
 
@@ -70,6 +70,20 @@ impl Source {
             );
         }
         Ok(Some(self.read(tag)?))
+    }
+
+    /// One static layer, without inventory background, tint or foreground slots.
+    pub(super) fn layer_icon(&self, tag: u32) -> Result<Icon> {
+        let texture = self
+            .icon_texture(tag, true)?
+            .context("Source icon layer is empty")?;
+        let layer = self.icon_layer(0, texture, None)?;
+        Ok(Icon {
+            texture,
+            width: layer.width,
+            height: layer.height,
+            rgba: crate::tiger::icon::decode(&layer)?,
+        })
     }
 
     fn icon_texture(&self, tag: u32, single: bool) -> Result<Option<u32>> {

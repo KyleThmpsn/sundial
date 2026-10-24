@@ -32,9 +32,10 @@ impl AppendedTagAllocator {
     }
 
     /// Where a build's private runtime goes: the private perk-runtime package's table after its
-    /// historical high-water mark `start`, then fresh standalone packages from the far end of the
-    /// build's window toward its first id. The asset packages count from its first id, so the two
-    /// meet only once the window is spent.
+    /// historical high-water mark `start`, then fresh standalone packages. Without a mod loader
+    /// those count from the far end of the build's window toward its first id, where the asset
+    /// packages start, so the two meet only once the window is spent. On a mod loader each takes
+    /// the highest id still free (`mod_family::build::private_runtime`).
     pub(crate) fn private_runtime(start: usize) -> Self {
         let window = crate::package_profile::window();
         Self {
@@ -126,10 +127,10 @@ impl AppendedTagAllocator {
             let package = if self.package_id == PRIVATE_PERK_RUNTIME_PACKAGE_ID
                 && crate::package_profile::host().is_standalone()
             {
-                let window = crate::package_profile::window();
-                (window.base..=window.top)
-                    .filter(|id| !crate::mod_family::build::reserved(*id))
-                    .nth(offset)
+                Some(
+                    crate::mod_family::build::private_runtime(offset)
+                        .map_err(AuthoringError::InvalidInput)?,
+                )
             } else {
                 u16::try_from(offset)
                     .ok()

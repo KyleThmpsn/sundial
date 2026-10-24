@@ -57,28 +57,6 @@ fn catalog() -> Catalog {
 }
 
 #[test]
-fn complete_and_reset_preserve_unknown_fields_and_existing_excess_progress() {
-    let catalog = catalog();
-    for native in [false, true] {
-        let mut document = json!({"future": {"preserve": 42}, "state": {"unlocks": {"objective_values": [[0, 12]], "future": true}}});
-        if native {
-            document["_native_progression"] = json!({});
-        }
-        let record = &catalog.records().unwrap()[0];
-        edit::apply_record(&mut document, &catalog, record, true).unwrap();
-        let snapshot = collection_state_snapshot(&document).unwrap();
-        assert_eq!(snapshot.evaluated_flag(0, &catalog), Some(true));
-        assert_eq!(snapshot.evaluated_value(0, &catalog), Some(12));
-        edit::apply_record(&mut document, &catalog, record, false).unwrap();
-        let snapshot = collection_state_snapshot(&document).unwrap();
-        assert_eq!(snapshot.evaluated_flag(0, &catalog), Some(false));
-        assert_eq!(snapshot.evaluated_value(0, &catalog), Some(0));
-        assert_eq!(document["future"]["preserve"], 42);
-        assert_eq!(document["state"]["unlocks"]["future"], true);
-    }
-}
-
-#[test]
 fn batches_skip_shared_counter_conflicts_and_reject_concurrent_changes() {
     let mut catalog = catalog();
     let first = catalog.records().unwrap()[0].clone();

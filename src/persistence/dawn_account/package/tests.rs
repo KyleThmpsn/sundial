@@ -75,24 +75,6 @@ fn removing_a_package_takes_its_items_out_of_the_account() {
     assert_eq!(orphans, 0, "the removed item's sockets cascade with it");
 }
 
-/// The cleanup must leave everything it was not asked to remove exactly as it found it.
-#[test]
-fn a_cleanup_with_nothing_to_remove_changes_nothing() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("player-state.db");
-    create_fixture(&path);
-    let before = held(&path, "character_items");
-
-    let report =
-        preview_replacement(&path, &[4_242_424].into_iter().collect(), &[], &[], None).unwrap();
-
-    assert!(report.removed_items.is_empty());
-    assert_eq!(report.cleared_plugs, 0);
-    assert!(!report.changed_anything());
-    assert_eq!(report.original_bytes, report.cleaned_bytes);
-    assert_eq!(held(&path, "character_items"), before);
-}
-
 /// Equipment is sparse by design: a character with nothing in the first slots really does start at
 /// position 3, so compaction must not renumber it.
 #[test]

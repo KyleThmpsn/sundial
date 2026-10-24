@@ -1,4 +1,4 @@
-//! Append inherited native vector inputs without changing existing shader ordinals.
+//! Keep native vector inputs, provider connections and allocation counts consistent.
 use super::{Graph, append, put};
 use crate::tiger::{channel::object_channel_map, payload::Payload, reader::Reader};
 use anyhow::{Context, Result, ensure};
@@ -73,6 +73,47 @@ pub(crate) fn input_allocation(
         after,
         &mut BTreeSet::new(),
     )
+}
+
+/// Remove a rigid presentation's unused donor object channels and their allocation together.
+/// The render gather reads these inputs even when its shaders do not use object channels, so
+/// removing their entity connections alone leaves unresolved runtime provider handles.
+pub(crate) fn without_object_inputs(
+    owner: &Payload,
+    allocation: &Payload,
+) -> Result<(Payload, Payload)> {
+    let channels = object_channel_map(&owner.0)?;
+    let instance = owner.pointer(16)?;
+    let parent = instance + 0x100;
+    let definition = usize::try_from(owner.u64(parent + 8)?)?;
+    let inputs = owner.array(instance + 0x120, 96, Some(0x80809788))?;
+    let definitions = owner.array(definition + 0x48, 40, Some(0x80809789))?;
+    ensure!(
+        inputs.len() == definitions.len()
+            && inputs.len() == channels.len()
+            && owner.u32(parent)? == owner.u32(instance)?
+            && owner.u32(definition)? == owner.u32(instance)?
+            && owner.u32(parent + 4)? == 0x808072C7
+            && owner.u32(definition + 4)? == 0x808072CB
+            && owner.u64(definition + 8)? == parent as u64,
+        "Native model input container differs"
+    );
+    for (&input, &definition) in inputs.iter().zip(&definitions) {
+        ensure!(
+            owner.u64(input + 8)? == definition as u64 && owner.pointer(input + 16)? == parent,
+            "Native model input is outside its declared container"
+        );
+    }
+    let mut allocation = allocation.clone();
+    let changed = input_allocation(&mut allocation, 0x20, inputs.len(), 0)?;
+    ensure!(
+        changed == 1 || (inputs.is_empty() && changed == 0),
+        "Native model input allocation is absent or ambiguous"
+    );
+    let mut owner = owner.clone();
+    put(&mut owner.0, instance + 0x120, &[0; 16])?;
+    put(&mut owner.0, definition + 0x48, &[0; 16])?;
+    Ok((owner, allocation))
 }
 
 struct Bank {

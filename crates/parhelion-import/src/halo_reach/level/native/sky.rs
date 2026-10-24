@@ -12,7 +12,7 @@ use crate::{
         choices,
         material::Material,
         model::{self, Primitive},
-        native_material::{
+        native::material::{
             SKY_RADIANCE,
             sky::{SkyScale, SkySurface, surfaces},
         },
@@ -355,7 +355,9 @@ pub(super) fn add(
         [templates.surface, templates.shafts],
         scale,
     )?;
-    let template = native.tag(templates.model, Some(MODEL_CLASS))?;
+    let template = native
+        .tag(templates.model, Some(MODEL_CLASS))
+        .context("Sky model template")?;
     let row = *template
         .array(16, 136, Some(MESH_CLASS))?
         .first()
@@ -542,7 +544,11 @@ fn add_streams(
         .enumerate()
     {
         let tag = template.u32(row + [0, 4, 16][stream])?;
-        let mut header = native.tag(tag, None)?.0.clone();
+        let mut header = native
+            .tag(tag, None)
+            .with_context(|| format!("Sky buffer {tag:08X}"))?
+            .0
+            .clone();
         put(
             &mut header,
             if stream == 2 { 8 } else { 0 },

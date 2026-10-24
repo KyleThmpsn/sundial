@@ -100,11 +100,18 @@ pub(super) fn inline(ui: &mut egui::Ui, content: &ItemInspection<'_>, size: egui
         dyes: resolved.dyes,
     };
     let packages = content.catalog.install_path().join("packages");
-    let id = egui::Id::new(("inspector-model", content.hash));
+    let id = egui::Id::new(("inspector-model", content.hash, ui.ctx().viewport_id()));
     model_preview::still::placeholder(ui.ctx(), id, None);
-    let response =
-        model_preview::still::show(ui, id, &packages, Some(appearance.clone()), &[], size);
-    model_preview::pop_out(
+    let access = content.catalog.inspection_access();
+    let response = model_preview::still::show_inspected(
+        ui,
+        id,
+        &packages,
+        appearance.clone(),
+        size,
+        access.clone(),
+    );
+    model_preview::inspected_pop_out(
         ui,
         id,
         response.rect,
@@ -113,6 +120,7 @@ pub(super) fn inline(ui: &mut egui::Ui, content: &ItemInspection<'_>, size: egui
             appearance,
             content.resolved_name.as_deref().unwrap_or("Model Preview"),
         ),
+        access,
     );
     true
 }

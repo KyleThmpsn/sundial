@@ -14,9 +14,13 @@ use std::{
 };
 mod audio;
 mod character;
+mod constraint;
 mod contact;
 mod fidelity;
+mod framing;
 mod inspection;
+mod vehicle_audio;
+mod vehicle_effects;
 
 fn configured(name: &str) -> Result<PathBuf> {
     env::var_os(name)
@@ -46,14 +50,25 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
     let barrel_witness: Value =
         serde_json::from_slice(&fs::read(configured("PARHELION_REACH_BARREL_WITNESS")?)?)?;
     let requested: Value = serde_json::from_slice(&fs::read(configured("PARHELION_REACH_PLAN")?)?)?;
-    let report = parhelion_import::halo_reach::prepare(
-        &configured("PARHELION_REACH_PLAN")?,
-        &maps,
-        &native,
-        &output.join("converted"),
-    )?;
+    let report = if let Some(prepared) = env::var_os("PARHELION_REACH_PREPARED") {
+        // Reuse the output of the same conversion when independent source witnesses
+        // require its decoded clips. All persisted and native readback below still runs.
+        fs::create_dir_all(&output)?;
+        serde_json::from_slice(&fs::read(PathBuf::from(prepared).join("report.json"))?)?
+    } else {
+        parhelion_import::halo_reach::prepare(
+            &configured("PARHELION_REACH_PLAN")?,
+            &maps,
+            &native,
+            &output.join("converted"),
+        )?
+    };
     let entries = report["items"].as_array().context("prepared items")?;
     ensure!(!entries.is_empty(), "Empty required native corpus");
+    ensure!(
+        entries.len() == requested.as_array().context("Import plan")?.len(),
+        "Prepared corpus differs from the required import plan"
+    );
     let mut recipes = Vec::new();
     let mut source_documents = BTreeMap::new();
     let mut evidence = Vec::new();
@@ -62,18 +77,18 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
         let path = PathBuf::from(entry["recipe"].as_str().context("prepared recipe")?);
         let recipe = WeaponRecipe::load_json(&path)?;
         let portable = recipe.to_json_pretty()?;
-        let reloaded = WeaponRecipe::from_json_str(&portable)?;
+        let mut reloaded = WeaponRecipe::from_json_str(&portable)?;
         ensure!(
             recipe.identity == reloaded.identity,
             "Portable identity changed"
         );
-        if recipe.kind.is_weapon() && recipe.icon_donor.is_none() {
+        if recipe.icon_donor.is_none() {
             let icon = recipe
                 .overrides
                 .icon_edit
                 .imported_image
                 .as_ref()
-                .context("Imported weapon has no inventory artwork")?;
+                .context("Imported item has no inventory artwork")?;
             ensure!(
                 reloaded.overrides.icon_edit.imported_image.as_ref() == Some(icon),
                 "Generated artwork was lost during recipe reload"
@@ -90,6 +105,10 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 decoded.dimensions() == (96, 96),
                 "Wrong inventory artwork size"
             );
+            ensure!(
+                decoded.pixels().any(|pixel| pixel[3] > 0),
+                "Inventory artwork contains no visible geometry"
+            );
             fs::write(
                 output.join(format!(
                     "{}-icon.png",
@@ -105,6 +124,24 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
             .context("imported graph")?;
         let graph: Value =
             serde_json::from_slice(&fs::read(reference.directory.join("asset-graph.json"))?)?;
+        // A saved import refresh replaces its graph while retaining authored settings.
+        // Its private character profile must therefore work without generated recipe patches.
+        if graph["animation"]["character"]["binding"]["builtin"] == 3 {
+            let private = u32::try_from(
+                graph["animation"]["character"]["private"]
+                    .as_u64()
+                    .context("Character profile")?,
+            )?;
+            let bytes = private
+                .to_le_bytes()
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            reloaded.overrides.runtime_resource_patches.retain(|patch| {
+                patch.binding_hash.parse_u32().ok() != Some(0xD3A5500E) || patch.bytes != bytes
+            });
+        }
         if recipe.kind == parhelion::ItemKind::Sparrow || graph.get("inspection").is_some() {
             let source = path
                 .parent()
@@ -153,7 +190,7 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 "{}.parhelion.json",
                 entry["slug"].as_str().context("slug")?
             )),
-            portable,
+            reloaded.to_json_pretty()?,
         )?;
         evidence.push(
             json!({"recipe":path,"graph_sha256":reference.sha256,"native_geometry_verified":true}),
@@ -168,8 +205,14 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
         recipes: recipes.clone(),
     })
     .map_err(anyhow::Error::msg)?;
-    let built = build_and_stage_snapshot_with_progress(&snapshot, |p| println!("{:?}", p.phase))
-        .map_err(anyhow::Error::msg)?;
+    let built = build_and_stage_snapshot_with_progress(&snapshot, |p| {
+        if let Some(parhelion::BuildActivity::Diagnostic(message)) = p.activity {
+            println!("{message}");
+        } else {
+            println!("{:?}", p.phase);
+        }
+    })
+    .map_err(anyhow::Error::msg)?;
     let view = output.join("view");
     let packages = view.join("packages");
     fs::create_dir_all(&packages)?;
@@ -243,7 +286,10 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 .context("Imported graph")?;
             let graph: Value =
                 serde_json::from_slice(&fs::read(reference.directory.join("asset-graph.json"))?)?;
-            let character = character::verify(&mut staged, &mut stock, request)?;
+            inspection::details(&mut staged, hash)?;
+            inspection::sights(&mut staged, hash)?;
+            inspection::sight_choices(&mut staged, &mut stock, hash, &graph)?;
+            let character = character::verify(&mut staged, &mut stock, &graph, &runtime)?;
             if !character.is_null() {
                 fs::write(
                     output.join(format!("character-{hash:08X}.json")),
@@ -254,6 +300,7 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 &mut staged,
                 &stock,
                 items.u32(row + 16)?,
+                hash,
                 &reference.directory,
                 &graph,
             )?;
@@ -272,8 +319,19 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 &reference.directory,
                 &graph,
                 &runtime,
+                &barrel_witness[format!("{hash:08X}")]["first_person_actions"],
+                &barrel_witness[format!("{hash:08X}")]["melee_actions"],
+                &barrel_witness[format!("{hash:08X}")]["hip_framing"],
             )?;
             verify_staged_vehicle(&mut staged, &recipe, &runtime, &barrel_witness)?;
+            if recipe.kind == parhelion::ItemKind::Sparrow {
+                vehicle_audio::verify(&mut staged, &stock, hash, &runtime)?;
+                let effects = vehicle_effects::verify(&mut staged, &stock, &runtime)?;
+                fs::write(
+                    output.join(format!("vehicle-effects-{hash:08X}.json")),
+                    serde_json::to_vec_pretty(&effects)?,
+                )?;
+            }
             contact::verify(
                 &mut staged,
                 &mut stock,
@@ -281,7 +339,13 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 &graph,
                 &runtime,
                 source_documents.get(&hash).unwrap_or(&Value::Null),
-                request["scale"].as_f64().unwrap_or(1.) as f32,
+                request["scale"].as_f64().unwrap_or(
+                    if recipe.kind == parhelion::ItemKind::Sparrow {
+                        0.8
+                    } else {
+                        1.
+                    },
+                ) as f32,
             )?;
             verify_staged_barrel(&mut staged, &recipe, &runtime, &barrel_witness)?;
             let witness = &barrel_witness[format!("{hash:08X}")];
@@ -291,7 +355,7 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                     "Vehicle needs an independent damage witness"
                 );
             }
-            if request["first_person"].get("melee").is_some() {
+            if request["first_person"].get("melee").is_some() || !graph["melee"].is_null() {
                 ensure!(
                     !witness["melee"].is_null(),
                     "Weapon melee needs an independent contact witness"
@@ -313,7 +377,13 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
                 &recipe,
                 &graph,
                 source_documents.get(&hash).unwrap_or(&Value::Null),
-                request["inspection_scale"].as_f64().unwrap_or(1.) as f32,
+                request["inspection_scale"].as_f64().unwrap_or(
+                    if recipe.kind == parhelion::ItemKind::Sparrow {
+                        2.
+                    } else {
+                        1.
+                    },
+                ) as f32,
             )
             .context("Staged inspection geometry")?
             {
@@ -345,16 +415,41 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_staged_arms(
     staged: &mut Reader,
     stock: &mut Reader,
     directory: &Path,
     graph: &Value,
     runtime: &Value,
+    required: &Value,
+    required_melee: &Value,
+    required_framing: &Value,
 ) -> Result<()> {
     let motion = &graph["animation"]["first_person"]["arm_motion"];
     if motion.is_null() {
+        ensure!(
+            required.is_null() && required_melee.is_null() && required_framing.is_null(),
+            "Required source arm actions were omitted"
+        );
         return Ok(());
+    }
+    if !required.is_null() {
+        let required = required
+            .as_object()
+            .context("Required arm action witness")?;
+        ensure!(!required.is_empty(), "Required arm action witness is empty");
+        let actions = motion["actions"].as_array().context("Arm actions")?;
+        for (state, clip) in required {
+            ensure!(
+                actions.iter().any(|action| action["state"] == *state
+                    && action
+                        .get("source_selection")
+                        .unwrap_or(&action["source_clip"])
+                        == clip),
+                "Required source action {state} was not translated"
+            );
+        }
     }
     let components = runtime["components"].as_array().context("Components")?;
     let lookup = components
@@ -362,6 +457,10 @@ fn verify_staged_arms(
         .filter(|row| row["entity"] != runtime["runtime_entity"] && row["class"] == "8080344B")
         .collect::<Vec<_>>();
     ensure!(lookup.len() == 1, "Missing first-person lookup");
+    let arm_entity = lookup[0]["entity"]
+        .as_str()
+        .context("Arm entity")?
+        .to_owned();
     let owner = u32::from_str_radix(lookup[0]["owner"].as_str().context("Lookup owner")?, 16)?;
     ensure!(
         stock.manager.get_entry(tiger_pkg::TagHash(owner)).is_none(),
@@ -412,13 +511,122 @@ fn verify_staged_arms(
         !receipts.is_empty() || held > 0,
         "Empty required arm motion"
     );
+    let melee = verify_staged_strikes(staged, stock, graph, &states, &bank, required_melee)?;
+    let framing = framing::verify(
+        staged,
+        components,
+        &arm_entity,
+        graph,
+        &states,
+        &bank,
+        required_framing,
+    )?;
+    let constraints = constraint::verify(staged, components, &arm_entity, graph, &states, &bank)?;
     fs::write(
         staged.output.join(format!("arms-{owner:08X}.json")),
         serde_json::to_vec_pretty(
-            &json!({"lookup":owner,"bank":bank_tag,"states":states_tag,"actions":receipts,"held_clips":held,"gameplay_verified":false}),
+            &json!({"lookup":owner,"bank":bank_tag,"states":states_tag,"actions":receipts,"melee":melee,"framing":framing,"constraints":constraints,"held_clips":held,"gameplay_verified":false}),
         )?,
     )?;
     Ok(())
+}
+
+fn verify_staged_strikes(
+    staged: &mut Reader,
+    stock: &Reader,
+    graph: &Value,
+    states: &Payload,
+    bank: &Payload,
+    required: &Value,
+) -> Result<Vec<Value>> {
+    if required.is_null() {
+        return Ok(Vec::new());
+    }
+    let required = required.as_object().context("Required melee witness")?;
+    ensure!(!required.is_empty(), "Required melee witness is empty");
+    let first_person = &graph["animation"]["first_person"];
+    let strikes = first_person["melee"]["strikes"]
+        .as_array()
+        .context("Required weapon strikes were omitted")?;
+    ensure!(
+        !graph["melee"].is_null(),
+        "Weapon strikes lack their private attack"
+    );
+    let mut receipts = Vec::new();
+    for state in [0xFDCA54D9, 0xFDCA54DB] {
+        let mut reached = std::collections::BTreeSet::new();
+        for (descriptor, tag) in arm_routes_hash(states, bank, state)? {
+            ensure!(
+                stock.reference(tag).is_err(),
+                "Weapon strike still uses a stock clip"
+            );
+            let clip = staged.tag(tag, Some(0x80808F49))?;
+            let marker = format!("{:08X}", clip.u32(0x120)?);
+            let matches = strikes
+                .iter()
+                .filter(|strike| strike["clip_name"] == marker)
+                .collect::<Vec<_>>();
+            let [strike] = matches.as_slice() else {
+                anyhow::bail!("Staged strike has no unique source identity");
+            };
+            let name = strike["source_clip"]
+                .as_str()
+                .context("Strike source name")?;
+            let expected = required
+                .get(name)
+                .context("Unexpected source strike selected")?;
+            ensure!(
+                Some(u64::from(clip.u16(0x13C)?)) == expected["frames"].as_u64(),
+                "Strike duration differs from source"
+            );
+            let mut contacts = Vec::new();
+            let mut sounds = Vec::new();
+            for row in clip.array(0x160, 8, Some(0x8080902B))? {
+                let event = clip.pointer(row)?;
+                match clip.u32(event - 4)? {
+                    0x8080903A if clip.u32(event + 4)? == 1 => contacts.push(clip.u16(event)?),
+                    0x80809033 => sounds.push((clip.u16(event)?, clip.u32(event + 24)?)),
+                    _ => {}
+                }
+            }
+            let primary = u16::try_from(
+                expected["primary_frame"]
+                    .as_u64()
+                    .context("Source contact frame")?,
+            )?;
+            ensure!(
+                contacts == [primary],
+                "Strike contact is not on the source primary frame"
+            );
+            if expected["native_audio"] == true {
+                ensure!(
+                    sounds == [(primary, 0x80C12945)],
+                    "Unconfigured melee audio must retain native contact timing"
+                );
+            }
+            let dynamic = clip.pointer(24)?;
+            let rotations = clip.array(0xE8, 2, Some(0x8080000A))?;
+            ensure!(
+                clip.u16(dynamic)? == 0
+                    && first_person["arm_motion"]["hand_slots"]
+                        .as_array()
+                        .context("Strike hands")?
+                        .iter()
+                        .all(|slot| rotations
+                            .iter()
+                            .any(|&at| clip.u16(at).ok().map(u64::from) == slot.as_u64())),
+                "Strike does not drive the source hand motion"
+            );
+            reached.insert(name);
+            receipts.push(json!({"state":format!("{state:08X}"),"descriptor":descriptor,
+                "clip":format!("{tag:08X}"),"source_clip":name,"frames":clip.u16(0x13C)?,"primary_frame":primary}));
+        }
+        ensure!(
+            reached == required.keys().map(String::as_str).collect(),
+            "A source strike is absent from a native attack state"
+        );
+    }
+    Ok(receipts)
 }
 
 fn verify_staged_held_clips(
@@ -466,11 +674,18 @@ fn verify_staged_held_clips(
 }
 
 fn arm_routes(states: &Payload, bank: &Payload, name: &str) -> Result<Vec<(u32, u32)>> {
+    arm_routes_hash(
+        states,
+        bank,
+        sundial::package_authoring::fnv1_name_hash(name),
+    )
+}
+
+fn arm_routes_hash(states: &Payload, bank: &Payload, hash: u32) -> Result<Vec<(u32, u32)>> {
     let names = states.array(8, 8, Some(0x8080342E))?;
     let nodes = states.array(24, 16, Some(0x8080342F))?;
     let descriptors = bank.array(0x68, 32, Some(0x80809002))?;
     let clips = bank.array(8, 4, Some(0x80808F48))?;
-    let hash = sundial::package_authoring::fnv1_name_hash(name);
     let row = names
         .iter()
         .find(|&&row| states.u32(row).ok() == Some(hash))

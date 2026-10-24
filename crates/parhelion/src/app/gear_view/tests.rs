@@ -39,6 +39,8 @@ mod emblem;
 mod emblem_trackers;
 #[cfg(feature = "d2-model-importer")]
 mod imported_preview;
+#[cfg(feature = "d2-model-importer")]
+mod imported_vehicle;
 mod shader;
 mod shader_socket;
 mod subclass;

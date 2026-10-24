@@ -12,6 +12,97 @@ fn word(value: &Value, key: &str) -> anyhow::Result<u32> {
     )?)
 }
 
+fn snapshots(
+    manager: &sundial::package_authoring::PackageManager,
+    character: &Value,
+    read: &impl Fn(&Value) -> anyhow::Result<Payload>,
+    digest: &mut Sha256,
+) -> anyhow::Result<BTreeMap<String, (u32, Payload)>> {
+    use anyhow::{Context, ensure};
+    let mut originals = BTreeMap::new();
+    for (key, class) in [
+        ("bank", 0x808036F6),
+        ("parameters", 0x80808EE1),
+        ("states", 0x80803465),
+        ("layers", 0x808034EB),
+        ("pose", 0x80809C36),
+        ("directions", 0x8080348E),
+        ("skeleton", 0x80809C36),
+        ("controls", 0x80809C36),
+    ] {
+        let tag = word(character, key)?;
+        let payload = read(&character["files"][key])?;
+        ensure!(
+            manager
+                .get_entry(TagHash(tag))
+                .is_some_and(|entry| entry.reference == class)
+                && manager.read_tag(TagHash(tag)).map_err(anyhow::Error::msg)? == payload.0,
+            "Character {key} was prepared from different or modified native packages. Reimport this item with the current importer before building"
+        );
+        digest.update(&payload.0);
+        originals.insert(key.to_owned(), (tag, payload));
+    }
+    if character.get("first_person_parameters").is_some() {
+        let key = "first_person_parameters";
+        let tag = word(character, key)?;
+        let payload = read(&character["files"][key])?;
+        ensure!(
+            tag != originals["parameters"].0
+                && manager
+                    .get_entry(TagHash(tag))
+                    .is_some_and(|e| e.reference == 0x80808EE1)
+                && manager.read_tag(TagHash(tag)).map_err(anyhow::Error::msg)? == payload.0,
+            "First-person parameter dictionary changed since preparation"
+        );
+        digest.update(&payload.0);
+        originals.insert(key.to_owned(), (tag, payload));
+    }
+    let pose = &originals["pose"].1;
+    let pose_at = pose.pointer(24)?;
+    ensure!(
+        pose.u32(pose_at - 4)? == 0x80803640
+            && pose.u32(pose_at + 0x108)? == word(character, "bank")?
+            && pose.u32(pose_at + 0x114)? == originals["directions"].0
+            && pose.u32(pose_at + 0x11C)? == originals["layers"].0,
+        "Character pose references a different bank or correction table"
+    );
+    let tables = character["tables"]
+        .as_array()
+        .context("Character motion tables missing")?;
+    for table in tables {
+        let label = table["kind"]
+            .as_str()
+            .context("Character table kind missing")?;
+        let class = match label {
+            "rider" => 0x8080344D,
+            "stance" => 0x8080345F,
+            _ => anyhow::bail!("Unsupported character motion table"),
+        };
+        ensure!(
+            word(table, "class")? == class,
+            "Character motion table class differs"
+        );
+        for (suffix, class) in [("table", class), ("selector", 0x80803478)] {
+            let key = format!("{label}_{suffix}");
+            let tag = word(table, suffix)?;
+            let payload = read(&character["files"][&key])?;
+            ensure!(
+                manager
+                    .get_entry(TagHash(tag))
+                    .is_some_and(|entry| entry.reference == class)
+                    && manager.read_tag(TagHash(tag)).map_err(anyhow::Error::msg)? == payload.0,
+                "Character {key} was prepared from different or modified native packages. Reimport this item with the current importer before building"
+            );
+            digest.update(&payload.0);
+            ensure!(
+                originals.insert(key, (tag, payload)).is_none(),
+                "Character motion tables overlap"
+            );
+        }
+    }
+    Ok(originals)
+}
+
 pub(super) fn apply(
     manager: &sundial::package_authoring::PackageManager,
     emission: &mut PackageEmission,
@@ -42,72 +133,10 @@ pub(super) fn apply(
             );
             Ok(payload)
         };
-        let mut originals = BTreeMap::new();
-        for (key, class) in [
-            ("bank", 0x808036F6),
-            ("parameters", 0x80808EE1),
-            ("states", 0x80803465),
-            ("layers", 0x808034EB),
-            ("pose", 0x80809C36),
-            ("directions", 0x8080348E),
-            ("skeleton", 0x80809C36),
-            ("controls", 0x80809C36),
-        ] {
-            let tag = word(character, key)?;
-            let payload = read(&character["files"][key])?;
-            ensure!(
-                manager
-                    .get_entry(TagHash(tag))
-                    .is_some_and(|entry| entry.reference == class)
-                    && manager.read_tag(TagHash(tag)).map_err(anyhow::Error::msg)? == payload.0,
-                "Character {key} no longer matches the native source"
-            );
-            digest.update(&payload.0);
-            originals.insert(key.to_owned(), (tag, payload));
-        }
-        let pose = &originals["pose"].1;
-        let pose_at = pose.pointer(24)?;
-        ensure!(
-            pose.u32(pose_at - 4)? == 0x80803640
-                && pose.u32(pose_at + 0x108)? == bank_tag
-                && pose.u32(pose_at + 0x114)? == originals["directions"].0
-                && pose.u32(pose_at + 0x11C)? == originals["layers"].0,
-            "Character pose references a different bank or correction table"
-        );
+        let originals = snapshots(manager, character, &read, &mut digest)?;
         let tables = character["tables"]
             .as_array()
             .context("Character motion tables missing")?;
-        for table in tables {
-            let label = table["kind"]
-                .as_str()
-                .context("Character table kind missing")?;
-            let class = match label {
-                "rider" => 0x8080344D,
-                "stance" => 0x8080345F,
-                _ => anyhow::bail!("Unsupported character motion table"),
-            };
-            ensure!(
-                word(table, "class")? == class,
-                "Character motion table class differs"
-            );
-            for (suffix, class) in [("table", class), ("selector", 0x80803478)] {
-                let key = format!("{label}_{suffix}");
-                let tag = word(table, suffix)?;
-                let payload = read(&character["files"][&key])?;
-                ensure!(
-                    manager
-                        .get_entry(TagHash(tag))
-                        .is_some_and(|entry| entry.reference == class)
-                        && manager.read_tag(TagHash(tag)).map_err(anyhow::Error::msg)? == payload.0,
-                    "Character {key} no longer matches the native source"
-                );
-                digest.update(&payload.0);
-                ensure!(
-                    originals.insert(key, (tag, payload)).is_none(),
-                    "Character motion tables overlap"
-                );
-            }
-        }
         let rig = animation::control::Rig::read_character(
             &originals["skeleton"].1,
             &originals["controls"].1,
@@ -118,7 +147,9 @@ pub(super) fn apply(
             .context("Character clips missing")?
         {
             let template = word(clip, "template")?;
-            let payload = read(&clip["file"])?;
+            // Earlier imports stored the animated span as floats. Re-encoding keeps each sample
+            // within half a 16-bit step of its track's range.
+            let payload = animation::clip::compact(&read(&clip["file"])?)?;
             ensure!(
                 manager
                     .get_entry(TagHash(template))
@@ -160,7 +191,12 @@ pub(super) fn apply(
             matches!(builtin, 2 | 3) && word(parameter, "private")? == private,
             "Character binding does not publish its private parameter"
         );
-        let dictionary = animation::state::parameter::extend(
+        let extend_parameter = if parameter["alias"] == true {
+            animation::state::parameter::alias
+        } else {
+            animation::state::parameter::extend
+        };
+        let dictionary = extend_parameter(
             &current("parameters"),
             builtin,
             word(parameter, "parent")?,
@@ -183,6 +219,7 @@ pub(super) fn apply(
             .unwrap()
             .iter()
             .zip(&allocated)
+            .filter(|(clip, _)| clip.get("descriptor").is_some())
             .map(|(clip, tag)| {
                 Ok(animation::bank::Addition {
                     descriptor: usize::try_from(word(clip, "descriptor")?)?,
@@ -196,9 +233,9 @@ pub(super) fn apply(
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let animation::bank::Extension {
-            bank,
-            layers,
-            directions,
+            mut bank,
+            mut layers,
+            mut directions,
             descriptors: new_descriptors,
         } = animation::bank::extend(
             &current("bank"),
@@ -209,6 +246,76 @@ pub(super) fn apply(
             &originals["directions"].1,
             &additions,
         )?;
+        let body_count = additions.len();
+        let definitions = character["clips"].as_array().unwrap();
+        ensure!(
+            definitions[..body_count]
+                .iter()
+                .all(|c| c.get("descriptor").is_some())
+                && definitions[body_count..]
+                    .iter()
+                    .all(|c| c.get("descriptor").is_none()),
+            "Supplemental clips must follow body descriptors"
+        );
+        if parameter["alias"] == true {
+            ensure!(
+                builtin == 3 && character["actions"].as_array().is_some_and(Vec::is_empty),
+                "Holding aliases require a weapon stance profile"
+            );
+            let holds = definitions[..body_count]
+                .iter()
+                .zip(&new_descriptors)
+                .map(|(clip, &descriptor)| {
+                    let layers = clip["holding_layers"]
+                        .as_array()
+                        .context("Source holding layers")?
+                        .iter()
+                        .map(|layer| {
+                            Ok(animation::bank::holding::Layer {
+                                name: word(layer, "name")?,
+                                clips: layer["clips"]
+                                    .as_array()
+                                    .context("Source holding weights")?
+                                    .iter()
+                                    .map(|weight| {
+                                        Ok((
+                                            usize::try_from(word(weight, "clip")?)?,
+                                            weight["weight"]
+                                                .as_f64()
+                                                .context("Source holding weight")?
+                                                as f32,
+                                        ))
+                                    })
+                                    .collect::<anyhow::Result<_>>()?,
+                            })
+                        })
+                        .collect::<anyhow::Result<_>>()?;
+                    Ok(animation::bank::holding::Hold {
+                        original: usize::try_from(word(clip, "descriptor")?)?,
+                        descriptor,
+                        layers,
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            animation::bank::holding::extend(
+                &mut bank,
+                &mut layers,
+                &mut directions,
+                &originals["layers"].1,
+                &originals["directions"].1,
+                &allocated[body_count..]
+                    .iter()
+                    .map(|t| t.0)
+                    .collect::<Vec<_>>(),
+                &allocated.iter().map(|t| t.0).collect::<Vec<_>>(),
+                &holds,
+            )?;
+        } else {
+            ensure!(
+                body_count == definitions.len(),
+                "Supplemental clips require a holding profile"
+            );
+        }
         let remap = |value: &Value| -> anyhow::Result<BTreeMap<usize, usize>> {
             let mut mapping = BTreeMap::new();
             for (old, new) in value.as_object().context("Character route clips missing")? {
@@ -250,6 +357,18 @@ pub(super) fn apply(
             )?
         };
         let mut extra = Vec::new();
+        if let Some((tag, _)) = originals.get("first_person_parameters") {
+            let payload = animation::state::parameter::alias(
+                &current("first_person_parameters"),
+                3,
+                word(parameter, "parent")?,
+                private,
+            )?;
+            extra.push(ReplacementSpec {
+                tag: TagHash(*tag),
+                payload: payload.0,
+            });
+        }
         for table in tables {
             let label = table["kind"].as_str().unwrap();
             let kind = match label {
@@ -287,8 +406,9 @@ pub(super) fn apply(
                     .map(|key| Ok((key.parse()?, word(&branch["conditions"], key)?)))
                     .collect::<anyhow::Result<BTreeMap<u8, u32>>>()?;
                 let (extended, choices) = animation::motion_table::extend(&data, kind, &routes)?;
-                selector = animation::state::parameter::table_branch(
+                selector = animation::state::parameter::table_branch_from(
                     &selector,
+                    &originals[&selector_key].1,
                     &dictionary,
                     builtin,
                     private,

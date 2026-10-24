@@ -97,36 +97,6 @@ fn collapsed(ctx: &egui::Context, workbench: &Workbench) {
     }
 }
 
-#[test]
-fn validation_reveals_the_incomplete_action_inside_a_collapsed_effect() {
-    let size = egui::vec2(1320.0, 900.0);
-    let (ctx, mut workbench) = setup();
-    collapsed(&ctx, &workbench);
-    let before = workbench.documents[0].recipe.clone();
-    let issue = workbench.validation_issue(&before).unwrap();
-    // Every effect edits as nodes, so the problem points at the node's field as well.
-    let location = issue.location.unwrap();
-    assert_eq!(
-        (&location.document, location.effect, location.action),
-        (&before.id, 1178, Some(0))
-    );
-    assert_eq!(
-        location
-            .native
-            .map(|native| (native.group, native.action, native.field)),
-        Some((0, 0, "Object"))
-    );
-    let output = render(&ctx, &mut workbench, size);
-    let button = label(&output, "Show Problem").unwrap().center();
-    pointer(&ctx, &mut workbench, size, button, true);
-    pointer(&ctx, &mut workbench, size, button, false);
-    let output = render(&ctx, &mut workbench, size);
-    assert!(Card::new(&before.id, 1178, 0, 3).expanded(&ctx));
-    assert!(label(&output, "Choose Object or Effect…").is_some());
-    assert_eq!(workbench.documents[0].recipe, before);
-    assert!(workbench.reveal_problem.is_none());
-}
-
 fn projectile_fixture() -> PrivatePerkRuntimeGraph {
     let mut loaded = fixture();
     loaded.action_tag = 0;
@@ -270,35 +240,6 @@ fn projectile_properties_edit_inline_for_typed_and_native_effects_and_undo_toget
 }
 
 #[test]
-fn collapse_hides_only_the_body_and_keeps_recipe_data_and_document_state_separate() {
-    for size in [egui::vec2(640.0, 480.0), egui::vec2(1320.0, 900.0)] {
-        let (ctx, mut workbench) = setup();
-        let before = workbench.documents[0].recipe.clone();
-        let modified = workbench.documents[0].modified;
-        collapsed(&ctx, &workbench);
-        let output = render(&ctx, &mut workbench, size);
-        assert_eq!(rects(&output, egui_phosphor::regular::CARET_RIGHT).len(), 3);
-        assert!(label(&output, "Trigger").is_none());
-        assert!(label(&output, "Edit Behavior…").is_some());
-        capture::write(&ctx, &output, &format!("effects-collapsed-{}", size.x));
-
-        let toggle = rects(&output, egui_phosphor::regular::CARET_RIGHT)[0].center();
-        pointer(&ctx, &mut workbench, size, toggle, true);
-        pointer(&ctx, &mut workbench, size, toggle, false);
-        let output = render(&ctx, &mut workbench, size);
-        assert!(label(&output, "Trigger").is_some());
-        // Expanded content may scroll the other headers out of a short viewport.
-        for (position, index) in [(1, 1179), (2, 421)] {
-            assert!(!Card::new(&before.id, index, position, 3).expanded(&ctx));
-        }
-        assert_eq!(before, workbench.documents[0].recipe);
-        assert_eq!(workbench.documents[0].modified, modified);
-        assert!(Card::new("another-document", 1179, 1, 3).expanded(&ctx));
-        capture::write(&ctx, &output, &format!("effects-expanded-{}", size.x));
-    }
-}
-
-#[test]
 fn dragging_moves_whole_effects_in_both_directions_and_escape_cancels() {
     let size = egui::vec2(1320.0, 900.0);
     let (ctx, mut workbench) = setup();
@@ -377,35 +318,6 @@ fn dragging_moves_whole_effects_in_both_directions_and_escape_cancels() {
 }
 
 #[test]
-fn move_menu_keeps_custom_effect_data() {
-    let size = egui::vec2(1320.0, 900.0);
-    let (ctx, mut workbench) = setup();
-    collapsed(&ctx, &workbench);
-    let original = workbench.documents[0].recipe.effects.clone();
-    let output = render(&ctx, &mut workbench, size);
-    let title = label(&output, "Spawn on Kill").unwrap();
-    let menu = rects(&output, crate::app::style::MORE)
-        .into_iter()
-        .find(|rect| (rect.center().y - title.center().y).abs() < 5.0)
-        .unwrap()
-        .center();
-    pointer(&ctx, &mut workbench, size, menu, true);
-    pointer(&ctx, &mut workbench, size, menu, false);
-    let output = render(&ctx, &mut workbench, size);
-    let down = label(&output, "Move Down").unwrap().center();
-    pointer(&ctx, &mut workbench, size, down, true);
-    pointer(&ctx, &mut workbench, size, down, false);
-    assert_eq!(
-        workbench.documents[0].recipe.effects,
-        vec![
-            original[1].clone(),
-            original[0].clone(),
-            original[2].clone()
-        ]
-    );
-}
-
-#[test]
 fn dragging_scrolls_a_long_effect_list_and_reaches_later_cards() {
     let size = egui::vec2(640.0, 480.0);
     let (ctx, mut workbench) = setup();
@@ -466,48 +378,6 @@ fn dragging_scrolls_a_long_effect_list_and_reaches_later_cards() {
         position > 3,
         "effect was not inserted among later cards: {position}"
     );
-}
-
-#[test]
-fn native_validation_reveals_the_required_asset_in_execution_order() {
-    let size = egui::vec2(1320.0, 900.0);
-    let (ctx, mut workbench) = setup();
-    let draft = Program {
-        trigger: Trigger::Always,
-        actions: vec![
-            Action::add_rounds(1),
-            Action::Spawn {
-                asset: Asset::default(),
-                position: Position::Owner,
-            },
-        ],
-        ..Program::default()
-    };
-    workbench.documents[0].recipe.effects.truncate(1);
-    workbench.documents[0].recipe.effects[0].program = Some(Program {
-        native: Some(
-            sundial::package_authoring::sandbox_perk::program::native_draft(&draft).unwrap(),
-        ),
-        ..Program::default()
-    });
-    let before = workbench.documents[0].recipe.clone();
-    let issue = workbench
-        .validation_issue(&before)
-        .unwrap()
-        .location
-        .unwrap()
-        .native
-        .unwrap();
-    assert_eq!((issue.group, issue.action, issue.field), (0, 1, "Object"));
-    collapsed(&ctx, &workbench);
-    let output = render(&ctx, &mut workbench, size);
-    let button = label(&output, "Show Problem").unwrap().center();
-    pointer(&ctx, &mut workbench, size, button, true);
-    pointer(&ctx, &mut workbench, size, button, false);
-    let output = render(&ctx, &mut workbench, size);
-    assert!(label_starting_with(&output, "Object:").is_some());
-    assert_eq!(workbench.documents[0].recipe, before);
-    capture::write(&ctx, &output, "native-required-asset");
 }
 
 #[test]

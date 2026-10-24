@@ -1,6 +1,9 @@
 //! Headless checks for the importer window against a fake catalog.
 use super::*;
 use crate::app::custom_perks::workbench::tests::capture;
+mod projectile;
+mod refresh;
+mod stock;
 mod vehicle;
 
 #[test]
@@ -332,42 +335,4 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
         repeat: false,
         modifiers,
     }
-}
-
-#[test]
-fn arrow_keys_move_a_cursor_and_space_toggles_it() {
-    let mut app = app_with_catalog();
-    let ctx = egui::Context::default();
-    let run = |app: &mut PackageAuthoringApp, events: Vec<egui::Event>| {
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(980.0, 640.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default().show(ui, |ui| app.draw_importer_contents(ui));
-            },
-        );
-    };
-    run(&mut app, Vec::new());
-    run(
-        &mut app,
-        vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)],
-    );
-    run(
-        &mut app,
-        vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)],
-    );
-    run(&mut app, vec![key(egui::Key::Space, egui::Modifiers::NONE)]);
-    assert_eq!(app.importer.browser.cursor, Some(1));
-    assert_eq!(
-        app.importer.selected.iter().copied().collect::<Vec<_>>(),
-        [0x1002]
-    );
-    run(&mut app, vec![key(egui::Key::A, egui::Modifiers::COMMAND)]);
-    assert_eq!(app.importer.selected.len(), 5);
 }

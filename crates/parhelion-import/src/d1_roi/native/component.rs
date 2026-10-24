@@ -9,6 +9,7 @@ mod channel;
 mod light;
 mod optic;
 mod query;
+mod sequence;
 
 /// A stock weapon part entity: render component, markers and channel bank, each bound to the
 /// weapon's skeleton provider `AE7D0AED`. The character templates below bind to the character
@@ -226,7 +227,10 @@ impl Assembly<'_> {
                 self.object_channels = channel::channel_names(&source)?;
             }
         }
-        for row in source_entity.array(0x20, 12, Some(0x80800715))? {
+        // Connection rows name a component by tag and by its ordinal in this list, which
+        // distinguishes repeated instances of one component.
+        let rows = source_entity.array(0x20, 12, Some(0x80800715))?;
+        for (ordinal, row) in rows.into_iter().enumerate() {
             let tag = source_entity.u32(row)?;
             let source = self.source.read(tag)?;
             let sr = source.pointer(24)?;
@@ -350,18 +354,22 @@ impl Assembly<'_> {
                     components.push(component);
                 }
                 0x808027FC if self.weapon => {
-                    source_owners.insert(tag, components.len());
+                    source_owners.insert(ordinal, components.len());
                     components.push(self.optic(tag, &source, &source_entity, &name, components.len())?);
                 }
                 0x80803136 if self.weapon => {
                     components.push(self.query(&source, &name, components.len())?);
                 }
                 0x80801B6F if self.weapon => {
-                    components.push(self.light(tag, &source, &source_entity, &name, components.len())?);
+                    components.push(self.light(tag, ordinal, &source, &source_entity, &name, components.len())?);
                 }
                 0x80802733 | 0x8080203D if self.weapon => {
                     self.evidence.push(json!({"source_component":tag,"resource_class":class,
                         "omitted":"Source auxiliary sight effects require separate runtime translation"}));
+                }
+                0x80800610 if self.weapon && source.u64(sr + 0x190)? != 0 => {
+                    source_owners.insert(ordinal, components.len());
+                    components.push(self.scalar_sequence(tag, ordinal, &source, &source_entity, &name, components.len())?);
                 }
                 0x80800610 => self.evidence.push(json!({"source_component":tag,"resource_class":class,"omitted":"source effect sequence is outside the translated visual graph"})),
                 _ => anyhow::bail!("Untranslated source body component {tag:08X}, class {class:08X}"),

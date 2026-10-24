@@ -10,15 +10,17 @@ pub(crate) const PRIVATE_PERK_RUNTIME_PACKAGE_ID: u16 = 0x01BB;
 pub(crate) const PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT: usize = 6_468;
 
 /// The authored package ids one build uses, `base` through `top`. Its packages count from its
-/// first id: asset packages, then map packages. Private runtime overflow counts from the far end
-/// toward them, so the two meet only once the window is spent.
+/// first id: asset packages, then map packages.
 ///
 /// Without a mod loader the window ascends from `0x0AA0`, the names those installs have always
-/// had. On Sunrise's mod loader it descends from its top. Sunrise Studio gives a mod's new
-/// packages the first ids no stock package holds, `0x0AA0` upward, without reading other mods,
-/// and the loader refuses a mod whose package id another mod already adds, so Parhelion fills the
-/// range from the other end. The loader window also skips ids an installed package or another
-/// mod already holds.
+/// had, and private runtime overflow counts down from its top toward the assets, so the two meet
+/// only once the window is spent. On Sunrise's mod loader it descends from its top. Sunrise Studio
+/// gives a mod's new packages the first ids no stock package holds, `0x0AA0` upward, without
+/// reading other mods, and the loader refuses a mod whose package id another mod already adds, so
+/// every package of a build sits at the other end. The private runtime's packages and imported
+/// content take the highest ids still free as they need them, and asset and map packages count
+/// past those. The loader window also skips ids an installed package or another mod already
+/// holds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Window {
     pub base: u16,
@@ -77,31 +79,9 @@ impl Window {
         }
     }
 
-    /// How many packages from the window's first `id` is, if the window holds it.
-    pub(crate) fn position(self, id: u16) -> Option<usize> {
-        if !(self.base..=self.top).contains(&id) {
-            return None;
-        }
-        if self.descending && host().is_standalone() {
-            return (self.base..=self.top)
-                .rev()
-                .filter(|id| !crate::mod_family::build::reserved(*id))
-                .position(|candidate| candidate == id);
-        }
-        Some(usize::from(if self.descending {
-            self.top - id
-        } else {
-            id - self.base
-        }))
-    }
-
-    /// The window's last id, where private runtime overflow starts, counting toward the first.
+    /// The window's last id, where private runtime overflow starts without a mod loader, counting
+    /// toward the first.
     pub(crate) fn last(self) -> u16 {
-        if self.descending && host().is_standalone() {
-            return (self.base..=self.top)
-                .find(|id| !crate::mod_family::build::reserved(*id))
-                .unwrap_or(self.base);
-        }
         if self.descending { self.base } else { self.top }
     }
 
@@ -387,7 +367,7 @@ pub(crate) const PARHELION_ASSET_PACKAGE: AuthoredPackage = AuthoredPackage {
     required_output: true,
 };
 
-pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 27] = [
+pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 28] = [
     // The private perk runtime package.
     CanonicalPackage {
         package_id: PRIVATE_PERK_RUNTIME_PACKAGE_ID,
@@ -490,6 +470,16 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 27] = [
         authored_patch_id: 6,
         authored_file_name: "w64_sandbox_0206_6.pkg",
         stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    // First-person holding parameters for the native hand cannon animation family.
+    CanonicalPackage {
+        package_id: 0x0207,
+        stock_file_stem: "w64_sandbox_0207",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_sandbox_0207_7.pkg",
+        stock_generation: FINAL_GENERATION,
         required_output: false,
     },
     // The human locomotion and rider motion tables and their selectors.

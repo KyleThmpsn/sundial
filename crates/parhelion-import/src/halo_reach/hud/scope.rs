@@ -29,6 +29,8 @@ pub(crate) struct Scope {
     pub magnification: [f32; 2],
     pub layers: Vec<Layer>,
     pub excluded: Vec<Value>,
+    /// Layers drawn at the final frame of an entry transition that is not reproduced.
+    pub settled: Vec<Value>,
 }
 
 fn zoom(c: &Cache, weapon: &Tag) -> Result<(u16, [f32; 2])> {
@@ -94,6 +96,60 @@ fn state(c: &Cache, widget: usize, require_zoom: bool) -> Result<bool> {
         }
     }
     Ok(!require_zoom || zoom)
+}
+
+/// The kind-zero state values a widget's activation groups name, for reporting.
+fn states(c: &Cache, widget: usize) -> Result<Vec<u32>> {
+    let mut values = Vec::new();
+    for row in c.block(widget + 0x1c, 0x38)? {
+        for group in c.block(row, 12)? {
+            for term in c.block(group, 8)? {
+                if c.u32(term)? == 0 {
+                    values.push(c.u32(term + 4)?);
+                }
+            }
+        }
+    }
+    Ok(values)
+}
+
+/// A one-shot entry transition that comes to rest on the static widget. The widget slot plays
+/// forward on its default time function, and the `chad` at `animation` does not loop through
+/// flag bits 1 and 2. Only its position (`+04`, Float32 frame and offset) and alpha (`+34`,
+/// Float32 frame and value) channels hold keyframes, each ending on the last frame at `+70`
+/// with no offset and full alpha. Such an animation leaves the widget unchanged once it ends.
+fn settles(c: &Cache, slot: usize, animation: usize) -> Result<bool> {
+    if c.u8(slot)? != 0 || c.u8(slot + 1)? != 0 || c.u8(animation)? & 6 != 0 {
+        return Ok(false);
+    }
+    for field in [0x10, 0x1c, 0x28, 0x40, 0x4c, 0x58] {
+        if !c.block(animation + field, 32)?.is_empty() {
+            return Ok(false);
+        }
+    }
+    let end = c.f32(animation + 0x70)?;
+    for (field, stride, rest) in [(4, 16, &[0., 0., 0.][..]), (0x34, 8, &[1.][..])] {
+        for channel in c.block(animation + field, 32)? {
+            let frames = c.block(channel, stride)?;
+            let numbers = frames
+                .iter()
+                .map(|at| c.f32(*at))
+                .collect::<Result<Vec<_>>>()?;
+            let Some(&last) = frames.last() else {
+                return Ok(false);
+            };
+            let values = (0..rest.len())
+                .map(|i| c.f32(last + 4 + i * 4))
+                .collect::<Result<Vec<_>>>()?;
+            if numbers.windows(2).any(|pair| pair[0] > pair[1])
+                || numbers.last() != Some(&end)
+                || values != rest
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(end > 0.)
 }
 
 fn placement(c: &Cache, widget: usize) -> Result<[f32; 6]> {
@@ -202,6 +258,7 @@ fn layer(c: &Cache, widget: usize, parent: [f32; 6], globals: usize) -> Result<L
     })
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub(crate) fn read(c: &Cache, weapon: &Tag) -> Result<Option<Scope>> {
     let (zoom_levels, magnification) = zoom(c, weapon)?;
     let base = weapon.address()?;
@@ -223,6 +280,7 @@ pub(crate) fn read(c: &Cache, weapon: &Tag) -> Result<Option<Scope>> {
         magnification,
         layers: Vec::new(),
         excluded: Vec::new(),
+        settled: Vec::new(),
     };
     for parent in c.block(result.hud.address()?, 0xdc)? {
         let scoped = state(c, parent, true)?;
@@ -241,6 +299,7 @@ pub(crate) fn read(c: &Cache, weapon: &Tag) -> Result<Option<Scope>> {
             }
             let simple = shader <= 1 || shader == 6;
             let mut animated = false;
+            let mut settled = Vec::new();
             let mut opacity = 1.;
             for row in c.block(widget + 0x54, 0x64)? {
                 for slot in 0..5 {
@@ -269,6 +328,8 @@ pub(crate) fn read(c: &Cache, weapon: &Tag) -> Result<Option<Scope>> {
                                 "Invalid neutral reticle alpha"
                             );
                         }
+                    } else if settles(c, row + slot * 20, at)? {
+                        settled.push(animation.path);
                     } else {
                         animated = true;
                     }
@@ -282,12 +343,39 @@ pub(crate) fn read(c: &Cache, weapon: &Tag) -> Result<Option<Scope>> {
                 let mut layer = layer(c, widget, placement(c, parent)?, globals)?;
                 layer.opacity = opacity;
                 result.layers.push(layer);
+                if !settled.is_empty() {
+                    result.settled.push(json!({"widget":name,"animations":settled,
+                        "reason":"The entry transition is not reproduced. The layer is drawn at its final frame"}));
+                }
             }
         }
     }
-    ensure!(
-        result.layers.iter().any(|layer| layer.flags & 8 != 0),
-        "Scoped HUD has no supported border mask"
-    );
+    if !result.layers.iter().any(|layer| layer.flags & 8 != 0) {
+        // Name each border the zoomed view left out, with the HUD states that show it.
+        let mut borders = Vec::new();
+        for parent in c.block(result.hud.address()?, 0xdc)? {
+            for widget in c.block(parent + 0x98, 0x9c)? {
+                if c.u32(widget + 0x7c)? & 8 == 0 {
+                    continue;
+                }
+                let name = c.string_id(c.u32(widget)?)?;
+                borders.push(if result.excluded.iter().any(|row| row["widget"] == name) {
+                    format!("{name} is dynamic")
+                } else {
+                    let mut shown = states(c, parent)?;
+                    shown.extend(states(c, widget)?);
+                    format!("{name} is shown in HUD states {shown:?}")
+                });
+            }
+        }
+        anyhow::bail!(
+            "Scoped HUD has no supported border mask. Only zoom states 85 and 86 are translated{}",
+            if borders.is_empty() {
+                String::new()
+            } else {
+                format!(", and {}", borders.join(", "))
+            }
+        );
+    }
     Ok(Some(result))
 }

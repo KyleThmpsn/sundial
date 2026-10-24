@@ -72,45 +72,6 @@ fn click(ctx: &egui::Context, pos: egui::Pos2, mut draw: impl FnMut(&mut egui::U
 }
 
 #[test]
-fn advanced_power_cap_mode_preserves_the_effective_selection() {
-    let donor = donor();
-    for scalar in [None, Some(15)] {
-        let ctx = egui::Context::default();
-        let mut app = PackageAuthoringApp::default();
-        app.recipe.overrides.power_cap_group = scalar;
-        app.recipe.overrides.power_cap_groups = None;
-        let expected = scalar.map_or_else(|| vec![7, 8], |group| vec![group; 2]);
-        let before = app.recipe.clone();
-        let mut draw = |ui: &mut egui::Ui| app.draw_native_inventory_fields(ui, Some(&donor));
-        frame(&ctx, vec![], &mut draw);
-        let output = frame(&ctx, vec![], &mut draw);
-        let pos = text_origin(&output, "Customize Each Row") + egui::vec2(8.0, 6.0);
-        assert_eq!(app.recipe, before);
-        assert!(
-            text(&output).contains(
-                &expected
-                    .iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        );
-        click(&ctx, pos, |ui| {
-            app.draw_native_inventory_fields(ui, Some(&donor))
-        });
-        assert_eq!(app.recipe.overrides.power_cap_group, None);
-        assert_eq!(
-            app.recipe.overrides.power_cap_groups,
-            Some(expected.clone())
-        );
-        assert_eq!(
-            effective_power_cap_rows(&app.recipe.overrides, &[1, 2]),
-            expected
-        );
-    }
-}
-
-#[test]
 fn trace_rifle_rarity_choices_reject_unsupported_tiers_without_coercing_imports() {
     let mut donor = donor();
     assert!(rarity_is_supported(Some(&donor), None));

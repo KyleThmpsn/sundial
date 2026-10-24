@@ -3,8 +3,8 @@ use super::*;
 
 pub(super) fn grip(rig: &animation::control::Rig, delta: [f32; 3]) -> Result<Option<usize>> {
     ensure!(
-        delta.iter().all(|v| v.is_finite() && v.abs() <= 0.2),
-        "Held offset exceeds 20 centimetres"
+        delta.iter().all(|v| v.is_finite()),
+        "Grip translation must be finite"
     );
     if delta == [0.; 3] {
         return Ok(None);

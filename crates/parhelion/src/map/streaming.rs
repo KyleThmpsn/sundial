@@ -1,4 +1,5 @@
 //! A connected native bubble graph, with separately requested geometry and spatial crossings.
+mod lighting;
 mod tome;
 
 use crate::{
@@ -8,8 +9,8 @@ use crate::{
         enroll_dependencies, remove_dependencies, remove_hash_dependencies,
     },
     tag_payload::{
-        append_native_array, array_at, read_i64, read_tag, read_u32, synchronize_payload_size,
-        write_relative_pointer, write_u32, write_u64,
+        append_native_array, array_at, read_i64, read_tag, read_u16, read_u32, read_u64,
+        synchronize_payload_size, write_relative_pointer, write_u32, write_u64,
     },
 };
 use parhelion_import::halo_reach::level::streaming::{self as source, Bounds};
@@ -44,20 +45,15 @@ pub(super) struct Cells {
     descriptors: Vec<u8>,
     clusters: Vec<u8>,
     regions: Vec<tome::Region>,
+    /// Explicit probe choices for the lighting clusters appended after the crossing clusters.
+    lighting_probes: Vec<u16>,
 }
-
-/// The finest lighting cell, in meters, and the most cells an area's tome takes. Cells double in
-/// size until the probes' box needs no more.
-const LIGHTING_CELL: f32 = 16.;
-const MAX_LIGHTING_CELLS: usize = 2048;
-/// How far past the area's probes its lighting cells reach, in meters.
-const LIGHTING_MARGIN: f32 = 16.;
 
 impl Cells {
     /// A lighting cell: a cluster of its own with cluster 0's row, no crossing, at its middle. A
     /// lit object finds the cell it stands in through its connected-region query, and the
     /// occlusion record assigns each cluster a probe ([`Cells::assignments`]).
-    fn push_lighting(&mut self, bounds: Bounds) {
+    fn push_lighting(&mut self, lighting::Cell { bounds, probe }: lighting::Cell) {
         let cluster = (self.clusters.len() / 20) as u32;
         let mut row = self.clusters[..20].to_vec();
         for (k, value) in bounds.center().into_iter().enumerate() {
@@ -65,19 +61,24 @@ impl Cells {
         }
         self.clusters.extend(row);
         self.regions.push(tome::Region { bounds, cluster });
+        self.lighting_probes.push((probe + 1) as u16);
     }
 
     /// Each cluster's probe in the occlusion record, whose probes after the first are `probes`.
     /// Cluster 0, the space outside every cell and crossing, takes the record's first probe, the
-    /// open-ground fallback every stock record holds, and every other cluster the probe nearest
-    /// its middle.
+    /// open-ground fallback every stock record holds. Crossings take the probe nearest their
+    /// middle. Lighting cells retain the in-cell probe chosen during adaptive subdivision.
     pub(super) fn assignments(&self, probes: &[[f32; 4]]) -> Vec<u16> {
+        let first_lighting = self.clusters.len() / 20 - self.lighting_probes.len();
         self.clusters
             .chunks_exact(20)
             .enumerate()
             .map(|(cluster, row)| {
                 if cluster == 0 {
                     return 0;
+                }
+                if cluster >= first_lighting {
+                    return self.lighting_probes[cluster - first_lighting];
                 }
                 let middle: [f32; 3] = std::array::from_fn(|k| {
                     f32::from_le_bytes(row[k * 4..k * 4 + 4].try_into().unwrap())
@@ -107,6 +108,76 @@ impl Cells {
         self.clusters.extend(row);
         self.regions.push(tome::Region { bounds, cluster });
     }
+}
+
+/// The visibility record's table of static instance identifiers (`+0x18`: a seed, then at `+0x20`
+/// 16-byte rows of a u64 key, a u32 value and padding) and its list from each value's index to a
+/// tome object (`+0x30`). A static instance's key is its bounds-row identifier with a zero upper
+/// half, as in Distant Shore's record, whose 2,084 listed instances all take that form.
+const VISIBILITY_SEED: usize = 0x18;
+const VISIBILITY_ROWS: usize = 0x20;
+const VISIBILITY_OBJECTS: usize = 0x30;
+const ROW_CLASS: u32 = 0x8080_733E;
+const OBJECT_INDEX_CLASS: u32 = 0x8080_0007;
+/// A row's value: bit 30 marks a stored key, bit 31 a row a probe passes on to the next, and the
+/// low 30 bits the key's index in the `+0x30` list.
+const STORED: u32 = 0x4000_0000;
+const PROBED_PAST: u32 = 0x8000_0000;
+
+/// The client's slot hash (`011501A0`, called by the lookup at `01165F00`): Thomas Wang's 64 to
+/// 32-bit integer hash over the key, the seed duplicated into both halves first.
+fn slot_hash(seed: u32, key: u64) -> u32 {
+    let mut h = ((u64::from(seed) << 32) | u64::from(seed)) ^ !key;
+    h = h.wrapping_add(key << 18);
+    h ^= h >> 31;
+    h = h.wrapping_mul(21);
+    h ^= h >> 11;
+    h = h.wrapping_mul(65);
+    h ^= h >> 22;
+    h as u32
+}
+
+/// The seed, rows and object indices for area `name`'s instances, instance `i` being tome object
+/// `i`. The client hashes a key with the seed, masks it with the row count less one and probes
+/// forward: a matching row with bit 30 returns its index, and a different row ends the search
+/// unless its bit 31 is set. Rows hold at least twice the keys, a power of two, as stock tables do,
+/// and inserting a key sets bit 31 on every occupied row it passes.
+fn visibility_table(
+    name: &str,
+    visible: &[parhelion_import::halo_reach::level::native::Visible],
+) -> AuthoringResult<(u32, Vec<u8>, Vec<u8>)> {
+    let seed = sundial::package_authoring::fnv1_name_hash(&format!("{name}/visibility"));
+    if visible.is_empty() {
+        return Ok((seed, Vec::new(), Vec::new()));
+    }
+    let capacity = (visible.len() * 2).next_power_of_two();
+    let mask = capacity - 1;
+    let mut rows = vec![(0u64, 0u32); capacity];
+    for (index, object) in visible.iter().enumerate() {
+        let key = u64::from(object.id);
+        if key == 0 {
+            return Err(invalid("A static instance identifier is zero"));
+        }
+        let mut slot = slot_hash(seed, key) as usize & mask;
+        while rows[slot].0 != 0 {
+            if rows[slot].0 == key {
+                return Err(invalid("Static instance identifiers repeat"));
+            }
+            rows[slot].1 |= PROBED_PAST;
+            slot = (slot + 1) & mask;
+        }
+        rows[slot] = (key, STORED | index as u32);
+    }
+    let mut bytes = Vec::with_capacity(capacity * 16);
+    for (key, value) in rows {
+        bytes.extend(key.to_le_bytes());
+        bytes.extend(value.to_le_bytes());
+        bytes.extend(0u32.to_le_bytes());
+    }
+    let objects = (0..visible.len() as u32)
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    Ok((seed, bytes, objects))
 }
 
 fn distance(bounds: Bounds, point: [f32; 3]) -> f32 {
@@ -407,12 +478,40 @@ impl Layout {
         Ok(())
     }
 
+    /// Bindings identify common keyed definitions without mistaking interface bodies or the
+    /// volume definition's distinct prefix for a slot carrying a bubble index.
+    fn registry_slots(&self, tags: &[NewTagSpec]) -> AuthoringResult<BTreeSet<(u32, u16, u16)>> {
+        let mut slots = BTreeSet::new();
+        for spec in tags {
+            if self.classes.get(&spec.template_tag) != Some(&0x8080_9462)
+                || read_u64(&spec.payload, 0x20)? == 0
+            {
+                continue;
+            }
+            let key = read_u32(&spec.payload, 0x0C)?;
+            let (count, _, rows, class) = array_at(&spec.payload, 0x20)?;
+            if class != 0x8080_9B3A {
+                return Err(invalid("Registry object has an invalid slot array class"));
+            }
+            for index in 0..count {
+                let kind = read_u16(&spec.payload, rows + index * 8)?;
+                let index = u16::try_from(index)
+                    .map_err(|_| invalid("Registry object slot index overflow"))?;
+                slots.insert((key, kind, index));
+            }
+        }
+        Ok(slots)
+    }
+
     pub(super) fn patch_registry(
         &self,
         tags: &mut [NewTagSpec],
         first: TagHash,
         bubble: usize,
     ) -> AuthoringResult<()> {
+        let slots = self.registry_slots(tags)?;
+        let bubble =
+            u32::try_from(bubble).map_err(|_| invalid("Registry bubble index overflow"))?;
         for (index, spec) in tags.iter_mut().enumerate() {
             match self.classes.get(&spec.template_tag).copied() {
                 Some(0x8080_9462) => {
@@ -420,20 +519,13 @@ impl Layout {
                     for i in 0..count {
                         let at = rows + i * 24;
                         if read_u32(&spec.payload, at)? != u32::MAX {
-                            write_u32(&mut spec.payload, at, bubble as u32)?;
+                            write_u32(&mut spec.payload, at, bubble)?;
                         }
                     }
                 }
                 Some(0x8080_9C36) => {
                     let own = TagHash::new(first.pkg_id(), first.entry_index() + index as u16).0;
-                    for at in (0..spec.payload.len().saturating_sub(0x80)).step_by(4) {
-                        if read_u32(&spec.payload, at)? == own
-                            && read_u32(&spec.payload, at + 8)? == 0x70
-                            && read_u32(&spec.payload, at + 0x38)? != u32::MAX
-                        {
-                            write_u32(&mut spec.payload, at + 0x38, bubble as u32)?;
-                        }
-                    }
+                    super::placed::set_bubble(&mut spec.payload, own, bubble, &slots)?;
                 }
                 _ => {}
             }
@@ -495,6 +587,7 @@ impl Layout {
             descriptors: Vec::new(),
             clusters,
             regions: Vec::new(),
+            lighting_probes: Vec::new(),
         };
         let neighbors = self.neighbors(bubble).collect::<Vec<_>>();
         for &other in &neighbors {
@@ -559,88 +652,56 @@ impl Layout {
                 cells.push(bounds, 3, descriptor);
             }
         }
-        let inside = probes
-            .iter()
-            .filter(|probe| {
-                (0..3).all(|k| {
-                    probe[k] >= area.minimum[k] - LIGHTING_MARGIN
-                        && probe[k] <= area.maximum[k] + LIGHTING_MARGIN
-                })
-            })
-            .collect::<Vec<_>>();
-        if !inside.is_empty() {
-            let low: [f32; 3] = std::array::from_fn(|k| {
-                inside.iter().map(|p| p[k]).fold(f32::INFINITY, f32::min) - LIGHTING_MARGIN
-            });
-            let high: [f32; 3] = std::array::from_fn(|k| {
-                inside
-                    .iter()
-                    .map(|p| p[k])
-                    .fold(f32::NEG_INFINITY, f32::max)
-                    + LIGHTING_MARGIN
-            });
-            let mut size = LIGHTING_CELL;
-            let counts = |size: f32| -> [usize; 3] {
-                std::array::from_fn(|k| (((high[k] - low[k]) / size).ceil() as usize).max(1))
-            };
-            while counts(size).iter().product::<usize>() > MAX_LIGHTING_CELLS {
-                size *= 2.;
-            }
-            let [nx, ny, nz] = counts(size);
-            // The tome splits a box at the faces of the first region in it, so a grid in row
-            // order would peel one cell at a time past the tree's depth limit. In bit-reversed
-            // order the first cell of any aligned range lies at its middle, and splits halve.
-            let reversed = |value: usize, count: usize| {
-                let bits = usize::BITS - count.saturating_sub(1).leading_zeros();
-                if bits == 0 {
-                    0
-                } else {
-                    value.reverse_bits() >> (usize::BITS - bits)
-                }
-            };
-            let mut order = (0..nx)
-                .flat_map(|x| (0..ny).flat_map(move |y| (0..nz).map(move |z| [x, y, z])))
-                .collect::<Vec<_>>();
-            order.sort_by_key(|&[x, y, z]| (reversed(x, nx), reversed(y, ny), reversed(z, nz)));
-            for [x, y, z] in order {
-                let minimum = [
-                    low[0] + x as f32 * size,
-                    low[1] + y as f32 * size,
-                    low[2] + z as f32 * size,
-                ];
-                cells.push_lighting(Bounds {
-                    minimum,
-                    maximum: minimum.map(|value| value + size),
-                });
-            }
+        for cell in lighting::cells(area, probes, &cells.regions)? {
+            cells.push_lighting(cell);
         }
         Ok(cells)
     }
 
-    /// Install a native point-query resource in the bubble's own geometry container.
+    /// Install a native point-query and visibility resource in the bubble's own geometry
+    /// container. `visible` are the area's static instances, each an Umbra object of its tome.
     pub(super) fn spatial(
         &self,
         chain: &mut [NewTagSpec],
         first: TagHash,
-        extra: TagHash,
         bubble: usize,
         mut bounds: Bounds,
         cells: Cells,
+        visible: &[parhelion_import::halo_reach::level::native::Visible],
     ) -> AuthoringResult<Vec<NewTagSpec>> {
+        let chain_count = u16::try_from(chain.len())
+            .map_err(|_| invalid("Spatial geometry chain exceeds the package entry range"))?;
+        let entry = first
+            .entry_index()
+            .checked_add(chain_count)
+            .ok_or_else(|| invalid("Spatial geometry chain entry overflow"))?;
+        let extra = TagHash::new(first.pkg_id(), entry);
         let at = |offset: u16| TagHash::new(extra.pkg_id(), extra.entry_index() + offset);
         let (table_tag, world_tag, raw_tag, metadata_tag) = (at(0), at(1), at(2), at(3));
         let Cells {
             descriptors,
             clusters,
             regions,
+            lighting_probes: _,
         } = cells;
-        for region in &regions {
+        let objects = visible
+            .iter()
+            .map(|object| Bounds {
+                minimum: object.minimum,
+                maximum: object.maximum,
+            })
+            .collect::<Vec<_>>();
+        for extent in regions
+            .iter()
+            .map(|region| region.bounds)
+            .chain(objects.iter().copied())
+        {
             for k in 0..3 {
-                bounds.minimum[k] = bounds.minimum[k].min(region.bounds.minimum[k] - 16.);
-                bounds.maximum[k] = bounds.maximum[k].max(region.bounds.maximum[k] + 16.);
+                bounds.minimum[k] = bounds.minimum[k].min(extent.minimum[k] - 16.);
+                bounds.maximum[k] = bounds.maximum[k].max(extent.maximum[k] + 16.);
             }
         }
-        let raw = tome::encode(bounds, &regions, clusters.len() / 20)?;
+        let raw = tome::encode(bounds, &regions, clusters.len() / 20, &objects)?;
         let mut metadata = self.metadata.1[..0x88].to_vec();
         metadata[0x18..0x78].fill(0);
         metadata[0x78..0x88].fill(0xFF);
@@ -685,6 +746,23 @@ impl Layout {
                 write_u32(&mut world, base + k * 4, value.to_bits())?;
             }
         }
+        let (seed, rows, objects) = visibility_table(&self.names[bubble], visible)?;
+        write_u32(&mut world, VISIBILITY_SEED, seed)?;
+        append_native_array(
+            &mut world,
+            VISIBILITY_ROWS,
+            ROW_CLASS,
+            rows.len() / 16,
+            &rows,
+        )?;
+        append_native_array(
+            &mut world,
+            VISIBILITY_OBJECTS,
+            OBJECT_INDEX_CLASS,
+            objects.len() / 4,
+            &objects,
+        )?;
+        world = synchronize_payload_size(world)?;
         let mut table = self.table.1.clone();
         let row = array_at(&table, 8)?.2;
         let resource = (row + 0x78)

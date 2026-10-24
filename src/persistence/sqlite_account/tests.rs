@@ -22,6 +22,16 @@ pub(crate) fn default_resources() -> super::AccountDefaults {
     }
 }
 
+/// The schema v3 resources Sunrise 0.6 installs, with the account settings tables v2 shares.
+pub(crate) fn v3_resources() -> super::AccountDefaults {
+    super::AccountDefaults {
+        schema: super::contract::SCHEMA_V3.to_owned(),
+        rows: include_str!("fixtures/v3/investment_defaults.sql").to_owned(),
+        starter: Some(super::contract::STARTER_V3.to_owned()),
+        ..default_resources()
+    }
+}
+
 pub(crate) fn create_fixture(path: &Path, inventory_flags: u32) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut connection = Connection::open(path).unwrap();

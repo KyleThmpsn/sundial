@@ -76,7 +76,7 @@ fn source_gear_is_planned_before_conversion_and_preserves_its_art() -> Result<()
                 let recipe: Value = serde_json::from_slice(&fs::read(&path)?)?;
                 let reference: GraphReference =
                     serde_json::from_value(recipe["overrides"]["imported_graph"].clone())?;
-                reference.validate(service::destination_hash(item.hash)?)?;
+                reference.validate(service::destination_hash(item.hash, &item.name)?)?;
                 let graph: Value = serde_json::from_slice(&fs::read(
                     reference.directory.join("asset-graph.json"),
                 )?)?;

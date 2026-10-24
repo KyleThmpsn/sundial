@@ -39,14 +39,19 @@ pub(super) struct Geometry {
     /// areas' chains name.
     first: bool,
     pieces: Vec<Piece>,
+    props: Vec<parhelion_import::halo_reach::level::native::Prop>,
     spawns: Vec<parhelion_import::halo_reach::level::spawn::Spawn>,
     objectives: Vec<parhelion_import::halo_reach::level::objectives::Objective>,
     volumes: Vec<parhelion_import::halo_reach::level::volumes::Volume>,
+    /// The level's AI squads in this area, with their spawn points in the map's coordinates.
+    squads: Vec<parhelion_import::halo_reach::level::squads::Squad>,
     world: parhelion_import::halo_reach::level::native::World,
     /// The preheader of the static instance group that places this area's pieces.
     statics: String,
     /// The symbol of the sound point table that places the level's ambience.
     ambience: Option<String>,
+    /// This area's static instances as its tome's Umbra objects, empty without connected areas.
+    visibility: Vec<parhelion_import::halo_reach::level::native::Visible>,
     /// The graph nodes, by index, that this area's chain loads, or all of them.
     loads: Option<Vec<usize>>,
     /// An exclusive lock on the map's cache folder, held until the stage has read its payloads.
@@ -63,6 +68,7 @@ struct Shared {
     folder: PathBuf,
     nodes: Vec<Value>,
     pieces: Vec<Piece>,
+    props: Vec<parhelion_import::halo_reach::level::native::Prop>,
     /// The connected areas, or none when the level is one area.
     areas: Vec<parhelion_import::halo_reach::level::native::Area>,
     spawns: Vec<parhelion_import::halo_reach::level::spawn::Spawn>,
@@ -70,6 +76,8 @@ struct Shared {
     statics: String,
     sky: Vec<parhelion_import::halo_reach::level::native::sky::Object>,
     ambience: Option<String>,
+    /// The first area's static instances, which a single-area map's tome lists.
+    visibility: Vec<parhelion_import::halo_reach::level::native::Visible>,
     /// The symbol of the atmosphere volume the map's atmosphere names.
     atmosphere: Option<String>,
     /// The symbol of the distance lookup the map's atmosphere names.
@@ -97,6 +105,7 @@ impl Shared {
             .iter()
             .map(|&piece| self.pieces[piece].mesh.as_str())
             .chain([area.statics.as_str(), area.world.compound.as_str()])
+            .chain(area.props.iter().map(|prop| prop.entity.as_str()))
             .chain(area.world.meshes.iter().map(String::as_str))
             .chain(self.sky.iter().map(|object| object.reference.as_str()))
             .chain(area.ambience.as_deref())
@@ -241,6 +250,10 @@ impl Geometry {
             });
         let templates = parhelion_import::halo_reach::level::native::Templates {
             model: chain.prop().model,
+            props: parhelion_import::halo_reach::level::native::PropTemplates {
+                entity: chain.prop().entity,
+                render: chain.prop().render,
+            },
             statics: chain.static_templates(),
             world_compound,
             world_meshes,
@@ -351,12 +364,14 @@ impl Geometry {
             folder,
             nodes: converted.nodes,
             pieces: converted.pieces,
+            props: converted.props,
             areas: converted.areas,
             spawns: converted.spawns,
             world: converted.world,
             statics: converted.statics,
             sky: converted.sky,
             ambience: converted.ambience,
+            visibility: converted.visibility,
             atmosphere: converted.atmosphere,
             atmosphere_lookup: converted.atmosphere_lookup,
             occlusion: converted.occlusion,
@@ -413,50 +428,63 @@ impl Geometry {
         folder_lock: Option<std::fs::File>,
         generation: Option<parhelion_import::cache::Generation>,
     ) -> AuthoringResult<Self> {
-        let (pieces, spawns, world, statics, ambience, loads) = match shared.areas.get(index) {
-            Some(area) => {
-                let mut loads = shared.reach(shared.roots(area))?;
-                loads.extend(&shared.everywhere);
-                (
-                    area.pieces
-                        .iter()
-                        .map(|&piece| shared.pieces[piece].clone())
-                        .collect(),
-                    area.spawns.clone(),
-                    area.world.clone(),
-                    area.statics.clone(),
-                    area.ambience.clone(),
-                    Some(loads.into_iter().collect()),
-                )
-            }
-            None => (
-                shared.pieces.clone(),
-                shared.spawns.clone(),
-                shared.world.clone(),
-                shared.statics.clone(),
-                shared.ambience.clone(),
-                None,
-            ),
-        };
+        let (pieces, props, spawns, world, statics, ambience, visibility, loads) =
+            match shared.areas.get(index) {
+                Some(area) => {
+                    let mut loads = shared.reach(shared.roots(area))?;
+                    loads.extend(&shared.everywhere);
+                    (
+                        area.pieces
+                            .iter()
+                            .map(|&piece| shared.pieces[piece].clone())
+                            .collect(),
+                        area.props.clone(),
+                        area.spawns.clone(),
+                        area.world.clone(),
+                        area.statics.clone(),
+                        area.ambience.clone(),
+                        area.visibility.clone(),
+                        Some(loads.into_iter().collect()),
+                    )
+                }
+                None => (
+                    shared.pieces.clone(),
+                    shared.props.clone(),
+                    shared.spawns.clone(),
+                    shared.world.clone(),
+                    shared.statics.clone(),
+                    shared.ambience.clone(),
+                    shared.visibility.clone(),
+                    None,
+                ),
+            };
         let source = &shared.source;
+        let zone_sets = shared
+            .areas
+            .get(index)
+            .map_or(&source.zone_sets, |area| &area.zone_sets);
         let activity = parhelion_import::halo_reach::level::activity::load(
             &source.maps,
             &source.map,
             source.variant.as_deref(),
             source.offset.map(|v| v as f32),
             &spawns,
+            zone_sets,
         )
         .map_err(|error| invalid(format!("Map {name} activity: {error:#}")))?;
         Ok(Self {
             chain,
             first: index == 0,
             pieces,
+            props,
             spawns,
             objectives: activity.objectives,
             volumes: activity.volumes,
+            squads: activity.squads,
             world,
             statics,
             ambience,
+            visibility,
             loads,
             shared,
             _folder_lock: folder_lock,
@@ -471,6 +499,11 @@ impl Geometry {
     pub(super) fn disable_ambience(&mut self) {
         self.ambience = None;
     }
+    /// This area's static instances, which its tome lists as Umbra objects.
+    pub(super) fn visible(&self) -> &[parhelion_import::halo_reach::level::native::Visible] {
+        &self.visibility
+    }
+
     /// The level's player spawn points, in the map's coordinates.
     pub(super) fn spawns(&self) -> &[parhelion_import::halo_reach::level::spawn::Spawn] {
         &self.spawns
@@ -486,6 +519,11 @@ impl Geometry {
     /// The level's kill volumes, in the map's coordinates.
     pub(super) fn volumes(&self) -> &[parhelion_import::halo_reach::level::volumes::Volume] {
         &self.volumes
+    }
+
+    /// The level's AI squads in this area, with their spawn points in the map's coordinates.
+    pub(super) fn squads(&self) -> &[parhelion_import::halo_reach::level::squads::Squad] {
+        &self.squads
     }
 
     /// The geometry's entries across `ids`, the map root among them, and the entry-header
@@ -746,6 +784,11 @@ impl Geometry {
             })
             .collect::<Vec<_>>();
         let statics = tag(&self.statics)?;
+        let props = self
+            .props
+            .iter()
+            .map(|prop| Ok((tag(&prop.entity)?, prop.position)))
+            .collect::<AuthoringResult<Vec<_>>>()?;
         let loads = self
             .loads
             .clone()
@@ -798,7 +841,6 @@ impl Geometry {
                     center: volume.center,
                     extents: volume.extents,
                     capture: volume.capture,
-                    priority: volume.priority,
                     identity: fnv1a64(&format!("parhelion/map/{name}/cubemap/{index}")) | 1,
                 })
             })
@@ -807,6 +849,7 @@ impl Geometry {
             first,
             statics,
             &pieces,
+            &props,
             &self.spawns,
             &world,
             &sky,

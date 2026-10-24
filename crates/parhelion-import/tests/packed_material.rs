@@ -6,8 +6,8 @@ use parhelion_import::d2_mot::{
         compile_shader,
     },
     reader::{self, Reader},
-    tfx,
 };
+use parhelion_import::tiger::shader::globals;
 use serde_json::{Value, json};
 use std::{env, fs, path::PathBuf};
 
@@ -34,7 +34,7 @@ fn packed_material_programs_emit_checked_native_resources() -> Result<()> {
     let mut source = Reader::new(&packages, &output.join("tfx-modern"), true)?;
     let mut native = Reader::new(&native_packages, &output.join("tfx-native"), false)?;
     for (r, modern) in [(&mut source, true), (&mut native, false)] {
-        let context = tfx::context(r, modern)?;
+        let context = globals::read(r, modern)?;
         reader::write_json(
             &output
                 .join(if modern { "tfx-modern" } else { "tfx-native" })

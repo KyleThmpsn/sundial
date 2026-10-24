@@ -187,11 +187,9 @@ pub(crate) fn expand_overrides(
         reusable_plug_set_index: None,
         randomized_plug_set_index: None,
         randomized_selection_program: Vec::new(),
+        reusable_choices: None,
     });
-    column
-        .choices
-        .retain(|choice| *choice != FUNDAMENTALS_PLUG_HASH);
-    column.choices.insert(0, FUNDAMENTALS_PLUG_HASH);
+    column.lead_with(FUNDAMENTALS_PLUG_HASH);
     if expanded
         .socket_plug_variants
         .iter()

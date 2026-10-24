@@ -2,7 +2,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn verify_events(bank: &Payload, start: u32, stop: u32, looping: bool) -> Result<usize> {
+pub(super) fn verify_events(bank: &Payload, start: u32, stop: u32, looping: bool) -> Result<usize> {
     let mut cursor = 0;
     let mut objects = BTreeMap::new();
     while cursor < bank.0.len() {
@@ -91,13 +91,46 @@ fn verify_events(bank: &Payload, start: u32, stop: u32, looping: bool) -> Result
     Ok(start_plays.len())
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn verify(
     staged: &mut Reader,
     stock: &Reader,
     item: u32,
+    identity: u32,
     directory: &Path,
     graph: &Value,
 ) -> Result<()> {
+    // The witness comes from source recordings or a separately inspected prior import.
+    // Requiring a route here catches a conversion that silently keeps donor audio.
+    if let Some(path) = std::env::var_os("PARHELION_REACH_AUDIO_WITNESS") {
+        let witness: Value = serde_json::from_slice(&fs::read(path)?)?;
+        if let Some(expected) = witness.get(format!("{identity:08X}")) {
+            ensure!(
+                graph["audio"]["authoring_schema"] == 3,
+                "Required source firing audio was not translated for {item:08X}: {}",
+                graph["audio"]
+            );
+            ensure!(
+                graph["audio"]["routing"] == expected["routing"],
+                "Required firing route changed for {item:08X}"
+            );
+            let media = graph["audio"]["transcoded_media"]
+                .as_array()
+                .context("Required firing media")?
+                .iter()
+                .filter_map(|row| row["source_tag"].as_str())
+                .collect::<BTreeSet<_>>();
+            for id in expected["media"]
+                .as_array()
+                .context("Audio witness media")?
+            {
+                ensure!(
+                    media.contains(id.as_str().context("Audio witness identity")?),
+                    "Required source firing recording {id} disappeared for {item:08X}"
+                );
+            }
+        }
+    }
     if graph["audio"]["authoring_schema"] == 3 {
         let routed = parhelion_import::tiger::rig::inspect_with_audio(staged, item, false)?;
         let mut sounds = routed["audio"]["unnamed_groups"]
