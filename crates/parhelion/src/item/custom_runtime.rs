@@ -33,7 +33,9 @@ mod sword_profiles;
 mod tests;
 pub(super) use banks::{attached_glyph_patches, bank_glyph_patches, bank_value_patches};
 use graph_tree::*;
-pub(super) use graph_tree::{append_private_graph_tree, split_swapped_values};
+pub(super) use graph_tree::{
+    append_private_graph_tree, append_private_graph_tree_in, split_swapped_values,
+};
 use private_perk::*;
 pub(super) use private_perk::{
     PrivateRuntimeEdits, append_private_action, clone_private_sandbox_perk_runtime,

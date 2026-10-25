@@ -23,6 +23,9 @@ pub(super) fn lower(
         // Positive enabled timings have the same write semantics. The shared writer
         // emits the target's additional empty condition list as a reciprocal pair.
         0x808028B8 => (0x80804125, 12),
+        // The source callback returns a fixed factor. The native consumer instead
+        // evaluates a value program, so its writer adds a constant unfiltered program.
+        0x808026D1 => (0x80804520, 8),
         _ => anyhow::bail!("Unqualified source literal ability property"),
     };
     let key = p.u32(row)?;
@@ -85,6 +88,14 @@ pub(super) fn lower(
     );
     let n = matches[0];
     let template_key = native.u32(n + 16)?;
+    if class == 0x80804520 {
+        ensure!(
+            p.u32(row + 4)? == 0x811C9DC5
+                && native.u32(n + 20)? == 0x811C9DC5
+                && p.u32(at)? == (-1.0f32).to_bits(),
+            "Ability protection requires an unnamed source factor for the full activation"
+        );
+    }
     ensure!(
         native.u32(n + 24)? == p.u32(row + 8)?
             && native.u32(n + 32)? == p.u32(row + 16)?

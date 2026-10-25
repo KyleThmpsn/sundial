@@ -1,6 +1,6 @@
 //! Match named actions and specialize profile-selected motion on private native controllers.
 use super::*;
-mod conditional;
+pub(super) mod conditional;
 
 struct Routes {
     choices: BTreeMap<u32, Vec<(u32, u32)>>,

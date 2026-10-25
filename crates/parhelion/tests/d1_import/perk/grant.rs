@@ -5,6 +5,7 @@ mod attack;
 mod effect;
 mod evade;
 mod group;
+mod protection;
 mod scalar;
 
 pub(super) fn check(
@@ -82,6 +83,7 @@ pub(super) fn check(
         let rows = new.iter().filter(|r| r.key == key).collect::<Vec<_>>();
         assert_eq!(rows.len(), 1);
         match original.u32(modifier - 4)? {
+            0x808026D1 => protection::check(&original, row, &before, &emitted, stored[0])?,
             0x8080296E => group::check(&original, row, &before, &emitted, stored[0])?,
             0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365
             | 0x808028B8 | 0x80802B72 => {
@@ -353,7 +355,7 @@ pub(super) fn origins(
                     let parameters = match payload.u32(modifier - 4)? {
                         0x80802254 | 0x808030C8 | 0x8080296E | 0x8080251A | 0x808028BA
                         | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365 | 0x808028B8
-                        | 0x80803198 | 0x80802AA8 => vec![None],
+                        | 0x80803198 | 0x80802AA8 | 0x80802B72 | 0x808026D1 => vec![None],
                         0x80802974 | 0x8080235E => {
                             let first = payload.u32(modifier + 16)?;
                             let count = payload.u32(modifier + 20)?;

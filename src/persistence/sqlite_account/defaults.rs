@@ -88,14 +88,34 @@ impl ResetPlan {
         &self.path
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(self) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-        self.apply_with_backup(None)
+        self.apply_checked(|| Ok(()))
     }
 
+    /// Resets the account, refused whenever `require_closed` reports the game running: before the
+    /// recovery snapshot, and again just before the reset commits.
+    pub(crate) fn apply_checked(
+        self,
+        require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+        self.apply_with(None, require_closed)
+    }
+
+    #[cfg(test)]
     fn apply_with_backup(
         self,
         backup: Option<PathBuf>,
     ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+        self.apply_with(backup, || Ok(()))
+    }
+
+    fn apply_with(
+        self,
+        backup: Option<PathBuf>,
+        mut require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+        require_closed().map_err(SqliteAccountError::WriteBlocked)?;
         if snapshot::capture_path(&self.path).map_err(SqliteAccountError::Backup)? != self.before {
             return Err(SqliteAccountError::SourceChanged);
         }
@@ -112,12 +132,14 @@ impl ResetPlan {
         {
             return Err(SqliteAccountError::SourceChanged);
         }
-        snapshot::restore_snapshot(&self.path, &self.before, &self.after).map_err(|error| {
-            SqliteAccountError::Backup(format!(
-                "Account defaults were not restored: {error}. The recovery snapshot is at {}",
-                safety_backup.display()
-            ))
-        })?;
+        snapshot::restore_snapshot(&self.path, &self.before, &self.after, require_closed).map_err(
+            |error| {
+                SqliteAccountError::Backup(format!(
+                    "Account defaults were not restored: {error}. The recovery snapshot is at {}",
+                    safety_backup.display()
+                ))
+            },
+        )?;
         Ok(SqliteRestoreReceipt { safety_backup })
     }
 }

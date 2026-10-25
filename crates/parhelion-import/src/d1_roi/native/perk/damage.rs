@@ -2,7 +2,12 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
 
-pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Action> {
+pub(super) fn read(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    native: Option<&mut Reader>,
+) -> Result<Action> {
     ensure!(
         p.u8(at + 1)? == 0
             && p.bytes::<0x8E>(at + 2)? == [0; 0x8E]
@@ -76,7 +81,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Action> {
             });
         }
     }
-    label::translate(source, p, at + 0x98, &mut graph, 0xC0)?;
+    label::translate(source, p, at + 0x98, &mut graph, 0xC0, native)?;
     graph
         .validate_node(NodeKind::Effect(40))
         .map_err(anyhow::Error::msg)?;

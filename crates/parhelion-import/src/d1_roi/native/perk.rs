@@ -20,6 +20,7 @@ mod policy;
 mod scalar;
 mod timer;
 mod transfer;
+mod weighted;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Host {
@@ -43,12 +44,40 @@ impl Host {
     }
 
     fn validate_action(self, source: &Source, tag: u32) -> Result<()> {
+        self.validate_action_inner(source, tag, &mut Vec::new())
+    }
+
+    fn validate_action_inner(
+        self,
+        source: &Source,
+        tag: u32,
+        ancestors: &mut Vec<u32>,
+    ) -> Result<()> {
+        if self != Self::Armor {
+            return Ok(());
+        }
+        ensure!(
+            ancestors.len() < 8 && !ancestors.contains(&tag),
+            "Source armor controllers form a cycle or exceed the depth limit"
+        );
+        ancestors.push(tag);
+        let result = self.validate_action_body(source, tag, ancestors);
+        ancestors.pop();
+        result
+    }
+
+    fn validate_action_body(
+        self,
+        source: &Source,
+        tag: u32,
+        ancestors: &mut Vec<u32>,
+    ) -> Result<()> {
         if self == Self::Armor {
             let data = source.read(tag)?;
             for row in data.array(0x38, 8, None)? {
                 let at = data.pointer(row)?;
                 match data.u8(at)? {
-                    0 => pattern::armor_attachment(source, &data, at)?,
+                    0 => pattern::armor_attachment_inner(source, &data, at, ancestors)?,
                     // Explicit player properties use the same target resolver on armor.
                     // An item-local property or selected ability needs a separate contract.
                     9 => ensure!(
@@ -57,7 +86,7 @@ impl Host {
                     ),
                     // Ammo modifier callbacks resolve the action owner's player component,
                     // independently of an owning weapon or a triggering-weapon event.
-                    4 | 7 | 10 | 11 | 19 | 27 | 28 => {}
+                    4 | 7 | 10 | 11 | 12 | 19 | 27 | 28 => {}
                     // Reserve transfer resolves the player's inventory. Armor can name
                     // explicit inventory slots, but cannot supply an owning weapon amount.
                     15 => ensure!(
@@ -160,12 +189,17 @@ struct Lowered {
 /// Shadowkeep share no sandbox perk identities, so the pairs are listed rather than looked up.
 const STOCK_EQUIVALENTS: [(u32, u32); 2] = [(0x4E98_55BC, 0x2A1C_BFD4), (0x5D32_FF95, 0x3916_9B67)];
 
-fn conditions(source: &Source, data: &Payload, descriptor: usize) -> Result<Vec<NativeNode>> {
+fn conditions(
+    source: &Source,
+    data: &Payload,
+    descriptor: usize,
+    mut native: Option<&mut Reader>,
+) -> Result<Vec<NativeNode>> {
     data.array(descriptor, 8, None)?
         .into_iter()
         .map(|at| {
             let node = data.pointer(at)?;
-            if let Some(translated) = condition::read(source, data, node)? {
+            if let Some(translated) = condition::read(source, data, node, native.as_deref_mut())? {
                 return Ok(translated);
             }
             let class = data.u32(node - 4)?;
@@ -174,21 +208,6 @@ fn conditions(source: &Source, data: &Payload, descriptor: usize) -> Result<Vec<
                 (0x80803176, 0) => 8,
                 (0x80802DEB, 1) => {
                     ensure!(data.f32(node + 8)? >= 0.0, "Negative source timer");
-                    12
-                }
-                // Aiming down sights. The certain, unfiltered start and end records equal the
-                // native kind 23 records of stock Tracking Module byte for byte.
-                (0x80802192, 23) => {
-                    let bytes = data.bytes::<12>(node)?;
-                    ensure!(
-                        bytes[..5] == [0, 0, 0x80, 0x3F, 0xFF]
-                            && bytes[6] == 0
-                            && bytes[8] <= 1
-                            && bytes[9] == 0
-                            && bytes[10] == 1
-                            && bytes[11] == 0,
-                        "Source aim condition is conditional or filtered"
-                    );
                     12
                 }
                 _ => anyhow::bail!("Condition {class:08X} ({kind}) requires runtime translation"),
@@ -203,15 +222,21 @@ fn conditions(source: &Source, data: &Payload, descriptor: usize) -> Result<Vec<
         .collect()
 }
 
-fn effect(source: &Source, data: &Payload, at: usize) -> Result<Action> {
+fn effect(
+    source: &Source,
+    data: &Payload,
+    at: usize,
+    native: Option<&mut Reader>,
+) -> Result<Action> {
     let class = data.u32(at - 4)?;
     let kind = data.u8(at)?;
     match (class, kind) {
         (0x80802A46, 4) => orb::read(source, data, at),
-        (0x808026E4, 28) => incoming::read(source, data, at),
+        (0x808026E4, 28) => incoming::read(source, data, at, native),
         (0x808027D8, 10) | (0x80802188, 11) => scalar::ammo_modifiers(data, at, kind),
-        (0x8080230E, 27) => timer::read(source, data, at),
+        (0x8080230E, 27) => timer::read(source, data, at, native),
         (0x8080231F, 7) => energy::read(data, at),
+        (0x80802482, 12) => weighted::read(data, at),
         (0x808027F1, 13) => scalar::rounds(data, at),
         (0x8080321E, 15) => transfer::read(data, at),
         (0x8080314E, 19) => {
@@ -228,7 +253,7 @@ fn effect(source: &Source, data: &Payload, at: usize) -> Result<Action> {
                 },
             })
         }
-        (0x808031C0, 34) => damage::read(source, data, at),
+        (0x808031C0, 34) => damage::read(source, data, at, native),
         (0x80802AC6, 5) => {
             ensure!(
                 data.u8(at + 1)? == 1 && data.u8(at + 2)? <= 3,
@@ -344,7 +369,34 @@ fn program(
     source: &Source,
     tag: u32,
     name: &str,
+    native: Option<&mut Reader>,
+) -> Result<(Program, usize)> {
+    program_inner(source, tag, name, native, &mut Vec::new())
+}
+
+fn program_inner(
+    source: &Source,
+    tag: u32,
+    name: &str,
+    native: Option<&mut Reader>,
+    ancestors: &mut Vec<u32>,
+) -> Result<(Program, usize)> {
+    ensure!(
+        ancestors.len() < 8 && !ancestors.contains(&tag),
+        "Source nested perk controllers form a cycle or exceed the depth limit"
+    );
+    ancestors.push(tag);
+    let result = action_program(source, tag, name, native, ancestors);
+    ancestors.pop();
+    result
+}
+
+fn action_program(
+    source: &Source,
+    tag: u32,
+    name: &str,
     mut native: Option<&mut Reader>,
+    ancestors: &mut Vec<u32>,
 ) -> Result<(Program, usize)> {
     ensure!(
         source.reference(tag)? == 0x80802711,
@@ -356,6 +408,7 @@ fn program(
         "Additional source action groups require translation"
     );
     let policy = policy::read(&data, native.as_deref_mut())?;
+    let mut omitted_presentation = usize::try_from(data.u64(0x10)?)?;
     let mut patches = Vec::new();
     let mut actions = Vec::new();
     for at in data
@@ -377,6 +430,8 @@ fn program(
                     .context("Pattern translation needs native component layouts")?,
                 &data,
                 at,
+                ancestors,
+                &mut omitted_presentation,
             )?;
             for (action, mut patch) in translated {
                 patch.action_index = actions.len();
@@ -384,26 +439,35 @@ fn program(
                 actions.push(action);
             }
         } else {
-            actions.push(effect(source, &data, at)?);
+            actions.push(effect(source, &data, at, native.as_deref_mut())?);
         }
     }
     ensure!(
         !actions.is_empty(),
         "Source choice has no executable effects"
     );
-    let mut activation = conditions(source, &data, 0x20)?.into_iter();
-    let mut removal = conditions(source, &data, 0x48)?.into_iter();
-    let mut rearm = conditions(source, &data, 0x58)?.into_iter();
+    let mut activation = conditions(source, &data, 0x20, native.as_deref_mut())?.into_iter();
+    let mut removal = conditions(source, &data, 0x48, native.as_deref_mut())?.into_iter();
+    let mut rearm = conditions(source, &data, 0x58, native)?.into_iter();
+    let native_trigger = activation.next();
+    let trigger = if native_trigger.is_some() {
+        Trigger::Native
+    } else {
+        // Source 6CD410 and native EBCEA0 admit an empty primary activation list
+        // on event zero when its compiled mask contains that event. Use the
+        // native Always condition without broadening a source routing mask.
+        ensure!(
+            data.u64(0x80)? == 1,
+            "Source empty activation list requires initialization-only routing"
+        );
+        Trigger::Always
+    };
     let program = Program {
         name: name.to_owned(),
-        trigger: Trigger::Native,
+        trigger,
         duration_ms: 0,
         cooldown_ms: 0,
-        native_trigger: Some(
-            activation
-                .next()
-                .context("Source action has no activation condition")?,
-        ),
+        native_trigger,
         alternative_triggers: activation.collect(),
         native_removal: removal.next(),
         alternative_removals: removal.collect(),
@@ -415,7 +479,7 @@ fn program(
         ..Program::default()
     };
     program.validate_structure().map_err(anyhow::Error::msg)?;
-    Ok((program, usize::try_from(data.u64(0x10)?)?))
+    Ok((program, omitted_presentation))
 }
 
 /// Intrinsic plugs (`67FBA961`) set a native weapon's frame, a fixed perk Rise of Iron never had.
@@ -1060,10 +1124,16 @@ pub(super) fn translate(
     } else {
         "Source talent columns become private socket choices, with additional perk sockets when needed. A column offers the first supported step of each of its first four nodes, in row order, and every supported step joins a private randomized plug set the socket rolls from, since Rise of Iron rolled one step of each node. Offered talents are available immediately, with plain stat adjustments as equipped stat contributions. A fixed damage talent sets the weapon's damage type. Alternative damage steps share a separate socket that offers every one of them, with the first source step as the initial damage type. Supported attached status companions remain part of their talent. Source progression, separate auxiliary status rows and unsupported talents are not migrated."
     };
+    // Authored columns make the build curate the sockets the base keeps, such as a year-two
+    // armor base's random stat intrinsic, so each needs a default.
+    let mut columns = json!(columns);
+    let mut native_defaults = Vec::new();
+    crate::tiger::shadowkeep::fill_native_defaults(&native, &mut columns, &mut native_defaults)?;
     Ok((
-        json!(columns),
+        columns,
         json!(variants),
         json!({"translated":translated,"unsupported":unsupported,"damage_type":damage,
+        "native_defaults":native_defaults,
         "status":if translated.is_empty() { "unsupported" } else if unsupported.is_empty() { "translated" } else { "partial" },
         "intrinsic":intrinsic,
         "empty_source_grid":nodes.is_empty(),

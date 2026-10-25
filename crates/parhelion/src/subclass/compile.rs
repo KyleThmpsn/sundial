@@ -45,6 +45,7 @@ pub(crate) trait Planner {
 /// payloads the build reads, so the build keeps copies between builds by it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EntityChanges<'a> {
+    pub(crate) imported: Option<&'a super::ImportedAbility>,
     pub(crate) values: &'a [WeaponRuntimeValueOverride],
     pub(crate) palettes: &'a [PaletteEdit],
     pub(crate) tints: &'a [TintEdit],
@@ -121,6 +122,7 @@ enum Effect<P> {
 struct EntityPlan {
     row: u8,
     source: TagHash,
+    imported: Option<super::ImportedAbility>,
     values: Vec<WeaponRuntimeValueOverride>,
     palettes: Vec<PaletteEdit>,
     tints: Vec<TintEdit>,
@@ -205,6 +207,7 @@ fn plan_entry<L: Planner>(
             Ok(EntityPlan {
                 row: own.row,
                 source: own.source,
+                imported: own.imported.clone(),
                 values: own.values.clone(),
                 palettes: own.palettes.clone(),
                 tints: own.tints.clone(),
@@ -272,6 +275,7 @@ pub(crate) fn compile<C: Compiler>(
             let copy = compiler.entity(
                 (label, entity.source),
                 EntityChanges {
+                    imported: entity.imported.as_ref(),
                     values: &entity.values,
                     palettes: &entity.palettes,
                     tints: &entity.tints,

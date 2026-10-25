@@ -22,16 +22,25 @@ pub(super) fn registrations(
 ) -> Result<()> {
     let p = component.payload;
     let instance = p.pointer(16)?;
-    let definition = p.pointer(24)?;
+    // The header names the loader's runtime boundary. Sealing may duplicate its
+    // schema after appended mutable arrays while implementation references keep
+    // pointing at the original reciprocal definition.
+    let definition = usize::try_from(p.u64(instance + 8)?)?;
+    let boundary = p.pointer(24)?;
     ensure!(
         p.u64(0)? == p.0.len() as u64
+            && instance >= 4
             && instance < definition
+            && definition <= boundary
             && p.u32(instance)? == component.owner
             && p.u32(definition)? == component.owner
+            && p.u32(boundary)? == component.owner
             && p.u32(instance - 4)? == p.u32(definition + 4)?
             && p.u32(definition - 4)? == p.u32(instance + 4)?
-            && p.u64(instance + 8)? == definition as u64
-            && p.u64(definition + 8)? == instance as u64,
+            && p.u32(boundary - 4)? == p.u32(definition - 4)?
+            && p.u32(boundary + 4)? == p.u32(definition + 4)?
+            && p.u64(definition + 8)? == instance as u64
+            && p.u64(boundary + 8)? == instance as u64,
         "Authored component root is not reciprocal"
     );
     let mut keys = BTreeSet::new();
@@ -54,15 +63,18 @@ pub(super) fn registrations(
         let target = interface.definition_offset;
         let state = usize::try_from(p.u64(target + 8)?)?;
         let class = p.u32(target + 4)?;
+        // A derived native owner retains provider tables that dispatch its registered bases.
         ensure!(
             p.u32(target)? == component.owner
                 && p.u32(state)? == component.owner
                 && p.u64(state + 8)? == target as u64
                 && !interface.methods.is_empty()
-                && interface
-                    .methods
-                    .iter()
-                    .all(|method| method.implementation_class == class),
+                && interface.methods.iter().all(|method| {
+                    sundial::package_authoring::runtime::native_type_inherits(
+                        class,
+                        method.implementation_class,
+                    )
+                }),
             "Authored provider does not resolve its implementation"
         );
         let mut map = vec![0; 40];
@@ -96,7 +108,7 @@ pub(super) fn registrations(
         masks.len() <= i16::MAX as usize,
         "Authored condition capacity exceeded"
     );
-    p.0.get(instance..definition)
+    p.0.get(instance..boundary)
         .context("Authored instance span")?;
     Ok(())
 }

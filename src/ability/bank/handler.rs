@@ -1,4 +1,5 @@
-//! A handler index is local to its bank and cannot stand in for an ability target.
+//! The serialized index selects a bank-local modifier priority byte. Native compatibility and
+//! application use separate typed callbacks. The public name is retained for saved callers.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct HandlerIndex(u32);
 

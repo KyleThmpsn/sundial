@@ -18,6 +18,8 @@ use crate::{
 
 use super::ItemDef;
 
+mod bank;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct AbilityOptions {
     pub movement: Vec<AbilityChoice>,
@@ -418,6 +420,7 @@ pub(in crate::catalog) fn scan_ability_rows(
 ) -> Vec<crate::investment::AbilityRowSummary> {
     use crate::ability::bank::{self, Modifier};
     use crate::investment::{AbilityKey, AbilityParameter, AbilityRowSummary};
+    let banks = self::bank::Banks::new(manager);
     let parameter = |parameter: &bank::Parameter| AbilityParameter {
         name: parameter.name,
         reset: parameter.reset,
@@ -434,18 +437,14 @@ pub(in crate::catalog) fn scan_ability_rows(
                 entity: *entity,
                 ..AbilityRowSummary::default()
             };
-            let bank_tag = entity
+            let found = entity
                 .and_then(|entity| manager.read_tag(TagHash(entity)).ok())
-                .and_then(|payload| {
-                    crate::ability::modifier::entity_bank(&payload)
-                        .ok()
-                        .flatten()
-                });
-            if let Some(bank_tag) = bank_tag
+                .and_then(|payload| banks.entity(manager, &payload).ok().flatten());
+            if let Some((bank_tag, slot)) = found
                 && let Ok(payload) = manager.read_tag(TagHash(bank_tag))
             {
                 summary.bank = Some(bank_tag);
-                summary.slot = crate::ability::modifier::bank_slot(bank_tag);
+                summary.slot = slot;
                 summary.charges = bank::handler_slot(&payload, Modifier::Charges(1))
                     .ok()
                     .flatten()

@@ -26,17 +26,20 @@ fn operations(at: usize) -> Vec<(usize, usize, usize, usize)> {
         .collect()
 }
 
+/// The package build compiles the written lists against Shadowkeep's registry, so with the
+/// native reader they first take the [`restrict`] rule.
 pub(super) fn translate(
     source: &Source,
     p: &Payload,
     at: usize,
     graph: &mut Graph,
     to: usize,
+    native: Option<&mut Reader>,
 ) -> Result<()> {
     let tag = p.u32(at + 0x48)?;
     reference(p, at + 0x40, tag)?;
     let lists = declared(source, p, tag, &operations(at))?;
-    write(&lists, graph, to)
+    write(&native_lists(source, tag, lists, native)?, graph, to)
 }
 
 /// D1 ability labels have only include-any and exclude-any lists. Their named
@@ -48,6 +51,7 @@ pub(super) fn ability(
     dictionary: usize,
     graph: &mut Graph,
     to: usize,
+    native: Option<&mut Reader>,
 ) -> Result<()> {
     let tag = p.u32(dictionary + 8)?;
     reference(p, dictionary, tag)?;
@@ -60,13 +64,26 @@ pub(super) fn ability(
             (at + 0x30, at + 0x68, at + 0x8B, 2),
         ],
     )?;
-    write(&lists, graph, to)
+    write(&native_lists(source, tag, lists, native)?, graph, to)
 }
 
-/// A query filter's labels as Shadowkeep objects can carry them. A source atom the destination
-/// registry lacks is on no destination object, so match any drops it, require all can never
-/// hold, exclude any drops it and exclude all together always holds. `None` means the filter
-/// can never hold. A source group the registry lacks has no established expansion and rejects.
+/// A perk filter's lists for Shadowkeep's registry. A filter that can never hold there has no
+/// effect a translated perk could keep, so it refuses the perk.
+fn native_lists(
+    source: &Source,
+    tag: u32,
+    lists: [Vec<u32>; 4],
+    native: Option<&mut Reader>,
+) -> Result<[Vec<u32>; 4]> {
+    let Some(native) = native else {
+        return Ok(lists);
+    };
+    let registry = native.tag(NATIVE, None)?;
+    restrict(source, tag, lists, &registry)?
+        .context("Source label filter can never hold, since Shadowkeep lacks labels it requires")
+}
+
+/// A query filter's labels as Shadowkeep objects can carry them, by the [`restrict`] rule.
 pub(in crate::d1_roi::native) fn destination(
     source: &Source,
     p: &Payload,
@@ -75,7 +92,20 @@ pub(in crate::d1_roi::native) fn destination(
 ) -> Result<Option<[Vec<u32>; 4]>> {
     let tag = p.u32(at + 0x48)?;
     reference(p, at + 0x40, tag)?;
-    let mut lists = declared(source, p, tag, &operations(at))?;
+    let lists = declared(source, p, tag, &operations(at))?;
+    restrict(source, tag, lists, registry)
+}
+
+/// A source atom the destination registry lacks is on no destination object, so match any
+/// drops it, require all can never hold, exclude any drops it and exclude all together always
+/// holds. `None` means the filter can never hold. A source group the registry lacks has no
+/// established expansion and rejects.
+fn restrict(
+    source: &Source,
+    tag: u32,
+    mut lists: [Vec<u32>; 4],
+    registry: &Payload,
+) -> Result<Option<[Vec<u32>; 4]>> {
     let held = registry
         .array(8, 4, Some(0x80800070))?
         .into_iter()

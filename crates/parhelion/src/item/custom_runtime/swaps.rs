@@ -1,6 +1,7 @@
 //! A projectile swap: the patches at every place a graph names the stock projectile,
 //! each naming one private copy of the replacement.
 use super::*;
+use sundial::package_authoring::ability_spawns::Discovery;
 
 /// Most levels of graphs a copy follows below its source: the graphs an ability spawns, and
 /// theirs.
@@ -13,9 +14,10 @@ pub(super) const PROJECTILE: u8 = 18;
 /// The patches that make each swap's graph spawn a private copy of its replacement wherever it
 /// spawned the replaced projectile, by graph. Each replacement is copied once, with the graphs
 /// below it that `colors` recolors and `values` changes for it. Refuses a swap whose graph spawns
-/// no such projectile, and one between graphs that are not both projectiles.
+/// no such projectile, and one between graphs that are not both projectiles. Graphs are read
+/// through `discovery`, so several swaps from one graph scan it once.
 pub(in crate::item) fn swap_patches(
-    manager: &PackageManager,
+    (manager, discovery): (&PackageManager, &mut Discovery),
     swaps: &[crate::subclass::SpawnSwap],
     (colors, values): (
         &BTreeMap<u32, palettes::ColorPatches>,
@@ -28,18 +30,22 @@ pub(in crate::item) fn swap_patches(
     let mut copies = BTreeMap::<u32, TagHash>::new();
     for swap in swaps {
         for tag in [swap.replaced, swap.replacement] {
-            let payload = read_tag(manager, TagHash(tag), "swapped projectile")?;
+            let payload = discovery.payload(manager, tag).map_err(|error| {
+                invalid(format!("Swapped projectile {}: {error}", TagHash(tag)))
+            })?;
             if payload.get(OBJECT_TYPE) != Some(&PROJECTILE) {
                 return Err(invalid(format!("Graph 0x{tag:08X} is not a projectile")));
             }
         }
-        let payload = read_tag(manager, TagHash(swap.graph), "spawning graph")?;
-        let places =
-            sundial::package_authoring::ability_spawns::spawns(manager, swap.graph, &payload)
-                .map_err(invalid)?
-                .into_iter()
-                .filter(|place| place.graph == swap.replaced)
-                .collect::<Vec<_>>();
+        // The spawns of `links` are those `ability_spawns::spawns` finds, in its order.
+        let places = discovery
+            .links(manager, swap.graph)
+            .map_err(|error| invalid(format!("Spawning graph {}: {error}", TagHash(swap.graph))))?
+            .spawns
+            .iter()
+            .copied()
+            .filter(|place| place.graph == swap.replaced)
+            .collect::<Vec<_>>();
         if places.is_empty() {
             return Err(invalid(format!(
                 "Graph 0x{:08X} spawns no projectile 0x{:08X}",
@@ -64,14 +70,11 @@ pub(in crate::item) fn swap_patches(
                         tags,
                     )?
                 } else {
-                    append_private_graph_tree(
-                        manager,
+                    append_private_graph_tree_in(
+                        (manager, &mut *discovery),
                         TagHash(swap.replacement),
-                        values,
-                        colors.unwrap_or(&BTreeMap::new()),
-                        &BTreeMap::new(),
-                        allocator,
-                        tags,
+                        (values, colors.unwrap_or(&BTreeMap::new()), &BTreeMap::new()),
+                        (allocator, tags),
                     )?
                 };
                 copies.insert(swap.replacement, copy);

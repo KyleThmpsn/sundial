@@ -100,10 +100,13 @@ struct PackageAuthoringApp {
     /// takes back exactly those and never a perk the author placed by hand.
     behavior_pins: socket_editor::BehaviorPins,
     observed_recipe: WeaponRecipe,
-    /// Undo and redo for the open recipe, one step per edit.
-    recipe_history: custom_perks::workbench::history::History<WeaponRecipe>,
-    /// The recipe as `recipe_history` last saw it.
+    /// Undo and redo for the open recipe, one step per edit. Each step keeps the behavior pins
+    /// beside the recipe, so a perk a behavior placed comes back as the behavior's to take back.
+    recipe_history:
+        custom_perks::workbench::history::History<(WeaponRecipe, socket_editor::BehaviorPins)>,
+    /// The recipe and behavior pins as `recipe_history` last saw them.
     recorded_recipe: WeaponRecipe,
+    recorded_pins: socket_editor::BehaviorPins,
     /// Advances whenever the recipe or its baseline is replaced or edited.
     recipe_revision: u64,
     recipe_baseline: WeaponRecipe,
@@ -310,6 +313,7 @@ impl Default for PackageAuthoringApp {
         Self {
             recipe_baseline: recipe.clone(),
             recorded_recipe: recipe.clone(),
+            recorded_pins: socket_editor::BehaviorPins::default(),
             recipe,
             observed_recipe,
             recipe_history: Default::default(),
@@ -519,6 +523,7 @@ impl PackageAuthoringApp {
             ctx.request_repaint_after(Duration::from_millis(100));
             return;
         }
+        self.start_upgrade_build(ctx);
         self.ensure_runtime_graph(ctx);
         egui::Panel::bottom("parhelion_build_actions")
             .resizable(false)

@@ -2,7 +2,12 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::nodes;
 
-pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode> {
+pub(super) fn read(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    mut native: Option<&mut Reader>,
+) -> Result<NativeNode> {
     let cap = p.f32(at + 0x28)?;
     ensure!(
         (0.0..=1.0).contains(&p.f32(at)?)
@@ -88,7 +93,8 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
             matches!(kind, 2 | 4 | 8 | 14..=19 | 22 | 27) && p.u8(child + 6)? == 0,
             "Source accumulator child requires a qualified leaf event"
         );
-        let node = super::read(source, p, child)?.context("Unsupported source counter child")?;
+        let node = super::read(source, p, child, native.as_deref_mut())?
+            .context("Unsupported source counter child")?;
         source_mask |= 1u64 << kind;
         native_mask |= 1u64 << node.kind;
         let class = nodes::condition(node.kind)

@@ -9,6 +9,8 @@ use crate::entity::{weapon_component_binding_hashes, weapon_component_bindings};
 use crate::package_payload::{i64_at, native_array_at, relative_offset, u16_at, u32_at, u64_at};
 use crate::package_runtime::reader::PackageManager;
 
+use super::spawns::Discovery;
+
 /// A component owner holding effect sequence nodes, its header and data roots, and its node
 /// rows: the owner's tag, a row class, then a pointer to the node at `+0x10`.
 pub const EFFECT_OWNER_CLASS: u32 = 0x8080_9C36;
@@ -289,21 +291,31 @@ pub fn ability_graphs(
     entity: u32,
     depth: usize,
 ) -> Result<Vec<(u32, Vec<u8>)>, String> {
+    ability_graphs_in((manager, &mut Discovery::default()), entity, depth)
+}
+
+/// [`ability_graphs`], reading each graph through `discovery`, which other walks of the same
+/// trees share.
+pub fn ability_graphs_in(
+    (manager, discovery): (&PackageManager, &mut Discovery),
+    entity: u32,
+    depth: usize,
+) -> Result<Vec<(u32, Vec<u8>)>, String> {
     let mut graphs = Vec::new();
     let mut seen = std::collections::BTreeSet::from([entity]);
     let mut level = vec![entity];
     for below in 0..=depth {
         let mut next = Vec::new();
         for graph in level {
-            let payload = manager.read_tag(graph)?;
+            let payload = discovery.payload(manager, graph)?;
             if below < depth {
-                for child in super::spawns::reached_graphs(manager, graph, &payload)? {
+                for child in discovery.reached_graphs(manager, graph)? {
                     if seen.insert(child) {
                         next.push(child);
                     }
                 }
             }
-            graphs.push((graph, payload));
+            graphs.push((graph, payload.as_ref().clone()));
         }
         level = next;
     }
@@ -319,6 +331,7 @@ pub struct Graphs<'a> {
     manager: &'a PackageManager,
     depth: usize,
     roots: std::collections::BTreeMap<u32, SharedGraphs>,
+    discovery: Discovery,
 }
 
 impl<'a> Graphs<'a> {
@@ -328,6 +341,7 @@ impl<'a> Graphs<'a> {
             manager,
             depth,
             roots: std::collections::BTreeMap::new(),
+            discovery: Discovery::default(),
         }
     }
 
@@ -335,9 +349,18 @@ impl<'a> Graphs<'a> {
         if let Some(graphs) = self.roots.get(&root) {
             return Ok(std::sync::Arc::clone(graphs));
         }
-        let graphs = std::sync::Arc::new(ability_graphs(self.manager, root, self.depth)?);
+        let graphs = std::sync::Arc::new(ability_graphs_in(
+            (self.manager, &mut self.discovery),
+            root,
+            self.depth,
+        )?);
         self.roots.insert(root, std::sync::Arc::clone(&graphs));
         Ok(graphs)
+    }
+
+    /// The discovery its trees were read through, for other walks of them in the same step.
+    pub fn discovery(&mut self) -> &mut Discovery {
+        &mut self.discovery
     }
 }
 

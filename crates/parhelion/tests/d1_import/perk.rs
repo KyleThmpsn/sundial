@@ -6,6 +6,7 @@ mod event;
 mod grant;
 mod pattern;
 mod transfer;
+mod weighted;
 type CheckResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[allow(clippy::cognitive_complexity)]
@@ -391,280 +392,302 @@ pub(super) fn check(
             assert_eq!(assigned.len(), 1);
             let action_tag = runtime.u32(assigned[0] + 4)?;
             let action = readback.tag(action_tag, Some(0x808040B5))?;
-            assert_eq!(source.u8(0xB0)?, action.u8(0xB8)?);
-            assert_eq!(source.u8(0xB1)?, action.u8(0xB9)?);
-            if source.u8(0xB0)? == 1 {
-                let s = source.pointer(0x78)?;
-                let n = action.pointer(0x78)?;
-                assert_eq!(source.u32(s - 4)?, 0x808031C4);
-                assert_eq!(action.u32(n - 4)?, 0x80803E07);
-                assert_eq!(source.bytes::<8>(s)?, action.bytes::<8>(n)?);
-            } else {
-                assert_eq!(action.u64(0x78)?, 0);
-            }
-            let source_effects = source.array(0x38, 8, None)?;
-            let effects = action.array(0x38, 8, Some(0x808040AC))?;
-            assert!(effects.len() >= source_effects.len());
-            let mut extensions = 0u64;
-            for (index, &row) in effects.iter().enumerate() {
-                if action.u8(action.pointer(row)?)? == 32 {
-                    extensions |= 1 << index;
-                }
-            }
-            assert_eq!(action.u64(0xA0)?, extensions);
-            let mut next_effect = 0;
-            for source_at in source_effects {
-                let s = source.pointer(source_at)?;
-                if source.u8(s)? == 1 {
-                    next_effect += pattern::dynamic(
-                        source_reader,
-                        stock,
-                        readback,
-                        &source,
-                        s,
-                        &action,
-                        &effects[next_effect..],
-                    )?;
-                    continue;
-                }
-                let at = effects.get(next_effect).ok_or("Missing native effect")?;
-                next_effect += 1;
-                let n = if source.u8(s)? == 9 {
-                    let matching = effects
-                        .iter()
-                        .map(|&at| action.pointer(at))
-                        .collect::<std::result::Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .filter(|&at| {
-                            action.u8(at).ok() == Some(10)
-                                && action.u8(at + 2).ok() == source.u8(s + 2).ok()
-                                && action.u32(at + 8).ok() == source.u32(s + 8).ok()
-                        })
-                        .collect::<Vec<_>>();
-                    assert_eq!(
-                        matching.len(),
-                        1,
-                        "Source property lacks a unique native write"
-                    );
-                    matching[0]
-                } else {
-                    action.pointer(*at)?
-                };
-                match source.u8(s)? {
-                    4 => {
-                        assert_eq!(action.u32(n - 4)?, 0x80803E42);
-                        assert_eq!(action.bytes::<4>(n)?, [5, 0, 0, 0]);
-                        assert_eq!(source.bytes::<8>(s + 4)?, action.bytes::<8>(n + 4)?);
-                        assert_eq!(action.bytes::<12>(n + 12)?, [0; 12]);
-                        if source.u32(s + 24)? != u32::MAX {
-                            // A source default-orb alias must become the native service's
-                            // default selection, never a dangling source package reference.
-                            let configuration = source_reader.classes(0x80802257);
-                            assert_eq!(configuration.len(), 1);
-                            let globals = source_reader.read(configuration[0])?;
-                            let default = source_reader.read(globals.u32(0xC8)?)?;
-                            let selected = source_reader.read(source.u32(s + 24)?)?;
-                            assert_eq!(default.u64(0x20)?, selected.u64(0x20)?);
-                            let selected_owners = selected.array(0x20, 12, Some(0x80800715))?;
-                            let default_owners = default.array(0x20, 12, Some(0x80800715))?;
-                            for (selected_row, default_row) in
-                                selected_owners.into_iter().zip(default_owners)
-                            {
-                                let selected = source_reader.read(selected.u32(selected_row)?)?;
-                                let default = source_reader.read(default.u32(default_row)?)?;
-                                assert_eq!(
-                                    selected.u32(selected.pointer(24)? - 4)?,
-                                    default.u32(default.pointer(24)? - 4)?
-                                );
-                            }
-                        }
-                        assert_eq!(action.u32(n + 24)?, u32::MAX);
-                        assert_eq!(action.u32(n + 28)?, 0);
-                    }
-                    28 => {
-                        event::incoming(stock, &source, s, &action, n)?;
-                        let owner = readback.tag(action.u32(n + 0xA8)?, Some(0x808040B5))?;
-                        assert_eq!(
-                            owner.0, action.0,
-                            "Damage callback must resolve to its private action"
-                        );
-                    }
-                    0 => pattern::check(source_reader, stock, readback, &source, s, &action, n)?,
-                    10 | 11 => {
-                        // Compare the complete original numeric record, including every ammo
-                        // lane. A signature with both actions must retain both finished perks.
-                        let pickup = source.u8(s)? == 11;
-                        assert_eq!(action.u8(n)?, if pickup { 12 } else { 11 });
-                        assert_eq!(
-                            action.u32(n - 4)?,
-                            if pickup { 0x80803E37 } else { 0x80803E35 }
-                        );
-                        assert_eq!(source.bytes::<3>(s + 1)?, [0; 3]);
-                        assert_eq!(action.bytes::<3>(n + 1)?, [0; 3]);
-                        for offset in (4..if pickup { 28 } else { 48 }).step_by(4) {
-                            assert_eq!(source.u32(s + offset)?, action.u32(n + offset)?);
-                        }
-                    }
-                    27 => {
-                        assert_eq!(action.u8(n)?, 32);
-                        assert_eq!(action.u32(n - 4)?, 0x80803E3B);
-                        assert_eq!(source.bytes::<8>(s + 4)?, action.bytes::<8>(n + 4)?);
-                        let original = source.array(s + 16, 8, None)?;
-                        let nested = action.array(n + 16, 8, Some(0x808040BA))?;
-                        assert!(!original.is_empty());
-                        assert_eq!(original.len(), nested.len());
-                        let mut mask = 0u64;
-                        for (s, n) in original.into_iter().zip(nested) {
-                            let s = source.pointer(s)?;
-                            let n = action.pointer(n)?;
-                            assert_eq!(source.bytes::<7>(s)?, action.bytes::<7>(n)?);
-                            assert_eq!(action.u8(n + 7)?, 255);
-                            mask |= 1 << action.u8(n + 5)?;
-                            event::check(source_reader, stock, &source, s, &action, n)?;
-                        }
-                        assert_eq!(action.u64(n + 32)?, mask);
-                    }
-                    19 => {
-                        assert_eq!(action.u8(n)?, 20);
-                        assert_eq!(action.u32(n - 4)?, 0x80803e24);
-                        assert_eq!(source.bytes::<2>(s + 1)?, action.bytes::<2>(n + 1)?);
-                    }
-                    34 => {
-                        assert_eq!(action.u8(n)?, 40);
-                        assert_eq!(action.u32(n - 4)?, 0x80802f16);
-                        assert_eq!(source.u8(s + 1)?, action.u8(n + 1)?);
-                        assert_eq!(source.u8(s + 0x94)?, action.u8(n + 0xb8)?);
-                        assert_eq!(action.u8(n + 0x148)?, 0);
-                        assert_eq!(action.bytes::<0x90>(n + 8)?, [0; 0x90]);
-                        assert_eq!(action.u8(n + 0xa0)?, 255);
-                        assert_eq!(action.bytes::<2>(n + 0xb0)?, [1; 2]);
-                        for (original, emitted) in [(0x170, 0x120), (0x180, 0x130)] {
-                            let originals = source.array(s + original, 12, Some(0x80802069))?;
-                            let rows = action.array(n + emitted, 12, Some(0x80803E22))?;
-                            assert_eq!(originals.len(), rows.len());
-                            for (original, row) in originals.into_iter().zip(rows) {
-                                assert_eq!(source.bytes::<12>(original)?, action.bytes::<12>(row)?);
-                                assert_eq!(action.u8(row)?, 0);
-                                assert_eq!(action.u8(row + 8)?, 255);
-                            }
-                        }
-                        let value = action.pointer(n + 0x140)?;
-                        assert_eq!(action.u32(value - 4)?, 0x80802f1a);
-                        assert_eq!(source.u32(s + 0x190)?, action.u32(value)?);
-                        assert_eq!(source.u32(s + 0x190)?, action.u32(value + 4)?);
-                        event::labels(source_reader, stock, &source, s + 0x98, &action, n + 0xc0)?;
-                    }
-                    7 => {
-                        assert_eq!(action.u8(n)?, 8);
-                        assert_eq!(action.u32(n - 4)?, 0x80803E4D);
-                        assert_eq!(source.bytes::<2>(s + 2)?, action.bytes::<2>(n + 2)?);
-                        assert_eq!(action.u8(n + 4)?, 0);
-                        assert_eq!(source.u32(s + 4)?, action.u32(n + 8)?);
-                        assert_eq!(source.u32(s + 8)?, action.u32(n + 12)?);
-                        let values = action.array(n + 0x28, 16, Some(0x80800090))?;
-                        let originals = source.array(s + 0x28, 16, Some(0x80800090))?;
-                        assert_eq!(values.len(), originals.len());
-                        for (original, emitted) in originals.into_iter().zip(values) {
-                            assert_eq!(source.bytes::<16>(original)?, action.bytes::<16>(emitted)?);
-                        }
-                        let original_code = source.array(s + 0x18, 1, Some(0x80800009))?;
-                        let emitted_code = action.array(n + 0x18, 1, Some(0x80800009))?;
-                        assert_eq!(original_code.len(), emitted_code.len());
-                        for (original, emitted) in original_code.into_iter().zip(emitted_code) {
-                            assert_eq!(source.u8(original)?, action.u8(emitted)?);
-                        }
-                        assert_eq!(source.bytes::<24>(s + 0x38)?, action.bytes::<24>(n + 0x38)?);
-                    }
-                    13 => {
-                        assert_eq!(action.u8(n)?, 14);
-                        assert_eq!(source.bytes::<4>(s + 2)?, action.bytes::<4>(n + 0x68)?);
-                        assert_eq!(source.u32(s + 8)?, action.u32(n + 0x6c)?);
-                        assert!(action.0[n + 0x70..n + 0x88].iter().all(|b| *b == 0));
-                    }
-                    5 => {
-                        assert_eq!(action.u8(n)?, 6);
-                        assert_eq!(source.u8(s + 2)?, action.u8(n + 2)?);
-                    }
-                    9 => {
-                        assert_eq!(action.u8(n)?, 10);
-                        assert_eq!(action.u32(n - 4)?, 0x808029ED);
-                        assert_eq!(source.u8(s + 1)?, action.u8(n + 1)?);
-                        assert_eq!(source.u8(s + 2)?, action.u8(n + 2)?);
-                        assert_eq!(source.u8(s + 3)?, action.u8(n + 3)?);
-                        assert_eq!(source.u32(s + 4)?, action.u32(n + 4)?);
-                        assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
-                        let code = action.array(n + 0x18, 1, Some(0x80800009))?;
-                        assert_eq!(
-                            code.into_iter()
-                                .map(|at| action.u8(at))
-                                .collect::<std::result::Result<Vec<_>, _>>()?,
-                            [0x34, 0, 0x3E, 0]
-                        );
-                        let values = action.array(n + 0x28, 16, Some(0x80800090))?;
-                        assert_eq!(values.len(), 1);
-                        assert_eq!(source.bytes::<16>(s + 16)?, action.bytes::<16>(values[0])?);
-                        assert_eq!(action.u8(n + 0x4A)?, 1);
-                        assert_eq!(action.u32(n + 0x4C)?, 0);
-                    }
-                    14 => {
-                        assert_eq!(action.u8(n)?, 15);
-                        assert_eq!(source.u32(s + 8)?, action.u32(n + 0x6C)?);
-                        assert_eq!(source.u8(s + 2)?, action.u8(n + 0x68)?);
-                        assert_eq!(source.u8(s + 4)?, action.u8(n + 0x6A)?);
-                        assert!(action.0[n + 0x70..n + 0x88].iter().all(|b| *b == 0));
-                    }
-                    15 => transfer::check(readback, &source, s, &action, n)?,
-                    24 | 25 => {
-                        assert_eq!(action.u8(n)?, source.u8(s)? + 4);
-                        let length = if source.u8(s)? == 24 { 24 } else { 16 };
-                        assert_eq!(source.0[s + 1..s + length], action.0[n + 1..n + length]);
-                    }
-                    26 => {
-                        assert_eq!(action.u8(n)?, 30);
-                        // Only the retained and operation bytes belong to this node.
-                        // Neighbor alignment and the next object's class are not fields.
-                        assert_eq!(source.bytes::<2>(s + 1)?, action.bytes::<2>(n + 1)?);
-                    }
-                    _ => {
-                        return Err(
-                            "An unsupported source effect was presented as translated".into()
-                        );
-                    }
-                }
-            }
-            assert_eq!(
-                next_effect,
-                effects.len(),
-                "Unexpected extra native effects"
-            );
-            for group in [0x20, 0x48, 0x58] {
-                let source_conditions = source.array(group, 8, None)?;
-                let conditions = action.array(group, 8, Some(0x808040BA))?;
-                assert_eq!(conditions.len(), source_conditions.len());
-                for (s, n) in source_conditions.into_iter().zip(conditions) {
-                    let s = source.pointer(s)?;
-                    let n = action.pointer(n)?;
-                    assert_eq!(source.bytes::<5>(s)?, action.bytes::<5>(n)?);
-                    let kind = source.u8(s + 5)?;
-                    assert_eq!(
-                        action.u8(n + 5)?,
-                        if matches!(kind, 14..=18) {
-                            kind - 1
-                        } else {
-                            kind
-                        }
-                    );
-                    assert_eq!(source.u8(s + 6)?, action.u8(n + 6)?);
-                    if source.u8(s + 5)? == 1 {
-                        assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
-                    }
-                    event::check(source_reader, stock, &source, s, &action, n)?;
-                }
-            }
+            check_action(source_reader, stock, readback, &source, &action)?;
             behaviors.push(
                 json!({"plug":plug_hash,"source_action":source_tag,"native_action":action_tag}),
             );
         }
     }
     Ok(json!(behaviors))
+}
+
+/// The same independent controller contract applies at the root and inside private wrappers.
+fn check_action(
+    source_reader: &Source,
+    stock: &mut Reader,
+    readback: &mut Reader,
+    source: &Payload,
+    action: &Payload,
+) -> CheckResult<()> {
+    assert_eq!(source.u8(0xB0)?, action.u8(0xB8)?);
+    assert_eq!(source.u8(0xB1)?, action.u8(0xB9)?);
+    if source.u8(0xB0)? == 1 {
+        let s = source.pointer(0x78)?;
+        let n = action.pointer(0x78)?;
+        assert_eq!(source.u32(s - 4)?, 0x808031C4);
+        assert_eq!(action.u32(n - 4)?, 0x80803E07);
+        assert_eq!(source.bytes::<8>(s)?, action.bytes::<8>(n)?);
+    } else {
+        assert_eq!(action.u64(0x78)?, 0);
+    }
+    let source_effects = source.array(0x38, 8, None)?;
+    let effects = action.array(0x38, 8, Some(0x808040AC))?;
+    assert!(effects.len() >= source_effects.len());
+    let mut extensions = 0u64;
+    for (index, &row) in effects.iter().enumerate() {
+        if action.u8(action.pointer(row)?)? == 32 {
+            extensions |= 1 << index;
+        }
+    }
+    assert_eq!(action.u64(0xA0)?, extensions);
+    let mut next_effect = 0;
+    for source_at in source_effects {
+        let s = source.pointer(source_at)?;
+        if source.u8(s)? == 1 {
+            next_effect += pattern::dynamic(
+                source_reader,
+                stock,
+                readback,
+                source,
+                s,
+                action,
+                &effects[next_effect..],
+            )?;
+            continue;
+        }
+        let at = effects.get(next_effect).ok_or("Missing native effect")?;
+        next_effect += 1;
+        let n = if source.u8(s)? == 9 {
+            let matching = effects
+                .iter()
+                .map(|&at| action.pointer(at))
+                .collect::<std::result::Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|&at| {
+                    action.u8(at).ok() == Some(10)
+                        && action.u8(at + 2).ok() == source.u8(s + 2).ok()
+                        && action.u32(at + 8).ok() == source.u32(s + 8).ok()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matching.len(),
+                1,
+                "Source property lacks a unique native write"
+            );
+            matching[0]
+        } else {
+            action.pointer(*at)?
+        };
+        match source.u8(s)? {
+            12 => weighted::check(source, s, action, n)?,
+            4 => {
+                assert_eq!(action.u32(n - 4)?, 0x80803E42);
+                assert_eq!(action.bytes::<4>(n)?, [5, 0, 0, 0]);
+                assert_eq!(source.bytes::<8>(s + 4)?, action.bytes::<8>(n + 4)?);
+                assert_eq!(action.bytes::<12>(n + 12)?, [0; 12]);
+                if source.u32(s + 24)? != u32::MAX {
+                    // A source default-orb alias must become the native service's
+                    // default selection, never a dangling source package reference.
+                    let configuration = source_reader.classes(0x80802257);
+                    assert_eq!(configuration.len(), 1);
+                    let globals = source_reader.read(configuration[0])?;
+                    let default = source_reader.read(globals.u32(0xC8)?)?;
+                    let selected = source_reader.read(source.u32(s + 24)?)?;
+                    assert_eq!(default.u64(0x20)?, selected.u64(0x20)?);
+                    let selected_owners = selected.array(0x20, 12, Some(0x80800715))?;
+                    let default_owners = default.array(0x20, 12, Some(0x80800715))?;
+                    for (selected_row, default_row) in
+                        selected_owners.into_iter().zip(default_owners)
+                    {
+                        let selected = source_reader.read(selected.u32(selected_row)?)?;
+                        let default = source_reader.read(default.u32(default_row)?)?;
+                        assert_eq!(
+                            selected.u32(selected.pointer(24)? - 4)?,
+                            default.u32(default.pointer(24)? - 4)?
+                        );
+                    }
+                }
+                assert_eq!(action.u32(n + 24)?, u32::MAX);
+                assert_eq!(action.u32(n + 28)?, 0);
+            }
+            28 => {
+                event::incoming(stock, source, s, action, n)?;
+                let owner = readback.tag(action.u32(n + 0xA8)?, Some(0x808040B5))?;
+                assert_eq!(
+                    owner.0, action.0,
+                    "Damage callback must resolve to its private action"
+                );
+            }
+            0 => pattern::check(source_reader, stock, readback, source, s, action, n)?,
+            10 | 11 => {
+                // Compare the complete original numeric record, including every ammo
+                // lane. A signature with both actions must retain both finished perks.
+                let pickup = source.u8(s)? == 11;
+                assert_eq!(action.u8(n)?, if pickup { 12 } else { 11 });
+                assert_eq!(
+                    action.u32(n - 4)?,
+                    if pickup { 0x80803E37 } else { 0x80803E35 }
+                );
+                assert_eq!(source.bytes::<3>(s + 1)?, [0; 3]);
+                assert_eq!(action.bytes::<3>(n + 1)?, [0; 3]);
+                for offset in (4..if pickup { 28 } else { 48 }).step_by(4) {
+                    assert_eq!(source.u32(s + offset)?, action.u32(n + offset)?);
+                }
+            }
+            27 => {
+                assert_eq!(action.u8(n)?, 32);
+                assert_eq!(action.u32(n - 4)?, 0x80803E3B);
+                assert_eq!(source.bytes::<8>(s + 4)?, action.bytes::<8>(n + 4)?);
+                let original = source.array(s + 16, 8, None)?;
+                let nested = action.array(n + 16, 8, Some(0x808040BA))?;
+                assert!(!original.is_empty());
+                assert_eq!(original.len(), nested.len());
+                let mut mask = 0u64;
+                for (s, n) in original.into_iter().zip(nested) {
+                    let s = source.pointer(s)?;
+                    let n = action.pointer(n)?;
+                    assert_eq!(source.bytes::<7>(s)?, action.bytes::<7>(n)?);
+                    assert_eq!(action.u8(n + 7)?, 255);
+                    mask |= 1 << action.u8(n + 5)?;
+                    event::check(source_reader, stock, source, s, action, n)?;
+                }
+                assert_eq!(action.u64(n + 32)?, mask);
+            }
+            19 => {
+                assert_eq!(action.u8(n)?, 20);
+                assert_eq!(action.u32(n - 4)?, 0x80803e24);
+                assert_eq!(source.bytes::<2>(s + 1)?, action.bytes::<2>(n + 1)?);
+            }
+            34 => {
+                assert_eq!(action.u8(n)?, 40);
+                assert_eq!(action.u32(n - 4)?, 0x80802f16);
+                assert_eq!(source.u8(s + 1)?, action.u8(n + 1)?);
+                assert_eq!(source.u8(s + 0x94)?, action.u8(n + 0xb8)?);
+                assert_eq!(action.u8(n + 0x148)?, 0);
+                assert_eq!(action.bytes::<0x90>(n + 8)?, [0; 0x90]);
+                assert_eq!(action.u8(n + 0xa0)?, 255);
+                assert_eq!(action.bytes::<2>(n + 0xb0)?, [1; 2]);
+                for (original, emitted) in [(0x170, 0x120), (0x180, 0x130)] {
+                    let originals = source.array(s + original, 12, Some(0x80802069))?;
+                    let rows = action.array(n + emitted, 12, Some(0x80803E22))?;
+                    assert_eq!(originals.len(), rows.len());
+                    for (original, row) in originals.into_iter().zip(rows) {
+                        assert_eq!(source.bytes::<12>(original)?, action.bytes::<12>(row)?);
+                        assert_eq!(action.u8(row)?, 0);
+                        assert_eq!(action.u8(row + 8)?, 255);
+                    }
+                }
+                let value = action.pointer(n + 0x140)?;
+                assert_eq!(action.u32(value - 4)?, 0x80802f1a);
+                assert_eq!(source.u32(s + 0x190)?, action.u32(value)?);
+                assert_eq!(source.u32(s + 0x190)?, action.u32(value + 4)?);
+                event::labels(source_reader, stock, source, s + 0x98, action, n + 0xc0)?;
+            }
+            7 => {
+                assert_eq!(action.u8(n)?, 8);
+                assert_eq!(action.u32(n - 4)?, 0x80803E4D);
+                assert_eq!(source.bytes::<2>(s + 2)?, action.bytes::<2>(n + 2)?);
+                assert_eq!(action.u8(n + 4)?, 0);
+                assert_eq!(source.u32(s + 4)?, action.u32(n + 8)?);
+                assert_eq!(source.u32(s + 8)?, action.u32(n + 12)?);
+                let values = action.array(n + 0x28, 16, Some(0x80800090))?;
+                let originals = source.array(s + 0x28, 16, Some(0x80800090))?;
+                assert_eq!(values.len(), originals.len());
+                for (original, emitted) in originals.into_iter().zip(values) {
+                    assert_eq!(source.bytes::<16>(original)?, action.bytes::<16>(emitted)?);
+                }
+                let original_code = source.array(s + 0x18, 1, Some(0x80800009))?;
+                let emitted_code = action.array(n + 0x18, 1, Some(0x80800009))?;
+                assert_eq!(original_code.len(), emitted_code.len());
+                for (original, emitted) in original_code.into_iter().zip(emitted_code) {
+                    assert_eq!(source.u8(original)?, action.u8(emitted)?);
+                }
+                assert_eq!(source.bytes::<24>(s + 0x38)?, action.bytes::<24>(n + 0x38)?);
+            }
+            13 => {
+                assert_eq!(action.u8(n)?, 14);
+                assert_eq!(source.bytes::<4>(s + 2)?, action.bytes::<4>(n + 0x68)?);
+                assert_eq!(source.u32(s + 8)?, action.u32(n + 0x6c)?);
+                assert!(action.0[n + 0x70..n + 0x88].iter().all(|b| *b == 0));
+            }
+            5 => {
+                assert_eq!(action.u8(n)?, 6);
+                assert_eq!(source.u8(s + 2)?, action.u8(n + 2)?);
+            }
+            9 => {
+                assert_eq!(action.u8(n)?, 10);
+                assert_eq!(action.u32(n - 4)?, 0x808029ED);
+                assert_eq!(source.u8(s + 1)?, action.u8(n + 1)?);
+                assert_eq!(source.u8(s + 2)?, action.u8(n + 2)?);
+                assert_eq!(source.u8(s + 3)?, action.u8(n + 3)?);
+                assert_eq!(source.u32(s + 4)?, action.u32(n + 4)?);
+                assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
+                let code = action.array(n + 0x18, 1, Some(0x80800009))?;
+                assert_eq!(
+                    code.into_iter()
+                        .map(|at| action.u8(at))
+                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                    [0x34, 0, 0x3E, 0]
+                );
+                let values = action.array(n + 0x28, 16, Some(0x80800090))?;
+                assert_eq!(values.len(), 1);
+                assert_eq!(source.bytes::<16>(s + 16)?, action.bytes::<16>(values[0])?);
+                assert_eq!(action.u8(n + 0x4A)?, 1);
+                assert_eq!(action.u32(n + 0x4C)?, 0);
+            }
+            14 => {
+                assert_eq!(action.u8(n)?, 15);
+                assert_eq!(source.u32(s + 8)?, action.u32(n + 0x6C)?);
+                assert_eq!(source.u8(s + 2)?, action.u8(n + 0x68)?);
+                assert_eq!(source.u8(s + 4)?, action.u8(n + 0x6A)?);
+                assert!(action.0[n + 0x70..n + 0x88].iter().all(|b| *b == 0));
+            }
+            15 => transfer::check(readback, source, s, action, n)?,
+            24 | 25 => {
+                assert_eq!(action.u8(n)?, source.u8(s)? + 4);
+                let length = if source.u8(s)? == 24 { 24 } else { 16 };
+                assert_eq!(source.0[s + 1..s + length], action.0[n + 1..n + length]);
+            }
+            26 => {
+                assert_eq!(action.u8(n)?, 30);
+                // Only the retained and operation bytes belong to this node.
+                // Neighbor alignment and the next object's class are not fields.
+                assert_eq!(source.bytes::<2>(s + 1)?, action.bytes::<2>(n + 1)?);
+            }
+            _ => {
+                return Err("An unsupported source effect was presented as translated".into());
+            }
+        }
+    }
+    assert_eq!(
+        next_effect,
+        effects.len(),
+        "Unexpected extra native effects"
+    );
+    for group in [0x20, 0x48, 0x58] {
+        let source_conditions = source.array(group, 8, None)?;
+        let conditions = action.array(group, 8, Some(0x808040BA))?;
+        if group == 0x20 && source_conditions.is_empty() {
+            // The original controller admits an empty primary list only on event
+            // zero with its routing bit set. The authored Always condition must
+            // preserve that event, certainty and lack of retained predicate state.
+            assert_eq!(source.u64(0x80)?, 1);
+            assert_eq!(action.u64(0x88)?, 1);
+            assert_eq!(conditions.len(), 1);
+            let n = action.pointer(conditions[0])?;
+            assert_eq!(action.u32(n - 4)?, 0x80803E03);
+            assert_eq!(action.bytes::<7>(n)?, [0, 0, 0x80, 0x3F, 0xFF, 0, 0]);
+            continue;
+        }
+        assert_eq!(conditions.len(), source_conditions.len());
+        for (s, n) in source_conditions.into_iter().zip(conditions) {
+            let s = source.pointer(s)?;
+            let n = action.pointer(n)?;
+            assert_eq!(source.bytes::<5>(s)?, action.bytes::<5>(n)?);
+            let kind = source.u8(s + 5)?;
+            assert_eq!(
+                action.u8(n + 5)?,
+                match kind {
+                    14..=18 | 32 | 33 | 36 => kind - 1,
+                    _ => kind,
+                }
+            );
+            assert_eq!(source.u8(s + 6)?, action.u8(n + 6)?);
+            if source.u8(s + 5)? == 1 {
+                assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
+            }
+            event::check(source_reader, stock, source, s, action, n)?;
+        }
+    }
+    Ok(())
 }

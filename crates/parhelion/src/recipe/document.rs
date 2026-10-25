@@ -60,6 +60,10 @@ impl WeaponRecipe {
             )));
         }
         recipe.canonicalize_investment_stats();
+        // A recipe saved before shared projectiles had to agree on a damage type builds as it did.
+        if let Some(abilities) = &mut recipe.overrides.subclass_abilities {
+            abilities.settle_shared_swap_damage();
+        }
         #[cfg(feature = "d2-model-importer")]
         crate::imported::artwork::apply(&mut recipe).map_err(RecipeError::Validation)?;
         recipe.validate()?;
@@ -139,6 +143,20 @@ impl WeaponRecipe {
             listed::put(path, version, &recipe);
         }
         Ok(recipe)
+    }
+
+    /// The namespace and identity hashes a saved recipe claims, read without checking the rest of
+    /// it, so a recipe this version refuses still reserves them.
+    pub(crate) fn load_claim(path: impl AsRef<Path>) -> Result<(String, [u32; 12]), RecipeError> {
+        #[derive(serde::Deserialize)]
+        struct Claim {
+            namespace: String,
+            identity: WeaponIdentity,
+        }
+        let claim: Claim =
+            sundial::package_authoring::parse_json_envelope(&read(path.as_ref())?, RECIPE_NESTING)?;
+        let hashes = claim.identity.parsed_hashes(&claim.namespace)?;
+        Ok((claim.namespace, hashes))
     }
 
     /// Parses a recipe as `load_listing` reads it, with an embedded model left unrestored.

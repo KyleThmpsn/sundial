@@ -1151,7 +1151,6 @@ impl PackageAuthoringApp {
             }
             false
         };
-        let own_graphs = tree_graphs(tree);
         let mut next = edits.clone();
         let show_alternatives = page.properties.show_alternatives;
         // Variants share the card of the first of them, a column each.
@@ -1211,13 +1210,7 @@ impl PackageAuthoringApp {
                     style::card(ui, |ui| {
                         card_header(ui, card);
                         if card.projectile {
-                            swap_row(
-                                ui,
-                                (card, &own_graphs),
-                                &sources,
-                                &mut page.properties,
-                                &mut next,
-                            );
+                            swap_row(ui, (card, tree), &sources, &mut page.properties, &mut next);
                         }
                         match &swapped_in {
                             Some((replacement, Some(Ok(tree)))) => {

@@ -72,6 +72,14 @@ fn compatible_controls(
     rig: &target::control::Rig,
 ) -> Result<Vec<[f32; 8]>> {
     let from = source.read(SOURCE_CONTROLS_OWNER)?;
+    control_defaults(&from, native, rig)
+}
+
+pub(super) fn control_defaults(
+    from: &Payload,
+    native: &Payload,
+    rig: &target::control::Rig,
+) -> Result<Vec<[f32; 8]>> {
     let a = from.pointer(24)?;
     let b = native.pointer(24)?;
     ensure!(

@@ -1,6 +1,8 @@
 //! Literal modifier bodies require a matching existing property and reciprocal pairs.
 use super::*;
 mod duration;
+mod protection;
+pub use protection::constant_protection_definition;
 
 /// Selection metadata witnessed on one stock row. A zero required key means no inner gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -23,9 +25,10 @@ impl FixedModifier {
     pub fn byte_len(self) -> Result<usize, String> {
         match self.class {
             0x80804399 => Ok(32),
+            0x808044D6 => Ok(16),
             duration::CLASS => Ok(12),
-            0x8080442E => Ok(8),
-            0x80804528 | 0x8080411F | 0x808042A5 | 0x8080411B | 0x80804127 => Ok(4),
+            0x8080442E | 0x808044D4 | protection::CLASS => Ok(8),
+            0x80804528 | 0x8080411F | 0x808042A5 | 0x8080411B | 0x80804127 | 0x808044D2 => Ok(4),
             _ => Err("Unqualified fixed ability modifier class".into()),
         }
     }
@@ -40,6 +43,19 @@ impl FixedModifier {
             || (self.class == 0x8080442E && self.words[0] > 2)
             || (self.class == 0x8080411F && self.words[0] > 2)
             || (self.class == 0x80804127 && f32::from_bits(self.words[0]) <= 0.0)
+            || (self.class == 0x808044D2 && self.words[0] > 1)
+            || (matches!(self.class, 0x808044D4 | 0x808044D6)
+                && self.words[..count].iter().any(|&v| f32::from_bits(v) < 0.0))
+            || (matches!(self.class, 0x808044D2 | 0x808044D4 | 0x808044D6)
+                && self.selection
+                    != Some(FixedSelection {
+                        name: 0x811C9DC5,
+                        priority: 255,
+                        required_key: 0,
+                    }))
+            || (self.class == protection::CLASS
+                && (self.words[0] != (-1.0f32).to_bits()
+                    || !(0.0..=1.0).contains(&f32::from_bits(self.words[1]))))
             || (self.class == 0x808042A5
                 && (self.selection.is_none() || !(1..=16).contains(&self.words[0])))
             || (self.class == duration::CLASS
@@ -47,8 +63,10 @@ impl FixedModifier {
                     || self.words[0] != 1
                     || self.words[1..3].iter().any(|&v| f32::from_bits(v) <= 0.0)))
             || self.selection.is_some_and(|s| {
-                !matches!(self.class, 0x808042A5 | duration::CLASS)
-                    || !matches!(s.priority, 1 | 2 | 255)
+                !matches!(
+                    self.class,
+                    0x808042A5 | 0x808044D2 | 0x808044D4 | 0x808044D6 | duration::CLASS
+                ) || !matches!(s.priority, 1 | 2 | 255)
                     || [u32::MAX, 0x811C9DC5].contains(&s.required_key)
             })
             || (self.class == 0x80804399
@@ -62,6 +80,12 @@ impl FixedModifier {
     pub fn check_bank(self, payload: &[u8]) -> Result<(), String> {
         self.validate()?;
         let layout = layout(payload)?;
+        if matches!(self.class, 0x808044D2 | 0x808044D4 | 0x808044D6)
+            && (u32_at(payload, layout.definition - 4)? != 0x8080429E
+                || u32_at(payload, layout.instance - 4)? != 0x8080429F)
+        {
+            return Err("Movement literal requires the qualified Jump bank".into());
+        }
         let mut found = 0;
         for i in 0..layout.definition_rows.count {
             let row = layout.definition_rows.first + i * DEFINITION_ROW_SIZE;
@@ -117,6 +141,8 @@ impl FixedModifier {
                 .ok_or("Truncated fixed ability modifier")?;
             if self.class == duration::CLASS {
                 duration::check(payload, layout.owner, m, twin)?;
+            } else if self.class == protection::CLASS {
+                protection::check(payload, m, twin)?;
             }
         }
         if found != 1 {
@@ -126,10 +152,10 @@ impl FixedModifier {
     }
 
     pub(super) fn definition_size(self) -> Result<usize, String> {
-        Ok(if self.class == duration::CLASS {
-            72
-        } else {
-            (16 + self.byte_len()?).next_multiple_of(8)
+        Ok(match self.class {
+            duration::CLASS => 72,
+            protection::CLASS => protection::SIZE,
+            _ => (16 + self.byte_len()?).next_multiple_of(8),
         })
     }
 
@@ -146,6 +172,8 @@ impl FixedModifier {
     ) -> Result<(), String> {
         if self.class == duration::CLASS {
             duration::write(out, owner, definition, instance)?;
+        } else if self.class == protection::CLASS {
+            protection::write(out, definition, self.words[1])?;
         }
         Ok(())
     }

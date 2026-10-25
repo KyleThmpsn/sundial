@@ -9,6 +9,7 @@
 //! the detonation graph `80BFA4B6` that draws Suppressor's colors, so those graphs are reached
 //! only through the table.
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::entity::{
     WEAPON_ENTITY_CLASS, weapon_component_binding_hashes, weapon_component_bindings,
@@ -125,14 +126,15 @@ pub fn links(manager: &PackageManager, entity_tag: u32, entity: &[u8]) -> Result
     Ok(found)
 }
 
+/// Each graph or impact table a table names, with the offset of every declared reference field
+/// naming it.
+pub type TableEntries = Vec<(u32, Vec<usize>)>;
+
 /// The graphs and impact tables `table` names, each with the offset of every declared reference
 /// field naming it, in the order they first appear. A `80808BCB` table can name the table above
 /// it and itself, as `80C70C92` names `80C70C91` at `+0xC` and itself at `+0x10`, so the list can
 /// hold `table`.
-pub fn table_entries(
-    manager: &PackageManager,
-    table: u32,
-) -> Result<Vec<(u32, Vec<usize>)>, String> {
+pub fn table_entries(manager: &PackageManager, table: u32) -> Result<TableEntries, String> {
     let mut entries = Vec::<(u32, Vec<usize>)>::new();
     for (offset, tag) in crate::package_runtime::references::declared_fields(manager, table)? {
         let Some(entry) = manager.get_entry(tag) else {
@@ -151,24 +153,7 @@ pub fn table_entries(
 
 /// The graphs `table` names, through any tables it names, each once, in the order found.
 pub fn table_graphs(manager: &PackageManager, table: u32) -> Result<Vec<u32>, String> {
-    let mut graphs = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut pending = vec![table];
-    while let Some(table) = pending.pop() {
-        if !seen.insert(table) {
-            continue;
-        }
-        let mut nested = Vec::new();
-        for (tag, _) in table_entries(manager, table)? {
-            if is_table(manager, tag) {
-                nested.push(tag);
-            } else if !graphs.contains(&tag) {
-                graphs.push(tag);
-            }
-        }
-        pending.extend(nested.into_iter().rev());
-    }
-    Ok(graphs)
+    Discovery::default().table_graphs(manager, table)
 }
 
 /// The graphs `entity` names directly or through its impact tables, each once: those `spawns`
@@ -178,21 +163,116 @@ pub fn reached_graphs(
     entity_tag: u32,
     entity: &[u8],
 ) -> Result<Vec<u32>, String> {
-    let links = links(manager, entity_tag, entity)?;
+    reached(entity_tag, &links(manager, entity_tag, entity)?, |table| {
+        table_graphs(manager, table)
+    })
+}
+
+/// The graphs `found` names directly, then those its impact tables name as `table_graphs`
+/// reads them, each once and never `entity_tag`.
+fn reached(
+    entity_tag: u32,
+    found: &Links,
+    mut table_graphs: impl FnMut(u32) -> Result<Vec<u32>, String>,
+) -> Result<Vec<u32>, String> {
     let mut graphs = Vec::new();
-    for spawn in links.spawns {
+    for spawn in &found.spawns {
         if !graphs.contains(&spawn.graph) {
             graphs.push(spawn.graph);
         }
     }
-    for place in links.tables {
-        for graph in table_graphs(manager, place.graph)? {
+    for place in &found.tables {
+        for graph in table_graphs(place.graph)? {
             if graph != entity_tag && !graphs.contains(&graph) {
                 graphs.push(graph);
             }
         }
     }
     Ok(graphs)
+}
+
+/// The graphs and impact tables one build step has walked, each read and scanned once, so a step
+/// that walks the same tree several times reads it once. Only that step's walks share one, so
+/// every read the step depends on still happens while it runs, where a read trace records it.
+#[derive(Default)]
+pub struct Discovery {
+    payloads: BTreeMap<u32, Arc<Vec<u8>>>,
+    links: BTreeMap<u32, Arc<Links>>,
+    tables: BTreeMap<u32, Arc<TableEntries>>,
+}
+
+impl Discovery {
+    /// The payload of graph `tag`.
+    pub fn payload(&mut self, manager: &PackageManager, tag: u32) -> Result<Arc<Vec<u8>>, String> {
+        if let Some(payload) = self.payloads.get(&tag) {
+            return Ok(Arc::clone(payload));
+        }
+        let payload = Arc::new(manager.read_tag(tag)?);
+        self.payloads.insert(tag, Arc::clone(&payload));
+        Ok(payload)
+    }
+
+    /// What graph `tag` names, as [`links`] finds it.
+    pub fn links(&mut self, manager: &PackageManager, tag: u32) -> Result<Arc<Links>, String> {
+        if let Some(found) = self.links.get(&tag) {
+            return Ok(Arc::clone(found));
+        }
+        let payload = self.payload(manager, tag)?;
+        let found = Arc::new(links(manager, tag, &payload)?);
+        self.links.insert(tag, Arc::clone(&found));
+        Ok(found)
+    }
+
+    /// What impact table `table` names, as [`table_entries`] finds it.
+    pub fn table_entries(
+        &mut self,
+        manager: &PackageManager,
+        table: u32,
+    ) -> Result<Arc<TableEntries>, String> {
+        if let Some(entries) = self.tables.get(&table) {
+            return Ok(Arc::clone(entries));
+        }
+        let entries = Arc::new(table_entries(manager, table)?);
+        self.tables.insert(table, Arc::clone(&entries));
+        Ok(entries)
+    }
+
+    /// The graphs `table` names through any tables it names, as [`table_graphs`] finds them.
+    pub fn table_graphs(
+        &mut self,
+        manager: &PackageManager,
+        table: u32,
+    ) -> Result<Vec<u32>, String> {
+        let mut graphs = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![table];
+        while let Some(table) = pending.pop() {
+            if !seen.insert(table) {
+                continue;
+            }
+            let mut nested = Vec::new();
+            for &(tag, _) in self.table_entries(manager, table)?.iter() {
+                if is_table(manager, tag) {
+                    nested.push(tag);
+                } else if !graphs.contains(&tag) {
+                    graphs.push(tag);
+                }
+            }
+            pending.extend(nested.into_iter().rev());
+        }
+        Ok(graphs)
+    }
+
+    /// The graphs graph `tag` names directly or through its impact tables, as [`reached_graphs`]
+    /// finds them.
+    pub fn reached_graphs(
+        &mut self,
+        manager: &PackageManager,
+        tag: u32,
+    ) -> Result<Vec<u32>, String> {
+        let found = self.links(manager, tag)?;
+        reached(tag, &found, |table| self.table_graphs(manager, table))
+    }
 }
 
 /// Every place `entity`'s component owners name a live tag that `wanted` accepts, by the tag and its

@@ -21,13 +21,15 @@ struct PrivatePlugSource {
     classification_perk_index: Option<usize>,
 }
 
-/// Chooses a visible row only when the donor's visible perks agree on tooltip grouping.
+/// The first visible finished perk among `indices`, and whether every visible one shares its
+/// tooltip group.
 fn tooltip_perk(
     sources: &sources::ProjectSources,
     indices: &[u16],
-) -> AuthoringResult<Option<usize>> {
+) -> AuthoringResult<(Option<usize>, bool)> {
     let mut selected = None;
     let mut category = None;
+    let mut agreed = true;
     for &index in indices {
         let row =
             finished_sandbox_perk_at(&sources.stock_finished_sandbox_perks, usize::from(index))
@@ -37,15 +39,11 @@ fn tooltip_perk(
             continue;
         }
         let value = read_u32(&detail, 20)?;
-        if category.is_some_and(|previous| previous != value) {
-            return Err(invalid(
-                "Classification donor has conflicting visible tooltip groups",
-            ));
-        }
+        agreed &= category.is_none_or(|previous| previous == value);
         category = Some(value);
         selected.get_or_insert(usize::from(index));
     }
-    Ok(selected)
+    Ok((selected, agreed))
 }
 
 /// Reads the classification template and a representative visible finished perk.
@@ -90,7 +88,13 @@ fn read_plug_classification(
         )?),
         "classification source strings",
     )?;
-    *classification_perk_index = tooltip_perk(sources, &weapon_sandbox_perks(&definition)?)?;
+    let (perk, agreed) = tooltip_perk(sources, &weapon_sandbox_perks(&definition)?)?;
+    if !agreed {
+        return Err(invalid(
+            "Classification donor has conflicting visible tooltip groups",
+        ));
+    }
+    *classification_perk_index = perk;
     crate::plug_classification::PlugClassification::from_template(&definition, &strings)
 }
 
@@ -193,10 +197,15 @@ fn read_private_plug_source(
     if variant.replace_effects && !variant.sandbox_perks.is_empty() {
         // Independent programs can borrow finished rows from a different kind of perk.
         // The visible tooltip belongs to the plug's classification, not that runtime carrier.
+        // A template whose visible perks disagree on grouping gives no row, so the plug builds
+        // without one, as it did before tooltips followed the classification.
+        let mut agreed = true;
         if variant.classification_donor_hash.is_none() {
-            classification_perk_index = tooltip_perk(sources, &perk_indices)?;
+            let (perk, all) = tooltip_perk(sources, &perk_indices)?;
+            agreed = all;
+            classification_perk_index = perk.filter(|_| agreed);
         }
-        if classification_perk_index.is_none() {
+        if classification_perk_index.is_none() && agreed {
             let layout = match classification {
                 Some(layout) => layout,
                 None => crate::plug_classification::PlugClassification::from_template(
@@ -204,22 +213,21 @@ fn read_private_plug_source(
                     &strings,
                 )?,
             };
-            if layout.category == 0x67FB_A961 {
-                return Err(invalid(
-                    "Intrinsic classification donor has no visible tooltip row",
-                ));
-            }
-            // Stat-only layouts such as barrels have no finished-perk presentation.
-            // Borrow the ordinary trait's neutral grouping without changing the plug itself.
-            read_plug_classification(
-                sources,
-                crate::perk::DEFAULT_PLUG_LAYOUT,
-                &mut classification_perk_index,
-            )?;
-            if classification_perk_index.is_none() {
-                return Err(invalid(
-                    "Default trait classification has no visible tooltip row",
-                ));
+            // Stat-only layouts such as barrels have no finished-perk presentation, so they
+            // borrow the ordinary trait's neutral grouping without changing the plug itself. An
+            // intrinsic with no visible row keeps none, since that grouping would present a frame
+            // as a trait.
+            if layout.category != 0x67FB_A961 {
+                read_plug_classification(
+                    sources,
+                    crate::perk::DEFAULT_PLUG_LAYOUT,
+                    &mut classification_perk_index,
+                )?;
+                if classification_perk_index.is_none() {
+                    return Err(invalid(
+                        "Default trait classification has no visible tooltip row",
+                    ));
+                }
             }
         }
     }
@@ -1287,6 +1295,35 @@ impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_, '_> {
         changes: crate::subclass::compile::EntityChanges<'_>,
         pattern: u32,
     ) -> AuthoringResult<TagHash> {
+        if let Some(imported) = changes.imported {
+            #[cfg(not(feature = "d2-model-importer"))]
+            {
+                let _ = imported;
+                return Err(invalid("Imported ability support is unavailable"));
+            }
+            #[cfg(feature = "d2-model-importer")]
+            {
+                let root = self
+                    .catalog
+                    .weapon
+                    .and_then(|ordinal| self.catalog.particle_symbols.get(&ordinal))
+                    .and_then(|symbols| symbols.get(&imported.symbol))
+                    .copied()
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "Imported ability {} was not allocated for this item",
+                            imported.symbol
+                        ))
+                    })?;
+                *self.catalog.entity_assignments = insert_sandbox_perk_runtime_assignment(
+                    &*self.catalog.entity_assignments,
+                    pattern,
+                    root.0,
+                )
+                .map_err(invalid)?;
+                return Ok(root);
+            }
+        }
         let manager = self.manager;
         let allocator = self.catalog.private_perk_runtime_tag_allocator;
         let name = format!("{label} · {}", self.item);
@@ -1335,6 +1372,7 @@ fn author_copy(
     progress: &mut Progress<'_>,
 ) -> AuthoringResult<TagHash> {
     let crate::subclass::compile::EntityChanges {
+        imported: _,
         values,
         palettes,
         tints,
@@ -1357,6 +1395,9 @@ fn author_copy(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
+    // Every walk below reads the ability's tree and the projectiles swapped in through the
+    // discovery these graphs keep, so each graph is read and scanned once for this copy. It is
+    // made here, inside the copy's step, so the runtime cache still sees every read it depends on.
     let mut graphs = sundial::package_authoring::ability_palette::Graphs::new(
         manager,
         crate::subclass::SPAWN_DEPTH,
@@ -1415,10 +1456,14 @@ fn author_copy(
     if !swaps.is_empty() {
         progress.start(&format!("Swapping Projectiles: {name}"));
     }
-    let (values, swapped_values) =
-        custom_runtime::split_swapped_values(manager, source, values, &replacements)?;
+    let (values, swapped_values) = custom_runtime::split_swapped_values(
+        (manager, graphs.discovery()),
+        source,
+        values,
+        &replacements,
+    )?;
     for (graph, swapped) in custom_runtime::swap_patches(
-        manager,
+        (manager, graphs.discovery()),
         swaps,
         (&swapped_colors, &swapped_values),
         allocator,
@@ -1461,20 +1506,17 @@ fn author_copy(
     }
     // The ability's own values, and those of the graphs it spawns, each on a copy.
     progress.start(&format!("Copying Graphs: {name}"));
-    custom_runtime::append_private_graph_tree(
-        manager,
+    custom_runtime::append_private_graph_tree_in(
+        (manager, graphs.discovery()),
         source,
-        &values,
-        &patches,
-        &std::collections::BTreeMap::new(),
-        allocator,
-        tags,
+        (&values, &patches, &std::collections::BTreeMap::new()),
+        (allocator, tags),
     )
 }
 
 impl RecordCompiler<'_, '_, '_> {
-    /// Compiles `perk`, then moves each ability key that `moves` names in its cloned action.
-    /// Returns its finished row and how many keys moved.
+    /// Compiles `perk`, then moves ability references in its root and owned child actions.
+    /// Returns its finished row and how many fields moved across those private actions.
     fn append(
         &mut self,
         perk: &ResolvedPrivateSandboxPerk,
@@ -1498,28 +1540,45 @@ impl RecordCompiler<'_, '_, '_> {
             return Ok((index, 0));
         }
         let allocator = self.catalog.private_perk_runtime_tag_allocator;
-        for ordinal in first..self.catalog.private_perk_runtime_new_tags.len() {
-            if allocator.assigned_tag(ordinal, "Private perk runtime", "private perk runtime")?
-                == action
+        let mut root_found = false;
+        let mut moved = 0;
+        for (ordinal, tag) in self
+            .catalog
+            .private_perk_runtime_new_tags
+            .iter_mut()
+            .enumerate()
+            .skip(first)
+        {
+            if !self
+                .manager
+                .get_entry(tag.template_tag)
+                .is_some_and(|entry| entry.reference == 0x808040B5)
             {
-                let payload = &mut self.catalog.private_perk_runtime_new_tags[ordinal].payload;
-                if let Some((_, entity)) =
-                    sundial::package_authoring::ability_reference::references(payload)
-                        .map_err(invalid)?
-                        .into_iter()
-                        .find(|(_, entity)| moves.ambiguous.contains(entity))
-                {
-                    return Err(validation(format!(
-                        "A Specific Ability condition names ability 0x{entity:08X}, but this \
-                         entry is selected beside more than one form of it. Give the perk to each \
-                         alternative instead"
-                    )));
-                }
-                let moved =
-                    sundial::package_authoring::ability_reference::retarget(payload, &moves.to)
-                        .map_err(invalid)?;
-                return Ok((index, moved));
+                continue;
             }
+            root_found |=
+                allocator.assigned_tag(ordinal, "Private perk runtime", "private perk runtime")?
+                    == action;
+            if let Some((_, entity)) =
+                sundial::package_authoring::ability_reference::references(&tag.payload)
+                    .map_err(invalid)?
+                    .into_iter()
+                    .find(|(_, entity)| moves.ambiguous.contains(entity))
+            {
+                return Err(validation(format!(
+                    "A Specific Ability condition names ability 0x{entity:08X}, but this \
+                     entry is selected beside more than one form of it. Give the perk to each \
+                     alternative instead"
+                )));
+            }
+            moved += sundial::package_authoring::ability_reference::retarget(
+                &mut tag.payload,
+                &moves.to,
+            )
+            .map_err(invalid)?;
+        }
+        if root_found {
+            return Ok((index, moved));
         }
         Err(validation(format!(
             "The runtime action {action} of a private perk is not among the tags it added"

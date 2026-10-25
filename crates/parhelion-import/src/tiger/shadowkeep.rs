@@ -242,6 +242,38 @@ pub fn sockets(r: &mut Reader, hash: u32) -> Result<Value> {
     Ok(report)
 }
 
+/// A recipe that sets any socket column makes the build curate every socket it inherits, and a
+/// randomized socket then needs a default to keep. One with no default and no listed plugs, such
+/// as year-two armor's random stat intrinsic, takes the curated fallback from the `sockets`
+/// report. Each filled lane is recorded in `fallbacks`.
+pub fn fill_native_defaults(
+    native: &Value,
+    columns: &mut Value,
+    fallbacks: &mut Vec<Value>,
+) -> Result<()> {
+    let sockets = native["sockets"].as_array().context("native sockets")?;
+    for (lane, socket) in sockets.iter().enumerate() {
+        let Some(hash) = socket["curated_fallback"].as_u64() else {
+            continue;
+        };
+        if columns.is_null() {
+            *columns = json!(vec![Value::Null; sockets.len()]);
+        }
+        let columns = columns.as_array_mut().context("recipe socket columns")?;
+        if columns.is_empty() {
+            columns.resize(sockets.len(), Value::Null);
+        }
+        let column = columns
+            .get_mut(lane)
+            .context("recipe lacks donor socket lane")?;
+        if column.is_null() {
+            *column = json!({"choices":[format!("0x{hash:08X}")]});
+            fallbacks.push(json!({"socket":lane,"native_randomized_default":hash}));
+        }
+    }
+    Ok(())
+}
+
 /// The resource an investment record's pointer at `at` names, checked against its class word.
 pub(crate) fn resource(p: &Payload, at: usize, class: u32) -> Result<usize> {
     ensure!(p.u64(at)? != 0, "missing investment resource at {at:X}");

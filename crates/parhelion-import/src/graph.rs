@@ -15,7 +15,7 @@ pub use opened::forget_opened;
 /// The importer revision a new import records in its graph. Raise it with any change to what
 /// conversion writes. Raise `MINIMUM_CONVERTER_REVISION` to it as well when imports made before
 /// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
-pub const CONVERTER_REVISION: u32 = 212;
+pub const CONVERTER_REVISION: u32 = 214;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;

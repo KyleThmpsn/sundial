@@ -2,7 +2,12 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
 
-pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Action> {
+pub(super) fn read(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    native: Option<&mut Reader>,
+) -> Result<Action> {
     ensure!(
         p.bytes::<3>(at + 1)? == [1, 0, 0]
             && p.bytes::<4>(at + 8)? == [255, 0, 0, 0]
@@ -36,7 +41,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Action> {
             links: BTreeMap::new(),
         }],
     };
-    filter::damage(source, p, at + 16, at + 0xE0, &mut graph, 16)?;
+    filter::damage(source, p, at + 16, at + 0xE0, &mut graph, 16, native)?;
     // The ordinary private-action relocation writes the new owner and node offset.
     graph
         .validate_node(NodeKind::Effect(33))

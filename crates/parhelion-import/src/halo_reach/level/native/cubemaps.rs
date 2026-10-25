@@ -248,7 +248,7 @@ pub(super) fn volumes(
     let lights = occlusion::lights(
         level,
         &placed.iter().map(|cube| cube.capture).collect::<Vec<_>>(),
-    );
+    )?;
     let mut volumes = Vec::new();
     let mut kinds = [0usize; 3];
     let mut skipped = Vec::new();

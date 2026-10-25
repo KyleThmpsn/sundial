@@ -47,12 +47,14 @@ fn read(p: &Payload, source: bool) -> Result<Vec<Record>> {
         );
         let class = match (source, p.u32(at - 4)?) {
             (true, 0x80800436) | (false, 0x8080903A) => 0x8080903A,
+            (true, 0x808003AA) | (false, 0x80809032) => 0x80809032,
             (true, 0x80800607) | (false, 0x80809031) => 0x80809031,
             (true, 0x8080060E) | (false, 0x80809033) => 0x80809033,
             (_, other) => anyhow::bail!("Event {other:08X} has no validated native layout"),
         };
         let (size, kind) = match class {
             0x8080903A => (6, 2),
+            0x80809032 => (8, 4),
             0x80809031 => (12, 5),
             _ => (32, 3),
         };
@@ -127,13 +129,34 @@ impl Library {
         reader: &mut Reader,
         bank: &Payload,
     ) -> Result<Self> {
-        let mut records: BTreeMap<Key, BTreeSet<Option<u32>>> = BTreeMap::new();
         let tags = bank
             .array(8, 4, Some(0x80808F48))?
             .into_iter()
             .map(|r| bank.u32(r))
             .collect::<Result<BTreeSet<_>>>()?;
-        for tag in tags {
+        let mut library = Self::selected(reader, &tags)?;
+        // A selected weapon bank need not contain every shared event resource.
+        // Its local bindings remain stronger than the complete native corpus.
+        for (key, candidates) in native::catalog(reader)?.iter() {
+            library
+                .records
+                .entry(key.clone())
+                .or_insert_with(|| candidates.clone());
+        }
+        Ok(library)
+    }
+
+    pub(in crate::d1_roi::native::animation) fn selected(
+        reader: &mut Reader,
+        tags: &BTreeSet<u32>,
+    ) -> Result<Self> {
+        ensure!(!tags.is_empty(), "Native action event witnesses are empty");
+        let mut records: BTreeMap<Key, BTreeSet<Option<u32>>> = BTreeMap::new();
+        for &tag in tags {
+            // Character banks can retain an explicitly unbound clip row.
+            if tag == u32::MAX {
+                continue;
+            }
             let clip = reader.tag(tag, Some(0x80808F49))?;
             // Unsupported witness clips do not weaken the requirements on a source clip.
             let Ok(events) = read(&clip, false) else {
@@ -153,13 +176,6 @@ impl Library {
                 }
                 records.entry(event.key).or_default().insert(event.resource);
             }
-        }
-        // A selected weapon bank need not contain every shared event resource.
-        // Its local bindings remain stronger than the complete native corpus.
-        for (key, candidates) in native::catalog(reader)?.iter() {
-            records
-                .entry(key.clone())
-                .or_insert_with(|| candidates.clone());
         }
         Ok(Self { records })
     }

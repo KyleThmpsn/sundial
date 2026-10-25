@@ -448,6 +448,73 @@ impl ImportedParticles {
         Ok(())
     }
 
+    /// An equipped import must own a native ability bank in the donor's selection bucket.
+    /// The node's storage template is only a format witness. Its prepared bytes carry behavior.
+    pub(in crate::item) fn ability(
+        &self,
+        manager: &PackageManager,
+        symbol: &str,
+        source: TagHash,
+        retained_keys: &[u32],
+    ) -> AuthoringResult<()> {
+        use sundial::package_authoring::{ability_bank, ability_modifier};
+        self.attachment(symbol)?;
+        let source = manager
+            .read_tag(source)
+            .map_err(|error| invalid(error.to_string()))?;
+        let slot = ability_modifier::entity_bank(&source)
+            .map_err(invalid)?
+            .and_then(ability_modifier::bank_slot)
+            .ok_or_else(|| invalid("The native ability donor has no qualified selection bucket"))?;
+        let root = self
+            .nodes
+            .iter()
+            .find(|node| node.symbol == symbol)
+            .ok_or_else(|| invalid("Imported ability root is missing"))?;
+        let (count, _, first, _) = array_at(&root.payload, 16)?;
+        let mut banks = BTreeSet::new();
+        for index in 0..count {
+            let at = first + index * 12;
+            let owner = read_u32(&root.payload, at)?;
+            let target = root
+                .patches
+                .iter()
+                .find(|(offset, _)| *offset == at)
+                .and_then(|(_, symbol)| self.nodes.iter().find(|node| node.symbol == *symbol));
+            let template = target.map_or(owner, |node| node.template);
+            if !ability_modifier::is_bank(template) {
+                continue;
+            }
+            let bank =
+                target.ok_or_else(|| invalid("An imported ability must own its prepared bank"))?;
+            if bank.reference.is_some() || ability_modifier::bank_slot(template) != Some(slot) {
+                return Err(invalid(
+                    "The imported ability bank does not match its selection bucket",
+                ));
+            }
+            ability_bank::validate_native_owner(&bank.payload).map_err(invalid)?;
+            banks.insert(bank.symbol.as_str());
+            if !retained_keys.is_empty() {
+                let keys = ability_bank::property_rows(&bank.payload)
+                    .map_err(invalid)?
+                    .into_iter()
+                    .map(|row| row.key)
+                    .collect::<BTreeSet<_>>();
+                if retained_keys.iter().any(|key| !keys.contains(key)) {
+                    return Err(invalid(
+                        "The imported ability bank lacks a property retained by its entry",
+                    ));
+                }
+            }
+        }
+        if banks.len() != 1 {
+            return Err(invalid(
+                "An imported ability needs exactly one private bank in its selection bucket",
+            ));
+        }
+        Ok(())
+    }
+
     pub(in crate::item) fn merge(&mut self, other: Self) -> AuthoringResult<()> {
         if self.presentation.is_some() && other.presentation.is_some() {
             return Err(invalid(

@@ -9,6 +9,7 @@ use sundial::package_authoring::{
 };
 mod connected;
 mod dynamic;
+mod nested;
 mod status;
 
 struct Modifier {
@@ -282,6 +283,15 @@ fn modifier_owner(source: &Source, graph: &Payload, owner: u32) -> Result<Vec<Mo
 }
 
 pub(super) fn armor_attachment(source: &Source, p: &Payload, at: usize) -> Result<()> {
+    armor_attachment_inner(source, p, at, &mut Vec::new())
+}
+
+pub(super) fn armor_attachment_inner(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    ancestors: &mut Vec<u32>,
+) -> Result<()> {
     match p.u8(at + 2)? {
         1 | 2 => Ok(()),
         0 => {
@@ -291,6 +301,13 @@ pub(super) fn armor_attachment(source: &Source, p: &Payload, at: usize) -> Resul
             let tag = p.u32(at + 16)?;
             let graph = source.read(tag)?;
             let owners = graph.array(32, 12, Some(0x80800715))?;
+            if owners.len() == 1 {
+                let owner = source.read(graph.u32(owners[0])?)?;
+                if owner.u32(owner.pointer(24)? - 4)? == 0x80802A94 {
+                    let child = nested::source_action(source, &graph)?;
+                    return Host::Armor.validate_action_inner(source, child, ancestors);
+                }
+            }
             let rows = if owners.len() == 2 {
                 let owner = source.read(graph.u32(owners[0])?)?;
                 ensure!(
@@ -320,6 +337,8 @@ pub(super) fn read(
     native: &mut Reader,
     p: &Payload,
     at: usize,
+    ancestors: &mut Vec<u32>,
+    omitted_presentation: &mut usize,
 ) -> Result<Vec<(Action, NativeAssetPatch)>> {
     if (p.u32(at - 4)?, p.u8(at)?) == (0x80802B8D, 1) {
         return dynamic::read(source, native, p, at);
@@ -350,6 +369,28 @@ pub(super) fn read(
         "Source attachment owner class differs"
     );
     let owner = source.read(owner_tag)?;
+    if owner.u32(owner.pointer(24)? - 4)? == 0x80802A94 {
+        if p.u8(at + 2)? == 1 {
+            // A player attachment cannot supply an owning weapon to the child.
+            // Apply the same player-host restrictions used by an armor action.
+            Host::Armor.validate_action(source, nested::source_action(source, &source_graph)?)?;
+        }
+        let (tag, program, omitted) = nested::read(source, native, &source_graph, ancestors)?;
+        *omitted_presentation = omitted_presentation
+            .checked_add(omitted)
+            .context("Nested presentation record count overflow")?;
+        return Ok(vec![(
+            attachment(p, at, tag, None)?,
+            NativeAssetPatch {
+                action_index: 0,
+                source_graph: tag,
+                patches: Vec::new(),
+                appends: Vec::new(),
+                remove_owners: Vec::new(),
+                programs: vec![program],
+            },
+        )]);
+    }
     if owner.u32(owner.pointer(24)? - 4)? == 0x808029C3 {
         let (tag, patches) = connected::read(source, native, &source_graph)?;
         return Ok(vec![(
@@ -360,6 +401,7 @@ pub(super) fn read(
                 patches,
                 appends: Vec::new(),
                 remove_owners: Vec::new(),
+                programs: Vec::new(),
             },
         )]);
     }
@@ -385,6 +427,7 @@ pub(super) fn read(
             patches,
             appends,
             remove_owners: Vec::new(),
+            programs: Vec::new(),
         },
     )])
 }

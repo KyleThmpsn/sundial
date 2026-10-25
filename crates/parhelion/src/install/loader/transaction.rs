@@ -138,7 +138,9 @@ impl Record {
     fn write(&self) -> Result<(), InstallError> {
         write_json(&self.journal(), self)
     }
-    fn migration(&self) -> bool {
+    /// Whether this operation retires an earlier layout's packages, the files in stock `packages`
+    /// or those of an older transaction it recovers, besides publishing the mod folder.
+    fn retires_legacy(&self) -> bool {
         !self.legacy.is_empty() || self.legacy_recovery.is_some()
     }
     /// Whether the recorded runtime loads the mod folder. On Dawn or Sunrise before 0.6 the only
@@ -789,14 +791,14 @@ pub(in crate::install) fn recover(
             verify_file(&path, &TransactionDigest::from(artifact))?;
         }
     }
-    if record.migration() {
-        // Commit writes the account before any package moves. A migration whose account change
-        // was not written yet moved nothing, so recovery restores the account and keeps every
-        // legacy package where it is. Once it was written, the migration finishes forward.
+    if record.retires_legacy() {
+        // Commit writes the account before any package changes. A retirement whose account change
+        // was not written yet changed no package, so recovery restores the account and keeps every
+        // legacy package where it is. Once it was written, the retirement finishes forward.
         if record.legacy_recovery.is_none() && account::verify_committed(&record.context).is_err() {
-            return roll_back_unstarted_migration(&mut record, request);
+            return roll_back_unstarted_retirement(&mut record, request);
         }
-        complete_migration(&mut record, request)?;
+        finish_legacy_retirement(&mut record, request)?;
         return Ok(Some(RecoveryOutcome::CommittedTransaction));
     }
     check_stopped(request.game_running_check)?;
@@ -894,9 +896,9 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
     if let Some(legacy) = &record.legacy_recovery {
         legacy.validate(target, &root)?;
     }
-    if record.migration() && record.members().any(|m| m.original.is_some()) {
+    if record.retires_legacy() && record.members().any(|m| m.original.is_some()) {
         return Err(InstallError::validation(
-            "Legacy migration cannot replace an existing managed mod",
+            "Retiring legacy packages cannot replace an existing managed mod",
         ));
     }
     validate_source_artifact_records(record.stock.clone())?;
@@ -928,7 +930,12 @@ fn cleanup(record: &Record) -> Result<(), InstallError> {
     fs::remove_file(record.journal()).map_err(failure)
 }
 
-fn complete_migration(record: &mut Record, request: &RecoveryRequest) -> Result<(), InstallError> {
+/// Publishes the staged mod folder and retires the legacy packages after a committed account
+/// change, so an interrupted retirement finishes forward.
+fn finish_legacy_retirement(
+    record: &mut Record,
+    request: &RecoveryRequest,
+) -> Result<(), InstallError> {
     let target = &record.context.target_packages_directory;
     check_stopped(request.game_running_check)?;
     verify_source_artifacts(target, &record.stock)?;
@@ -963,7 +970,7 @@ fn complete_migration(record: &mut Record, request: &RecoveryRequest) -> Result<
     cleanup(record)
 }
 
-fn roll_back_unstarted_migration(
+fn roll_back_unstarted_retirement(
     record: &mut Record,
     request: &RecoveryRequest,
 ) -> Result<Option<RecoveryOutcome>, InstallError> {

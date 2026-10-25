@@ -16,11 +16,11 @@ Sundial edits accounts and settings for [Project Sunrise](https://github.com/sta
 ## Compatibility
 
 - Destiny 2 Shadowkeep build `86657.20.08.23`
-- Project Sunrise 0.6 (settings schema v18 and SQLite schema v3)
-- Dawn 0.1.3 or newer (`player-state.db` schema v5)
+- Project Sunrise, up to version 0.6 (settings schema v18 and SQLite schema v3)
+- Dawn, up to version 1.7.2 (`player-state.db` schema v5)
 - Windows 10 or Linux x86-64 (glibc 2.35 or later)
 
-Newer Sunrise schemas may be opened with a warning, but future compatibility is not guaranteed. On Sunrise 0.6 or later, Sundial also reads content from other Sunrise mods, leaving out any that Sunrise would refuse.
+Sundial remains compatible with previous Project Sunrise and Dawn releases. Newer schemas may be opened with a warning, but future compatibility is not guaranteed.
 
 Sunrise schema v18 stores most account data in `data/investment.sqlite3`, with identity and runtime configuration in `settings.json`. Dawn stores account data, preferences, and key bindings in `player-state.db`, with identity, language, and runtime configuration in `Dawn/settings.json`. Sundial selects the active format automatically and still supports earlier Sunrise builds, with SQLite schema v2 or legacy JSON accounts.
 
@@ -105,11 +105,23 @@ cargo build --release --locked -p sundial-suite
 
 The executable is `target/release/sundial.exe` on Windows or `target/release/sundial` on Linux.
 
+### D2 Importer
+
+The D2 Importer is a work-in-progress feature that isn't included in releases yet. Some imported items and features will be broken or incomplete. Once it's more polished, it will be included in releases. To try it now, build with the importer feature:
+
+```sh
+cargo build --release --locked -p sundial-suite --features d2-model-importer
+```
+
+Then turn on **D2 Importer** in Parhelion's **Preferences… > Editor & Library > Experimental**, and open it from **Tools > D2 Importer…**.
+
 ## Credits and licensing
 
 - [tiger-pkg](https://github.com/v4nguard/tiger-pkg) provides the Destiny 2 package reader. This project would not be possible without it.
 - Package-layout research was informed by Sunrise, [Charm](https://github.com/MontagueM/Charm), and [Alkahest](https://github.com/cohaereo/alkahest), whose Pre-Beyond Light branch helped guide the model preview.
 - Compatibility with other Sunrise mods is based on Project Sunrise's mod loader and [Sunrise Studio](https://github.com/stanuwu/SunriseStudio)'s merge data.
+- Thanks to [VulnerabilitiesrUs](https://x.com/TempAccountNull) for help with various aspects of the D2 Importer, and to [isinternets](https://github.com/isinternets) for help researching Destiny 1 imports.
+- [Assembly](https://github.com/XboxChaos/Assembly)'s tag definitions helped guide the D2 Importer's Halo: Reach support.
 - Thanks to [Solus](https://www.youtube.com/@Solus-yt) for creating the Project Sunrise logo used in Parhelion's badge and inspiring its watermark.
 - Thanks to [soul](https://github.com/chnsw) for creating the Dawn icon used in Parhelion's badge and inspiring its watermark, and to [Flumoxxed](https://www.youtube.com/@flumx) for the SVG!
 - [justrealmilk/destiny-icons](https://github.com/justrealmilk/destiny-icons) provides optional alternative icons for custom perks, badges, and watermarks.

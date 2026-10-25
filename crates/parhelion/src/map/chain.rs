@@ -179,6 +179,12 @@ const SUN: u32 = 0x8080_6F61;
 const SUN_RECORD: usize = 0x10;
 const SUN_MATERIALS: usize = 0x1C;
 const SUN_FLARE: usize = 0x20;
+/// The sun's float at `+0x14`: 1,800 in Distant Shore's and `mission_proton`'s, 7,200 in Midtown's
+/// and The Dead Cliffs'. Every map's sun takes 1,800. With it, Breakneck's and Nightfall's
+/// `GlobalLighting+0x10` both read 10, and their sun rows differed only by the frame's exposure.
+/// Whether 7,200 changed the sun was not measured.
+const SUN_SCALAR: usize = 0x14;
+const SUN_SCALAR_VALUE: f32 = 1800.;
 /// The lens flare record class, and how far into a sun or atmosphere resource its references are
 /// sought.
 const LENS_FLARE_RECORD: u32 = 0x8080_6F68;
@@ -187,10 +193,9 @@ const SUN_RECORD_CLASS: u32 = 0x8080_6F64;
 const SUN_TRACKS: usize = 0x10;
 /// The sun record's leading floats, read as the sun's time of day windows: `mission_proton`'s
 /// `(0, 1, 0, 1)`, Midtown's `(1, 0, 1, 0)` and Distant Shore's `(0.667, 0.833, 0.667, 0.833)`.
-/// With Midtown's, Breakneck's and Paradiso's global lighting sun (row 62 from
-/// `GlobalLighting+0x10`) read zero in game, as Midtown lights itself through time of day channels
-/// that a converted map does not drive, and with `mission_proton`'s Nightfall's read 15.1. Every
-/// map's sun takes `mission_proton`'s. The windows reading is an inference from those values.
+/// Every map's sun takes `mission_proton`'s. Breakneck's row 62 reads zero with either, since its
+/// global lighting program carries the sun in row 65, and its sun color reads 10 with these. The
+/// windows reading is an inference from the values, and their effect was not isolated.
 const SUN_WINDOWS: [f32; 4] = [0., 1., 0., 1.];
 const SUN_TRACK_SLOTS: usize = 4;
 const SUN_TRACK_CLASS: u32 = 0x8080_8EF3;
@@ -202,8 +207,10 @@ const SUN_DIRECTION_CLASS: u32 = 0x8080_0090;
 const ATMOSPHERE: u32 = 0x8080_7086;
 const ATMOSPHERE_VOLUME: usize = 0x90;
 /// A second volume, or none, which the sky reflection generator samples beside the first and
-/// blends toward by global channel 43. Midtown names one (`80B91A92`) and Distant Shore none, so a
-/// map that replaced only the first could take Midtown's own sky in its players' light.
+/// blends toward by global channel 43. Midtown names one (`80B91A92`), and Distant Shore and
+/// `mission_proton` none. A map with its own atmosphere volume names none, the configuration
+/// whose global lighting sun read 15.1 on Nightfall, where Midtown's two-volume atmosphere lights
+/// itself through time of day channels with that sun at zero.
 const ATMOSPHERE_SECOND_VOLUME: usize = 0x94;
 /// The atmosphere's 2D distance lookup, 16 by 1,024 in Distant Shore's, which a map whose
 /// surfaces draw their own fog replaces with a black copy.
@@ -2621,18 +2628,19 @@ impl Chain {
                                 // map's sky draws its own.
                                 write_u32(&mut payload, resource + SUN_MATERIALS, u32::MAX)?;
                                 write_u32(&mut payload, resource + SUN_FLARE, u32::MAX)?;
+                                write_u32(
+                                    &mut payload,
+                                    resource + SUN_SCALAR,
+                                    SUN_SCALAR_VALUE.to_bits(),
+                                )?;
                                 if let (Some(row), Some(volume)) = (atmosphere_resource, atmosphere)
                                 {
                                     write_u32(&mut payload, row + ATMOSPHERE_VOLUME, volume.0)?;
-                                    if read_u32(&payload, row + ATMOSPHERE_SECOND_VOLUME)?
-                                        != u32::MAX
-                                    {
-                                        write_u32(
-                                            &mut payload,
-                                            row + ATMOSPHERE_SECOND_VOLUME,
-                                            volume.0,
-                                        )?;
-                                    }
+                                    write_u32(
+                                        &mut payload,
+                                        row + ATMOSPHERE_SECOND_VOLUME,
+                                        u32::MAX,
+                                    )?;
                                 }
                                 if let (Some(row), Some(lookup)) = (atmosphere_resource, lookup) {
                                     write_u32(&mut payload, row + ATMOSPHERE_LOOKUP, lookup.0)?;

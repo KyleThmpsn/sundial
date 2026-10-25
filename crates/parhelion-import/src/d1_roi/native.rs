@@ -4,7 +4,7 @@ use crate::tiger::reader::Reader;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-mod animation;
+pub(crate) mod animation;
 mod component;
 mod dye;
 mod geometry;

@@ -354,9 +354,13 @@ pub(super) fn decode(
     fs::create_dir_all(root)?;
     let mut files = BTreeMap::new();
     let mut missing = BTreeSet::new();
-    for &id in ids {
-        crate::cancellation::check()?;
-        if decode_sample(&banks, &decoder, id, root)?.is_some() {
+    // Each sample decodes in its own decoder process into its own file, so samples decode in
+    // parallel.
+    let ids = ids.iter().copied().collect::<Vec<_>>();
+    let decoded =
+        crate::cancellation::parallel_map(&ids, |&id| decode_sample(&banks, &decoder, id, root))?;
+    for (id, sample) in ids.into_iter().zip(decoded) {
+        if sample?.is_some() {
             files.insert(id, root.join(format!("{id:08X}.wav")));
         } else {
             missing.insert(id);
@@ -400,9 +404,14 @@ pub(super) fn export(
     let mut result = Vec::new();
     let mut unavailable = Vec::new();
     let expected = wanted.len();
-    for id in wanted {
-        crate::cancellation::check()?;
-        match decode_sample(&banks, &decoder, id, root)? {
+    // Each sample decodes in its own decoder process into its own file, so samples decode in
+    // parallel.
+    let wanted = wanted.into_iter().collect::<Vec<_>>();
+    let decoded = crate::cancellation::parallel_map(&wanted, |&id| {
+        decode_sample(&banks, &decoder, id, root)
+    })?;
+    for (id, sample) in wanted.into_iter().zip(decoded) {
+        match sample? {
             Some(sample) => result.push(sample),
             None if options.record_missing_samples => unavailable.push(json!({"id":id,"reason":"Referenced source sample is absent from the configured banks","native_playback":false})),
             None => bail!(

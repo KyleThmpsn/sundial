@@ -28,16 +28,15 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 - **Weapon Stats** include starting perk bonuses, with green and red changes and a hover breakdown.
 - **Firing Behavior**, **Barrel**, and **Magazine** on **Gameplay** can each come from a different weapon and no longer need Experimental Features. Each one now copies just that part's values into your base weapon and keeps the rest of its gameplay intact, so these swaps are much more reliable.
-- **Barrel Settings** on **Gameplay** adds **Pellets per Bullet**, **Spread**, and **Pattern**. Choose **Filled Circle**, **Ring**, or **Custom**, then edit each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview.
+- **Barrel Settings** on **Gameplay** adds **Bullets per Shot**, which sets how many bullets fire with each trigger pull, and **Pellets per Bullet**, **Spread**, and **Pattern**. Choose **Filled Circle**, **Ring**, or **Custom**, then edit each ring's pellet count, inner and outer radius, rotation, and randomness beside a preview.
   - Some weapon types may not work as expected with **Pellets per Bullet** above 1. Extra Rocket Launcher rockets, for example, explode as soon as they're fired. Confirmed working types include Fusion Rifles, Shotguns, Pulse Rifles, Auto Rifles, Scout Rifles, Submachine Guns, Sniper Rifles, Grenade Launchers, Sidearms, and Hand Cannons.
-- **Bullets per Shot** sets how many bullets fire with each trigger pull.
 - **Projectile** on **Gameplay** tunes what a weapon fires, such as a rocket's speed and gravity, on any weapon that fires one, including shotguns and fusion rifles. Projectiles it spawns get their own **Spawned Projectile** cards, and ones that spawn only with certain perks or states sit under **Show Alternatives**. Other weapons that fire the same projectile keep theirs.
 - **Animations** on **Appearance** can come from another weapon. Its **Actions** borrow single actions, such as **Hip Fire** or **Holster**, from another frame. **Reload Animation** can borrow other reloads on compatible rigs, including Submachine Guns, Grenade Launchers, and Bows.
   - Some weapon type combinations may still not work as expected, such as a Bow's appearance on a Shotgun base, Swords with other weapon types, or Machine Guns with some weapon types.
 - A weapon with another type's appearance now takes that type's name, Collections page, and HUD icon. A **Keep … Type** checkbox on **Appearance**, such as **Keep Scout Rifle Type**, keeps the base weapon's.
 - **Placement** on **Appearance** moves the model in the hand, and **Markers** moves named points such as the sights and muzzle.
 
-### Project Sunrise 0.6
+### Project Sunrise 0.6 and Sunrise Studio
 
 - Parhelion supports Project Sunrise 0.6's mods feature. Builds install to the mod folder, and Sunrise's **Mods** page lists them as **Parhelion**, with the version of Sundial that built them. Packages from earlier builds can't move there, so Parhelion offers to build them again, and installing backs up and removes the old ones. **Review Sunrise Mod Upgrade…** in **Preferences… > Builds & Backups** opens that review again.
 - You can switch between Sunrise 0.6 and Dawn or an earlier Sunrise. Sundial and Parhelion read whichever runtime is active, and installing there backs up and removes the build installed for the other one, so the two never load together. Parhelion keeps the build you last installed for each, and after you switch back it offers to install that build again without a rebuild.
@@ -82,6 +81,8 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 
 ### Workbench and Builds
 
+- Builds and installs are faster. Unchanged items reuse their compiled data and more work runs on several cores at once. Parhelion also uses less memory when browsing artwork and the recipe library.
+- Opening an item, its model preview, and other views that read the game's packages no longer spends several seconds rereading the packages each time.
 - Installation also removes saved items and perk selections the game no longer defines, such as ones left from an older build. The review lists them before you confirm, and the account backup keeps them.
 - Weapon, Armor, Sparrow, Ship, and Ghost Shell pages now show an embedded model preview, with a corner button that opens the full viewer. To load a page's model only when you click **Load Model**, turn off **Load Model Previews Automatically** in **Preferences…**.
 - A changed value turns its name white and shows its original value beside it. Click that to restore it. A dot marks each section you've changed.
@@ -89,8 +90,6 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - The recipe editor has **Undo** and **Redo**, in the **Recipe…** menu or with Ctrl+Z and Ctrl+Y.
 - Leaving a recipe with unsaved changes now offers to save them.
 - **Technical Build** also shows the rig, moved markers, and animation sources, flags when the recipe has changed since the build, and names far more of the game's native fields.
-- Builds and installs are faster. Unchanged items reuse their compiled data and more work runs on several cores at once. Parhelion also uses less memory when browsing artwork and the recipe library.
-- Opening a weapon or other item, its model preview, and other views that read the game's packages is faster. Sundial reads the packages' tables once and reuses them, instead of spending several seconds rereading them for each preview and view.
 - The recipe library and **Items in This Build** mark recipes whose items are installed, and **Build & Stage** warns before a build would remove installed items and offers **Add to Build**.
 
 ### Fixes
@@ -115,6 +114,7 @@ Read the [Parhelion README](crates/parhelion/README.md) for the workbench, bundl
 - Fixed installs, recovery, and removals failing when the Sunrise or Dawn DLL is linked to a build outside the game folder.
 - Fixed installs and removals clearing only the active runtime's item cache, so switching between Dawn and Sunrise could start the game with outdated custom items.
 - Fixed builds refusing some base perks and items the game records in more than one place.
+- Fixed builds occasionally failing on a custom perk or item, depending only on which identifiers the build gave it.
 - Fixed Dawn installs and uninstalls sometimes bringing back removed items or changing account data they didn't list.
 - Fixed Dawn installs leaving saved rolls on sockets a weapon no longer has.
 - Fixed Dawn Collections sync sometimes adding a duplicate unlock row, which made Sundial refuse the account, or changing an account whose database layout Sundial doesn't support.
@@ -183,4 +183,4 @@ Model previews in Sundial and Parhelion support more models and reproduce more o
 
 Sundial v0.4.1 and newer can update to v0.6 in the app. Older releases should install v0.6 manually.
 
-Parhelion remains experimental. Authored abilities, custom perks on abilities, Emblems, mods, sockets on armor and other items, vehicles, Subclasses, appearances from other weapon types, and borrowed perk behavior still need in-game testing, and some combinations may crash. Report issues on [GitHub](https://github.com/KyleThmpsn/sundial/issues), on Discord, or on Twitter/X [@KyleThmpsn](https://x.com/KyleThmpsn). For Parhelion issues, include the recipe and describe what happens in game.
+Parhelion remains experimental. Authored abilities, custom perks on abilities, Emblems, mods, sockets on armor and other items, vehicles, Subclasses, appearances from other weapon types, and borrowed perk behavior still need in-game testing, and some combinations may crash. Report issues on [GitHub](https://github.com/KyleThmpsn/sundial/issues). You can also reach me on Discord or [Twitter/X](https://x.com/kylethmpsn) as kylethmpsn. For Parhelion issues, include the recipe and describe what happens in game.

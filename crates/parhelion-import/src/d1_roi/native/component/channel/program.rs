@@ -1,52 +1,12 @@
 //! Checked channel expressions with an explicit bank-local input list.
 use super::*;
-use sundial::package_authoring::sandbox_perk::action::native::value::{
-    Instruction, Program as NativeProgram,
-};
+use crate::d1_roi::procedure::validate;
 
 pub(super) struct Program {
     code: Vec<u8>,
     constants: Vec<u8>,
     pub(super) inputs: Vec<u32>,
     pub(super) flags: u16,
-}
-
-pub(in crate::d1_roi::native::component) fn validate(
-    code: &[u8],
-    constants: &[[u32; 4]],
-    inputs: usize,
-) -> Result<()> {
-    let mut instructions = Vec::new();
-    let mut at = 0;
-    while at < code.len() {
-        let opcode = code[at];
-        at += 1;
-        let operand = match opcode {
-            0x01 | 0x02 | 0x03 | 0x04 | 0x0F | 0x23 => None,
-            0x22 | 0x34 | 0x35 | 0x37 | 0x38 | 0x3C | 0x3E => {
-                let operand = *code.get(at).context("Truncated channel instruction")?;
-                at += 1;
-                Some(operand)
-            }
-            _ => anyhow::bail!("Source channel opcode {opcode:02X} requires translation"),
-        };
-        ensure!(
-            opcode != 0x3E || at == code.len(),
-            "Source channel output must end its procedure"
-        );
-        instructions.push(Instruction { opcode, operand });
-    }
-    // Channel input/output operands are one byte. Material-expression extern operands have a
-    // different width. Reuse the native stack and constant-span checks only after decoding this
-    // dialect. Declaration +74 is preserved separately and is not the scalar fast-path field.
-    NativeProgram {
-        instructions,
-        constants: constants.to_vec(),
-        fast_path: 0,
-    }
-    .validate_inputs(inputs)
-    .map_err(anyhow::Error::msg)
-    .context("Source channel procedure")
 }
 
 pub(super) fn read(source: &Payload, row: usize, channels: usize) -> Result<Program> {

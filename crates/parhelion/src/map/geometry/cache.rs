@@ -80,7 +80,7 @@ fn ordinary(path: &Path) -> Result<fs::Metadata> {
 
 fn files(root: &Path) -> Result<Vec<File>> {
     let mut pending = vec![root.to_path_buf()];
-    let mut result = Vec::new();
+    let mut paths = Vec::new();
     while let Some(directory) = pending.pop() {
         parhelion_import::cancellation::check()?;
         for entry in fs::read_dir(directory)? {
@@ -95,15 +95,48 @@ fn files(root: &Path) -> Result<Vec<File>> {
             if relative == Path::new("cache.json") {
                 continue;
             }
-            let digest =
-                crate::artifact::digest_file(&path).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            result.push(File {
-                path: relative,
-                bytes: digest.byte_length,
-                sha256: digest.sha256,
-            });
+            paths.push((path, relative));
         }
     }
+    // A campaign generation holds thousands of payloads and gigabytes, so workers take files in
+    // turn and the list is sorted afterwards.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .clamp(1, 8)
+        .min(paths.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let digests = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| -> Result<Vec<File>> {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((path, relative)) = paths.get(index) else {
+                            return Ok(done);
+                        };
+                        parhelion_import::cancellation::check()?;
+                        let digest = crate::artifact::digest_file(path)
+                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                        done.push(File {
+                            path: relative.clone(),
+                            bytes: digest.byte_length,
+                            sha256: digest.sha256,
+                        });
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("A map cache hash worker stopped"))?
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    let mut result = digests.into_iter().flatten().collect::<Vec<_>>();
     result.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
 }

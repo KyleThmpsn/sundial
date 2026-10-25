@@ -26,18 +26,18 @@ impl Default for Prepared {
 }
 
 #[derive(PartialEq, Eq)]
-struct Choice {
-    descriptor: usize,
-    tag: u32,
-    weight: u32,
+pub(in crate::d1_roi::native::animation) struct Choice {
+    pub(in crate::d1_roi::native::animation) descriptor: usize,
+    pub(in crate::d1_roi::native::animation) tag: u32,
+    pub(in crate::d1_roi::native::animation) weight: u32,
 }
-struct Action {
-    conditional: bool,
-    index: usize,
-    choices: Vec<Choice>,
+pub(in crate::d1_roi::native::animation) struct Action {
+    pub(in crate::d1_roi::native::animation) conditional: bool,
+    pub(in crate::d1_roi::native::animation) index: usize,
+    pub(in crate::d1_roi::native::animation) choices: Vec<Choice>,
 }
 
-fn action(
+pub(in crate::d1_roi::native::animation) fn action(
     states: &Payload,
     bank: &Payload,
     node: usize,
@@ -128,7 +128,10 @@ fn action(
     })
 }
 
-fn names(p: &Payload, source: bool) -> Result<BTreeMap<u32, usize>> {
+pub(in crate::d1_roi::native::animation) fn names(
+    p: &Payload,
+    source: bool,
+) -> Result<BTreeMap<u32, usize>> {
     let nodes = p.array(24, 16, Some(if source { 0x808023C9 } else { 0x8080342F }))?;
     let mut result = BTreeMap::new();
     for row in p.array(8, 8, Some(if source { 0x80802153 } else { 0x8080342E }))? {

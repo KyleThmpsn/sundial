@@ -74,12 +74,14 @@ pub struct Templates {
     pub shadow: u32,
 }
 
-/// One drawn group of a piece: its surface key, the stage its surface draws in, and whether it
-/// also draws in the depth prepass and shadow stages, which hold every pixel of its triangles.
+/// One drawn group of a piece: its surface key, the stage its surface draws in, whether it also
+/// draws in the depth prepass and shadow stages, which hold every pixel of its triangles, and
+/// whether it is alpha tested, so it draws the depth prepass with its own surface.
 pub(super) struct Draw {
     pub key: u32,
     pub stage: u8,
     pub solid: bool,
+    pub clipped: bool,
 }
 
 /// One instance of the map's statics: its static mesh's symbol, where its geometry's origin sits
@@ -220,6 +222,12 @@ pub(super) fn mesh(
         if draw.solid {
             passes[0].push((part, DEPTH_STAGE, POSITION_LAYOUT, Ok(templates.depth)));
             passes[1].push((part, SHADOW_STAGE, POSITION_LAYOUT, Ok(templates.shadow)));
+        } else if draw.clipped {
+            // Stock statics draw every part in the depth prepass, an alpha-tested one with a
+            // pixel program of its own. Left out of it, Paradiso's pine branches drew from afar
+            // and vanished as the camera neared them, while their solid trunks stayed. The
+            // surface's own technique clips the same texels in the prepass as in its stage.
+            passes[0].push((part, DEPTH_STAGE, SURFACE_LAYOUT, Err(surface.clone())));
         }
         passes[2].push((part, SURFACE_STAGE, SURFACE_LAYOUT, Err(surface)));
     }
@@ -481,6 +489,16 @@ pub(super) fn solid(materials: &BTreeMap<u32, super::Material>) -> BTreeSet<u32>
     materials
         .iter()
         .filter(|(_, material)| material.alpha_mode() == "OPAQUE" && !material.decal())
+        .map(|(&key, _)| key)
+        .collect()
+}
+
+/// The alpha-tested surface keys that are not decals, which draw the depth prepass with their own
+/// surface so it holds only the texels they keep.
+pub(super) fn clipped(materials: &BTreeMap<u32, super::Material>) -> BTreeSet<u32> {
+    materials
+        .iter()
+        .filter(|(_, material)| material.alpha_mode() == "MASK" && !material.decal())
         .map(|(&key, _)| key)
         .collect()
 }

@@ -200,6 +200,7 @@ fn emit(
             patches,
             appends: Vec::new(),
             remove_owners: Vec::new(),
+            programs: Vec::new(),
         },
     ))
 }

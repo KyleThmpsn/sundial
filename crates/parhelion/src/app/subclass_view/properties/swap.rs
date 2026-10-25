@@ -16,7 +16,7 @@ pub(super) struct Sources<'a> {
 /// filter asks for all of them.
 pub(super) fn swap_row(
     ui: &mut egui::Ui,
-    (card, own_graphs): (&Card, &BTreeSet<u32>),
+    (card, tree): (&Card, &Tree),
     sources: &Sources<'_>,
     properties: &mut Properties,
     edits: &mut EntryEdits,
@@ -67,34 +67,42 @@ pub(super) fn swap_row(
         }
     });
     if chosen != current {
-        // The values of the projectile no longer swapped in go with it, unless the ability's own
-        // tree or a projectile another place still fires holds the same graph.
-        if let Some(old) = current {
-            let graphs_of = |graph: u32| {
-                properties
-                    .trees
-                    .get(&graph)
-                    .and_then(|tree| tree.as_ref().ok())
-                    .map_or_else(|| BTreeSet::from([graph]), |tree| tree_graphs(tree))
-            };
-            let graphs = graphs_of(old);
-            let kept = edits
-                .spawn_swaps
-                .iter()
-                .filter(|swap| !swaps.contains(&(swap.graph, swap.replaced)))
-                .flat_map(|swap| graphs_of(swap.replacement))
-                .collect::<BTreeSet<_>>();
-            edits.ability_values.retain(|value| {
-                value.locator.graph_tag.is_none_or(|tag| {
-                    !graphs.contains(&tag.get())
-                        || own_graphs.contains(&tag.get())
-                        || kept.contains(&tag.get())
-                })
-            });
-        }
         for &(parent, tag) in &swaps {
             edits.set_swap(parent, tag, chosen);
         }
+        // Values go with a projectile nothing fires any more: the one swapped in here before, and
+        // the original once another takes its place. A graph the ability's own tree still fires,
+        // or that a projectile swapped in at any place reaches, keeps them, since the build gives
+        // a value for a graph two trees share to each.
+        let graphs_of = |graph: u32| {
+            properties
+                .trees
+                .get(&graph)
+                .and_then(|tree| tree.as_ref().ok())
+                .map_or_else(|| BTreeSet::from([graph]), |tree| tree_graphs(tree))
+        };
+        let mut released = BTreeSet::new();
+        if let Some(old) = current {
+            released.extend(graphs_of(old));
+        }
+        if chosen.is_some() {
+            released.extend(swaps.iter().map(|&(_, tag)| tag));
+        }
+        let fired = fired_graphs(tree, edits)
+            .into_iter()
+            .chain(
+                edits
+                    .spawn_swaps
+                    .iter()
+                    .flat_map(|swap| graphs_of(swap.replacement)),
+            )
+            .collect::<BTreeSet<_>>();
+        edits.ability_values.retain(|value| {
+            value
+                .locator
+                .graph_tag
+                .is_none_or(|tag| !released.contains(&tag.get()) || fired.contains(&tag.get()))
+        });
     }
     // The projectile swapped in deals the ability's damage type unless one is set for it here.
     if edits.swap(parent, tag).is_none() {
@@ -133,6 +141,31 @@ pub(super) fn swap_row(
             edits.set_swap_damage(parent, tag, choice);
         }
     }
+}
+
+/// The graphs of the ability's own tree it still fires: each one that no swap replaces, itself
+/// or above it.
+fn fired_graphs(tree: &Tree, edits: &EntryEdits) -> BTreeSet<u32> {
+    let replaced = |tag: u32| {
+        tree.parents
+            .get(&tag)
+            .is_some_and(|parent| edits.swap(*parent, tag).is_some())
+    };
+    tree_graphs(tree)
+        .into_iter()
+        .filter(|&tag| {
+            let mut at = tag;
+            loop {
+                if replaced(at) {
+                    return false;
+                }
+                match tree.parents.get(&at) {
+                    Some(&parent) => at = parent,
+                    None => return true,
+                }
+            }
+        })
+        .collect()
 }
 
 /// A projectile's name: the stock ability that fires it, else the engine catalog's.

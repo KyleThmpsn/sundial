@@ -1,8 +1,8 @@
-//! Scalar-only source effect sequences preserve scheduling and their material output providers.
+//! Scalar source effect sequences preserve scheduling, delays and their material output providers.
 use super::*;
+use crate::d1_roi::sequence::{Bindings, Domain, Plan};
 use crate::tiger::{allocation::Row, sequence};
 pub(super) mod output;
-mod source;
 
 fn pair(p: &mut Payload, owner: u32, i: usize, d: usize, ic: u32, dc: u32) -> Result<()> {
     for (at, class, twin) in [(i, dc, d), (d, ic, i)] {
@@ -25,9 +25,22 @@ impl Assembly<'_> {
     ) -> Result<Component> {
         let names =
             light::inputs::names_at(self.source, source, entity, tag, ordinal, 0xB0, 0x1A0)?;
-        let tree = source::tree(source, names.len())?;
+        let plan = Plan::read(self.source, source)?;
+        let tree = plan.topology();
+        ensure!(
+            tree.input_count() == names.len()
+                && tree
+                    .events()
+                    .iter()
+                    .all(|event| event.domain == Domain::Numeric),
+            "Source scalar sequence inputs differ or external events need translation"
+        );
         let mut component = self.component(0x80FC7EE1, 0x80C0DC18, symbol, index)?;
         let envelope = self.native.tag(0x80B36407, Some(0x80809C36))?;
+        let mut event_envelopes = vec![(*envelope).clone()];
+        if tree.events().iter().any(|event| event.class == 0x808006CE) {
+            event_envelopes.push((*self.native.tag(0x80B76100, Some(0x80809C36))?).clone());
+        }
         let count = output::write(self, source, &mut component, &envelope)?;
         let p = &mut component.payload;
         let i = p.pointer(16)?;
@@ -90,8 +103,13 @@ impl Assembly<'_> {
             &mut allocation,
             32,
         )?;
-        let written = sequence::write(p, &mut allocation, &tree, &[(*envelope).clone()])?;
-        source::events(source, p, &written, count)?;
+        let written = plan.write(
+            source,
+            p,
+            &mut allocation,
+            &event_envelopes,
+            &Bindings::default(),
+        )?;
         activation(source, p)?;
         let allocation_symbol = format!("{symbol}-allocation");
         self.node(&allocation_symbol, allocation_tag, &allocation.0, None, &[])?;
@@ -114,8 +132,11 @@ impl Assembly<'_> {
             72,
         )?;
         size(&mut component.entity.0)?;
+        // The lifecycle reader checks the stored size, which the row appends above leave stale.
+        size(&mut component.payload.0)?;
+        crate::d1_roi::lifecycle::sequence(source, &mut component.payload)?;
         component.seal()?;
-        self.evidence.push(json!({"source_component":tag,"scalar_sequence":{"outputs":count,"inputs":component.inputs.len(),"events":written.events.len()},"gameplay_verified":false}));
+        self.evidence.push(json!({"source_component":tag,"scalar_sequence":{"outputs":count,"inputs":component.inputs.len(),"events":written.topology.events.len()},"gameplay_verified":false}));
         Ok(component)
     }
 }

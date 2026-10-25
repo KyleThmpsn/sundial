@@ -927,6 +927,7 @@ fn modern_lunge_modifier_compiles_with_a_scoped_native_graph_patch()
             source_graph: 0x8162C91A,
             appends: Vec::new(),
             remove_owners: Vec::new(),
+            programs: Vec::new(),
             patches: vec![patch],
         }],
         ..Program::default()

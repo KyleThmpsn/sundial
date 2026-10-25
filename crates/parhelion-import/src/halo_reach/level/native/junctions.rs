@@ -187,50 +187,63 @@ fn blend(corners: &[&Vertex], weights: &[f32], position: [f32; 3]) -> Vertex {
 
 /// Cuts every triangle of `primitives` with a vertex of the level on one of its edges into a fan
 /// around its center through those vertices. Returns how many triangles were cut.
-pub(super) fn split(primitives: &mut [Primitive]) -> usize {
+pub(super) fn split(primitives: &mut [Primitive]) -> anyhow::Result<usize> {
     let points = Points::new(primitives);
+    // Each primitive cuts against the shared points alone, so primitives cut in parallel and
+    // their new vertices and faces apply in order afterwards.
+    let cuts = crate::cancellation::parallel_map(primitives, |primitive| cut(primitive, &points))?;
+    let mut count = 0;
+    for (primitive, (vertices, indices, cut)) in primitives.iter_mut().zip(cuts) {
+        primitive.vertices.extend(vertices);
+        primitive.indices = indices;
+        count += cut;
+    }
+    Ok(count)
+}
+
+/// The vertices `primitive` gains, its new faces and how many of its triangles were cut.
+fn cut(primitive: &Primitive, points: &Points) -> (Vec<Vertex>, Vec<u32>, usize) {
+    let base = primitive.vertices.len();
+    let mut added = Vec::new();
+    let next = |added: &Vec<Vertex>| u32::try_from(base + added.len()).unwrap_or(u32::MAX);
     let mut cut = 0;
-    for primitive in primitives.iter_mut() {
-        let mut indices = Vec::with_capacity(primitive.indices.len());
-        let faces = std::mem::take(&mut primitive.indices);
-        for face in faces.chunks_exact(3) {
-            let mut ring = Vec::new();
-            for e in 0..3 {
-                let (a, b) = (face[e], face[(e + 1) % 3]);
-                ring.push(a);
-                let (pa, pb) = (
-                    primitive.vertices[a as usize].position,
-                    primitive.vertices[b as usize].position,
-                );
-                for (t, position) in points.on_edge(pa, pb) {
-                    let ends = [
-                        &primitive.vertices[a as usize],
-                        &primitive.vertices[b as usize],
-                    ];
-                    let vertex = blend(&ends, &[1. - t, t], position);
-                    ring.push(u32::try_from(primitive.vertices.len()).unwrap_or(u32::MAX));
-                    primitive.vertices.push(vertex);
-                }
-            }
-            if ring.len() == 3 {
-                indices.extend_from_slice(face);
-                continue;
-            }
-            cut += 1;
-            let corners = face
-                .iter()
-                .map(|&i| &primitive.vertices[i as usize])
-                .collect::<Vec<_>>();
-            let middle =
-                std::array::from_fn(|k| corners.iter().map(|v| v.position[k]).sum::<f32>() / 3.);
-            let center = blend(&corners, &[1. / 3.; 3], middle);
-            let center_index = u32::try_from(primitive.vertices.len()).unwrap_or(u32::MAX);
-            primitive.vertices.push(center);
-            for k in 0..ring.len() {
-                indices.extend_from_slice(&[center_index, ring[k], ring[(k + 1) % ring.len()]]);
+    let mut indices = Vec::with_capacity(primitive.indices.len());
+    for face in primitive.indices.chunks_exact(3) {
+        let mut ring = Vec::new();
+        for e in 0..3 {
+            let (a, b) = (face[e], face[(e + 1) % 3]);
+            ring.push(a);
+            let (pa, pb) = (
+                primitive.vertices[a as usize].position,
+                primitive.vertices[b as usize].position,
+            );
+            for (t, position) in points.on_edge(pa, pb) {
+                let ends = [
+                    &primitive.vertices[a as usize],
+                    &primitive.vertices[b as usize],
+                ];
+                let vertex = blend(&ends, &[1. - t, t], position);
+                ring.push(next(&added));
+                added.push(vertex);
             }
         }
-        primitive.indices = indices;
+        if ring.len() == 3 {
+            indices.extend_from_slice(face);
+            continue;
+        }
+        cut += 1;
+        let corners = face
+            .iter()
+            .map(|&i| &primitive.vertices[i as usize])
+            .collect::<Vec<_>>();
+        let middle =
+            std::array::from_fn(|k| corners.iter().map(|v| v.position[k]).sum::<f32>() / 3.);
+        let center = blend(&corners, &[1. / 3.; 3], middle);
+        let center_index = next(&added);
+        added.push(center);
+        for k in 0..ring.len() {
+            indices.extend_from_slice(&[center_index, ring[k], ring[(k + 1) % ring.len()]]);
+        }
     }
-    cut
+    (added, indices, cut)
 }

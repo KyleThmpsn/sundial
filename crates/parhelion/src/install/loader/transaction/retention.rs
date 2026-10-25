@@ -11,7 +11,7 @@ pub(in crate::install) fn completed_backup_owner(backup: &Path) -> Option<PathBu
     if record.state != InstallTransactionState::Committed
         || !paths_equal(&record.context.backup_directory, backup)
         || record.incoming.is_none()
-        || record.migration()
+        || record.retires_legacy()
         || record
             .members()
             .any(|m| m.original.is_some() && m.incoming.is_none())

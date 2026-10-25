@@ -802,28 +802,33 @@ impl RecipeLibrary {
                 continue;
             }
             // Names and identities only, so an embedded model is not restored for each recipe.
-            let existing = WeaponRecipe::load_listing(&path).map_err(|error| {
-                format!(
-                    "Could not verify recipe identity uniqueness because {} is invalid: {error}",
-                    path.display()
-                )
-            })?;
-            if existing
-                .namespace
-                .eq_ignore_ascii_case(&candidate.namespace)
-            {
+            let (namespace, existing_hashes) = match WeaponRecipe::load_listing(&path) {
+                Ok(existing) => {
+                    let hashes = existing
+                        .identity
+                        .parsed_hashes(&existing.namespace)
+                        .map_err(|error| {
+                            format!("Invalid identity in {}: {error}", path.display())
+                        })?;
+                    (existing.namespace, hashes)
+                }
+                // A recipe this version refuses still claims its namespace and identities, so
+                // they are read on their own rather than stopping every other save.
+                Err(_) => WeaponRecipe::load_claim(&path).map_err(|error| {
+                    format!(
+                        "Could not verify recipe identity uniqueness because {} is invalid: {error}",
+                        path.display()
+                    )
+                })?,
+            };
+            if namespace.eq_ignore_ascii_case(&candidate.namespace) {
                 return Err(format!(
                     "Recipe namespace {:?} is already used by {}",
                     candidate.namespace,
                     path.display()
                 ));
             }
-            let existing_hashes = existing
-                .identity
-                .parsed_hashes(&existing.namespace)
-                .map_err(|error| format!("Invalid identity in {}: {error}", path.display()))?
-                .into_iter()
-                .collect::<BTreeSet<_>>();
+            let existing_hashes = existing_hashes.into_iter().collect::<BTreeSet<_>>();
             if let Some(collision) = candidate_hashes.intersection(&existing_hashes).next() {
                 return Err(format!(
                     "Recipe identity hash 0x{collision:08X} is already used by {}",

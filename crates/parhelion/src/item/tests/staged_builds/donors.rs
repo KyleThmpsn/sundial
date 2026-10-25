@@ -23,7 +23,7 @@ fn real_mountaintop_energy_solar_clone_preserves_socket_topology_when_configured
         text: WeaponCloneText {
             name: "Second Sun".to_owned(),
             flavor: "A second dawn, made by our own hands.".to_owned(),
-            source: "Source: Guardians Made Their Own Fate".to_owned(),
+            source: "Source: Guardians Make Their Own Fate".to_owned(),
             ..WeaponCloneText::default()
         },
         overrides: WeaponCloneOverrides {

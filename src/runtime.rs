@@ -88,7 +88,7 @@ pub fn component_binding_label(binding: u32) -> String {
 }
 
 /// Native ancestry from the same registered Shadowkeep declarations used to resolve fields.
-pub(crate) fn native_type_inherits(mut class: u32, parent: u32) -> bool {
+pub fn native_type_inherits(mut class: u32, parent: u32) -> bool {
     let Ok(registry) = runtime_registry() else {
         return false;
     };

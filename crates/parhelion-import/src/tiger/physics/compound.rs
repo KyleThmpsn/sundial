@@ -41,12 +41,13 @@ const CONVEX_KEY_BITS: u8 = 1;
 const MINIMUM_KEY_BITS: u32 = 16;
 
 /// One placed shape: where its shape's origin sits, the box its shape fills there, the user data
-/// that names its shape to the client, and the triangles of its own copy of that shape.
+/// that names its shape to the client, and the triangles of its own copy of that shape, which
+/// compounds placing the same shape share.
 pub(crate) struct Instance {
     pub translation: [f32; 3],
     pub bounds: ([f32; 3], [f32; 3]),
     pub user_data: u64,
-    pub triangles: Vec<Triangle>,
+    pub triangles: std::sync::Arc<Vec<Triangle>>,
 }
 
 /// Bounds of a subtree's instances.
@@ -179,7 +180,7 @@ pub(super) fn convex_compound(
             translation: [0.; 3],
             bounds,
             user_data: 0,
-            triangles: Vec::new(),
+            triangles: Default::default(),
         })
         .collect::<Vec<_>>();
     let centre = |index: usize| -> [f32; 3] {

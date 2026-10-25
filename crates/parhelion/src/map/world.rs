@@ -444,6 +444,7 @@ impl World {
                 .cloned()
                 .collect())
         };
+        report("Reading Map Registry");
         let registry = match (&slice_set, &geometry) {
             (Some(slice_set), Some(geometry)) => Some(super::registry::Registry::load(
                 directory,
@@ -471,7 +472,9 @@ impl World {
             let first = geometry
                 .as_mut()
                 .ok_or_else(|| invalid("Streaming geometry is missing"))?;
+            report("Owning Map Containers");
             first.own_containers(directory, manager, companions)?;
+            report("Laying Out Connected Areas");
             let layout = super::streaming::Layout::new(
                 name,
                 plan,
@@ -493,10 +496,12 @@ impl World {
                     &layout.names[index],
                     index,
                 )?;
+                report("Owning Connected Area Containers");
                 geometry.own_containers(directory, manager, companions)?;
                 if !options.ambient_audio {
                     geometry.disable_ambience();
                 }
+                report("Reading Connected Area Registry");
                 let registry = super::registry::Registry::load(
                     directory,
                     manager,

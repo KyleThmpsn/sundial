@@ -637,7 +637,7 @@ impl PackageAuthoringApp {
     }
 
     /// No build ran: the error shows where the build's result would.
-    fn block_build(&mut self, error: String) {
+    pub(super) fn block_build(&mut self, error: String) {
         self.log
             .push(LogEntry::error(format!("Build blocked: {error}")));
         self.latest_build = Some(Err(error));

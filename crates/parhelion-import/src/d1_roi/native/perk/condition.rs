@@ -1,18 +1,37 @@
 //! Bounded event conditions rebuild native filters instead of copying compiled source masks.
 use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
+mod ability_event;
 mod accumulator;
+mod event_filter;
 mod group;
 mod player;
 
-pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<NativeNode>> {
+pub(super) fn read(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    mut native: Option<&mut Reader>,
+) -> Result<Option<NativeNode>> {
+    if let Some(node) = event_filter::read(source, p, at, native.as_deref_mut())? {
+        return Ok(Some(node));
+    }
     let class = p.u32(at - 4)?;
     let kind = p.u8(at + 5)?;
+    if (class, kind) == (0x808031BF, 10) {
+        return ability_event::read(
+            source,
+            native.context("Source ability events need native ability definitions")?,
+            p,
+            at,
+        )
+        .map(Some);
+    }
     if (class, kind) == (0x80802917, 32) {
-        return group::read(source, p, at).map(Some);
+        return group::read(source, p, at, native).map(Some);
     }
     if (class, kind) == (0x80801100, 36) {
-        return group::predicate(source, p, at).map(Some);
+        return group::predicate(source, p, at, native).map(Some);
     }
     if (class, kind) == (0x80803101, 20) {
         return player::read(p, at).map(Some);
@@ -36,7 +55,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<Nat
                 links: BTreeMap::new(),
             }],
         };
-        label::translate(source, p, at + 8, &mut graph, 8)?;
+        label::translate(source, p, at + 8, &mut graph, 8, native)?;
         graph
             .validate_node(NodeKind::Condition(32))
             .map_err(anyhow::Error::msg)?;
@@ -50,20 +69,24 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<Nat
             (0.0..=1.0).contains(&p.f32(at)?)
                 && p.u8(at + 4)? == 0xFF
                 && p.bytes::<2>(at + 6)? == [0; 2]
-                && p.u32(at + 8)? == 0x6CEC7A87
-                && p.u32(at + 12)? == 0x18CCBF24,
+                && matches!(
+                    (p.u32(at + 8)?, p.u32(at + 12)?),
+                    (0x6CEC7A87, 0x18CCBF24) | (0xB3311944, 0xC7161F86)
+                ),
             "Source game event has no qualified native event and context pair"
         );
         // Source 76C450 and native 107DD50 compare the event value, then resolve
-        // the context key. This pair is the shared Orb of Light pickup protocol.
-        // Other source activity signals need their own native producer evidence.
+        // the context key. Besides Orb pickup, B3311944 has matching event-list
+        // production in source 5D768E and native F95A77. Its C7161F86 context
+        // selects the compared source +48/native +50 member in both registries.
+        // Other source activity signals still need their own producer evidence.
         return Ok(Some(NativeNode {
             kind,
             bytes: p.bytes::<16>(at)?.to_vec(),
         }));
     }
     if (class, kind) == (0x8080320C, 26) {
-        return accumulator::read(source, p, at).map(Some);
+        return accumulator::read(source, p, at, native).map(Some);
     }
     if (class, kind) == (0x808031D9, 22) {
         ensure!(
@@ -82,7 +105,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<Nat
         }));
     }
     if (class, kind) == (0x8080307B, 4) {
-        return hit::read(source, p, at).map(Some);
+        return hit::read(source, p, at, native).map(Some);
     }
     if matches!((class, kind), (0x808031FD, 7) | (0x80803147, 8)) {
         ensure!(
@@ -111,7 +134,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<Nat
         _ => None,
     };
     if let Some(class) = weapon_class {
-        return weapon(source, p, at, kind, class).map(Some);
+        return weapon(source, p, at, kind, class, native).map(Some);
     }
     let (native_class, size, labels) = match (class, kind) {
         (0x80803145, 2) => (0x80803DE7, 0x158, 8),
@@ -177,9 +200,16 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<Nat
             links: BTreeMap::new(),
         }],
     };
-    label::translate(source, p, at + labels, &mut graph, labels)?;
+    label::translate(
+        source,
+        p,
+        at + labels,
+        &mut graph,
+        labels,
+        native.as_deref_mut(),
+    )?;
     if kind == 2 {
-        filter::damage(source, p, at + 0x128, at + 0x48, &mut graph, 0xB0)?;
+        filter::damage(source, p, at + 0x128, at + 0x48, &mut graph, 0xB0, native)?;
     }
     graph
         .validate_node(NodeKind::Condition(kind))
@@ -190,7 +220,14 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<Nat
     }))
 }
 
-fn weapon(source: &Source, p: &Payload, at: usize, kind: u8, class: u32) -> Result<NativeNode> {
+fn weapon(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    kind: u8,
+    class: u32,
+    native: Option<&mut Reader>,
+) -> Result<NativeNode> {
     ensure!(
         (0.0..=1.0).contains(&p.f32(at)?)
             && p.u8(at + 4)? == 0xFF
@@ -232,7 +269,7 @@ fn weapon(source: &Source, p: &Payload, at: usize, kind: u8, class: u32) -> Resu
     };
     // The source record includes compiled masks through +E3. Checking only the
     // native-sized +70 prefix would miss those masks and their empty flags.
-    label::translate(source, p, at + 0x10, &mut graph, 0x10)?;
+    label::translate(source, p, at + 0x10, &mut graph, 0x10, native)?;
     graph
         .validate_node(NodeKind::Condition(native_kind))
         .map_err(anyhow::Error::msg)?;

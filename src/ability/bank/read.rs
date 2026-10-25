@@ -209,6 +209,26 @@ pub fn validate(payload: &[u8]) -> Result<(), String> {
     layout(payload).map(|_| ())
 }
 
+/// Prepared owners must carry a registered native bank class pair as well as valid rows.
+/// A package storage template alone does not establish the behavior of replacement bytes.
+pub fn validate_native_owner(payload: &[u8]) -> Result<(), String> {
+    let layout = layout(payload)?;
+    let (runtime, definition) = (layout.definition, layout.instance);
+    if runtime < 4 || runtime >= definition {
+        return Err("Native bank roots have incompatible boundaries".into());
+    }
+    let runtime_class = u32_at(payload, runtime - 4)?;
+    let definition_class = u32_at(payload, definition - 4)?;
+    if u32_at(payload, runtime + BLOCK_CLASS)? != definition_class
+        || u32_at(payload, definition + BLOCK_CLASS)? != runtime_class
+        || !crate::runtime::native_type_inherits(runtime_class, 0x8080_44FC)
+        || !crate::runtime::native_type_inherits(definition_class, 0x8080_44FD)
+    {
+        return Err("Prepared ability has no registered native bank class pair".into());
+    }
+    Ok(())
+}
+
 fn parameter_at(payload: &[u8], row: usize) -> Result<Parameter, String> {
     Ok(Parameter {
         name: u32_at(payload, row)?,

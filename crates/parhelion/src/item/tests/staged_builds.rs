@@ -14,12 +14,16 @@ mod collection_conditions;
 mod companions;
 mod component_rewire;
 mod component_shapes;
+#[cfg(feature = "d2-model-importer")]
+mod d1_ability;
 mod donors;
 #[cfg(feature = "d2-model-importer")]
 mod eager_private_dependencies;
 mod effect_length;
 mod glow;
 mod hud;
+#[cfg(feature = "d2-model-importer")]
+mod imported_ability;
 #[cfg(feature = "d2-model-importer")]
 mod imported_attachments;
 #[cfg(feature = "d2-model-importer")]

@@ -56,7 +56,7 @@ pub(crate) fn validate_parhelion_namespace(namespace: &str) -> Result<(), String
 pub(crate) const ARC_LOGIC_DONOR_HASH: u32 = 0xA25B_8F8F;
 #[cfg(test)]
 pub(crate) const ARC_LOGIC_DONOR_NAME: &str = "Arc Logic";
-pub const DEFAULT_SOURCE_TEXT: &str = "Source: Guardians Made Their Own Fate";
+pub const DEFAULT_SOURCE_TEXT: &str = "Source: Guardians Make Their Own Fate";
 #[cfg(test)]
 const MOUNTAINTOP_DONOR_HASH: u32 = 0xEE06_B019;
 #[cfg(test)]

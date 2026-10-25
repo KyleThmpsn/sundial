@@ -898,11 +898,14 @@ struct ItemHashIndexArray {
     rows_end: usize,
 }
 
+/// Offsets of the 32-bit fields that hold `value`. Payload fields are naturally aligned. An
+/// unaligned window spans two fields, so a value with equal halves would also match across a
+/// neighbor, as `821F821F` does after `821F8220`.
 fn matching_u32_offsets(data: &[u8], value: u32) -> Vec<usize> {
     let bytes = value.to_le_bytes();
-    data.windows(bytes.len())
+    data.chunks_exact(bytes.len())
         .enumerate()
-        .filter_map(|(offset, window)| (window == bytes).then_some(offset))
+        .filter_map(|(index, field)| (field == bytes).then_some(index * bytes.len()))
         .collect()
 }
 

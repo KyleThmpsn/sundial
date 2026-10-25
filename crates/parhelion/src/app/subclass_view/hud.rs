@@ -86,6 +86,35 @@ impl PackageAuthoringApp {
             .subclass_abilities
             .as_ref()
             .and_then(|abilities| abilities.hud_color);
+        let prepared = self
+            .recipe
+            .overrides
+            .subclass_abilities
+            .as_ref()
+            .is_some_and(|abilities| {
+                abilities
+                    .choices
+                    .iter()
+                    .map(|choice| &choice.edits)
+                    .chain(
+                        abilities
+                            .attunements
+                            .iter()
+                            .flat_map(|path| path.nodes.iter().map(|node| &node.edits)),
+                    )
+                    .any(|edits| edits.imported_ability.is_some())
+            });
+        if prepared {
+            ui.label("Subclass Color");
+            ui.weak("Prepared abilities keep their own colors.");
+            if current.is_some()
+                && ui.button("Use Prepared Colors").clicked()
+                && let Some(abilities) = &mut self.recipe.overrides.subclass_abilities
+            {
+                abilities.hud_color = None;
+            }
+            return;
+        }
         let (label, reset) = style::stock_field_name(
             ui,
             "Subclass Color",

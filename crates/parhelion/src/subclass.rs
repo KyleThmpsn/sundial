@@ -14,10 +14,13 @@ use serde::{Deserialize, Serialize};
 pub mod art;
 pub(crate) mod authoring;
 pub(crate) mod compile;
+pub mod d1;
 mod edits;
 pub(crate) mod grouping;
 pub(crate) mod hud;
 pub mod icon;
+#[cfg(feature = "d2-model-importer")]
+pub mod import;
 pub mod layout;
 mod modifiers;
 pub(crate) mod native;
@@ -27,7 +30,9 @@ pub(crate) mod tables;
 pub(crate) mod ui;
 
 pub use art::{ArtImage, ArtPart, ScreenArt};
-pub use edits::{AttachedAbility, BankValue, EntryEdits, EntryIcon, SpawnSwap, damage_mode};
+pub use edits::{
+    AttachedAbility, BankValue, EntryEdits, EntryIcon, ImportedAbility, SpawnSwap, damage_mode,
+};
 pub use icon::GeneratedIcon;
 pub use modifiers::{
     AbilityModifier, MOST_CHARGES, ModifierEffect, ParameterValue, RECHARGE_RANGE, StockModifier,
@@ -221,6 +226,9 @@ impl Place {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SubclassAbilities {
+    /// Full D1 source choices and their explicit native adaptation, including incomplete plans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub d1: Option<d1::Plan>,
     /// The inherited sRGB color of tree nodes and ability tiles. The persisted name predates
     /// tree colors and stays compatible with existing recipes.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -234,7 +242,10 @@ pub struct SubclassAbilities {
 impl SubclassAbilities {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.hud_color.is_none() && self.choices.is_empty() && self.attunements.is_empty()
+        self.d1.is_none()
+            && self.hud_color.is_none()
+            && self.choices.is_empty()
+            && self.attunements.is_empty()
     }
 
     #[must_use]
@@ -400,6 +411,9 @@ impl SubclassAbilities {
     /// Checks the shape of every choice. Sources and classes are checked against the installed
     /// subclasses when the recipe builds.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(plan) = &self.d1 {
+            plan.validate()?;
+        }
         for (index, choice) in self.choices.iter().enumerate() {
             let slot = AbilitySlot::of_entry(choice.entry);
             let context = Place::Ability(choice.entry).label();
@@ -444,6 +458,20 @@ impl SubclassAbilities {
             attunement.validate()?;
         }
         Ok(())
+    }
+
+    /// Settles the damage type of each projectile several places share, in every ability and
+    /// attunement node, as `EntryEdits::settle_shared_swap_damage` describes.
+    pub fn settle_shared_swap_damage(&mut self) {
+        let choices = self.choices.iter_mut().map(|choice| &mut choice.edits);
+        let nodes = self
+            .attunements
+            .iter_mut()
+            .flat_map(|attunement| &mut attunement.nodes)
+            .map(|node| &mut node.edits);
+        for edits in choices.chain(nodes) {
+            edits.settle_shared_swap_damage();
+        }
     }
 }
 

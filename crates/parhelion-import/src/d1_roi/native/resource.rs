@@ -4,9 +4,18 @@ use crate::tiger::shader::{
     program::{Program, Template},
 };
 
+/// How a gbuffer-pass pixel program reaches the native targets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Gbuffer {
+    /// A surface writes all three native targets through the deferred adapter.
+    Surface,
+    /// A decal keeps its source targets. `replace` marks an unblended source state.
+    Decal { replace: bool },
+}
+
 pub(super) struct Shader {
     pub stage: Stage,
-    pub deferred: bool,
+    pub gbuffer: Option<Gbuffer>,
     pub layout: u16,
     pub depth: Option<super::super::expression::Depth>,
     /// The texture register of the reticle mask a pixel program loads.
@@ -23,7 +32,12 @@ impl Shader {
     fn symbol(&self, tag: u32) -> String {
         let mut symbol = format!(
             "shader-{tag:08X}-{}",
-            if self.deferred { "deferred" } else { "source" }
+            match self.gbuffer {
+                Some(Gbuffer::Surface) => "deferred",
+                Some(Gbuffer::Decal { replace: false }) => "decal",
+                Some(Gbuffer::Decal { replace: true }) => "decal-replace",
+                None => "source",
+            }
         );
         if self.no_detail_scale() {
             symbol.push_str(&format!("-layout-{}", self.layout));
@@ -146,7 +160,7 @@ impl Assembly<'_> {
         let no_detail_scale = inputs.no_detail_scale();
         let Shader {
             stage,
-            deferred,
+            gbuffer,
             layout,
             depth,
             reticle_mask,
@@ -164,9 +178,12 @@ impl Assembly<'_> {
         let mut code = if stage == Stage::Vertex {
             super::super::shader::skinning(raw)
                 .with_context(|| format!("Source vertex program {tag:08X}"))?
-        } else if deferred {
+        } else if gbuffer == Some(Gbuffer::Surface) {
             super::super::shader::deferred(raw, &self.glow)
                 .with_context(|| format!("Source deferred program {tag:08X}"))?
+        } else if let Some(Gbuffer::Decal { replace }) = gbuffer {
+            super::super::shader::decal(raw, replace)
+                .with_context(|| format!("Source decal program {tag:08X}"))?
         } else {
             super::super::shader::compact(raw)
                 .with_context(|| format!("Source GPU program {tag:08X}"))?

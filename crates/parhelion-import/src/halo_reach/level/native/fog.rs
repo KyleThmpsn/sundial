@@ -20,13 +20,16 @@ const CLUSTERS: (usize, usize) = (0x558, 0x54);
 const CLUSTER_FOGS: usize = 0x30;
 /// A fog tag's flags (sky band, ground band, fog light and patchy fog from bit 0), its distance
 /// bias, then its sky and ground bands, each a floor, a height above it, a thickness, a falloff
-/// end, a color and that color's intensity, and its fog light's color and intensity.
+/// end, a color and that color's intensity, and its fog light: pitch, yaw and angular radius,
+/// a tint and its intensity, then angular and distance falloff steepness and the nearby cutoff.
 const FLAGS: usize = 0x00;
 const BIAS: usize = 0x04;
 const SKY: usize = 0x0C;
 const GROUND: usize = 0x2C;
+const LIGHT: usize = 0x4C;
 const LIGHT_COLOR: usize = 0x58;
 const LIGHT_INTENSITY: usize = 0x64;
+const LIGHT_FALLOFF: usize = 0x68;
 const SKY_ENABLED: u16 = 1;
 const GROUND_ENABLED: u16 = 2;
 const LIGHT_ENABLED: u16 = 4;
@@ -34,8 +37,11 @@ const LIGHT_ENABLED: u16 = 4;
 /// The level's fog and a report of its tag's values, or none when the palette names no fog tag.
 /// The fog is the palette entry the most clusters of `bsps` select, the lowest on a tie, or the
 /// palette's first fog tag when none selects one. A level draws one fog, so where its clusters
-/// select several the report lists them. A disabled band does not fog. The fog light, a glow
-/// toward the sun, is not drawn.
+/// select several the report lists them. A disabled band does not fog. An enabled fog light of
+/// positive intensity glows toward its direction. Its angles read as radians: so read, Breakneck's
+/// glow lies 7 degrees of azimuth from its analytical light and Nightfall's 3 degrees of
+/// elevation (19 of azimuth) from its own, while the degrees the tag build's field names state
+/// would put every sampled glow within 2 degrees of +x on the horizon.
 pub(super) fn read(
     cache: &Cache,
     bsps: &[Tag],
@@ -144,6 +150,21 @@ pub(super) fn read(
     let (sky, sky_report) = band(SKY, flags & SKY_ENABLED != 0)?;
     let (ground, ground_report) = band(GROUND, flags & GROUND_ENABLED != 0)?;
     let bias = cache.f32(at + BIAS)?;
+    let [pitch, yaw, radius] = cache.floats::<3>(at + LIGHT)?;
+    let tint = cache.floats::<3>(at + LIGHT_COLOR)?;
+    let intensity = cache.f32(at + LIGHT_INTENSITY)?;
+    let [angular, distance, cutoff] = cache.floats::<3>(at + LIGHT_FALLOFF)?;
+    let light = (flags & LIGHT_ENABLED != 0 && intensity > 0.).then(|| {
+        native::material::Light::new(
+            pitch,
+            yaw,
+            radius,
+            tint.map(|c| c * intensity),
+            angular,
+            distance,
+            cutoff,
+        )
+    });
     let report = json!({
         "palette": rows.len(),
         "selected": selections,
@@ -156,9 +177,16 @@ pub(super) fn read(
         "ground_rate": ground.rate,
         "fog_light": {
             "enabled": flags & LIGHT_ENABLED != 0,
-            "color": cache.floats::<3>(at + LIGHT_COLOR)?,
-            "intensity": cache.f32(at + LIGHT_INTENSITY)?,
-            "drawn": false,
+            "pitch": pitch,
+            "yaw": yaw,
+            "angular_radius": radius,
+            "color": tint,
+            "intensity": intensity,
+            "angular_falloff": angular,
+            "distance_falloff": distance,
+            "nearby_cutoff": cutoff,
+            "direction": light.map(|light| light.direction),
+            "drawn": light.is_some(),
         },
         "lift": lift,
     });
@@ -168,6 +196,7 @@ pub(super) fn read(
             ground,
             bias,
             lift,
+            light,
         }),
         report,
     ))

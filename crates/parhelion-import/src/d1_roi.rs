@@ -1,22 +1,28 @@
 //! Rise of Iron source intake. D1 layouts never pass through the D2 reader.
+pub mod ability;
 mod armor;
 mod audio;
 mod cloth;
 mod codec;
+pub mod connections;
 mod dye;
 mod expression;
 mod icon;
 mod layout;
+pub mod lifecycle;
 mod localization;
 mod material;
 mod model;
 mod native;
 mod ornament;
 mod package;
+mod procedure;
+pub mod sequence;
 mod shader;
 mod talent;
 pub mod texture;
 mod weapon;
+pub use ability::Choice as AbilityChoice;
 pub use armor::Armor;
 pub use icon::Icon;
 pub use native::NativeOptions;

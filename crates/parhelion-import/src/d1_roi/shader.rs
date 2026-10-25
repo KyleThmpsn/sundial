@@ -507,21 +507,54 @@ pub(super) fn sight_depth_row(code: &[u8]) -> Result<u8> {
     u8::try_from(rows[0]).context("Sight depth row exceeds the vector table")
 }
 
+/// Whether a pixel program writes exactly the two full gbuffer targets of a D1 pass.
+fn two_targets(code: &[u8]) -> Result<bool> {
+    let signatures = dxbc::signature(code, b"OSGN")?;
+    Ok(signatures.len() == 2
+        && signatures
+            .iter()
+            .enumerate()
+            .all(|(i, (name, semantic, register, mask))| {
+                name.eq_ignore_ascii_case("SV_Target")
+                    && *semantic == i as u32
+                    && *register == i as u32
+                    && *mask == 15
+            }))
+}
+
+/// D1 decals write premultiplied color with its inverse coverage, and two-target decals a
+/// premultiplied packed normal as well, which is the target layout of native decals, so their
+/// outputs stay as they are. A replacing decal comes from an unblended source state. Its zero
+/// inverse coverage makes the native premultiplied blend replace the color.
+pub(super) fn decal(code: &[u8], replace: bool) -> Result<Vec<u8>> {
+    ensure!(two_targets(code)?, "Source decal output contract differs");
+    let words = tokens(code)?;
+    if !replace {
+        return dxbc::rebuild(code, &words, None);
+    }
+    let instructions = dxbc::walk(&words)?;
+    ensure!(
+        instructions.iter().filter(|i| i.opcode == 0x3E).count() == 1,
+        "Multiple decal returns need separate control-flow verification"
+    );
+    let mut output = words[..2].to_vec();
+    for instruction in &instructions {
+        if instruction.opcode == 0x3E {
+            // mov o0.w, l(0)
+            output.extend([0x05000036, 0x00102082, 0, 0x00004001, 0]);
+        }
+        output.extend_from_slice(&words[instruction.start..instruction.end]);
+    }
+    output[1] = u32::try_from(output.len())?;
+    dxbc::rebuild(code, &output, None)
+}
+
 /// D1's two deferred outputs encode color/AO and normal/roughness/material code.
 /// Native D2 retains the color and normal encodings in three render targets.
 /// Supported source emissive profiles need a separate native emission value.
 pub(super) fn deferred(code: &[u8], glow: &[glow::Profile]) -> Result<Vec<u8>> {
-    let signatures = dxbc::signature(code, b"OSGN")?;
     ensure!(
-        signatures.len() == 2
-            && signatures
-                .iter()
-                .enumerate()
-                .all(|(i, (name, semantic, register, mask))| name
-                    .eq_ignore_ascii_case("SV_Target")
-                    && *semantic == i as u32
-                    && *register == i as u32
-                    && *mask == 15),
+        two_targets(code)?,
         "Source deferred output contract differs"
     );
     let mut words = tokens(code)?;

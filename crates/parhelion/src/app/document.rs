@@ -565,7 +565,10 @@ impl PackageAuthoringApp {
     pub(super) fn record_recipe_history(&mut self, ctx: &egui::Context) {
         if self.recipe != self.recorded_recipe {
             let before = std::mem::replace(&mut self.recorded_recipe, self.recipe.clone());
-            self.recipe_history.record(before, ctx);
+            let pins = std::mem::replace(&mut self.recorded_pins, self.behavior_pins.clone());
+            self.recipe_history.record((before, pins), ctx);
+        } else if self.recorded_pins != self.behavior_pins {
+            self.recorded_pins.clone_from(&self.behavior_pins);
         }
     }
 
@@ -574,6 +577,7 @@ impl PackageAuthoringApp {
     pub(super) fn reset_recipe_history(&mut self) {
         self.recipe_history = Default::default();
         self.recorded_recipe.clone_from(&self.recipe);
+        self.recorded_pins.clone_from(&self.behavior_pins);
     }
 
     /// Whether a build, install or library job, or an open perk edit, holds the recipe still.
@@ -593,10 +597,13 @@ impl PackageAuthoringApp {
             return;
         }
         self.record_recipe_history(ctx);
-        if !self.recipe_history.restore(&mut self.recipe, redo) {
+        let mut state = (self.recipe.clone(), self.behavior_pins.clone());
+        if !self.recipe_history.restore(&mut state, redo) {
             return;
         }
+        (self.recipe, self.behavior_pins) = state;
         self.recorded_recipe.clone_from(&self.recipe);
+        self.recorded_pins.clone_from(&self.behavior_pins);
         // A name still being corrected belongs to the state left behind.
         self.invalid_weapon_name = None;
         self.barrel_controls.invalidate();

@@ -2,7 +2,12 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
 
-pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode> {
+pub(super) fn read(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    mut native: Option<&mut Reader>,
+) -> Result<NativeNode> {
     ensure!(
         (0.0..=1.0).contains(&p.f32(at)?)
             && p.u8(at + 4)? == 0xFF
@@ -64,7 +69,15 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
             links: BTreeMap::new(),
         });
     }
-    filter::damage(source, p, at + 8, at + 0xE0, &mut graph, 8)?;
+    filter::damage(
+        source,
+        p,
+        at + 8,
+        at + 0xE0,
+        &mut graph,
+        8,
+        native.as_deref_mut(),
+    )?;
     let mut labels = Graph {
         blocks: vec![Block {
             class: 0x80804D73,
@@ -74,7 +87,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
         }],
     };
     labels.blocks[0].bytes[0x50] = 0xFF;
-    label::translate(source, p, at + 0xA0, &mut labels, 0)?;
+    label::translate(source, p, at + 0xA0, &mut labels, 0, native)?;
     let label_index = graph.blocks.len();
     for mut block in labels.blocks {
         for target in block.links.values_mut() {

@@ -316,8 +316,14 @@ fn split<T>(
     let axis = (0..3)
         .max_by(|&a, &b| (high[a] - low[a]).total_cmp(&(high[b] - low[b])))
         .unwrap_or(0);
-    let mut items = items;
-    items.sort_by(|a, b| center(a)[axis].total_cmp(&center(b)[axis]));
+    // Each center is taken once. Taken in every comparison, the sorts of Nightfall's 15.7
+    // million triangles took about 40 seconds longer.
+    let mut keyed = items
+        .into_iter()
+        .map(|item| (center(&item)[axis], item))
+        .collect::<Vec<_>>();
+    keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut items = keyed.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
     let upper = items.split_off(items.len() / 2);
     split(items, center, fits, out);
     split(upper, center, fits, out);
@@ -544,15 +550,55 @@ const PLACED_LEAST: f32 = 1. / 16_384.;
 /// with no lobe, and on Breakneck, whose sun comes from its lobes, drew several times darker than
 /// the floor they stand on. Primitives with no ground within [`GROUND_DEPTH`] keep the neutral texel.
 fn ground_light(level: &super::Level) -> HashMap<u32, [f32; 2]> {
-    let cell = |x: f32, y: f32| {
-        (
-            (x / GROUND_CELL).floor() as i32,
-            (y / GROUND_CELL).floor() as i32,
-        )
-    };
+    let middles = level
+        .primitives
+        .iter()
+        .enumerate()
+        .filter(|(_, primitive)| {
+            !primitive.vertices.is_empty()
+                && !primitive.vertices.iter().all(|v| v.lightmap.is_some())
+        })
+        .map(|(index, primitive)| {
+            let (low, high) = bounds(primitive.vertices.iter().map(|v| v.position));
+            (
+                index,
+                std::array::from_fn::<f32, 3, _>(|k| (low[k] + high[k]) / 2.),
+            )
+        })
+        .collect::<Vec<_>>();
+    let grid = ground_faces(level, &middles);
+    let mut ground = HashMap::new();
+    for &(index, middle) in &middles {
+        if let Some(uv) = ground_below(level, &grid, middle) {
+            ground.insert(u32::try_from(index).unwrap_or(u32::MAX), uv);
+        }
+    }
+    ground
+}
+
+/// The [`GROUND_CELL`] grid cell holding horizontal position `(x, y)`.
+fn ground_cell(x: f32, y: f32) -> (i32, i32) {
+    (
+        (x / GROUND_CELL).floor() as i32,
+        (y / GROUND_CELL).floor() as i32,
+    )
+}
+
+/// Every upward-facing lightmapped face, as its primitive and face index, binned in the cells
+/// below the primitive middles. Each middle looks up only its own cell, so faces are binned in
+/// those cells alone. A backdrop face kilometres across covers millions of cells, and binning
+/// every cell held Nightfall's conversion for most of a minute.
+fn ground_faces(
+    level: &super::Level,
+    middles: &[(usize, [f32; 3])],
+) -> HashMap<(i32, i32), Vec<(usize, usize)>> {
     let mut grid = HashMap::<(i32, i32), Vec<(usize, usize)>>::new();
+    for (_, middle) in middles {
+        grid.entry(ground_cell(middle[0], middle[1])).or_default();
+    }
+    let looked_up = grid.keys().copied().collect::<Vec<_>>();
     for (index, primitive) in level.primitives.iter().enumerate() {
-        if primitive.vertices.iter().any(|v| v.lightmap.is_none()) {
+        if middles.is_empty() || primitive.vertices.iter().any(|v| v.lightmap.is_none()) {
             continue;
         }
         for (face, corners) in primitive.indices.chunks_exact(3).enumerate() {
@@ -564,67 +610,90 @@ fn ground_light(level: &super::Level) -> HashMap<u32, [f32; 2]> {
             if normal[2] < GROUND_FACING {
                 continue;
             }
-            let low = cell(
+            let low = ground_cell(
                 points.iter().map(|p| p[0]).fold(f32::MAX, f32::min),
                 points.iter().map(|p| p[1]).fold(f32::MAX, f32::min),
             );
-            let high = cell(
+            let high = ground_cell(
                 points.iter().map(|p| p[0]).fold(f32::MIN, f32::max),
                 points.iter().map(|p| p[1]).fold(f32::MIN, f32::max),
             );
-            for x in low.0..=high.0 {
-                for y in low.1..=high.1 {
-                    grid.entry((x, y)).or_default().push((index, face));
+            bin_face(&mut grid, &looked_up, low, high, (index, face));
+        }
+    }
+    grid
+}
+
+/// Add `face` to every looked-up cell from `low` to `high`, walking whichever is fewer: the face's
+/// cell range or the looked-up cells.
+fn bin_face(
+    grid: &mut HashMap<(i32, i32), Vec<(usize, usize)>>,
+    looked_up: &[(i32, i32)],
+    low: (i32, i32),
+    high: (i32, i32),
+    face: (usize, usize),
+) {
+    let covered =
+        (i64::from(high.0) - i64::from(low.0) + 1) * (i64::from(high.1) - i64::from(low.1) + 1);
+    if covered <= looked_up.len() as i64 {
+        for x in low.0..=high.0 {
+            for y in low.1..=high.1 {
+                if let Some(faces) = grid.get_mut(&(x, y)) {
+                    faces.push(face);
                 }
             }
         }
+    } else {
+        for &(x, y) in looked_up {
+            if (low.0..=high.0).contains(&x)
+                && (low.1..=high.1).contains(&y)
+                && let Some(faces) = grid.get_mut(&(x, y))
+            {
+                faces.push(face);
+            }
+        }
     }
-    let mut ground = HashMap::new();
-    for (index, primitive) in level.primitives.iter().enumerate() {
-        if primitive.vertices.is_empty() || primitive.vertices.iter().all(|v| v.lightmap.is_some())
-        {
+}
+
+/// The lightmap coordinates of the highest ground face straight below `middle`, within
+/// [`GROUND_DEPTH`].
+fn ground_below(
+    level: &super::Level,
+    grid: &HashMap<(i32, i32), Vec<(usize, usize)>>,
+    middle: [f32; 3],
+) -> Option<[f32; 2]> {
+    let mut best: Option<(f32, [f32; 2])> = None;
+    for &(owner, face) in grid
+        .get(&ground_cell(middle[0], middle[1]))
+        .into_iter()
+        .flatten()
+    {
+        let lit = &level.primitives[owner];
+        let corners = &lit.indices[face * 3..face * 3 + 3];
+        let vertices = [0, 1, 2].map(|k| &lit.vertices[corners[k] as usize]);
+        let [a, b, c] = vertices.map(|v| v.position);
+        // Barycentric coordinates of the middle in the face's horizontal projection.
+        let area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        if area.abs() < 1e-8 {
             continue;
         }
-        let (low, high) = bounds(primitive.vertices.iter().map(|v| v.position));
-        let middle: [f32; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.);
-        let mut best: Option<(f32, [f32; 2])> = None;
-        for &(owner, face) in grid.get(&cell(middle[0], middle[1])).into_iter().flatten() {
-            let lit = &level.primitives[owner];
-            let corners = &lit.indices[face * 3..face * 3 + 3];
-            let vertices = [0, 1, 2].map(|k| &lit.vertices[corners[k] as usize]);
-            let [a, b, c] = vertices.map(|v| v.position);
-            // Barycentric coordinates of the middle in the face's horizontal projection.
-            let area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-            if area.abs() < 1e-8 {
-                continue;
-            }
-            let wb =
-                ((middle[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (middle[1] - a[1])) / area;
-            let wc =
-                ((b[0] - a[0]) * (middle[1] - a[1]) - (middle[0] - a[0]) * (b[1] - a[1])) / area;
-            let wa = 1. - wb - wc;
-            if wa < 0. || wb < 0. || wc < 0. {
-                continue;
-            }
-            let z = wa * a[2] + wb * b[2] + wc * c[2];
-            if z > middle[2]
-                || middle[2] - z > GROUND_DEPTH
-                || best.is_some_and(|(top, _)| z <= top)
-            {
-                continue;
-            }
-            let uv =
-                [vertices[0], vertices[1], vertices[2]].map(|v| v.lightmap.unwrap_or_default());
-            best = Some((
-                z,
-                [0, 1].map(|k| wa * uv[0][k] + wb * uv[1][k] + wc * uv[2][k]),
-            ));
+        let wb = ((middle[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (middle[1] - a[1])) / area;
+        let wc = ((b[0] - a[0]) * (middle[1] - a[1]) - (middle[0] - a[0]) * (b[1] - a[1])) / area;
+        let wa = 1. - wb - wc;
+        if wa < 0. || wb < 0. || wc < 0. {
+            continue;
         }
-        if let Some((_, uv)) = best {
-            ground.insert(u32::try_from(index).unwrap_or(u32::MAX), uv);
+        let z = wa * a[2] + wb * b[2] + wc * c[2];
+        if z > middle[2] || middle[2] - z > GROUND_DEPTH || best.is_some_and(|(top, _)| z <= top) {
+            continue;
         }
+        let uv = [vertices[0], vertices[1], vertices[2]].map(|v| v.lightmap.unwrap_or_default());
+        best = Some((
+            z,
+            [0, 1].map(|k| wa * uv[0][k] + wb * uv[1][k] + wc * uv[2][k]),
+        ));
     }
-    ground
+    best.map(|(_, uv)| uv)
 }
 
 fn lightmap_coordinates(
@@ -828,6 +897,13 @@ pub fn convert_areas(
     let compute_before = crate::compute::snapshot();
     let shaders_before = crate::tiger::shader::cache_snapshot();
     let started = std::time::Instant::now();
+    // Each step's seconds, for the report's timing.
+    let mut steps = serde_json::Map::new();
+    let mut lap = started;
+    let mut time = |step: &str| {
+        steps.insert(step.to_owned(), json!(lap.elapsed().as_secs_f64()));
+        lap = std::time::Instant::now();
+    };
     ensure!(
         !output.join("controller.lua").exists() && !output.join("execution.json").exists(),
         "Use a fresh map output when an earlier mission controller is present"
@@ -881,11 +957,13 @@ pub fn convert_areas(
             .filter(|&(_, &loaded)| bsps == 0 || bsps & loaded != 0)
             .fold(0, |mask, (area, _)| mask | 1 << area)
     };
+    time("source");
     report(&format!(
         "Reading Geometry and Lightmaps / {} BSPs",
         tags.len()
     ));
     let mut level = super::read_areas(&cache, &mut pages, &tags, &groups)?;
+    time("geometry_and_lightmaps");
     // A surface whose alpha test discards every pixel draws nothing and casts no shadow. The
     // structure's own collision still holds any such surface's wall.
     let hidden = level
@@ -907,6 +985,7 @@ pub fn convert_areas(
         .filter(|&(_, &never)| never)
         .filter_map(|(material, _)| material.tag.as_ref().map(|tag| tag.path.clone()))
         .collect::<Vec<_>>();
+    time("hidden_materials");
     // Each BSP's collision places that BSP's instances, and each polygon lists the areas whose
     // collision holds it. A seam joining two BSPs an area loads is open in that area
     // ([`collision`]).
@@ -961,7 +1040,9 @@ pub fn convert_areas(
             polygon_areas.push(areas);
         }
     }
+    time("collision_read");
     let placed = objects::read(&cache, &mut pages, variant.as_ref(), zone_sets, &mission)?;
+    time("objects");
     // Placed objects' primitives follow the structure's, and the T-junction repair below only adds
     // vertices, so they keep these indices.
     let placed_from = u32::try_from(level.primitives.len())?;
@@ -1125,10 +1206,12 @@ pub fn convert_areas(
     }
     let (world_mesh_tag, world_mesh) = world_mesh_template
         .context("The donor's world collision has no bare compressed mesh packfile")?;
+    time("sky_order_spawns_and_templates");
 
     // A triangle with another surface's corner on its edge is cut there, so the corner rounds to
     // one point in both.
-    let t_junctions = junctions::split(&mut level.primitives);
+    let t_junctions = junctions::split(&mut level.primitives)?;
+    time("t_junctions");
     let periods = level
         .primitives
         .iter()
@@ -1151,6 +1234,7 @@ pub fn convert_areas(
             ));
         }
     }
+    time("triangles");
     // Each material's period, triangles, the range its shifted texture coordinates cover and its
     // widest triangle's span, for the report.
     report(&format!(
@@ -1293,7 +1377,15 @@ pub fn convert_areas(
                 .or_default()
                 .push(triangle);
         }
-        for ((areas, band, period, class), group) in bands {
+        // Each band splits on its own, so bands split in parallel and their pieces follow in band
+        // order.
+        let bands = bands
+            .into_iter()
+            .map(|(key, group)| (key, std::sync::Mutex::new(group)))
+            .collect::<Vec<_>>();
+        let split_bands = crate::cancellation::parallel_map(&bands, |(key, group)| {
+            let (_, band, period, _) = *key;
+            let group = std::mem::take(&mut *group.lock().unwrap_or_else(|e| e.into_inner()));
             let limit = period_range(period, band);
             // Why groups failed to fit, for the report: too many vertices, too wide a texture
             // coordinate range, or too wide a play-area piece.
@@ -1314,9 +1406,14 @@ pub fn convert_areas(
                 }
                 model && near
             };
-            let (before, triangles) = (renders.len(), group.len());
-            split(group, &triangle_center, &fits, &mut renders);
-            render_areas.resize(renders.len(), areas);
+            let triangles = group.len();
+            let mut pieces = Vec::new();
+            split(group, &triangle_center, &fits, &mut pieces);
+            (pieces, triangles, refused.get())
+        })?;
+        for (((areas, band, period, class), _), (pieces, triangles, refused)) in
+            bands.into_iter().zip(split_bands)
+        {
             band_report.push(json!({
                 "areas": areas,
                 "play": in_play,
@@ -1324,11 +1421,14 @@ pub fn convert_areas(
                 "period": period,
                 "tiling": class,
                 "triangles": triangles,
-                "pieces": renders.len() - before,
-                "refused": refused.get(),
+                "pieces": pieces.len(),
+                "refused": refused,
             }));
+            renders.extend(pieces);
+            render_areas.resize(renders.len(), areas);
         }
     }
+    time("render_split");
     let face_center =
         |f: &Face| -> [f32; 3] { std::array::from_fn(|k| (f[0][k] + f[1][k] + f[2][k]) / 3.) };
     let mut shapes = Vec::new();
@@ -1354,6 +1454,7 @@ pub fn convert_areas(
         }
     }
 
+    time("collision_split");
     let mut used = BTreeMap::<u32, Material>::new();
     for primitive in &level.primitives {
         let key = primitive.material.map_or(u32::MAX, |m| m as u32);
@@ -1397,10 +1498,12 @@ pub fn convert_areas(
     } else {
         HashMap::new()
     };
+    time("used_materials_and_ground_light");
     // The surfaces draw the level's own fog in place of Destiny's.
     let (fog, fog_report) = fog::read(&cache, &tags, offset[2])?;
     let (radiance, camera_report) =
         sky::radiance(&cache, level.lightmap.as_ref().map(|atlas| atlas.level))?;
+    time("fog_and_radiance");
     report("Converting Lightmap Textures");
     let lightmap = level
         .lightmap
@@ -1422,6 +1525,7 @@ pub fn convert_areas(
         lightmap.radiance = radiance;
         lightmap
     });
+    time("lightmap_textures");
     let vertex_data = native::material::vertex_data::add(
         &mut native,
         &mut graph,
@@ -1432,6 +1536,7 @@ pub fn convert_areas(
             .map_or(1., |atlas| atlas.scale * atlas.level),
         |primitive, vertex| lightmap_coordinates(vertex, primitive, &ground, neutral, placed_from),
     )?;
+    time("vertex_data");
     report(&format!(
         "Converting Materials and Textures / {} Materials",
         used.len()
@@ -1457,6 +1562,7 @@ pub fn convert_areas(
         },
         report,
     )?;
+    time("materials");
 
     let mut pieces = Vec::new();
     let mut world = World {
@@ -1468,6 +1574,43 @@ pub fn convert_areas(
     let mut drawn = 0usize;
     let mut placed_faces = 0usize;
     let solid = statics::solid(&used);
+    let clipped = statics::clipped(&used);
+    // A piece too wide for POSITION_STEP stores its positions on a coarser power-of-two step, so
+    // a corner it shares with a finer piece rounded to two points. Paradiso's play area holds
+    // 1/128 m and 1/64 m pieces beside 1/256 m ones, and thin lines of sky showed along its
+    // ground. Each corner
+    // takes the coarsest step of the pieces that hold it, which a finer piece also stores exactly.
+    let piece_steps = renders
+        .iter()
+        .map(|group| {
+            let (low, high) = bounds(group.iter().flat_map(|t| {
+                let primitive = &level.primitives[t.primitive as usize];
+                t.corners.map(|c| primitive.vertices[c as usize].position)
+            }));
+            let half = (0..3).map(|k| (high[k] - low[k]) / 2.).fold(0., f32::max);
+            // Snapping moves the extent by up to a step, so two steps of margin keep the encoder
+            // from doubling it again.
+            let mut step = POSITION_STEP;
+            while half + 2. * step > 32767. * step {
+                step *= 2.;
+            }
+            step
+        })
+        .collect::<Vec<_>>();
+    let corner_key = |position: [f32; 3]| position.map(|v| (v / POSITION_STEP).round() as i64);
+    let mut corner_steps = HashMap::<[i64; 3], f32>::new();
+    for (group, &step) in renders.iter().zip(&piece_steps) {
+        for t in group {
+            let primitive = &level.primitives[t.primitive as usize];
+            for c in t.corners {
+                let position = primitive.vertices[c as usize].position;
+                let key = corner_key(std::array::from_fn(|k| position[k] + offset[k]));
+                let entry = corner_steps.entry(key).or_insert(step);
+                *entry = entry.max(step);
+            }
+        }
+    }
+    time("piece_steps");
     let render_started = std::time::Instant::now();
     let workers = crate::cancellation::workers()?;
     for (batch, groups) in renders.chunks(workers).enumerate() {
@@ -1488,12 +1631,23 @@ pub fn convert_areas(
             )?;
             // Snap in shared world coordinates before subtracting the instances' origin. This
             // also removes half-step rounding differences between individual statics.
+            let piece = batch * workers
+                + groups
+                    .iter()
+                    .position(|candidate| std::ptr::eq(candidate, group))
+                    .context("Render piece outside its batch")?;
+            let step = piece_steps[piece];
             for position in &mut mesh.positions {
+                let corner = corner_steps
+                    .get(&corner_key(*position))
+                    .copied()
+                    .unwrap_or(step)
+                    .max(step);
                 *position = std::array::from_fn(|axis| {
-                    (position[axis] / POSITION_STEP).round() * POSITION_STEP - arena[axis]
+                    (position[axis] / corner).round() * corner - arena[axis]
                 });
             }
-            let mut streams = geometry::encode_static(&mesh, POSITION_STEP)?;
+            let mut streams = geometry::encode_static(&mesh, step)?;
             let minimum = std::array::from_fn(|k| streams.bounds.0[k] + arena[k]);
             let maximum = std::array::from_fn(|k| streams.bounds.1[k] + arena[k]);
             ensure!(
@@ -1519,6 +1673,7 @@ pub fn convert_areas(
                     key: *key,
                     stage: stages.get(key).copied().unwrap_or(0),
                     solid: solid.contains(key),
+                    clipped: clipped.contains(key),
                 })
                 .collect::<Vec<_>>();
             Ok((
@@ -1595,12 +1750,13 @@ pub fn convert_areas(
                 translation: center,
                 bounds: (low, high),
                 user_data: PACKFILE_SHAPE | u64::try_from(part)?,
-                triangles: faces,
+                triangles: faces.into(),
             });
             world.meshes.push(symbol);
         }
     }
     let collision_seconds = collision_started.elapsed().as_secs_f64();
+    time("render_and_collision");
     report("Converting Sky Geometry");
     let (sky, sky_report) = match &templates.sky {
         Some(sky_templates) => sky::add(
@@ -1622,6 +1778,7 @@ pub fn convert_areas(
     // Native sun direction comes from the scenario sky's analytical light. Baked VMF lobes
     // describe a separate lighting term and do not establish the sun's direction.
     let light = sun.map(|sun| sun.vector);
+    time("sky");
     report("Decoding and Converting Ambient Audio");
     let (ambience, ambience_report) = match &templates.ambience {
         Some(ambience_templates) => super::ambience::add(
@@ -1641,6 +1798,7 @@ pub fn convert_areas(
             json!({"points": 0, "reason": "No sound point table or no audio decoder"}),
         ),
     };
+    time("ambience");
     report("Decoding Mission Audio");
     let mission_audio = match &templates.mission_audio {
         Some(options) => {
@@ -1664,6 +1822,7 @@ pub fn convert_areas(
             json!({"reason": "The donor names no atmosphere lookup or the level has no baked light"}),
         ),
     };
+    time("mission_audio_and_atmosphere_lookup");
     report("Preparing Lighting and Occlusion Probes");
     let (occlusion, open_light, occlusion_report) = match templates.occlusion_probes {
         Some(count) => occlusion::probes(
@@ -1681,7 +1840,7 @@ pub fn convert_areas(
             &super::interior_boxes(&cache, &tags)?,
             count,
             offset,
-        ),
+        )?,
         None => (
             Vec::new(),
             None,
@@ -1715,6 +1874,7 @@ pub fn convert_areas(
             json!({"reason": "The donor names no atmosphere image or the map keeps the donor's atmosphere"}),
         ),
     };
+    time("occlusion_and_atmosphere");
     report("Converting Reflection Cubemaps");
     let (cubemaps, cubemaps_report) = if templates.cubemaps && level.lightmap.is_some() {
         cubemaps::volumes(
@@ -1733,6 +1893,7 @@ pub fn convert_areas(
             json!({"reason": "The donor places no cubemap volumes or the level has no baked light"}),
         )
     };
+    time("cubemaps");
     report("Reading Lights");
     let (lights, lights_report) = match level.lightmap.as_ref() {
         Some(atlas) => lights::read(
@@ -1747,6 +1908,7 @@ pub fn convert_areas(
             json!({"reason": "The level has no baked light"}),
         ),
     };
+    time("lights");
     report("Converting Posed Props");
     let (props, prop_materials) = props::build(
         &cache,
@@ -1759,6 +1921,7 @@ pub fn convert_areas(
         offset,
         report,
     )?;
+    time("props");
     report("Binding Native Shaders");
     let document = json!({"nodes": graph.nodes});
     for (symbol, bytes) in crate::tiger::material::bind(&document, output)? {
@@ -1772,22 +1935,21 @@ pub fn convert_areas(
             bytes,
         )?;
     }
+    time("bind_shaders");
     ensure!(!pieces.is_empty(), "The level converted to no pieces");
     // Each area's static compound places its own meshes, numbered in its own order.
-    let mut area_rows = Vec::with_capacity(areas.len());
-    let mut area_report = Vec::with_capacity(areas.len());
-    for (area, zone_sets) in areas.iter().enumerate() {
-        let bit = 1u64 << area;
-        let shapes = (0..instances.len())
-            .filter(|&shape| shape_areas[shape] & bit != 0)
-            .collect::<Vec<_>>();
-        let area_pieces = (0..pieces.len())
-            .filter(|&piece| render_areas[piece] & bit != 0)
-            .collect::<Vec<_>>();
-        ensure!(
-            !shapes.is_empty() && !area_pieces.is_empty(),
-            "Area {area} converted to no pieces or no collision"
-        );
+    let area_shapes = (0..areas.len())
+        .map(|area| {
+            (0..instances.len())
+                .filter(|&shape| shape_areas[shape] & 1u64 << area != 0)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    // A compound encodes every mesh it places again, so the areas' compounds encode in parallel.
+    let compounds = crate::cancellation::parallel_map(&area_shapes, |shapes| {
+        if shapes.is_empty() {
+            return Ok(None);
+        }
         let placed = shapes
             .iter()
             .enumerate()
@@ -1801,12 +1963,29 @@ pub fn convert_areas(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        static_compound(&world_compound, &world_mesh, &placed).map(Some)
+    })?;
+    let mut area_rows = Vec::with_capacity(areas.len());
+    let mut area_report = Vec::with_capacity(areas.len());
+    for ((area, zone_sets), (shapes, compound)) in areas
+        .iter()
+        .enumerate()
+        .zip(area_shapes.iter().zip(compounds))
+    {
+        let bit = 1u64 << area;
+        let area_pieces = (0..pieces.len())
+            .filter(|&piece| render_areas[piece] & bit != 0)
+            .collect::<Vec<_>>();
+        ensure!(
+            !shapes.is_empty() && !area_pieces.is_empty(),
+            "Area {area} converted to no pieces or no collision"
+        );
         let symbol = if area == 0 {
             world.compound.clone()
         } else {
             format!("{}-{area}", world.compound)
         };
-        let compound = static_compound(&world_compound, &world_mesh, &placed)?;
+        let compound = compound?.context("Area compound")?;
         graph.add(
             &symbol,
             templates.world_compound,
@@ -1869,6 +2048,7 @@ pub fn convert_areas(
     }
     let world = area_rows[0].world.clone();
     let statics = area_rows[0].statics.clone();
+    time("areas");
     report("Verifying Source Files and Writing Map Reports");
     pages.verify_inputs()?;
     native.finish()?;
@@ -1885,11 +2065,13 @@ pub fn convert_areas(
         }
         None => json!({"execution":"not_selected"}),
     };
+    time("finish");
     let mut report = json!({
         "compute": crate::compute::snapshot().since(&compute_before),
         "shaders": crate::tiger::shader::cache_snapshot().since(&shaders_before),
         "timing": { "conversion_seconds": started.elapsed().as_secs_f64(),
-            "render_seconds": render_seconds, "collision_seconds": collision_seconds, "workers": workers },
+            "render_seconds": render_seconds, "collision_seconds": collision_seconds, "workers": workers,
+            "steps": steps },
         "source_build": cache.build,
         "source_inputs": pages.inputs,
         "source_resources": pages.resources,

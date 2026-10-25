@@ -1,6 +1,8 @@
 //! Decode the emitted event filters and masks independently of talent lowering.
 use super::*;
+mod ability_event;
 mod accumulator;
+mod event_filter;
 mod filter;
 mod hit;
 mod player;
@@ -32,6 +34,7 @@ pub(super) fn check(
 ) -> CheckResult<()> {
     let kind = source.u8(s + 5)?;
     let base = match kind {
+        10 => return ability_event::check(reader, stock, source, s, native, n),
         33 => {
             assert_eq!(native.u32(n - 4)?, 0x80803DF8);
             assert_eq!(native.u8(n + 5)?, 32);
@@ -39,13 +42,7 @@ pub(super) fn check(
             assert_eq!(source.u8(s + 6)?, native.u8(n + 6)?);
             8
         }
-        23 => {
-            assert_eq!(native.u32(n - 4)?, 0x80803DDA);
-            assert_eq!(source.bytes::<5>(s)?, native.bytes::<5>(n)?);
-            assert_eq!(source.u8(s + 6)?, native.u8(n + 6)?);
-            assert_eq!(source.bytes::<4>(s + 8)?, native.bytes::<4>(n + 8)?);
-            return Ok(());
-        }
+        3 | 9 | 23 => return event_filter::check(reader, stock, source, s, native, n),
         32 => {
             assert_eq!(native.u32(n - 4)?, 0x80803E04);
             assert_eq!(native.u8(n + 5)?, 31);
@@ -84,9 +81,12 @@ pub(super) fn check(
         20 => return player::check(source, s, native, n),
         12 => {
             assert_eq!(native.u32(n - 4)?, 0x80803DEA);
-            assert_eq!(source.u32(s + 8)?, 0x6CEC7A87);
-            assert_eq!(source.u32(s + 12)?, 0x18CCBF24);
-            assert_eq!(source.bytes::<16>(s)?, native.bytes::<16>(n)?);
+            assert!(matches!(
+                (source.u32(s + 8)?, source.u32(s + 12)?),
+                (0x6CEC7A87, 0x18CCBF24) | (0xB3311944, 0xC7161F86)
+            ));
+            assert_eq!(source.bytes::<7>(s)?, native.bytes::<7>(n)?);
+            assert_eq!(source.bytes::<8>(s + 8)?, native.bytes::<8>(n + 8)?);
             return Ok(());
         }
         26 => return accumulator::check(reader, stock, source, s, native, n),

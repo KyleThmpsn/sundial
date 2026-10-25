@@ -399,9 +399,21 @@ impl Workbench {
         let edited = self.documents.iter().any(|document| {
             !document.untouched_copy() && (document.changed() || document.pending_effect.is_some())
         });
-        (self.library.is_some() && !self.drafts_writable && edited).then(|| {
-            "Parhelion's draft autosave is paused, so its edited perk drafts are not saved.".into()
-        })
+        // A library that never opened leaves the workbench editable with nowhere to save, so
+        // its drafts are as unsaved as those of a paused autosave.
+        if !edited || self.drafts_writable {
+            None
+        } else if self.library.is_none() {
+            Some(
+                "Custom Perks could not open, so Parhelion's edited perk drafts are not saved."
+                    .into(),
+            )
+        } else {
+            Some(
+                "Parhelion's draft autosave is paused, so its edited perk drafts are not saved."
+                    .into(),
+            )
+        }
     }
 
     /// Opens the drafts other windows set aside after losing the drafts file, and folds them

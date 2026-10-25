@@ -425,12 +425,21 @@ impl PackageAuthoringApp {
         let restore = is_own(abilities, place).then(|| format!("Restore {restore_name}"));
         let icon = self.place_icon(ui.ctx(), abilities, base.hash, place);
         let name = edits.name.as_deref().unwrap_or(stock_name);
+        let prepared = edits.imported_ability.is_some();
+        if prepared {
+            page.choosing = None;
+        }
         let open = page.choosing == Some(page.selection);
         let (restored, based_on) = detail_header(
             ui,
             (&place.label(), name, Some(icon.as_ref())),
             restore.as_deref(),
             |ui| {
+                if prepared {
+                    return ui
+                        .add_enabled(false, egui::Button::new("Prepared Ability"))
+                        .on_hover_text("Restore this entry to choose a stock ability.");
+                }
                 ui.add_enabled_ui(!layout::FOUNDATIONS.contains(&entry), |ui| {
                     self.based_on_button(ui, (summary, entry), open)
                 })
@@ -452,7 +461,7 @@ impl PackageAuthoringApp {
         // changes an entry makes to the subclass's abilities.
         let sections = Section::ALL
             .into_iter()
-            .filter(|section| *section != Section::Visuals || entity.is_some())
+            .filter(|section| *section != Section::Visuals || (entity.is_some() && !prepared))
             .collect::<Vec<_>>();
         if !sections.contains(&page.section) {
             page.section = Section::Ability;
@@ -614,6 +623,10 @@ impl PackageAuthoringApp {
                 ..changed.unwrap_or_else(|| edits.clone())
             });
         }
+        if edits.imported_ability.is_some() {
+            ui.weak("This prepared ability includes its own icon, colors and attached abilities.");
+            return changed;
+        }
         let (icon, reset) = field(ui, "Icon", edits.icon.is_some(), |ui| {
             self.draw_icon_choices(ui, base, (summary, entry), (edits.icon.as_ref(), &[]), page)
         });
@@ -683,6 +696,11 @@ impl PackageAuthoringApp {
         edits: &EntryEdits,
         page: &mut PageState,
     ) -> Option<EntryEdits> {
+        if edits.imported_ability.is_some() {
+            ui.label("Prepared Ability");
+            ui.weak("Gameplay settings are part of the prepared ability. Its private perks can be edited in the Perks tab.");
+            return None;
+        }
         // The ability's tree: none without an entity, and `Some(None)` while it loads.
         let tree =
             summary

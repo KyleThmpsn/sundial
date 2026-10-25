@@ -230,8 +230,8 @@ pub mod ability_palette {
     pub use crate::ability::palette::{
         Graphs, MATERIAL_BINDINGS, MATERIAL_CLASS, PALETTE_FORMAT, PALETTE_HEIGHT, PALETTE_WIDTH,
         PARTICLE_SYSTEM_CLASS, Palette, PaletteUse, ParticleSite, SYSTEM_MATERIAL, ability_graphs,
-        ability_palettes, binding_tag_offset, bindings, palette_data, palette_pixels, palettes,
-        palettes_in_graphs, particle_sites,
+        ability_graphs_in, ability_palettes, binding_tag_offset, bindings, palette_data,
+        palette_pixels, palettes, palettes_in_graphs, particle_sites,
     };
 }
 
@@ -252,7 +252,7 @@ pub mod ability_settings {
 
 pub mod ability_spawns {
     pub use crate::ability::spawns::{
-        Links, Spawn, describe, is_table, links, names, reached_graphs, self_spawns,
+        Discovery, Links, Spawn, describe, is_table, links, names, reached_graphs, self_spawns,
         spawned_graphs, spawns, table_entries, table_graphs, tables,
     };
 }
@@ -272,11 +272,11 @@ pub mod ability_bank {
         MOVEMENT_SLOT, Modifier, PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind,
         ParameterName, PropertyRow, SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS,
         SLOT_PARAMETERS, SUPER_SLOT, StockParameter, UNPLACED_BANKS, bank_name, bank_names,
-        bank_owner, block_count, handler_slot, instance_shift, parameter_abilities, parameter_kind,
-        parameter_label, parameter_meaning, parameter_name, parameters, property_rows,
-        register_bank_names, retarget_references, row_modifiers, slot_banks, slot_name,
-        slot_parameters, tuning_key, validate, with_charge_row, with_property_row,
-        with_property_row_mode,
+        bank_owner, block_count, constant_protection_definition, handler_slot, instance_shift,
+        parameter_abilities, parameter_kind, parameter_label, parameter_meaning, parameter_name,
+        parameters, property_rows, register_bank_names, retarget_references, row_modifiers,
+        slot_banks, slot_name, slot_parameters, tuning_key, validate, validate_native_owner,
+        with_charge_row, with_property_row, with_property_row_mode,
     };
 }
 
@@ -351,8 +351,8 @@ pub mod runtime {
         load_weapon_runtime_entity_for_item_with_manager, load_weapon_runtime_entity_with_manager,
         load_weapon_runtime_graph, load_weapon_runtime_graph_for_entity,
         load_weapon_runtime_graph_with_manager, load_weapon_runtime_resource_shape, native_holders,
-        native_member_names, native_members, native_pointer_layout, native_type_name,
-        resolve_weapon_runtime_field, runtime_fields_share_semantics,
+        native_member_names, native_members, native_pointer_layout, native_type_inherits,
+        native_type_name, resolve_weapon_runtime_field, runtime_fields_share_semantics,
     };
     pub use crate::runtime::{modifiers, presentation};
 }

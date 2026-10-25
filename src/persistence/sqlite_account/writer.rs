@@ -162,8 +162,9 @@ pub(crate) fn restore_backup_safely(
 }
 
 /// Replaces the account with `backup` after keeping an integrity-checked safety snapshot of it.
-/// Refused whenever `require_closed` reports the game running: before the snapshot, and again just
-/// before the restore, since a game started while the snapshot is written must keep its database.
+/// Refused whenever `require_closed` reports the game running: before the snapshot, again before
+/// the restore and last just before its commit, since a game started while the snapshot or the
+/// tables are written must keep its database.
 pub(crate) fn restore_backup_checked(
     destination: &Path,
     backup: &Path,
@@ -191,12 +192,14 @@ fn restore_backup_safely_with_path(
     let expected =
         super::snapshot::capture_path(&safety_backup).map_err(SqliteAccountError::Backup)?;
     require_closed().map_err(SqliteAccountError::WriteBlocked)?;
-    super::snapshot::restore(destination, &expected, backup).map_err(|error| {
-        SqliteAccountError::Backup(format!(
-            "Could not restore the database: {error}. The recovery snapshot is at {}",
-            safety_backup.display()
-        ))
-    })?;
+    super::snapshot::restore_checked(destination, &expected, backup, require_closed).map_err(
+        |error| {
+            SqliteAccountError::Backup(format!(
+                "Could not restore the database: {error}. The recovery snapshot is at {}",
+                safety_backup.display()
+            ))
+        },
+    )?;
     Ok(SqliteRestoreReceipt { safety_backup })
 }
 

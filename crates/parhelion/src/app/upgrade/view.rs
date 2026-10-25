@@ -97,7 +97,7 @@ fn content(ui: &mut egui::Ui, state: &UpgradeUi, backup: &str) {
         path_block(ui, "Kept Build", &kept.run_directory);
         ui.label("The review checks it against this installation, your other mods and your account before anything changes. If it no longer fits, build again instead.");
     } else if let Some(plan) = &state.plan {
-        ui.label("On Sunrise 0.6 or later, builds install to the mod folder. Packages from earlier builds can't move there, so build and install again to bring your items over.");
+        ui.label("On Sunrise 0.6 or later, builds install to the mod folder. Packages from earlier builds can't move there, so build them again from your recipes and install to bring your items over.");
         ui.add_space(4.0);
         style::block(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());

@@ -2,6 +2,7 @@
 //! triples in addition to the top-level component rows. They must move together.
 use crate::tiger::payload::Payload;
 pub mod compiled;
+pub mod lifecycle;
 pub mod links;
 use anyhow::{Result, ensure};
 

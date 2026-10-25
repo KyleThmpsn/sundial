@@ -273,11 +273,13 @@ fn compile_canonical(
         )
         .filter_map(|perk| perk.program.as_ref())
         .filter(|program| {
-            program.assets().any(|asset| asset.hud_status.is_some())
-                || program
-                    .auxiliary
-                    .iter()
-                    .any(|record| record.hud_status.is_some())
+            program.owned_programs().any(|program| {
+                program.assets().any(|asset| asset.hud_status.is_some())
+                    || program
+                        .auxiliary
+                        .iter()
+                        .any(|record| record.hud_status.is_some())
+            })
         })
         .cloned()
         .collect::<Vec<_>>();

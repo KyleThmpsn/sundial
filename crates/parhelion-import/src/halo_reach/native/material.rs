@@ -23,7 +23,7 @@ mod surface;
 mod terrain;
 pub(in crate::halo_reach) mod vertex_data;
 mod water;
-pub(in crate::halo_reach) use fog::{Band, Fog};
+pub(in crate::halo_reach) use fog::{Band, Fog, Light};
 
 pub(in crate::halo_reach) struct Binding<'a> {
     pub palette: &'a [u8],
@@ -164,6 +164,16 @@ pub(in crate::halo_reach) const LIGHT_RADIANCE: f32 = 0.35;
 pub(in crate::halo_reach) const SKY_RADIANCE: f32 = LIGHT_RADIANCE;
 /// The frame constants at `b13`, which a baked surface's pixel program reads for its exposure.
 const FRAME: &str = "cbuffer Frame : register(b13) {float4 frameData[2];};";
+/// The relative illumination (`cb13[1].w`) at which a baked surface keeps the brightness it had
+/// when it followed the deferred emission path. Native light rows scale with the frame's
+/// exposure (`cb13[1].x`, `Frame+0x1C`), and the deferred pass scales emission by `x * w`, where
+/// `w` read `x^(-2/3)` on Nightfall (x 7.98, w 0.249) and Breakneck (x 0.192, w 3.03). Baked
+/// light written as emission therefore followed `x^(1/3)` and drove automatic exposure to
+/// `radiance^-3`: Breakneck's world, about 3.5 times Nightfall's, set its exposure 40 times lower,
+/// and the native sun and ambient light on its weapons and players with it. Baked surfaces divide
+/// by `w` and take this constant instead, so they scale with exposure as native light does.
+/// Nightfall's value keeps its look.
+const REFERENCE_ILLUMINATION: f32 = 0.25;
 
 #[derive(Clone)]
 pub(in crate::halo_reach) struct Lens {
@@ -1452,7 +1462,8 @@ fn analytical_lighting(
 /// occlusion (`o2.w` 0) instead.
 fn hybrid_finish(level: f32, veil: [f32; 3], radiance: f32) -> String {
     format!(
-        "float exposure={radiance:.9}*frameData[1].z/max(frameData[1].x,0.000001);float3 radiance=(max(albedo.rgb+emission*{inverse:.9},0)*fog.a+fog.rgb*{inverse:.9}+float3({veil_r:.9},{veil_g:.9},{veil_b:.9}))*exposure;sunlit=max(sunlit,0)*fog.a*exposure;float sunLevel=dot(sunlit,float3(0.2126,0.7152,0.0722));bool receives=lightNativeSun&&sunLevel>0.000001;float cosine=receives?lightDirectCosine:0;float3 total=radiance+sunlit*cosine;float peak=max(total.r,max(total.g,total.b));float ratio=dot(radiance,float3(0.2126,0.7152,0.0722))/max(sunLevel,0.000001);float desiredDirect=receives?saturate(peak/max(ratio+cosine,0.000001)):0;float packedVisibility=ceil(pow(desiredDirect,1.0/0.7)*255)/255;float directFactor=receives?pow(max(packedVisibility,0.0001),0.7):0;float wanted=receives?max(ratio*directFactor,max(peak-directFactor*cosine,0)):peak;float encoded=0.5*(1+2.0/255.0+saturate((log2(wanted+1.0/128.0)+7)/13));float packed=min(ceil(encoded*255)/255,1);float decoded=exp2(13*saturate(2*packed-(1+2.0/255.0))-7)-1.0/128.0;o0=float4(saturate(total/max(decoded+directFactor*cosine,0.000001)),0.04);o1=float4(saturate(n*((1-roughness)*0.125+0.375)+0.5),0);o2=float4(0,packed,0,receives?packedVisibility:0);",
+        "float exposure={scale:.9}*frameData[1].z/max(frameData[1].x*frameData[1].w,0.000001);float3 radiance=(max(albedo.rgb+emission*{inverse:.9},0)*fog.a+fog.rgb*{inverse:.9}+float3({veil_r:.9},{veil_g:.9},{veil_b:.9}))*exposure;sunlit=max(sunlit,0)*fog.a*exposure;float sunLevel=dot(sunlit,float3(0.2126,0.7152,0.0722));bool receives=lightNativeSun&&sunLevel>0.000001;float cosine=receives?lightDirectCosine:0;float3 total=radiance+sunlit*cosine;float peak=max(total.r,max(total.g,total.b));float ratio=dot(radiance,float3(0.2126,0.7152,0.0722))/max(sunLevel,0.000001);float desiredDirect=receives?saturate(peak/max(ratio+cosine,0.000001)):0;float packedVisibility=ceil(pow(desiredDirect,1.0/0.7)*255)/255;float directFactor=receives?pow(max(packedVisibility,0.0001),0.7):0;float wanted=receives?max(ratio*directFactor,max(peak-directFactor*cosine,0)):peak;float encoded=0.5*(1+2.0/255.0+saturate((log2(wanted+1.0/128.0)+7)/13));float packed=min(ceil(encoded*255)/255,1);float decoded=exp2(13*saturate(2*packed-(1+2.0/255.0))-7)-1.0/128.0;o0=float4(saturate(total/max(decoded+directFactor*cosine,0.000001)),0.04);o1=float4(saturate(n*((1-roughness)*0.125+0.375)+0.5),0);o2=float4(0,packed,0,receives?packedVisibility:0);",
+        scale = radiance * REFERENCE_ILLUMINATION,
         inverse = 1. / level,
         veil_r = veil[0],
         veil_g = veil[1],
@@ -1462,7 +1473,8 @@ fn hybrid_finish(level: f32, veil: [f32; 3], radiance: f32) -> String {
 
 /// A lightmapped level's transparent surface's output, as a sky surface's transparent stage writes
 /// its own: its lit color plus its self illumination over the average lit `level`, times the
-/// surfaces' [`LIGHT_RADIANCE`] and the frame's exposure (`cb13[1].z * cb13[1].w`), blended by its
+/// surfaces' [`LIGHT_RADIANCE`] and the frame's exposure (`cb13[1].z` times
+/// [`REFERENCE_ILLUMINATION`], as native light scales), blended by its
 /// blend mode. The opaque surface behind it already holds the large bloom's floor. Additive
 /// surfaces add their self illumination. A multiplying surface, such as a dirt decal, darkens what
 /// lies behind it by its unlit albedo's mean faded by its coverage, the nearest a premultiplied
@@ -1472,7 +1484,7 @@ fn baked_transparent_finish(material: &Material, level: f32, radiance: f32) -> S
     if let Some(finish) = decal::multiplication(material) {
         return finish;
     }
-    let scale = format!("{radiance:.9}*frameData[1].z*frameData[1].w");
+    let scale = format!("{:.9}*frameData[1].z", radiance * REFERENCE_ILLUMINATION);
     let inverse = 1. / level;
     let emission = format!("emission*{inverse:.9}");
     match material.options.get("blend_mode").map(String::as_str) {

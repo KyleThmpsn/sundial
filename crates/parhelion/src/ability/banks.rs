@@ -96,7 +96,7 @@ pub(crate) fn plan<'a>(
     let mut scoped: BTreeMap<u32, AbilityRow> = BTreeMap::new();
     for perk in perks {
         applied.extend(keys_applied(&perk)?);
-        if let Some(program) = perk.program {
+        for program in perk.program.into_iter().flat_map(Program::owned_programs) {
             for row in &program.ability_rows {
                 row.validate().map_err(invalid)?;
                 if scoped
@@ -443,7 +443,12 @@ fn retarget_referrers(
 /// program it compiles to, or from the stock action it clones unchanged.
 fn keys_applied(perk: &Perk<'_>) -> AuthoringResult<BTreeSet<(AbilityTarget, u32)>> {
     match perk.program {
-        Some(program) => program.ability_properties(),
+        Some(program) => program
+            .owned_programs()
+            .try_fold(BTreeSet::new(), |mut keys, program| {
+                keys.extend(program.ability_properties()?);
+                Ok(keys)
+            }),
         None => ability_properties_in(perk.stock_action),
     }
     .map_err(invalid)

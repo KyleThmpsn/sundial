@@ -67,6 +67,18 @@ impl PackageAuthoringApp {
             WorkbenchPage::Advanced => {
                 let donor = self.current_donor();
                 self.draw_gameplay_workspace(ui, donor.as_ref());
+                // A behavior chosen here claims its sockets in the same frame, so the choice and
+                // the perks it places are one undo step. Undo then never lands between them,
+                // where the next sync would take the perks straight back.
+                if self.recipe.kind.is_weapon()
+                    && let Some(donor) = &donor
+                {
+                    super::socket_editor::sync_behavior_socket_pins(
+                        &mut self.recipe,
+                        &mut self.behavior_pins,
+                        donor,
+                    );
+                }
             }
             WorkbenchPage::Identity => self.draw_identity_workspace(ui),
         }

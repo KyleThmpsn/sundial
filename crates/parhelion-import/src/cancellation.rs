@@ -102,6 +102,33 @@ pub(crate) fn workers() -> Result<usize> {
     Ok((std::thread::available_parallelism().map_or(1, usize::from) / 2).clamp(1, 8))
 }
 
+/// Evaluate pure `work` over any number of `items` on [`workers`] threads and retain input order.
+/// Each worker takes the next item no worker has taken, so items of uneven cost balance.
+pub(crate) fn parallel_map<T: Sync, R: Send>(
+    items: &[T],
+    work: impl Fn(&T) -> R + Sync,
+) -> Result<Vec<R>> {
+    let workers = workers()?.min(items.len()).max(1);
+    let lanes = (0..workers).collect::<Vec<_>>();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut done = parallel(&lanes, |_| {
+        let mut done = Vec::new();
+        loop {
+            check()?;
+            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(item) = items.get(index) else {
+                return Ok(done);
+            };
+            done.push((index, work(item)));
+        }
+    })?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    done.sort_by_key(|(index, _)| *index);
+    Ok(done.into_iter().map(|(_, result)| result).collect())
+}
+
 /// Evaluate a bounded pure batch with the caller's cancellation scope and retain input order.
 /// Callers commit graph mutations only after all workers have joined successfully.
 pub(crate) fn parallel<T: Sync, R: Send>(

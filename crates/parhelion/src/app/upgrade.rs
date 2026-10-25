@@ -26,6 +26,8 @@ pub(super) struct UpgradeUi {
     step: Arc<AtomicUsize>,
     plan: Option<UpgradeReview>,
     error: Option<String>,
+    /// Build & Stage chosen in the review, held until the catalog the build reads has loaded.
+    build: bool,
 }
 
 impl UpgradeUi {
@@ -137,13 +139,33 @@ impl PackageAuthoringApp {
         match view::show(ctx, &self.upgrade, &self.backup_root) {
             view::Action::None => {}
             view::Action::Build => {
+                // The open review holds back the catalog a build reads, so on a fresh open the
+                // build waits for it to load rather than starting now and stopping without it.
                 self.upgrade.open = false;
-                self.start_build_checked(ctx);
+                self.upgrade.build = true;
+                if self.build_ready().is_err() {
+                    self.log.push(LogEntry::info(
+                        "Build & Stage starts once the weapon catalog loads",
+                    ));
+                }
             }
             view::Action::Restore => self.start_restore(),
             view::Action::Review => self.start_upgrade_review(false),
             view::Action::Recover => self.start_upgrade_review(true),
             view::Action::Close => self.upgrade.open = false,
+        }
+    }
+
+    /// Starts the Build & Stage chosen in the review once the catalog has finished loading, or
+    /// blocks it with the reason when the load ended without a catalog.
+    pub(super) fn start_upgrade_build(&mut self, ctx: &egui::Context) {
+        if !std::mem::take(&mut self.upgrade.build) {
+            return;
+        }
+        if self.catalog.is_some() {
+            self.start_build_checked(ctx);
+        } else {
+            self.block_build("The weapon catalog did not load. Reload it, then build again".into());
         }
     }
 }

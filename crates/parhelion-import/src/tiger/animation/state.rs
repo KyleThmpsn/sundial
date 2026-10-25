@@ -119,6 +119,50 @@ pub fn clone_actions(
 /// cumulative weight cutoffs as `f32` bits.
 pub type ChoiceRoutes = BTreeMap<u32, BTreeMap<usize, Vec<(usize, u32)>>>;
 
+/// Add private names for translated choices without replacing a stock name or alias.
+/// Nodes and descriptor ordinals remain stable. Names are sorted for native lookup.
+pub fn extend_actions(
+    p: &Payload,
+    routes: &ChoiceRoutes,
+    names: &BTreeMap<u32, u32>,
+) -> Result<Payload> {
+    ensure!(
+        !routes.is_empty() && routes.keys().eq(names.keys()),
+        "Private action names do not cover exactly the translated routes"
+    );
+    let mut original = BTreeMap::new();
+    for at in p.array(8, 8, Some(0x8080342E))? {
+        ensure!(
+            original.insert(p.u32(at)?, p.u32(at + 4)?).is_none(),
+            "Native action names are ambiguous"
+        );
+    }
+    let mut unique = BTreeSet::new();
+    for &private in names.values() {
+        ensure!(
+            !matches!(private, 0 | 0x811C9DC5 | u32::MAX)
+                && !original.contains_key(&private)
+                && unique.insert(private),
+            "Private animation action collides with an existing name"
+        );
+    }
+    let mut result = replace_selected_choices(p, routes)?;
+    for at in result.array(8, 8, Some(0x8080342E))? {
+        if let Some(&private) = names.get(&result.u32(at)?) {
+            original.insert(private, result.u32(at + 4)?);
+        }
+    }
+    let mut entries = Vec::new();
+    for (name, index) in original {
+        entries.extend(name.to_le_bytes());
+        entries.extend(index.to_le_bytes());
+    }
+    append(&mut result.0, 8, 0x8080342E, &entries, 8)?;
+    let length = result.0.len() as u64;
+    put(&mut result.0, 0, &length.to_le_bytes())?;
+    Ok(result)
+}
+
 /// Replace complete weighted choices while preserving the native selector and
 /// every unselected variant. Each named action receives a private node.
 pub fn replace_selected_choices(p: &Payload, routes: &ChoiceRoutes) -> Result<Payload> {

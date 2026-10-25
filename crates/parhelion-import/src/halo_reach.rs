@@ -44,7 +44,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const REVISION: u32 = 49;
+pub const REVISION: u32 = 51;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

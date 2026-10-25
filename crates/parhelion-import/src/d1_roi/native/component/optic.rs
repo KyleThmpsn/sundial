@@ -122,7 +122,7 @@ impl Assembly<'_> {
         }
         // Optic procedures use the channel dialect. Preserve the source curve instead of
         // requiring the stock optic template to contain the same expression and vector count.
-        channel::program::validate(&zoom, &lanes, source.u64(s + 0xD8)? as usize)?;
+        crate::d1_roi::procedure::validate(&zoom, &lanes, source.u64(s + 0xD8)? as usize)?;
         array(&mut component.payload.0, n + 0xA0, 0x80800009, &zoom, 1)?;
         array(&mut component.payload.0, n + 0xB0, 0x80800090, &values, 16)?;
         put(

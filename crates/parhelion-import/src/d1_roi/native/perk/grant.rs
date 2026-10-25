@@ -364,7 +364,7 @@ fn modifiers(
     match data.u32(at - 4)? {
         0x8080296E => group::lower(source, data, row, native),
         0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365
-        | 0x808028B8 | 0x80802B72 => fixed::lower(data, row, native),
+        | 0x808028B8 | 0x80802B72 | 0x808026D1 => fixed::lower(data, row, native),
         0x8080235E => scalar::lower(source, data, row, native),
         0x80802254 => Ok(vec![(
             AbilityRowModifier::Charges {

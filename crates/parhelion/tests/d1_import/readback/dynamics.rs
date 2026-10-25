@@ -55,7 +55,42 @@ struct Sequence<'a> {
     visited: BTreeSet<usize>,
 }
 
+// Original consumers use an inclusive source maximum and an exclusive native maximum.
+// Normalize the emitted interval back to its inclusive Float32 endpoint for comparison.
+fn interval(p: &Payload, at: usize, native: bool) -> Result<Value> {
+    let maximum = f32::from_bits(p.u32(at + 4)?);
+    ensure!(!maximum.is_nan(), "Sequence interval contains NaN");
+    let mut maximum = if native {
+        if maximum == 0. {
+            0x80000001
+        } else if maximum > 0. {
+            maximum.to_bits() - 1
+        } else {
+            maximum.to_bits() + 1
+        }
+    } else {
+        maximum.to_bits()
+    };
+    if f32::from_bits(maximum) == 0. {
+        maximum = 0;
+    }
+    Ok(json!([p.u32(at)?, maximum]))
+}
+
+fn sequence_condition(p: &Payload, field: usize, native: bool) -> Result<Value> {
+    if p.u64(field)? == 0 {
+        return Ok(Value::Null);
+    }
+    let at = p.pointer(field)?;
+    ensure!(
+        p.u32(at - 4)? == if native { 0x808093ED } else { 0x8080045E } && p.u32(at)? == 0,
+        "Unverified sequence predicate"
+    );
+    Ok(json!({"range":interval(p,at+4,native)?,"input":p.u32(at+12)?}))
+}
+
 impl Sequence<'_> {
+    #[allow(clippy::cognitive_complexity)]
     fn node(&mut self, event: bool, index: usize, parent: i16) -> Result<Value> {
         let a = *(if event { &self.events } else { &self.controls })
             .get(index)
@@ -67,6 +102,13 @@ impl Sequence<'_> {
         let kind = self.p.u16(a + if self.native { 0x30 } else { 0x1c })?;
         result["kind"] = json!(kind);
         if event {
+            if kind == 0 {
+                ensure!(
+                    self.p.u32(a - 4)? == if self.native { 0x808093CB } else { 0x808006CE },
+                    "Delay event class differs"
+                );
+                return Ok(result);
+            }
             ensure!(kind == 2, "Expected scalar event");
             let body = a + if self.native { 0x38 } else { 0x20 };
             let code = a + if self.native { 0x40 } else { 0x28 };
@@ -91,6 +133,16 @@ impl Sequence<'_> {
             result["constants"] = json!(values(self.p, code + 16, 16, 0x80800090)?);
         } else {
             result["repeat"] = json!(self.p.u16(a + if self.native { 0x32 } else { 0x1e })?);
+            result["entry_condition"] = sequence_condition(
+                self.p,
+                a + if self.native { 0x48 } else { 0x30 },
+                self.native,
+            )?;
+            result["retirement_condition"] = sequence_condition(
+                self.p,
+                a + if self.native { 0x50 } else { 0x38 },
+                self.native,
+            )?;
             let mut children = Vec::new();
             for child in self
                 .p
@@ -107,7 +159,7 @@ impl Sequence<'_> {
             result["children"] = json!(children);
             let field = a + if self.native { 0x58 } else { 0x40 };
             if kind == 6 {
-                result["range"] = json!([self.p.u32(field)?, self.p.u32(field + 4)?]);
+                result["range"] = interval(self.p, field, self.native)?;
                 result["input"] = json!(
                     self.inputs
                         .get(self.p.u32(field + 8)? as usize)
@@ -116,7 +168,7 @@ impl Sequence<'_> {
             } else if kind == 2 {
                 result["weights"] = json!(values(self.p, field, 4, 0x8080000F)?);
             } else {
-                ensure!(kind == 1, "Unexpected scalar sequence control");
+                ensure!(matches!(kind, 0 | 1), "Unexpected scalar sequence control");
             }
         }
         Ok(result)
@@ -178,7 +230,10 @@ fn sequence(p: &Payload, native: bool) -> Result<Value> {
         tree.visited.len() == tree.controls.len() + tree.events.len(),
         "Unreachable sequence event"
     );
-    Ok(json!({"tree":result,"inputs":tree.inputs,"outputs":tree.outputs}))
+    Ok(
+        json!({"tree":result,"inputs":tree.inputs,"outputs":tree.outputs,
+        "root_condition":sequence_condition(p,r+if native {0x2D8} else {0x2C8},native)?}),
+    )
 }
 
 fn programs(p: &Payload, r: usize) -> Result<Vec<String>> {

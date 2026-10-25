@@ -18,6 +18,20 @@ pub(super) struct Draw {
     pub layout: u16,
 }
 
+/// The native state a D1 decal's blend state becomes, and whether it replaces target 0's color.
+/// Material `+0x20` selects a blend state with its high bit. Both executables give states 22
+/// and 23 the premultiplied blend `src + dst * src.a` that keeps the destination alpha, on
+/// target 0 or targets 0 and 1, as native vehicle decal programs such as `815B9A49` expect.
+/// D1 state 25 writes target 0's color without blending, where native state 25 blends three
+/// targets, so it becomes native 22 with zero inverse coverage.
+fn decal_state(state: u8) -> Result<(u8, bool)> {
+    Ok(match state {
+        0x96 | 0x97 => (state, false),
+        0x99 => (0x96, true),
+        _ => anyhow::bail!("Untranslated source decal blend state {state:02X}"),
+    })
+}
+
 fn vectors(data: &Payload, field: usize) -> Result<Vec<u8>> {
     Ok(data
         .array(field, 16, Some(0x80800090))?
@@ -147,6 +161,17 @@ impl Assembly<'_> {
             &(source.u32(0xC)? & 0x00FF_FFFF).to_le_bytes(),
         )?;
         out[0x27] = 0;
+        let decal = (pass == 1)
+            .then(|| decal_state(source.u8(0x20)?))
+            .transpose()?;
+        if let Some((state, _)) = decal {
+            out[0x20] = state;
+        }
+        let gbuffer = match pass {
+            0 => Some(super::resource::Gbuffer::Surface),
+            1 => decal.map(|(_, replace)| super::resource::Gbuffer::Decal { replace }),
+            _ => None,
+        };
         put(&mut out, 0x28, &u32::MAX.to_le_bytes())?;
         let masks = scope_masks(&source, &self.globals, simulated, pass, &mut out)?;
         let depth = (source.u32(0x1C)? & (1 << self.globals.depth.index) != 0)
@@ -227,7 +252,7 @@ impl Assembly<'_> {
                 shader,
                 super::resource::Shader {
                     stage,
-                    deferred: index == 4 && matches!(pass, 0 | 1),
+                    gbuffer: gbuffer.filter(|_| index == 4),
                     layout,
                     depth: depth.filter(|_| index == 4),
                     reticle_mask: program.reticle_mask.filter(|_| index == 4),

@@ -50,7 +50,7 @@ mod attack;
 mod census;
 pub use attack::AttackModifier;
 mod fixed;
-pub use fixed::{FixedModifier, FixedSelection};
+pub use fixed::{FixedModifier, FixedSelection, constant_protection_definition};
 mod group;
 pub use group::{GroupEntry, GroupModifier};
 mod handler;
@@ -70,7 +70,7 @@ pub use names::{
 pub(crate) use read::has_property_rows;
 pub use read::{
     bank_owner, block_count, handler_slot, instance_shift, parameter_rows, parameters,
-    property_rows, retarget_references, row_modifiers, validate,
+    property_rows, retarget_references, row_modifiers, validate, validate_native_owner,
 };
 pub use registry::{bank_name, bank_names, parameter_abilities, register_bank_names};
 

@@ -364,7 +364,9 @@ impl Geometry {
                     }
                     converted
                 };
+                report("Identifying Shared Textures");
                 sharing::identify(&mut converted.nodes, &folder, manager)?;
+                report("Keeping Converted Map Details");
                 crate::mod_family::build::remember_map(
                     name,
                     serde_json::to_value(&converted).map_err(|e| invalid(e.to_string()))?,

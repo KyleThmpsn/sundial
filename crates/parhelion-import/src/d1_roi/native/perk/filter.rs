@@ -9,6 +9,7 @@ pub(super) fn damage(
     dictionary: usize,
     graph: &mut Graph,
     to: usize,
+    native: Option<&mut Reader>,
 ) -> Result<()> {
     graph.blocks[0].bytes[to + 0x78] = 0xFF;
     for operation in 0..2 {
@@ -46,5 +47,5 @@ pub(super) fn damage(
             graph.blocks[0].links.insert(to + 8 + operation * 16, index);
         }
     }
-    label::ability(source, p, at, dictionary, graph, to + 0x20)
+    label::ability(source, p, at, dictionary, graph, to + 0x20, native)
 }

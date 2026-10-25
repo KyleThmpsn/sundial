@@ -34,11 +34,16 @@ pub(super) fn fields(source: &Payload, s: usize, native: &Payload, n: usize) -> 
     assert_eq!(native.u32(n + 0xC8)?, u32::MAX);
     assert_eq!(source.u32(s + 0xC4)?, native.u32(n + 0xE0)?);
     assert_eq!(source.u8(s + 0xC8)?, native.u8(n + 0xF8)?);
-    for at in [0x40, 0x50] {
-        assert_eq!(source.bytes::<16>(s + at)?, [0; 16]);
+    let original = source.array(s + 0x40, 12, Some(0x808031E8))?;
+    let emitted = native.array(n + 0x60, 12, Some(0x808040CA))?;
+    assert_eq!(original.len(), emitted.len());
+    for (original, emitted) in original.into_iter().zip(emitted) {
+        assert!(source.u32(original)? <= 2);
+        assert_eq!(source.bytes::<12>(original)?, native.bytes::<12>(emitted)?);
     }
+    assert_eq!(source.bytes::<16>(s + 0x50)?, [0; 16]);
     assert_eq!(native.u64(n + 0xC0)?, 0);
-    for at in [0x48, 0x60, 0x70, 0xE8] {
+    for at in [0x48, 0x70, 0xE8] {
         assert_eq!(native.bytes::<16>(n + at)?, [0; 16]);
     }
     Ok(())

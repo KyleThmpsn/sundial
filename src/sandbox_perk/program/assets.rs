@@ -141,6 +141,21 @@ pub struct NativeAssetPatch {
     /// another owner still sends events into is refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remove_owners: Vec<u32>,
+    /// Controllers owned by this attachment. Each child is compiled privately and bound to
+    /// its declared action reference without merging its lifecycle with the parent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<NativeAssetProgram>,
+}
+
+/// A private child controller referenced by an existing native component resource.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAssetProgram {
+    pub binding_hash: u32,
+    pub resource_index: u16,
+    pub offset: u32,
+    pub expected_action: u32,
+    pub program: Box<Program>,
 }
 
 /// Serialized definition data appended to a private owner. Runtime allocation

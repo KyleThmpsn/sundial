@@ -25,19 +25,21 @@ pub(super) fn validate_sword_profile(spec: &WeaponCloneSpec) -> AuthoringResult<
     let has_key_effect = spec.overrides.socket_plug_variants.iter().any(|variant| {
         variant.sandbox_perks.iter().any(|perk| {
             perk.program.as_ref().is_some_and(|program| {
-                program.actions.iter().any(|action| {
-                    matches!(action, sundial::package_authoring::sandbox_perk::program::Action::Native { node }
-                        if matching_node(node.kind, &node.bytes))
-                }) || program
-                    .additional_groups
-                    .iter()
-                    .flat_map(|group| &group.effects)
-                    .any(|node| matching_node(node.kind, &node.bytes))
-                    || program.native.as_ref().is_some_and(|native| {
-                        native.graph.blocks.iter().any(|block| {
-                            block.class == 0x8080_3E39 && matching_node(41, &block.bytes)
+                program.owned_programs().any(|program| {
+                    program.actions.iter().any(|action| {
+                        matches!(action, sundial::package_authoring::sandbox_perk::program::Action::Native { node }
+                            if matching_node(node.kind, &node.bytes))
+                    }) || program
+                        .additional_groups
+                        .iter()
+                        .flat_map(|group| &group.effects)
+                        .any(|node| matching_node(node.kind, &node.bytes))
+                        || program.native.as_ref().is_some_and(|native| {
+                            native.graph.blocks.iter().any(|block| {
+                                block.class == 0x8080_3E39 && matching_node(41, &block.bytes)
+                            })
                         })
-                    })
+                })
             })
         })
     });
@@ -618,7 +620,10 @@ pub(crate) fn validate_socket_plug_variant_shapes(
                         "A custom effect program cannot also contain stock action overrides.",
                     ));
                 }
-                for asset in program.assets() {
+                for asset in program
+                    .owned_programs()
+                    .flat_map(|program| program.assets())
+                {
                     validate_runtime_value_override_shapes(&asset.values)?;
                 }
             }

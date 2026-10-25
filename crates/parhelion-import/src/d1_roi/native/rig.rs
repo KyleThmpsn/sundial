@@ -221,7 +221,14 @@ pub(super) fn weapon(
 }
 
 pub(super) fn validate(source: &Source, native: &mut Reader) -> Result<Value> {
-    let target_tag = 0x80C22410;
+    validate_target(source, native, 0x80C22410)
+}
+
+pub(super) fn validate_target(
+    source: &Source,
+    native: &mut Reader,
+    target_tag: u32,
+) -> Result<Value> {
     let target = native.tag(target_tag, Some(0x80809C36))?;
     let tr = target.pointer(24)?;
     ensure!(

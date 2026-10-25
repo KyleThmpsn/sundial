@@ -86,11 +86,12 @@ struct Hit {
     weights: [f32; 2],
 }
 
-/// The level's faces near the probes, binned by cell, and those too large to bin.
+/// The level's faces near the probes, binned by cell, and those too large to bin with their
+/// bounds.
 struct Scene {
     faces: Vec<Face>,
     cells: HashMap<[i32; 3], Vec<u32>>,
-    large: Vec<u32>,
+    large: Vec<(u32, [f32; 3], [f32; 3])>,
 }
 
 fn cell(point: [f32; 3]) -> [i32; 3] {
@@ -127,7 +128,7 @@ impl Scene {
                     .map(|k| i64::from(to[k]) - i64::from(from[k]) + 1)
                     .product::<i64>();
                 if covered > LARGE_FACE_CELLS {
-                    large.push(index);
+                    large.push((index, a, b));
                     continue;
                 }
                 for x in from[0]..=to[0] {
@@ -146,8 +147,31 @@ impl Scene {
         }
     }
 
-    /// The nearest face along the ray from `origin` toward unit `direction` within `reach`.
-    fn cast(&self, origin: [f32; 3], direction: [f32; 3], reach: f32) -> Option<Hit> {
+    /// The large faces, in order, whose bounds come within `reach` of `point`. No other large
+    /// face holds a point within `reach` of it, so rays from `point` that look no farther test
+    /// these alone. Nightfall's backdrop left about 9,500 large faces, and every ray tested all
+    /// of them.
+    fn near(&self, point: [f32; 3], reach: f32) -> Vec<u32> {
+        // A margin keeps rounding from dropping a face that touches the reach.
+        let reach = reach + 1.;
+        self.large
+            .iter()
+            .filter(|(_, low, high)| {
+                (0..3).all(|k| low[k] <= point[k] + reach && high[k] >= point[k] - reach)
+            })
+            .map(|&(index, ..)| index)
+            .collect()
+    }
+
+    /// The nearest face along the ray from `origin` toward unit `direction` within `reach`,
+    /// testing of the large faces only `large`, which [`Scene::near`] gives for `origin`.
+    fn cast(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        reach: f32,
+        large: &[u32],
+    ) -> Option<Hit> {
         let mut at = cell(origin);
         let step = direction.map(|d| if d > 0. { 1 } else { -1 });
         let mut next: [f32; 3] = std::array::from_fn(|k| {
@@ -181,7 +205,7 @@ impl Scene {
                 });
             }
         };
-        for &index in &self.large {
+        for &index in large {
             nearest(index, &mut best);
         }
         loop {
@@ -301,8 +325,9 @@ fn view(
     directions: &[[f32; 3]],
 ) -> View {
     let (mut light, mut open, mut back) = (0f32, 0usize, 0usize);
+    let large = scene.near(point, REACH);
     for &direction in directions {
-        match scene.cast(point, direction, REACH) {
+        match scene.cast(point, direction, REACH, &large) {
             None => {
                 light += sky;
                 open += 1;
@@ -336,19 +361,18 @@ fn view(
 
 /// The mean light arriving at each of `points`, in the level's coordinates, as a probe's value
 /// measures it: in the atlas's units, where the average lit texel's irradiance over pi is one.
-pub(super) fn lights(level: &Level, points: &[[f32; 3]]) -> Vec<f32> {
+pub(super) fn lights(level: &Level, points: &[[f32; 3]]) -> anyhow::Result<Vec<f32>> {
     if points.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let (low, high) = bounds(points.iter().copied());
     let scene = Scene::new(level, low, high);
     let atlas = level.lightmap.as_ref();
     let sky = atlas.map_or(1., sky_light);
     let directions = sphere(RAYS);
-    points
-        .iter()
-        .map(|&point| view(&scene, atlas, sky, point, &directions).light)
-        .collect()
+    crate::cancellation::parallel_map(points, |&point| {
+        view(&scene, atlas, sky, point, &directions).light
+    })
 }
 
 /// `count` probes for `level`, each a position in the map's coordinates (the level's moved by
@@ -363,14 +387,15 @@ pub(super) fn probes(
     regions: &[([f32; 3], [f32; 3])],
     count: usize,
     offset: [f32; 3],
-) -> (Vec<[f32; 4]>, Option<f32>, Value) {
+) -> anyhow::Result<(Vec<[f32; 4]>, Option<f32>, Value)> {
     if spawns.is_empty() || count == 0 {
-        return (
+        return Ok((
             Vec::new(),
             None,
             json!({"reason": "The level has no spawn points or the donor no probes"}),
-        );
+        ));
     }
+    let started = std::time::Instant::now();
     let (spawn_low, spawn_high) = bounds(spawns.iter().copied());
     let spawn_region = (
         std::array::from_fn::<f32, 3, _>(|k| spawn_low[k] - REGION_MARGIN[k]),
@@ -392,6 +417,7 @@ pub(super) fn probes(
             .fold(f32::NEG_INFINITY, f32::max)
     });
     let scene = Scene::new(level, low, high);
+    let scene_seconds = started.elapsed().as_secs_f64();
     let atlas = level.lightmap.as_ref();
     let sky = atlas.map_or(1., sky_light);
     // Floor points above upward faces in the region, one per spacing cell.
@@ -422,11 +448,13 @@ pub(super) fn probes(
     });
     let test = sphere(TEST_RAYS);
     let usable = |point: [f32; 3]| {
+        let reach = HEADROOM - STANDING;
         scene
-            .cast(point, [0., 0., 1.], HEADROOM - STANDING)
+            .cast(point, [0., 0., 1.], reach, &scene.near(point, reach))
             .is_none()
             && view(&scene, None, sky, point, &test).back <= INSIDE
     };
+    let placing = std::time::Instant::now();
     let mut chosen = Vec::with_capacity(count);
     let mut rejected = 0usize;
     let standing = spawns
@@ -474,22 +502,24 @@ pub(super) fn probes(
     let near_spawns = chosen.len() - seeded;
     spread(&mut chosen, &candidates, count, 0., &usable, &mut rejected);
     if chosen.is_empty() {
-        return (
+        return Ok((
             Vec::new(),
             None,
             json!({"reason": "No usable floor point near the spawn points", "candidates": candidates.len(), "rejected": rejected}),
-        );
+        ));
     }
+    let placing_seconds = placing.elapsed().as_secs_f64();
     let placed = chosen.len();
     // Fewer usable points than the donor's probes repeat the first ones.
     for index in 0..count.saturating_sub(placed) {
         chosen.push(chosen[index % placed]);
     }
     let directions = sphere(RAYS);
-    let views = chosen
-        .iter()
-        .map(|&point| view(&scene, atlas, sky, point, &directions))
-        .collect::<Vec<_>>();
+    let viewing = std::time::Instant::now();
+    let views = crate::cancellation::parallel_map(&chosen, |&point| {
+        view(&scene, atlas, sky, point, &directions)
+    })?;
+    let views_seconds = viewing.elapsed().as_secs_f64();
     let median = |mut values: Vec<f32>| {
         if values.is_empty() {
             return None;
@@ -536,6 +566,9 @@ pub(super) fn probes(
         "candidates": candidates.len(),
         "rejected": rejected,
         "faces": scene.faces.len(),
+        "large_faces": scene.large.len(),
+        "binned_faces": scene.cells.values().map(Vec::len).sum::<usize>(),
+        "seconds": {"scene": scene_seconds, "placing": placing_seconds, "views": views_seconds},
         "sky_light": sky,
         "open_probes": open_count,
         "least_open_share": least_open,
@@ -555,7 +588,7 @@ pub(super) fn probes(
             }))
             .collect::<Vec<_>>(),
     });
-    (probes, Some(reference), report)
+    Ok((probes, Some(reference), report))
 }
 
 /// Adds points of `pool` to `chosen` by farthest point sampling, each the one farthest from every

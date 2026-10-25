@@ -219,6 +219,8 @@ fn event_layout(class: u32) -> Result<(u32, usize, usize, u32)> {
         0x80806cc6 => (0x80806cc5, 0x128, 0x50, 4),
         0x80806b38 => (0x80806b37, 0x78, 0x60, 6),
         0x80808881 => (0x80808880, 0xe0, 0x70, 15),
+        0x80803fe9 => (0x80803fe8, 0x88, 0x60, 18),
+        0x80804595 => (0x80804594, 0x38, 0x50, 19),
         0x80804ab0 => (0x80804aaf, 0x48, 0x40, 38),
         _ => anyhow::bail!("Unsupported native authored event {class:08X}"),
     })
@@ -371,7 +373,9 @@ pub(crate) fn write(
         relative(payload, ei[index] + 32, i)?;
         relative(payload, ed[index] + 16, d)?;
         common(payload, d, event.node, Some(event.parent), kind)?;
-        if kind != 0 {
+        // Bodyless ability-completion records end at +38. Their selected slot is runtime
+        // state supplied by the controller, so no definition selector exists to initialize.
+        if size > 0x38 && kind != 0 {
             put(&mut payload.0, d + 0x38, &0xffu32.to_le_bytes())?;
         }
         written.insert(event.node.name, d);

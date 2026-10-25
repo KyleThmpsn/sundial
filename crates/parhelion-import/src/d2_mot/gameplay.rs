@@ -496,34 +496,6 @@ fn columns(
     Ok(result)
 }
 
-fn fill_native_defaults(
-    native: &Value,
-    columns: &mut Value,
-    fallbacks: &mut Vec<Value>,
-) -> Result<()> {
-    let sockets = native["sockets"].as_array().context("native sockets")?;
-    for (lane, socket) in sockets.iter().enumerate() {
-        let Some(hash) = socket["curated_fallback"].as_u64() else {
-            continue;
-        };
-        if columns.is_null() {
-            *columns = json!(vec![Value::Null; sockets.len()]);
-        }
-        let columns = columns.as_array_mut().context("recipe socket columns")?;
-        if columns.is_empty() {
-            columns.resize(sockets.len(), Value::Null);
-        }
-        let column = columns
-            .get_mut(lane)
-            .context("recipe lacks donor socket lane")?;
-        if column.is_null() {
-            *column = json!({"choices":[format!("0x{hash:08X}")]});
-            fallbacks.push(json!({"socket":lane,"native_randomized_default":hash}));
-        }
-    }
-    Ok(())
-}
-
 /// Resolve against the actual gameplay donor after compatibility defaults have been applied.
 #[allow(clippy::cognitive_complexity)]
 pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -> Result<Value> {
@@ -662,7 +634,7 @@ pub fn apply(source: &Value, native: &Path, output: &Path, recipe: &mut Value) -
         .iter()
         .any(|socket| socket["curated_fallback"].as_u64().is_some())
     {
-        fill_native_defaults(
+        crate::tiger::shadowkeep::fill_native_defaults(
             &native_sockets,
             &mut recipe["overrides"]["socket_columns"],
             &mut fallbacks,

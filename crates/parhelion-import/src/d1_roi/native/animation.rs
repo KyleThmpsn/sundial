@@ -7,6 +7,7 @@
 //! channels retain their sample data. Direct cue events receive private graph references.
 use super::*;
 use crate::tiger::{animation::runtime, payload::write_array};
+pub mod ability;
 mod channel;
 pub(super) mod character;
 mod constraint;

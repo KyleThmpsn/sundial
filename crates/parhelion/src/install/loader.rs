@@ -1,4 +1,4 @@
-//! Sunrise 0.6 managed-directory publication and legacy-layout migration.
+//! Sunrise 0.6 managed-directory publication and retirement of legacy-layout packages.
 use super::*;
 use sundial::package_authoring::mod_content;
 mod legacy;

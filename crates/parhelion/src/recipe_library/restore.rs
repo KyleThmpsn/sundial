@@ -17,24 +17,27 @@ impl RecipeLibrary {
         }
         let mut namespaces = BTreeSet::new();
         let mut hashes = BTreeSet::new();
-        let mut validate = |recipe: WeaponRecipe| -> Result<(), String> {
-            recipe.to_spec().map_err(|e| e.to_string())?;
-            if !namespaces.insert(recipe.namespace.to_lowercase()) {
-                return Err(format!("Duplicate recipe namespace: {}", recipe.namespace));
+        let mut reserve = |namespace: &str, identity: [u32; 12]| -> Result<(), String> {
+            if !namespaces.insert(namespace.to_lowercase()) {
+                return Err(format!("Duplicate recipe namespace: {namespace}"));
             }
-            for hash in recipe
-                .identity
-                .parsed_hashes(&recipe.namespace)
-                .map_err(|e| e.to_string())?
-            {
+            for hash in identity {
                 if !hashes.insert(hash) {
                     return Err(format!("Duplicate recipe identity: 0x{hash:08X}"));
                 }
             }
             Ok(())
         };
+        let claim = |recipe: &WeaponRecipe| -> Result<[u32; 12], String> {
+            recipe.to_spec().map_err(|e| e.to_string())?;
+            recipe
+                .identity
+                .parsed_hashes(&recipe.namespace)
+                .map_err(|e| e.to_string())
+        };
         for (_, json) in BUNDLED_RECIPES {
-            validate(WeaponRecipe::from_json_str(json).map_err(|e| e.to_string())?)?;
+            let recipe = WeaponRecipe::from_json_str(json).map_err(|e| e.to_string())?;
+            reserve(&recipe.namespace, claim(&recipe)?)?;
         }
         for path in self.recipe_paths()? {
             if BUNDLED_RECIPES
@@ -44,9 +47,17 @@ impl RecipeLibrary {
                 continue;
             }
             self.confined_existing_path(&path)?;
-            validate(
-                WeaponRecipe::load_json(&path).map_err(|e| format!("{}: {e}", path.display()))?,
-            )?;
+            // A recipe this version refuses still claims its namespace and identities, so they
+            // are read on their own rather than refusing the restore.
+            let (namespace, identity) = match WeaponRecipe::load_json(&path) {
+                Ok(recipe) => {
+                    let identity = claim(&recipe)?;
+                    (recipe.namespace, identity)
+                }
+                Err(_) => WeaponRecipe::load_claim(&path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?,
+            };
+            reserve(&namespace, identity)?;
         }
         let mut originals = Vec::new();
         for (name, _) in BUNDLED_RECIPES {

@@ -53,13 +53,15 @@ pub(super) fn resolve_program_patches(
 pub(in crate::item) fn program_names_imported_particles(
     program: &sundial::package_authoring::sandbox_perk::program::Program,
 ) -> bool {
-    program.imported_labels.is_some()
-        || !program.imported_assets.is_empty()
-        || program
-            .native_asset_patches
-            .iter()
-            .flat_map(|edit| &edit.patches)
-            .any(|patch| patch.imported_particle.is_some())
+    program.owned_programs().any(|program| {
+        program.imported_labels.is_some()
+            || !program.imported_assets.is_empty()
+            || program
+                .native_asset_patches
+                .iter()
+                .flat_map(|edit| &edit.patches)
+                .any(|patch| patch.imported_particle.is_some())
+    })
 }
 
 pub(in crate::item) fn clone_private_sandbox_perk_runtime(
@@ -569,7 +571,36 @@ pub(super) fn append_private_program_runtime(
                 "Native asset edit {edit_index} changed its source graph during compilation"
             )));
         }
-        let patches = resolve_program_patches(&edit.patches, particle_symbols)?;
+        let mut patches = resolve_program_patches(&edit.patches, particle_symbols)?;
+        if !edit.programs.is_empty() {
+            let graph = read_tag(
+                manager,
+                TagHash(edit.source_graph),
+                "nested controller graph",
+            )?;
+            validate_child_references(manager, &graph, edit)?;
+        }
+        for child in &edit.programs {
+            let private = append_private_program_runtime(
+                manager,
+                TagHash(child.expected_action),
+                &child.program,
+                particle_symbols,
+                label_dictionaries,
+                allocator,
+                tags,
+            )?;
+            patches.push(
+                sundial::package_authoring::sandbox_perk::program::NativeAssetResourcePatch {
+                    binding_hash: child.binding_hash,
+                    resource_index: child.resource_index,
+                    offset: child.offset,
+                    expected: child.expected_action.to_le_bytes().to_vec(),
+                    bytes: private.0.to_le_bytes().to_vec(),
+                    imported_particle: None,
+                },
+            );
+        }
         let private = append_private_asset_graph(
             manager,
             TagHash(edit.source_graph),
@@ -625,6 +656,80 @@ pub(super) fn append_private_program_runtime(
     });
     tags.extend(residency);
     Ok(action)
+}
+
+/// Resolve authored selectors to declared stock fields before allocating child controllers.
+/// Different binding names can alias one owner, so overlap checks use absolute owner ranges.
+fn validate_child_references(
+    manager: &PackageManager,
+    graph: &[u8],
+    edit: &sundial::package_authoring::sandbox_perk::program::NativeAssetPatch,
+) -> AuthoringResult<()> {
+    let mut child_fields = Vec::<(u32, std::ops::Range<usize>)>::new();
+    for child in &edit.programs {
+        let bindings = weapon_component_bindings(graph, child.binding_hash).map_err(invalid)?;
+        let binding = bindings
+            .get(usize::from(child.resource_index))
+            .ok_or_else(|| invalid("A nested controller selects a missing component resource"))?;
+        if edit.remove_owners.contains(&binding.owner_tag) {
+            return Err(invalid(
+                "A nested controller cannot belong to a removed component",
+            ));
+        }
+        let owner = read_tag(
+            manager,
+            TagHash(binding.owner_tag),
+            "nested controller owner",
+        )?;
+        let field = usize::try_from(binding.resource_offset)
+            .ok()
+            .and_then(|at| at.checked_add(child.offset as usize))
+            .ok_or_else(|| invalid("A nested controller reference overflows its owner"))?;
+        let end = field
+            .checked_add(4)
+            .ok_or_else(|| invalid("A nested controller reference overflows its owner"))?;
+        if child_fields.iter().any(|(owner, range)| {
+            *owner == binding.owner_tag && field < range.end && range.start < end
+        }) {
+            return Err(invalid(
+                "Nested controller references overlap inside their native owner",
+            ));
+        }
+        child_fields.push((binding.owner_tag, field..end));
+        for patch in &edit.patches {
+            let aliases = weapon_component_bindings(graph, patch.binding_hash).map_err(invalid)?;
+            let alias = aliases
+                .get(usize::from(patch.resource_index))
+                .ok_or_else(|| invalid("An asset patch selects a missing component resource"))?;
+            let start = usize::try_from(alias.resource_offset)
+                .ok()
+                .and_then(|at| at.checked_add(patch.offset as usize))
+                .ok_or_else(|| invalid("An asset patch offset overflows its owner"))?;
+            let patch_end = start
+                .checked_add(patch.bytes.len())
+                .ok_or_else(|| invalid("An asset patch length overflows its owner"))?;
+            if alias.owner_tag == binding.owner_tag && start < end && field < patch_end {
+                return Err(invalid("A nested controller aliases another asset edit"));
+            }
+        }
+        let declared = sundial::package_authoring::declared_payload_references(
+            manager,
+            binding.owner_tag,
+            &owner,
+        )
+        .map_err(invalid)?;
+        if read_u32(&owner, field)? != child.expected_action
+            || !declared.contains(&(field, child.expected_action))
+            || !manager
+                .get_entry(TagHash(child.expected_action))
+                .is_some_and(|entry| entry.reference == 0x808040B5)
+        {
+            return Err(invalid(
+                "A nested controller must replace its declared native action reference",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The private copy of `asset`'s graph that its settings, HUD status, damage type and added

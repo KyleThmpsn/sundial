@@ -2,18 +2,23 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::nodes;
 
-fn child(source: &Source, p: &Payload, at: usize) -> Result<(u8, Graph)> {
+fn child(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    native: Option<&mut Reader>,
+) -> Result<(u8, Graph)> {
     let kind = p.u8(at + 5)?;
     // Bound recursion and keep compound timer allocation outside leaf children.
     ensure!(
-        matches!(kind, 2 | 4 | 7 | 8 | 12 | 14..=20 | 22 | 27),
+        matches!(kind, 2 | 3 | 4 | 7..=10 | 12 | 14..=20 | 22 | 23 | 27 | 33),
         "Source compound condition has an unqualified child"
     );
     ensure!(
         p.u8(at + 6)? == 0 && (kind != 20 || p.f32(at + 0xC4)? == 0.0),
         "Source compound child requires independent timer or retained-state allocation"
     );
-    let node = super::read(source, p, at)?.context("Source compound condition child")?;
+    let node = super::read(source, p, at, native)?.context("Source compound condition child")?;
     let class = nodes::condition(node.kind)
         .context("Native condition class")?
         .class;
@@ -21,7 +26,12 @@ fn child(source: &Source, p: &Payload, at: usize) -> Result<(u8, Graph)> {
     Ok((node.kind, graph))
 }
 
-pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode> {
+pub(super) fn read(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    mut native: Option<&mut Reader>,
+) -> Result<NativeNode> {
     ensure!(
         (0.0..=1.0).contains(&p.f32(at)?) && p.u8(at + 4)? == 255 && p.u8(at + 6)? == 0,
         "Source subgroup condition has unqualified state"
@@ -78,7 +88,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
         let (mut source_mask, mut native_mask) = (0u64, 0u64);
         for (i, pointer) in children.into_iter().enumerate() {
             let at = p.pointer(pointer)?;
-            let (kind, translated) = child(source, p, at)?;
+            let (kind, translated) = child(source, p, at, native.as_deref_mut())?;
             source_mask |= 1u64 << p.u8(at + 5)?;
             native_mask |= 1u64 << kind;
             let target = graph.append(&translated).map_err(anyhow::Error::msg)?;
@@ -103,7 +113,12 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
     })
 }
 
-pub(super) fn predicate(source: &Source, p: &Payload, at: usize) -> Result<NativeNode> {
+pub(super) fn predicate(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    native: Option<&mut Reader>,
+) -> Result<NativeNode> {
     ensure!(
         p.f32(at + 0xC4)? == 0.0,
         "Compound player hold requires its own scheduler contract"
@@ -117,7 +132,7 @@ pub(super) fn predicate(source: &Source, p: &Payload, at: usize) -> Result<Nativ
         p.u8(nested + 6)? == 0,
         "Nested predicate retains unqualified event state"
     );
-    let (_, translated) = child(source, p, nested)?;
+    let (_, translated) = child(source, p, nested, native)?;
     let target = graph.append(&translated).map_err(anyhow::Error::msg)?;
     graph.blocks[0].links.insert(0x100, target);
     graph

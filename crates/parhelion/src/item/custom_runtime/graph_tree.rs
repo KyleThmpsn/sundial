@@ -1,6 +1,7 @@
 //! The private copy of an ability entity's graph tree: the walk that finds which graphs
 //! and impact tables lead to an edit, and the copies that name each other.
 use super::*;
+use sundial::package_authoring::ability_spawns::Discovery;
 
 /// Copies `source` and every graph below it, up to [`SPAWN_DEPTH`] levels, whose values
 /// `values` change, that `patches` patch or that `appends` grow, each graph once. A value names its graph by its
@@ -20,6 +21,29 @@ pub(in crate::item) fn append_private_graph_tree(
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
+    append_private_graph_tree_in(
+        (manager, &mut Discovery::default()),
+        source,
+        (values, patches, appends),
+        (allocator, tags),
+    )
+}
+
+/// The edits [`append_private_graph_tree`] takes: values, resource patches and owner appends.
+pub(in crate::item) type TreeEdits<'a> = (
+    &'a [WeaponRuntimeValueOverride],
+    &'a BTreeMap<u32, Vec<WeaponRuntimeResourcePatch>>,
+    &'a BTreeMap<u32, Vec<WeaponRuntimeResourceAppend>>,
+);
+
+/// [`append_private_graph_tree`], walking through `discovery`, which the other walks of one
+/// ability copy share.
+pub(in crate::item) fn append_private_graph_tree_in(
+    (manager, discovery): (&PackageManager, &mut Discovery),
+    source: TagHash,
+    (values, patches, appends): TreeEdits<'_>,
+    (allocator, tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
+) -> AuthoringResult<TagHash> {
     let mut by_graph = BTreeMap::<u32, Vec<WeaponRuntimeValueOverride>>::new();
     for value in values {
         by_graph
@@ -35,6 +59,7 @@ pub(in crate::item) fn append_private_graph_tree(
     }
     let mut tree = GraphTree {
         manager,
+        discovery,
         edited: by_graph
             .keys()
             .chain(patches.keys())
@@ -65,11 +90,12 @@ pub(in crate::item) fn append_private_graph_tree(
 /// Every graph and impact table `source` reaches within [`SPAWN_DEPTH`] levels, itself included,
 /// as [`append_private_graph_tree`] walks them.
 pub(super) fn graph_closure(
-    manager: &PackageManager,
+    (manager, discovery): (&PackageManager, &mut Discovery),
     source: TagHash,
 ) -> AuthoringResult<BTreeSet<u32>> {
     let mut tree = GraphTree {
         manager,
+        discovery,
         edited: BTreeSet::new(),
         spawns: BTreeMap::new(),
         selves: BTreeMap::new(),
@@ -93,7 +119,7 @@ pub(in crate::item) type SplitValues = (
 );
 
 pub(in crate::item) fn split_swapped_values(
-    manager: &PackageManager,
+    (manager, discovery): (&PackageManager, &mut Discovery),
     source: TagHash,
     values: &[WeaponRuntimeValueOverride],
     replacements: &[u32],
@@ -102,10 +128,15 @@ pub(in crate::item) fn split_swapped_values(
     if replacements.is_empty() || values.is_empty() {
         return Ok((values.to_vec(), swapped));
     }
-    let own = graph_closure(manager, source)?;
+    let own = graph_closure((manager, &mut *discovery), source)?;
     let closures = replacements
         .iter()
-        .map(|&replacement| Ok((replacement, graph_closure(manager, TagHash(replacement))?)))
+        .map(|&replacement| {
+            Ok((
+                replacement,
+                graph_closure((manager, &mut *discovery), TagHash(replacement))?,
+            ))
+        })
         .collect::<AuthoringResult<Vec<_>>>()?;
     let mut kept = Vec::new();
     for value in values {
@@ -134,6 +165,8 @@ pub(super) type GraphEdits<'a> = (
 
 pub(super) struct GraphTree<'a> {
     pub(super) manager: &'a PackageManager,
+    /// What each graph and table names, read once for every walk of the same ability copy.
+    pub(super) discovery: &'a mut Discovery,
     pub(super) edited: BTreeSet<u32>,
     /// Where each walked graph names the graphs and impact tables below it.
     pub(super) spawns: BTreeMap<u32, Vec<sundial::package_authoring::ability_spawns::Spawn>>,
@@ -175,16 +208,20 @@ impl GraphTree<'_> {
                 continue;
             }
             let (below, level) = if table {
-                let entries = ability_spawns::table_entries(self.manager, node).map_err(invalid)?;
+                let entries = self
+                    .discovery
+                    .table_entries(self.manager, node)
+                    .map_err(invalid)?;
                 let below = entries.iter().map(|(tag, _)| *tag).collect::<BTreeSet<_>>();
-                self.entries.insert(node, entries);
+                self.entries.insert(node, entries.as_ref().clone());
                 (below, depth)
             } else {
-                let payload = read_tag(self.manager, TagHash(node), "spawned graph")?;
-                let links = ability_spawns::links(self.manager, node, &payload).map_err(invalid)?;
-                let mut places = links.spawns;
-                places.extend(links.tables);
-                self.selves.insert(node, links.selves);
+                let links = self.discovery.links(self.manager, node).map_err(|error| {
+                    invalid(format!("Spawned graph {}: {error}", TagHash(node)))
+                })?;
+                let mut places = links.spawns.clone();
+                places.extend(links.tables.iter().copied());
+                self.selves.insert(node, links.selves.clone());
                 let below = places
                     .iter()
                     .map(|place| place.graph)

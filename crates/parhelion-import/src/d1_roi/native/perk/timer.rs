@@ -2,7 +2,12 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
 
-pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Action> {
+pub(super) fn read(
+    source: &Source,
+    p: &Payload,
+    at: usize,
+    native: Option<&mut Reader>,
+) -> Result<Action> {
     ensure!(
         p.bytes::<3>(at + 1)? == [0; 3]
             && p.u32(at + 12)? == 0
@@ -12,7 +17,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Action> {
             && p.f32(at + 8)? >= 0.0,
         "Source timer extension has unsupported flags or bounds"
     );
-    let nodes = conditions(source, p, at + 16)?;
+    let nodes = conditions(source, p, at + 16, native)?;
     ensure!(
         !nodes.is_empty() && nodes.iter().all(|n| n.kind == 2),
         "Source timer extension requires checked kill predicates"

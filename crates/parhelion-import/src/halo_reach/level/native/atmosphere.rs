@@ -31,7 +31,8 @@ const RGBA16_FLOAT: u32 = 10;
 const TEXEL_BYTES: usize = 8;
 const LUMINANCE: [f32; 3] = [0.2126, 0.7152, 0.0722];
 /// The sky reflection generator's intensity (`cb0[23]`, from `Atmosphere+0x148`), which the
-/// atmosphere component does not hold. Its runtime value was not measured, so one stands for it.
+/// atmosphere component does not hold. Sunrise's World page read it as one on a converted
+/// Breakneck over Midtown.
 const SKY_INTENSITY: f32 = 1.;
 /// The volume whose texels every copy takes: Distant Shore's (`pvp_greenhouse_2`, shared with The
 /// Grove and Echo), 128 by 128 by 16. Its 16 depth slices, one per time of day the component's

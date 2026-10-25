@@ -33,17 +33,33 @@ pub(in crate::app) fn resolve_picked_perk(
         ));
     }
     let mut recipes = draft.cloned().into_iter().collect::<Vec<_>>();
+    // A recipe this version refuses cannot say which plugs it holds, so the search goes on
+    // without it, and names it when the perk is found nowhere else. Its claim tells whether it
+    // is the open draft's own file.
+    let mut unreadable = Vec::new();
     if let Some(scan) = scan {
         for entry in scan.entries {
-            let recipe =
-                WeaponRecipe::load_listing(&entry.path).map_err(|error| error.to_string())?;
-            if draft.is_none_or(|draft| recipe.namespace != draft.namespace) {
-                recipes.push(recipe);
+            let namespace = match WeaponRecipe::load_listing(&entry.path) {
+                Ok(recipe) => {
+                    if draft.is_none_or(|draft| recipe.namespace != draft.namespace) {
+                        recipes.push(recipe);
+                    }
+                    continue;
+                }
+                Err(_) => WeaponRecipe::load_claim(&entry.path)
+                    .map(|(namespace, _)| namespace)
+                    .map_err(|error| error.to_string())?,
+            };
+            if draft.is_none_or(|draft| namespace != draft.namespace) {
+                unreadable.push(entry.path.file_name().map_or_else(
+                    || entry.path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ));
             }
         }
     }
     let mut donors = BTreeMap::new();
-    find_picked_perk(&recipes, hash, |item_hash, socket_index, choice_index| {
+    let found = find_picked_perk(&recipes, hash, |item_hash, socket_index, choice_index| {
         let donor = donors
             .entry(item_hash)
             .or_insert_with(|| {
@@ -60,15 +76,26 @@ pub(in crate::app) fn resolve_picked_perk(
         )
         .get(usize::from(choice_index))
         .copied()
-    })
-    .map(Some)
+    })?;
+    match found {
+        Some(found) => Ok(Some(found)),
+        None if unreadable.is_empty() => Err(format!(
+            "The recipe data for custom perk 0x{hash:08X} is unavailable. Import its source recipe, then select the perk again."
+        )),
+        None => Err(format!(
+            "The recipe data for custom perk 0x{hash:08X} is unavailable. It may be in {}, which could not be read.",
+            unreadable.join(", ")
+        )),
+    }
 }
 
+/// The recipe data of the custom perk `hash` names, from the recipe whose installed choice
+/// it is, or `None` when no recipe holds it.
 fn find_picked_perk(
     recipes: &[WeaponRecipe],
     hash: u32,
     mut installed_choice: impl FnMut(u32, u16, u16) -> Option<u32>,
-) -> Result<WeaponSocketPlugVariantRecipe, String> {
+) -> Result<Option<WeaponSocketPlugVariantRecipe>, String> {
     // Follow native socket bindings instead of guessing a name or an allocation nonce.
     // A shared plug remains reusable through any installed weapon that supplies it.
     let mut found: Option<WeaponSocketPlugVariantRecipe> = None;
@@ -98,12 +125,7 @@ fn find_picked_perk(
             }
         }
     }
-    if let Some(found) = found {
-        return Ok(found);
-    }
-    Err(format!(
-        "The recipe data for custom perk 0x{hash:08X} is unavailable. Import its source recipe, then select the perk again."
-    ))
+    Ok(found)
 }
 
 pub(in crate::app) fn attach_picked_perk(

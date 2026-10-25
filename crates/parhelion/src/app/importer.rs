@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+mod ability;
 mod batch;
 mod browser;
 mod d1_roi;
@@ -54,6 +55,7 @@ pub(super) struct Importer {
     catalog_target: PathBuf,
     models: models::Picker,
     perks: perks::Picker,
+    abilities: ability::Picker,
     receiver: Option<Receiver<Event>>,
     scan_progress: Option<ScanProgress>,
     scan_started: Option<Instant>,
@@ -109,6 +111,8 @@ enum Event {
     Done(usize),
     ModelPrepared(Box<models::Prepared>),
     PerkPrepared(Box<perks::Prepared>),
+    AbilitiesListed(Box<ability::Listed>),
+    AbilityPrepared(Box<ability::Prepared>),
     Imported {
         paths: Vec<PathBuf>,
         errors: Vec<String>,
@@ -191,6 +195,7 @@ impl Default for Importer {
             catalog_target: PathBuf::new(),
             models: models::Picker::default(),
             perks: perks::Picker::default(),
+            abilities: ability::Picker::default(),
             receiver: None,
             scan_progress: None,
             scan_started: None,
@@ -265,6 +270,9 @@ impl PackageAuthoringApp {
             self.importer.save_view();
         }
         if closed {
+            if self.importer.abilities.close() {
+                self.importer.cancel.store(true, Ordering::Relaxed);
+            }
             return;
         }
         self.check_importer_tools(ctx);
@@ -332,6 +340,7 @@ impl PackageAuthoringApp {
             {
                 Some(Ok(event)) => event,
                 Some(Err(TryRecvError::Disconnected)) => {
+                    self.importer.abilities.worker_stopped();
                     self.importer.receiver = None;
                     self.importer.scan_progress = None;
                     self.importer.scan_started = None;
@@ -371,6 +380,16 @@ impl PackageAuthoringApp {
                         }
                         Err(error) => self.importer.notice = error,
                     }
+                }
+                Event::AbilitiesListed(listed) => {
+                    self.importer.receiver = None;
+                    self.importer.import_started = None;
+                    self.finish_roi_abilities(*listed);
+                }
+                Event::AbilityPrepared(prepared) => {
+                    self.importer.receiver = None;
+                    self.importer.import_started = None;
+                    self.finish_roi_ability(*prepared);
                 }
                 Event::PerkPrepared(prepared) => {
                     self.importer.receiver = None;
@@ -589,6 +608,7 @@ impl PackageAuthoringApp {
                 }
             });
         self.draw_modern_perk_window(ui.ctx());
+        self.draw_roi_ability_window(ui.ctx());
         self.draw_importer_tools_window(ui.ctx());
     }
 
@@ -606,6 +626,9 @@ impl PackageAuthoringApp {
                     let has_source = self.importer.folder().is_some();
                     if self.importer.source == Source::Modern {
                         self.draw_modern_perk_button(ui, has_source);
+                    }
+                    if self.importer.source == Source::Roi {
+                        self.draw_roi_ability_button(ui, has_source);
                     }
                     if ui
                         .add_enabled(has_source, egui::Button::new("Refresh"))

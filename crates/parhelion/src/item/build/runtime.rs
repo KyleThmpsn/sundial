@@ -1082,6 +1082,7 @@ impl ImportedRuntime {
             .iter()
             .flat_map(|variant| &variant.sandbox_perks)
             .filter_map(|perk| perk.program.as_ref())
+            .flat_map(sundial::package_authoring::sandbox_perk::program::Program::owned_programs)
             .flat_map(|program| &program.imported_assets)
         {
             attachments::load(imported, &mut directories, &mut loaded.particles)?;

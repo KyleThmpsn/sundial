@@ -2,6 +2,7 @@
 use super::*;
 mod connected;
 mod hud;
+mod nested;
 
 /// Read actual source/emitted programs and compare the resulting modifiers. A source bank
 /// may require several native drivers, but every original destination must occur exactly once.
@@ -167,6 +168,12 @@ pub(super) fn check(
     assert_eq!(source.bytes::<24>(s + 24)?, native.bytes::<24>(n + 24)?);
     let graph = reader.read(source.u32(s + 16)?)?;
     let owners = graph.array(32, 12, Some(0x80800715))?;
+    if owners.len() == 1 {
+        let owner = reader.read(graph.u32(owners[0])?)?;
+        if owner.u32(owner.pointer(24)? - 4)? == 0x80802A94 {
+            return nested::check(reader, stock, emitted, &graph, native.u32(n + 16)?);
+        }
+    }
     if owners.len() == 2 {
         let owner = reader.read(graph.u32(owners[0])?)?;
         if owner.u32(owner.pointer(24)? - 4)? == 0x808029C3 {

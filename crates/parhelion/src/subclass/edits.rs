@@ -36,6 +36,10 @@ pub struct EntryEdits {
     /// Presentation of descendant abilities with their own HUD controller, scoped to this entry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attached_abilities: Vec<AttachedAbility>,
+    /// A complete prepared native ability graph, equipped under this entry's private row.
+    /// The prepared group owns its controller, bank and presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_ability: Option<ImportedAbility>,
     /// Sandbox perks it grants beyond its source's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub added_perks: Vec<u16>,
@@ -91,6 +95,15 @@ pub struct EntryEdits {
     /// profiles. `None` keeps each profile's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub damage_type: Option<crate::recipe::RecipeDamageType>,
+}
+
+/// A fingerprinted prepared group whose declared attachment root is an equipped ability.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedAbility {
+    pub directory: std::path::PathBuf,
+    pub sha256: String,
+    pub symbol: String,
 }
 
 /// A traced lane of a property row of the ability's stock bank, by the row's key and place among
@@ -276,7 +289,8 @@ impl EntryEdits {
     /// type changes.
     #[must_use]
     pub fn keeps_entity(&self) -> bool {
-        self.ability_values.is_empty()
+        self.imported_ability.is_none()
+            && self.ability_values.is_empty()
             && !self.recolors()
             && self.spawn_swaps.is_empty()
             && self.bank_values.is_empty()
@@ -318,6 +332,33 @@ impl EntryEdits {
             .find(|swap| swap.graph == graph && swap.replaced == replaced)
         {
             swap.damage_type = damage;
+        }
+    }
+
+    /// Gives a place that fires a shared projectile on the ability's damage type the one type the
+    /// other places firing it name, where that differs from the ability's. The projectile is
+    /// copied once, and builds before `validate` compared inherited types dealt that named type at
+    /// every place, so a recipe saved then still builds as it did. Places naming two types stay a
+    /// conflict.
+    pub fn settle_shared_swap_damage(&mut self) {
+        let settled = self
+            .spawn_swaps
+            .iter()
+            .map(|swap| {
+                swap.damage_type.or_else(|| {
+                    let mut named = self
+                        .spawn_swaps
+                        .iter()
+                        .filter(|other| other.replacement == swap.replacement)
+                        .filter_map(|other| other.damage_type);
+                    let first = named.next()?;
+                    (named.all(|other| other == first) && self.damage_type != Some(first))
+                        .then_some(first)
+                })
+            })
+            .collect::<Vec<_>>();
+        for (swap, damage_type) in self.spawn_swaps.iter_mut().zip(settled) {
+            swap.damage_type = damage_type;
         }
     }
 
@@ -371,15 +412,14 @@ impl EntryEdits {
     }
 
     /// Spawns `replacement` in place of `replaced` where `graph` names it, or with `None` the
-    /// stock one again. Values of the replaced graph go with it, since nothing spawns it now,
-    /// and a damage type set on the place stays with the projectile now spawned there.
+    /// stock one again. A damage type set on the place stays with the projectile now spawned
+    /// there. Values stay as they are, since another place can still fire either projectile,
+    /// and only the caller knows the trees that tell.
     pub fn set_swap(&mut self, graph: u32, replaced: u32, replacement: Option<u32>) {
         let damage_type = self.swap_damage(graph, replaced);
         self.spawn_swaps
             .retain(|swap| !(swap.graph == graph && swap.replaced == replaced));
         if let Some(replacement) = replacement.filter(|replacement| *replacement != replaced) {
-            self.ability_values
-                .retain(|value| value.locator.graph_tag.map(|tag| tag.get()) != Some(replaced));
             self.spawn_swaps.push(SpawnSwap {
                 graph,
                 replaced,
@@ -470,6 +510,37 @@ impl EntryEdits {
     }
 
     pub(super) fn validate(&self, context: &str, source_entry: u8) -> Result<(), String> {
+        if let Some(imported) = &self.imported_ability {
+            if !cfg!(feature = "d2-model-importer") {
+                return Err(format!("{context} needs imported asset support"));
+            }
+            if !imported.directory.is_absolute()
+                || imported.sha256.len() != 64
+                || !imported.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || imported.symbol.trim().is_empty()
+                || imported.symbol.contains('\0')
+            {
+                return Err(format!(
+                    "{context} needs a prepared ability directory, fingerprint and root symbol"
+                ));
+            }
+            if !self.ability_values.is_empty()
+                || self.recolors()
+                || !self.spawn_swaps.is_empty()
+                || !self.bank_values.is_empty()
+                || self.damage_type.is_some()
+                || !self.attached_abilities.is_empty()
+                || self.icon.is_some()
+                || self.color.is_some()
+                || self.extra_charges != 0
+                || self.recharge().is_some()
+                || !self.parameters.is_empty()
+            {
+                return Err(format!(
+                    "{context}: edit an imported ability's behavior and HUD in its prepared group"
+                ));
+            }
+        }
         if self.extra_charges > MOST_CHARGES {
             return Err(format!(
                 "{context} takes at most {MOST_CHARGES} extra charges"
