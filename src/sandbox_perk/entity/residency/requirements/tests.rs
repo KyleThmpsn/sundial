@@ -1,45 +1,6 @@
 use super::*;
 
 #[test]
-fn missing_owner_and_nested_layout_are_both_reported() {
-    let required = [
-        Requirement {
-            tag: 21,
-            referenced_by: 10,
-            role: "component resource".into(),
-        },
-        Requirement {
-            tag: 22,
-            referenced_by: 10,
-            role: "component resource".into(),
-        },
-        Requirement {
-            tag: 31,
-            referenced_by: 22,
-            role: "component layout".into(),
-        },
-    ];
-    let result = report(10, &[10, 21].into(), required.clone());
-    assert_eq!(result.missing, required[1..]);
-    assert_eq!(result.additions(), [22, 31].into());
-}
-
-#[test]
-fn a_graph_missing_from_the_loading_index_is_enrolled_itself() {
-    let result = report(
-        10,
-        &[21].into(),
-        [Requirement {
-            tag: 21,
-            referenced_by: 10,
-            role: "component resource".into(),
-        }],
-    );
-    assert_eq!(result.additions(), [10].into());
-    assert!(report(10, &[10, 21].into(), []).additions().is_empty());
-}
-
-#[test]
 fn all_native_components_are_checked_without_named_bindings() {
     // There is deliberately no named-binding table in this isolated component-list fixture.
     let mut p = vec![0; 0x68];

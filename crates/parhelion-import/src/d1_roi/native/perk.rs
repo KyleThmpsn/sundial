@@ -14,6 +14,7 @@ mod hit;
 mod incoming;
 /// Object-label filters, shared with query components.
 pub(in crate::d1_roi::native) mod label;
+mod orb;
 mod pattern;
 mod policy;
 mod scalar;
@@ -34,10 +35,6 @@ impl Host {
                 "Appearance choices use the separate ornament route"
             );
             ensure!(
-                record.u64(16)? == 0,
-                "Source armor stat tiers require a native unit and scaling contract"
-            );
-            ensure!(
                 record.bytes::<40>(48)? == [0; 40],
                 "Source armor progression or variant metadata requires translation"
             );
@@ -51,11 +48,12 @@ impl Host {
             for row in data.array(0x38, 8, None)? {
                 let at = data.pointer(row)?;
                 match data.u8(at)? {
-                    // An armor item is not a weapon runtime. A modifier must explicitly name
-                    // the player or the weapon that produced the event, not the armor itself.
-                    0 => ensure!(
-                        matches!(data.u8(at + 2)?, 1 | 2),
-                        "Source armor attachment requires a player or triggering-weapon target"
+                    0 => pattern::armor_attachment(source, &data, at)?,
+                    // Explicit player properties use the same target resolver on armor.
+                    // An item-local property or selected ability needs a separate contract.
+                    9 => ensure!(
+                        data.u8(at + 2)? == 1 && data.u32(at + 4)? == 0,
+                        "Source armor property requires an unmasked player target"
                     ),
                     // Ammo modifier callbacks resolve the action owner's player component,
                     // independently of an owning weapon or a triggering-weapon event.
@@ -78,6 +76,7 @@ impl Host {
 /// rows and report rows. A source row is a plain delta only when both scale factors are one
 /// and its selector bytes are unset.
 fn adjustments(
+    host: Host,
     record: &Payload,
     rows: &Value,
     definitions: &BTreeMap<u32, u16>,
@@ -104,7 +103,22 @@ fn adjustments(
                 && bytes.bytes::<3>(13)? == [0xFF, 0, 0],
             "Source stat {hash:08X} adjustment is scaled or selected and requires curve translation"
         );
-        let value = i32::from_le_bytes(bytes.bytes::<4>(0)?);
+        let source_value = i32::from_le_bytes(bytes.bytes::<4>(0)?);
+        // Armor/Resilience keeps its investment identity across these builds. The
+        // plain Armor policy treats each source unit as one native tier, expressed
+        // as ten points. It does not recreate D1's health curve or armor roll.
+        let scale = if host == Host::Armor {
+            ensure!(
+                hash == 0x1769_266F,
+                "Source armor stat {hash:08X} requires a native unit and scaling contract"
+            );
+            10
+        } else {
+            1
+        };
+        let value = source_value
+            .checked_mul(scale)
+            .context("Source stat contribution overflow")?;
         // Rise of Iron and Shadowkeep share these stat hashes, including Inventory Size, which
         // the modern stat group mapping treats as repurposed, so the lookup is direct.
         let index = *definitions
@@ -120,7 +134,7 @@ fn adjustments(
         );
         stats.push(json!({"definition_index":index,"value":value}));
         report.push(json!({"source_hash":hash,"source_index":row["index"],
-            "definition_index":index,"value":value}));
+            "definition_index":index,"source_value":source_value,"unit_scale":scale,"value":value}));
     }
     Ok((stats, report))
 }
@@ -193,25 +207,7 @@ fn effect(source: &Source, data: &Payload, at: usize) -> Result<Action> {
     let class = data.u32(at - 4)?;
     let kind = data.u8(at)?;
     match (class, kind) {
-        (0x80802A46, 4) => {
-            ensure!(
-                data.bytes::<3>(at + 1)? == [0; 3]
-                    && data.u32(at + 4)? <= i32::MAX as u32
-                    && data.f32(at + 8)? >= 0.0
-                    && data.bytes::<12>(at + 12)? == [0; 12]
-                    && data.u32(at + 24)? == u32::MAX
-                    && data.bytes::<12>(at + 28)? == [0; 12],
-                "Source orb generation requires the default pickup and owner position"
-            );
-            // Original 71A160 and native 1089AF0 resolve the owning player and
-            // pass count and value to their orb services. FFFFFFFF selects each
-            // build's default orb. Custom pickup graphs need their own translation.
-            let mut bytes = data.bytes::<32>(at)?.to_vec();
-            bytes[0] = 5;
-            Ok(Action::Native {
-                node: NativeNode { kind: 5, bytes },
-            })
-        }
+        (0x80802A46, 4) => orb::read(source, data, at),
         (0x808026E4, 28) => incoming::read(source, data, at),
         (0x808027D8, 10) | (0x80802188, 11) => scalar::ammo_modifiers(data, at, kind),
         (0x8080230E, 27) => timer::read(source, data, at),
@@ -763,8 +759,12 @@ pub(super) fn translate(
                         .context("Source variant bytes")?,
                 )?);
                 host.validate_variant(step, &record)?;
-                let (stats, adjusted) =
-                    adjustments(&record, &variants[0]["stat_adjustments"], &definitions)?;
+                let (stats, adjusted) = adjustments(
+                    host,
+                    &record,
+                    &variants[0]["stat_adjustments"],
+                    &definitions,
+                )?;
                 let perks = variants[0]["perks"]
                     .as_array()
                     .context("Source talent perks")?;

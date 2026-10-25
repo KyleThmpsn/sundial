@@ -1,6 +1,10 @@
 use super::*;
 
-fn item_payloads(manager: &PackageManager, globals: &[u8], hash: u32) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn item_payloads(
+    manager: &PackageManager,
+    globals: &[u8],
+    hash: u32,
+) -> (Vec<u8>, Vec<u8>) {
     let root = manager
         .read_tag(globals_child_tag(globals, 0).unwrap())
         .unwrap();

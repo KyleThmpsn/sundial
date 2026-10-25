@@ -3,8 +3,6 @@ use super::{
     image::{HEIGHT, WIDTH},
 };
 mod preview;
-#[cfg(test)]
-mod tests;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 

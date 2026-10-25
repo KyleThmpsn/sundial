@@ -54,10 +54,11 @@ fn object(
     Ok(*object)
 }
 
+/// The opening's complete area variants, and the areas that hold one.
 fn variants(
     opening: &mission::encounter::Opening,
     encounters: &[(usize, Encounter, TagHash)],
-) -> AuthoringResult<String> {
+) -> AuthoringResult<(String, BTreeSet<usize>)> {
     let matches = |source: &str, target: &str| {
         source == target
             || (!source.contains('/')
@@ -104,6 +105,7 @@ fn variants(
         }
     }
     let mut variants = Vec::new();
+    let mut areas = BTreeSet::new();
     for (area, encounter, object) in encounters {
         let mut rows = Vec::new();
         let mut used = BTreeSet::new();
@@ -145,6 +147,7 @@ fn variants(
                 area * 8,
                 rows.join(",")
             ));
+            areas.insert(*area);
         }
     }
     if variants.is_empty() {
@@ -152,7 +155,7 @@ fn variants(
             "No native area contains this complete encounter opening",
         ));
     }
-    Ok(format!("{{{}}}", variants.join(",")))
+    Ok((format!("{{{}}}", variants.join(",")), areas))
 }
 
 pub(super) fn build(
@@ -212,10 +215,12 @@ pub(super) fn build(
             }
         }
         let mut gates = Vec::new();
+        let mut gate_areas = BTreeSet::new();
         for name in names {
             let before = gates.len();
             for (area, trigger, object) in &triggers {
                 if let Some(slot) = trigger.names.iter().position(|candidate| candidate == name) {
+                    gate_areas.insert(*area);
                     let alias = sdk_name(&format!("pt_{name}"));
                     gates.push(format!(
                         "{{region={},object={},key={},slot={},volume={},name={name:?},aliases={{{indexed:?},{qualified:?},{alias:?}}},id={id:?}}}",
@@ -236,7 +241,21 @@ pub(super) fn build(
                 )));
             }
         }
-        let variants = variants(&opening, &encounters)?;
+        let (variants, areas) = variants(&opening, &encounters)?;
+        // The controller starts the first phase only in the first area, where the mission
+        // begins, and a later phase only when one of its gates and a complete opening are in
+        // the area the player is in. A phase that cannot meet those never starts.
+        if index == 0 && !areas.contains(&0) {
+            return Err(invalid(
+                "The first encounter needs its opening squads in the first area, where the mission starts",
+            ));
+        }
+        if index > 0 && gate_areas.is_disjoint(&areas) {
+            return Err(invalid(format!(
+                "Encounter phase {} has no gate in an area that holds its opening squads",
+                index + 1
+            )));
+        }
         phases.push(format!(
             "{{gates={{{}}},variants={variants}}}",
             gates.join(",")

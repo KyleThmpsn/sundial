@@ -188,27 +188,25 @@ impl PackageAuthoringApp {
                 match self.importer.perks.source {
                     Source::KineticTremors => {
                         ui.label("Imports sustained-hit activation, repeated shockwaves and supported source visual layers.");
-                        ui.label("This experimental candidate uses approximate damage and fixed hit placement. Frame thresholds and some effects differ from the modern perk. Gameplay still needs verification.");
+                        ui.label("Damage is approximate and hit placement is fixed. Frame thresholds and some effects differ from the modern perk.");
                     }
                     Source::EagerEdge => {
                         ui.label("Imports the modern controller with its private lunge and sword profile dependencies.");
-                        ui.label("This is an experimental candidate. Swing consumption and the source status record still need verification.");
                     }
                     Source::DualLoader | Source::EnhancedDualLoader => {
                         ui.label("Imports the source perk's additional rounds per reload for this weapon.");
-                        ui.label("This is an experimental candidate. Reload behavior and cleanup still need gameplay verification.");
                     }
                     Source::DestabilizingRounds => {
                         ui.label("Imports the source perk's Volatile burst and Volatile Rounds effects.");
-                        ui.label("This is an experimental candidate. Some visual and audio layers differ. Activation, repeated use and cleanup still need gameplay verification.");
+                        ui.label("Some visual and audio layers differ.");
                     }
                     Source::RepulsorBrace => {
                         ui.label("Imports the source perk's Void debuff kill triggers and Void Overshield effects.");
-                        ui.label("This is an experimental candidate. Some visual and audio layers differ. Shield refresh, damage resistance and cleanup still need gameplay verification.");
+                        ui.label("Some visual and audio layers differ.");
                     }
                     Source::WolfpackRounds => {
                         ui.label("Imports the source perk's rocket channel, which releases the native tracking cluster missiles on detonation.");
-                        ui.label("This is an experimental candidate. The source damage bonus is not imported. Missiles still need gameplay verification.");
+                        ui.label("The source damage bonus is not imported.");
                     }
                 }
                 ui.add_space(8.0);

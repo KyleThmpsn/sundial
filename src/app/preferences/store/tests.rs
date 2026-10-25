@@ -14,9 +14,7 @@ fn saved_preferences_preserve_opt_ins_and_layout_choices() {
         let preferences = Preferences {
             experimental_progression: true,
             experimental_power_above_cap: true,
-            experimental_extended_fov: true,
             experimental_cross_class_subclasses: true,
-            experimental_package_authoring: true,
             show_parhelion_experimental_options: true,
             troubleshooting_logging: true,
             show_preview_fps: true,
@@ -30,9 +28,7 @@ fn saved_preferences_preserve_opt_ins_and_layout_choices() {
         let expected = serde_json::json!({
             "experimental_progression": true,
             "experimental_power_above_cap": true,
-            "experimental_extended_fov": true,
             "experimental_cross_class_subclasses": true,
-            "experimental_package_authoring": true,
             "show_parhelion_experimental_options": true,
             "troubleshooting_logging": true,
             "show_preview_fps": true,
@@ -164,7 +160,7 @@ fn plug_default_migration_runs_once_and_preserves_other_preferences() {
         let original = serde_json::json!({
             "default_plug_selection_mode": old_mode,
             "really_unsafe_warning_acknowledged": true,
-            "experimental_extended_fov": true,
+            "experimental_power_above_cap": true,
             "future_option": {"keep": [1, 2, 3]}
         });
         fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
@@ -174,7 +170,7 @@ fn plug_default_migration_runs_once_and_preserves_other_preferences() {
             loaded.preferences.default_plug_selection_mode,
             PlugSelectionMode::SocketAndGearType
         );
-        assert!(loaded.preferences.experimental_extended_fov);
+        assert!(loaded.preferences.experimental_power_above_cap);
         let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored["plug_defaults_version"], 1);
         assert_eq!(stored["future_option"], original["future_option"]);

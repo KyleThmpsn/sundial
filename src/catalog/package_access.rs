@@ -5,10 +5,28 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-#[derive(Debug, Default)]
+/// Every generation comes from one counter for the whole process, so a new access never repeats
+/// one an older access handed out, and a model cached under an older catalog never matches a
+/// newer one.
+static GENERATIONS: AtomicU64 = AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+    GENERATIONS.fetch_add(1, Ordering::SeqCst)
+}
+
+#[derive(Debug)]
 pub(crate) struct PackageInspectionAccess {
     suspended: RwLock<bool>,
     generation: AtomicU64,
+}
+
+impl Default for PackageInspectionAccess {
+    fn default() -> Self {
+        Self {
+            suspended: RwLock::new(false),
+            generation: AtomicU64::new(next_generation()),
+        }
+    }
 }
 
 impl PackageInspectionAccess {
@@ -32,7 +50,7 @@ impl PackageInspectionAccess {
             .suspended
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.generation.store(next_generation(), Ordering::SeqCst);
     }
 
     pub(super) fn resume(&self) {
@@ -40,6 +58,17 @@ impl PackageInspectionAccess {
             .suspended
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+    }
+
+    /// Allows reads again under a new generation, for a catalog that replaced the one earlier
+    /// reads came from.
+    pub(super) fn renew(&self) {
+        let mut suspended = self
+            .suspended
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.generation.store(next_generation(), Ordering::SeqCst);
+        *suspended = false;
     }
 
     pub(crate) fn is_suspended(&self) -> bool {

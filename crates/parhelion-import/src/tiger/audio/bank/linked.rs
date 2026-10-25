@@ -8,9 +8,17 @@ struct Definition<'a> {
     references: Vec<(usize, Kind, u32)>,
 }
 
+/// A bank's top-level objects, and each identity it owns inside one of them, by the object that
+/// holds it.
+type Definitions<'a> = (BTreeMap<u32, Definition<'a>>, BTreeMap<u32, u32>);
+
+/// The Wwise 113 hierarchy type of a layer container, the one object that holds identities of
+/// its own, its layer controllers.
+const LAYER_CONTAINER: u8 = 9;
+
 /// Banks have already been normalized to Wwise 113. Compare object-local bytes
 /// and typed relocations, excluding unrelated bank headers and physical offsets.
-fn definitions(bank: &Bank) -> Result<BTreeMap<u32, Definition<'_>>> {
+fn definitions(bank: &Bank) -> Result<Definitions<'_>> {
     let mut chunks = Read {
         bytes: &bank.bytes,
         at: 0,
@@ -86,11 +94,33 @@ fn definitions(bank: &Bank) -> Result<BTreeMap<u32, Definition<'_>>> {
         );
     }
     reader.end()?;
+    let top = result.keys().copied().collect::<BTreeSet<_>>();
     ensure!(
-        result.keys().copied().collect::<BTreeSet<_>>() == bank.objects,
+        top.is_subset(&bank.objects),
         "linked audio object inventory differs from its hierarchy"
     );
-    Ok(result)
+    // A layer controller's identity lives in its layer container's body, relocated there as an
+    // object reference, rather than as an object of its own. Every other identity the bank
+    // owns is a top-level object.
+    let mut embedded = BTreeMap::new();
+    for &id in bank.objects.difference(&top) {
+        let owners = result
+            .iter()
+            .filter(|(_, definition)| {
+                definition
+                    .references
+                    .iter()
+                    .any(|(_, kind, value)| matches!(kind, Kind::Object) && *value == id)
+            })
+            .map(|(owner, definition)| (*owner, definition.kind))
+            .collect::<Vec<_>>();
+        ensure!(
+            matches!(owners.as_slice(), [(_, LAYER_CONTAINER)]),
+            "linked audio object {id:08X} is neither a hierarchy object nor held by one layer container"
+        );
+        embedded.insert(id, owners[0].0);
+    }
+    Ok((result, embedded))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -108,8 +138,12 @@ impl Namespace {
             "empty audio namespace"
         );
         let mut shared = BTreeMap::new();
+        // An identity held inside an object is shared only with the same holder, which the
+        // holder's own comparison then covers.
+        let mut held = BTreeMap::new();
         for bank in banks {
-            for (id, definition) in definitions(bank)? {
+            let (objects, embedded) = definitions(bank)?;
+            for (id, definition) in objects {
                 if let Some((owner, existing)) = shared.get(&id) {
                     ensure!(
                         *existing == definition,
@@ -120,6 +154,26 @@ impl Namespace {
                     shared.insert(id, (bank.bank_id, definition));
                 }
             }
+            for (id, holder) in embedded {
+                if let Some(&(first, existing)) = held.get(&id) {
+                    ensure!(
+                        existing == holder,
+                        "conflicting linked audio object {id:08X} in banks {first:08X} and {:08X}",
+                        bank.bank_id
+                    );
+                } else {
+                    held.insert(id, (bank.bank_id, holder));
+                }
+            }
+        }
+        // A top-level object in one bank cannot also be held inside another's object.
+        for (id, (owner, _)) in &shared {
+            let held_by = held.get(id).map(|&(bank, _)| bank);
+            ensure!(
+                held_by.is_none(),
+                "conflicting linked audio object {id:08X} in banks {owner:08X} and {:08X}",
+                held_by.unwrap_or_default()
+            );
         }
         let owned = banks
             .iter()

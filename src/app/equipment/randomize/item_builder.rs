@@ -769,7 +769,7 @@ fn draw_available_plugs(
         if searchable {
             ui.add(
                 egui::TextEdit::singleline(&mut state.socket_query)
-                    .hint_text("Search plugs…")
+                    .hint_text("Search Plugs…")
                     .desired_width(f32::INFINITY),
             );
         } else {

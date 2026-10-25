@@ -46,9 +46,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::package_payload::{i64_at, u32_at, u64_at};
 
+mod attack;
 mod census;
+pub use attack::AttackModifier;
 mod fixed;
-pub use fixed::FixedModifier;
+pub use fixed::{FixedModifier, FixedSelection};
 mod group;
 pub use group::{GroupEntry, GroupModifier};
 mod handler;
@@ -314,6 +316,8 @@ pub struct PropertyRow {
 /// What a new row does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Modifier {
+    /// A private copy of a movement attack pair with separately allocated damage profiles.
+    Attack(AttackModifier),
     /// A checked super-specific declaration with its own flattened numeric inputs.
     Group(GroupModifier),
     /// A pointer-free typed body, scoped by an existing property in this bank.
@@ -369,6 +373,7 @@ pub fn with_property_row_mode(
             | Modifier::Scalar { .. }
             | Modifier::Fixed(_)
             | Modifier::Group(_)
+            | Modifier::Attack(_)
     ) {
         return Err(
             "An explicit property mode requires a charge, parameter, numeric or fixed row".into(),
@@ -400,6 +405,9 @@ pub fn with_property_row_mode(
 /// parameter, since only a listed parameter is known to be read by the bank's script, or that
 /// shows no slot for the modifier.
 pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result<Vec<u8>, String> {
+    if let Modifier::Attack(body) = modifier {
+        body.profiles(payload)?;
+    }
     if let Modifier::Group(body) = modifier {
         body.check_bank(payload)?;
         return scalar::with_group(payload, key, body);
@@ -451,7 +459,15 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
             new_rows.push((key, count, None, true));
         }
     } else {
-        new_rows.push((key, count, None, false));
+        let gate = match modifier {
+            Modifier::Attack(body) => Some(body.selection.required_key),
+            Modifier::Fixed(body) => body
+                .selection
+                .map(|s| s.required_key)
+                .filter(|&key| key != 0),
+            _ => None,
+        };
+        new_rows.push((key, count, gate, false));
     }
     let rows = count + new_rows.len();
     let row_classes = |closes: bool| if closes { WINDOW_CLASSES } else { classes };
@@ -486,6 +502,7 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
         | Modifier::Scalar { .. }
         | Modifier::Fixed(_)
         | Modifier::Group(_) => None,
+        Modifier::Attack(_) => None,
     };
     let mut added = Vec::with_capacity(new_rows.len());
     for (&(row_key, before_row, gate, closes), &modifier_instance) in
@@ -503,6 +520,9 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
             (Modifier::Charges(charges), _) => Body::Charges(charges),
             (Modifier::Parameter { .. }, _) => Body::Parameter(table.len()),
             (Modifier::Fixed(body), _) => Body::Fixed(body),
+            (Modifier::Attack(body), _) => {
+                Body::Movement(body.append(payload, out)?, body.selection)
+            }
             _ => return Err("The bank row has no modifier body".into()),
         };
         let gate = gate.map(|gate| append_gate(out, gate));
@@ -544,7 +564,14 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
     put_u64(out, SIZE, size);
 
     // Every stock block still links to its twin, plus the rows and the modifier pairs added.
-    if blocks(out, layout.owner).len() != links.len() + 2 * rows + 2 * added.len() {
+    let nested = added
+        .iter()
+        .map(|row| match row.body {
+            Body::Fixed(body) => body.extra_blocks(),
+            _ => 0,
+        })
+        .sum::<usize>();
+    if blocks(out, layout.owner).len() != links.len() + 2 * rows + 2 * added.len() + nested {
         return Err("The edited bank lost a block's link to its twin".into());
     }
     check_read_back(out, &before, &added, parameter)?;
@@ -615,6 +642,7 @@ struct Added {
 /// What an added row's definition modifier holds.
 #[derive(Clone, Copy)]
 enum Body {
+    Movement([usize; 2], FixedSelection),
     Fixed(FixedModifier),
     Charges(i64),
     /// The index of the row's parameter in the bank's parameter table.

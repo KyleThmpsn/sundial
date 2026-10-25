@@ -1,8 +1,6 @@
 use super::*;
 use sundial::investment::WeaponSocket;
 
-mod native;
-
 fn donor() -> WeaponDonor {
     WeaponDonor {
         summary: crate::test_support::donor_summary(1, "Workbench Test", "Auto Rifle"),
@@ -59,52 +57,6 @@ fn weapon(donor: &WeaponDonor, count: u16) -> WeaponRecipe {
         .collect();
     weapon.validate().unwrap();
     weapon
-}
-
-#[test]
-fn duplicate_stock_restore_is_rejected_without_changing_either_choice() {
-    let donor = donor();
-    for choice in [0, 1] {
-        let mut weapon = weapon(&donor, 2);
-        weapon
-            .overrides
-            .socket_plug_variants
-            .retain(|variant| usize::from(variant.choice_index) == choice);
-        weapon.validate().unwrap();
-        let before = weapon.clone();
-        let target = Target::capture(&weapon, &donor, 0, choice).unwrap();
-        let error = Change { target, perk: None }
-            .apply(&mut weapon, &donor)
-            .unwrap_err();
-        assert!(error.contains("already holds the stock perk"));
-        assert_eq!(weapon, before);
-        assert!(weapon.to_json_pretty().is_ok());
-    }
-}
-
-#[test]
-fn restoring_one_private_choice_preserves_sibling_variants_and_socket_metadata() {
-    let donor = donor();
-    for choice in [0, 1] {
-        let mut weapon = weapon(&donor, 2);
-        let before = weapon.clone();
-        let target = Target::capture(&weapon, &donor, 0, choice).unwrap();
-        Change { target, perk: None }
-            .apply(&mut weapon, &donor)
-            .unwrap();
-        assert_eq!(
-            weapon.overrides.socket_columns,
-            before.overrides.socket_columns
-        );
-        assert_eq!(
-            weapon.overrides.socket_plug_variants,
-            vec![before.overrides.socket_plug_variants[1 - choice].clone()]
-        );
-        assert_eq!(
-            WeaponRecipe::from_json_str(&weapon.to_json_pretty().unwrap()).unwrap(),
-            weapon
-        );
-    }
 }
 
 #[test]

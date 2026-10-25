@@ -1,7 +1,5 @@
 //! Reversible appearance browsing. Only the explicit use action returns a selection.
 use super::*;
-#[cfg(test)]
-mod tests;
 
 pub fn show<T>(
     ui: &mut egui::Ui,

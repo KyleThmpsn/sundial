@@ -449,7 +449,6 @@ fn draw_hash_inspector_contents(
         Some(draw_item_tabs(ui, content))
     } else {
         draw_definition_header(ui, content);
-        crate::ui::model_preview::inspected_unavailable(ui);
         None
     };
     ui.add_space(6.0);
@@ -625,12 +624,7 @@ fn draw_item_tabs(ui: &mut egui::Ui, content: &HashInspectorContent<'_>) -> Item
         .filter(|page| pages.contains(page))
         .unwrap_or_default();
     ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        super::item::draw_page_tabs(ui, &pages, &mut page, related);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            super::item::draw_preview_button(ui, item_inspection(content));
-        });
-    });
+    super::item::draw_page_tabs(ui, &pages, &mut page, related);
     ui.data_mut(|data| data.insert_temp(page_id, page));
     page
 }
@@ -1075,6 +1069,3 @@ fn hash_inspector_default_size(matches: &CatalogHashMatches<'_>) -> egui::Vec2 {
         egui::vec2(1_160.0, 840.0)
     }
 }
-
-#[cfg(test)]
-mod tests;

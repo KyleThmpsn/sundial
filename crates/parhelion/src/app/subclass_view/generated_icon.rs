@@ -44,18 +44,24 @@ impl PackageAuthoringApp {
             .as_ref()
             .is_some_and(|abilities| abilities.hud_color.is_some());
         let mut glyph = current.glyph.clone();
-        // A stock perk's icon arrives once its texture is read.
-        match self.subclass_page.symbol.as_ref().map(Receiver::try_recv) {
-            Some(Ok(Ok(icon))) => {
+        // A stock perk's icon arrives once its texture is read, unless the symbol it was to
+        // replace changed meanwhile.
+        let arrived = self
+            .subclass_page
+            .symbol
+            .as_ref()
+            .map(|(before, result)| (*before == glyph).then(|| result.try_recv()));
+        match arrived {
+            Some(Some(Ok(Ok(icon)))) => {
                 glyph = Some(icon);
                 self.subclass_page.symbol = None;
             }
-            Some(Ok(Err(error))) => {
+            Some(Some(Ok(Err(error)))) => {
                 self.log.push(LogEntry::error(format!("Symbol: {error}")));
                 self.subclass_page.symbol = None;
             }
-            Some(Err(TryRecvError::Disconnected)) => self.subclass_page.symbol = None,
-            Some(Err(TryRecvError::Empty)) | None => {}
+            Some(None | Some(Err(TryRecvError::Disconnected))) => self.subclass_page.symbol = None,
+            Some(Some(Err(TryRecvError::Empty))) | None => {}
         }
         let action = sundial::investment::draw_authoring_item_header(
             ui,
@@ -107,11 +113,11 @@ impl PackageAuthoringApp {
         match selection {
             Some(crate::artwork_browser::Selection::Icon(icon)) => glyph = Some(icon),
             Some(other) => {
-                page.symbol =
-                    Some(
-                        page.artwork
-                            .icon(other, &self.packages, self.catalog.as_ref(), ui.ctx()),
-                    );
+                page.symbol = Some((
+                    glyph.clone(),
+                    page.artwork
+                        .icon(other, &self.packages, self.catalog.as_ref(), ui.ctx()),
+                ));
             }
             None => {}
         }

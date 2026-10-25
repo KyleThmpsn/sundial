@@ -180,38 +180,95 @@ impl Picker {
         };
         ui.group(|ui| {
             ui.strong(format!("Insert into {}", recipe.name));
-            let effects = recipe.effects.iter().enumerate().filter(|(_, effect)| effect.program.is_some()).collect::<Vec<_>>();
-            if !effects.iter().any(|(index, _)| *index == self.effect) { self.effect = effects.first().map_or(0, |(index, _)| *index); }
+            let effects = recipe
+                .effects
+                .iter()
+                .enumerate()
+                .filter(|(_, effect)| effect.program.is_some())
+                .collect::<Vec<_>>();
+            if !effects.iter().any(|(index, _)| *index == self.effect) {
+                self.effect = effects.first().map_or(0, |(index, _)| *index);
+            }
             ui.horizontal_wrapped(|ui| {
-                egui::ComboBox::from_id_salt("catalog-effect").selected_text(format!("Effect {}", self.effect + 1)).show_ui(ui, |ui| {
-                    for (index, _) in &effects { ui.selectable_value(&mut self.effect, *index, format!("Effect {}", index + 1)); }
-                });
-                let groups = recipe.effects.get(self.effect).and_then(|effect| effect.program.as_ref()).and_then(|program| crate::perk::preflight::decoded(program).ok()).map_or(0, |decoded| decoded.groups.len());
-                self.group = self.group.min(groups.saturating_sub(1));
-                egui::ComboBox::from_id_salt("catalog-group").selected_text(format!("Behavior {}", self.group + 1)).show_ui(ui, |ui| {
-                    for group in 0..groups { ui.selectable_value(&mut self.group, group, format!("Behavior {}", group + 1)); }
-                });
-                if family == Family::Conditions {
-                    egui::ComboBox::from_id_salt("catalog-placement").selected_text(self.placement.label()).show_ui(ui, |ui| {
-                        for placement in [Placement::Requirement, Placement::Trigger] { ui.selectable_value(&mut self.placement, placement, placement.label()); }
+                egui::ComboBox::from_id_salt("catalog-effect")
+                    .selected_text(format!("Effect {}", self.effect + 1))
+                    .show_ui(ui, |ui| {
+                        for (index, _) in &effects {
+                            ui.selectable_value(
+                                &mut self.effect,
+                                *index,
+                                format!("Effect {}", index + 1),
+                            );
+                        }
                     });
+                let groups = recipe
+                    .effects
+                    .get(self.effect)
+                    .and_then(|effect| effect.program.as_ref())
+                    .and_then(|program| crate::perk::preflight::decoded(program).ok())
+                    .map_or(0, |decoded| decoded.groups.len());
+                self.group = self.group.min(groups.saturating_sub(1));
+                egui::ComboBox::from_id_salt("catalog-group")
+                    .selected_text(format!("Behavior {}", self.group + 1))
+                    .show_ui(ui, |ui| {
+                        for group in 0..groups {
+                            ui.selectable_value(
+                                &mut self.group,
+                                group,
+                                format!("Behavior {}", group + 1),
+                            );
+                        }
+                    });
+                if family == Family::Conditions {
+                    egui::ComboBox::from_id_salt("catalog-placement")
+                        .selected_text(self.placement.label())
+                        .show_ui(ui, |ui| {
+                            for placement in [Placement::Requirement, Placement::Trigger] {
+                                ui.selectable_value(
+                                    &mut self.placement,
+                                    placement,
+                                    placement.label(),
+                                );
+                            }
+                        });
                 }
-                if ui.add_enabled(!effects.is_empty() && !nodes.is_empty() && groups > 0, egui::Button::new("Insert Selected Configuration")).clicked() {
+                let ready = !effects.is_empty() && !nodes.is_empty() && groups > 0;
+                if ui.add_enabled(ready, egui::Button::new("Insert")).clicked() {
                     let node = nodes[self.configuration.min(nodes.len() - 1)].0.clone();
-                    match Request::new(recipe, recipe.effects[self.effect].source_perk_index, self.group, self.placement, node, stock) {
-                        Ok(request) => { self.requested = Some(request); self.error = None; }
+                    let effect = recipe.effects[self.effect].source_perk_index;
+                    match Request::new(recipe, effect, self.group, self.placement, node, stock) {
+                        Ok(request) => {
+                            self.requested = Some(request);
+                            self.error = None;
+                        }
                         Err(error) => self.error = Some(error),
                     }
                 }
             });
             self.configuration = self.configuration.min(nodes.len().saturating_sub(1));
             if let Some((_, description)) = nodes.get(self.configuration) {
-                egui::ComboBox::from_id_salt("catalog-configuration").width(ui.available_width()).selected_text(description).show_ui(ui, |ui| {
-                    for (index, (_, description)) in nodes.iter().enumerate() { ui.selectable_value(&mut self.configuration, index, format!("{} · {description}", index + 1)); }
-                });
-                ui.weak(stock.map_or_else(|| "Template configuration. Choose a stock use below to copy its native values.".into(), |stock| format!("Native configuration from stock effect {stock}. Source and content hash travel with the perk.")));
-            } else { ui.weak("No editable configuration is available for this selection."); }
-            if let Some(error) = &self.error { ui.colored_label(ui.visuals().error_fg_color, error); }
+                egui::ComboBox::from_id_salt("catalog-configuration")
+                    .width(ui.available_width())
+                    .selected_text(description)
+                    .show_ui(ui, |ui| {
+                        for (index, (_, description)) in nodes.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut self.configuration,
+                                index,
+                                format!("{} · {description}", index + 1),
+                            );
+                        }
+                    });
+                ui.weak(stock.map_or_else(
+                    || "Template configuration".to_owned(),
+                    |stock| format!("From stock effect {stock}"),
+                ));
+            } else {
+                ui.weak("No Editable Configuration");
+            }
+            if let Some(error) = &self.error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
         });
     }
 }

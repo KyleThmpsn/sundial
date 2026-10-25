@@ -32,6 +32,13 @@ pub(super) fn check(
 ) -> CheckResult<()> {
     let kind = source.u8(s + 5)?;
     let base = match kind {
+        33 => {
+            assert_eq!(native.u32(n - 4)?, 0x80803DF8);
+            assert_eq!(native.u8(n + 5)?, 32);
+            assert_eq!(source.bytes::<5>(s)?, native.bytes::<5>(n)?);
+            assert_eq!(source.u8(s + 6)?, native.u8(n + 6)?);
+            8
+        }
         23 => {
             assert_eq!(native.u32(n - 4)?, 0x80803DDA);
             assert_eq!(source.bytes::<5>(s)?, native.bytes::<5>(n)?);

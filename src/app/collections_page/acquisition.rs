@@ -279,7 +279,12 @@ pub(super) fn acquisition_status(
                 (
                     "Unsupported unlock-expression opcode".to_owned(),
                     format!(
-                        "Unsupported unlock-expression opcode(s): {}",
+                        "Unsupported unlock-expression {}: {}",
+                        if unsupported.len() == 1 {
+                            "opcode"
+                        } else {
+                            "opcodes"
+                        },
                         unsupported
                             .iter()
                             .map(u32::to_string)

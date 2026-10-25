@@ -124,7 +124,7 @@ impl PackageAuthoringApp {
                 controls::info(
                     ui,
                     "Vehicle",
-                    "Percent of the summoned vehicle's own values. Driving, repair and firing are untested in game.",
+                    "Percent of the summoned vehicle's own values.",
                 );
                 if original.has_changes() && style::reset_icon(ui, "Reset Vehicle") {
                     edited = Sparrow::default();
@@ -140,9 +140,18 @@ impl PackageAuthoringApp {
             );
             picker::projectile(self, ui, &mut edited, choose_projectile);
             for entity in [
-                match &edited.summon { Summon::Other { entity } => Some(entity), _ => None },
-                match &edited.weapons.projectile { Projectile::Other { entity } => Some(entity), _ => None },
-            ].into_iter().flatten() {
+                match &edited.summon {
+                    Summon::Other { entity } => Some(entity),
+                    _ => None,
+                },
+                match &edited.weapons.projectile {
+                    Projectile::Other { entity } => Some(entity),
+                    _ => None,
+                },
+            ]
+            .into_iter()
+            .flatten()
+            {
                 if let Err(error) = entity.parse_u32() {
                     ui.colored_label(ui.visuals().error_fg_color, error.to_string());
                 }
@@ -150,7 +159,10 @@ impl PackageAuthoringApp {
             #[cfg(feature = "d2-model-importer")]
             imported::show(
                 ui,
-                self.recipe.overrides.imported_graph.as_ref()
+                self.recipe
+                    .overrides
+                    .imported_graph
+                    .as_ref()
                     .zip(edited.summon.entity().ok().flatten()),
             );
         });

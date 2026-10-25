@@ -292,7 +292,7 @@ enum ProgressionSection {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfirmationDialog {
-    EnableParhelion,
+    OpenParhelion,
     ReallyUnsafe,
     ReviewSave,
     DeleteEquipment,
@@ -301,6 +301,7 @@ enum ConfirmationDialog {
     ResetSqliteDefaults,
     ResetDefaults,
     Exit,
+    UnsavedAuthoringWork,
 }
 
 #[derive(Clone)]
@@ -374,6 +375,8 @@ struct SundialApp {
     pending_sqlite_restore: Option<PathBuf>,
     pending_sqlite_reset: Option<crate::persistence::sqlite_account::ResetPlan>,
     exit_confirmed: bool,
+    /// Why Parhelion work kept outside its recipe is unsaved, while exiting asks about it.
+    unsaved_authoring_work: Option<String>,
     dirty: bool,
     undo_history: Vec<DocumentHistoryEntry>,
     account_details: account_details::State,
@@ -491,6 +494,7 @@ impl SundialApp {
             pending_sqlite_restore: None,
             pending_sqlite_reset: None,
             exit_confirmed: false,
+            unsaved_authoring_work: None,
             dirty: false,
             undo_history: Vec::new(),
             account_details: account_details::State::default(),
@@ -935,7 +939,6 @@ impl SundialApp {
                             account_settings: account_settings.as_ref().map_err(String::as_str),
                             bindings_editable,
                             json_account,
-                            extended_fov: self.preferences.experimental_extended_fov,
                             dawn,
                             tab: &mut self.game_settings_tab,
                             key_bindings: &mut self.key_binding_ui,
@@ -1015,7 +1018,7 @@ impl SundialApp {
                     self.set_status(message, true);
                 } else if self.has_unsaved_changes() {
                     self.confirmation = Some(ConfirmationDialog::Exit);
-                } else {
+                } else if self.confirm_authoring_work_saved() {
                     self.exit_confirmed = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -1036,6 +1039,8 @@ impl SundialApp {
             } else if self.has_unsaved_changes() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirmation = Some(ConfirmationDialog::Exit);
+            } else if !self.confirm_authoring_work_saved() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
         }
 
@@ -1122,6 +1127,7 @@ impl eframe::App for SundialApp {
         self.draw_delete_equipment_confirmation(ctx);
         self.draw_reload_confirmation(ctx);
         self.draw_exit_confirmation(ctx);
+        self.draw_unsaved_authoring_work_confirmation(ctx);
 
         self.handle_workspace_shortcuts(ctx);
         if std::mem::take(&mut self.document_repaint_pending) {

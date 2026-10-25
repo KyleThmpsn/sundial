@@ -228,7 +228,7 @@ fn unlocks(
                             .unwrap_or_default();
                         ui.add(
                             egui::TextEdit::singleline(&mut query)
-                                .hint_text("Search by name or index…")
+                                .hint_text("Search by Name or Index…")
                                 .desired_width(280.0),
                         );
                         ui.data_mut(|d| d.insert_temp(search_id, query.clone()));

@@ -5,6 +5,7 @@ pub mod scan;
 mod list;
 pub use list::BrowserList;
 pub mod assets;
+pub mod behavior;
 pub mod content;
 pub mod labels;
 
@@ -27,6 +28,35 @@ pub fn toolbar_status(
             .halign(egui::Align::Min)
             .truncate(),
     )
+}
+
+/// The room the Clear button after a search box takes, with the spacing before it.
+pub const CLEAR_WIDTH: f32 = 56.0;
+
+/// The width a toolbar keeps for its result count.
+const COUNT_WIDTH: f32 = 86.0;
+
+/// "1 Result" or "N Results".
+pub fn result_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "Result" } else { "Results" })
+}
+
+/// The toolbar a catalog list opens with: a search box, then a slot for its result count,
+/// which [`toolbar_status`] fills once the results are known. Returns whether the query
+/// changed, and the slot.
+pub fn search_bar(ui: &mut egui::Ui, query: &mut String, hint: &str) -> (bool, egui::Rect) {
+    ui.horizontal(|ui| {
+        let width = ui.available_width() - CLEAR_WIDTH - COUNT_WIDTH - ui.spacing().item_spacing.x;
+        let changed = search(ui, query, false, width, hint);
+        let slot = ui
+            .allocate_exact_size(
+                egui::vec2(COUNT_WIDTH, ui.spacing().interact_size.y),
+                egui::Sense::hover(),
+            )
+            .0;
+        (changed, slot)
+    })
+    .inner
 }
 
 pub fn search(ui: &mut egui::Ui, query: &mut String, opened: bool, width: f32, hint: &str) -> bool {

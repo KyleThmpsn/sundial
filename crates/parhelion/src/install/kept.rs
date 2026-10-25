@@ -45,8 +45,14 @@ fn installation_directory(target: &Path) -> Option<PathBuf> {
         return None;
     }
     let data = sundial::package_authoring::parhelion_data_directory()?;
-    // Windows paths compare without case.
-    let key = Sha256::digest(target.to_string_lossy().to_lowercase().as_bytes());
+    // Windows paths compare without case. Elsewhere two paths that differ only in case are two
+    // installations, and each keeps its own run.
+    let path = target.to_string_lossy();
+    let key = if cfg!(windows) {
+        Sha256::digest(path.to_lowercase().as_bytes())
+    } else {
+        Sha256::digest(path.as_bytes())
+    };
     Some(data.join(ROOT).join(hex::encode(&key[..8])))
 }
 

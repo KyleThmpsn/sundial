@@ -28,8 +28,6 @@ pub(super) use defaults::{
     default_subclass_name, item_class_is_compatible, selected_attunement_index,
     subclass_display_name,
 };
-#[cfg(test)]
-pub(super) use document::materialize_authored_plugs;
 pub(super) use document::{
     displayed_plugs, equip_definition, equip_inventory_item, equip_subclass_with_default_abilities,
     equipment_slot_label, equipped_item_snapshots, native_plug_default,

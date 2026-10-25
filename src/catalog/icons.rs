@@ -111,6 +111,19 @@ impl Catalog {
         runtime.resume();
     }
 
+    /// Takes over `previous`'s inspection access when this catalog replaces it. Previews and
+    /// viewers keep the access they were given, so a fresh one would leave them on the old
+    /// catalog's, which nobody resumes. Its generation advances, since reads now come from this
+    /// catalog. `suspended` carries the host's package pause over.
+    pub(crate) fn adopt_package_access(&mut self, previous: &Catalog, suspended: bool) {
+        self.inspection_access = previous.inspection_access();
+        if suspended {
+            self.suspend_package_access();
+        } else {
+            self.inspection_access.renew();
+        }
+    }
+
     /// Loads an installed package icon on demand and keeps only displayed icons on the GPU.
     pub(crate) fn icon_texture(
         &self,

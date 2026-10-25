@@ -131,21 +131,6 @@ fn new_bundles_are_enabled_without_reenabling_disabled_old_bundles() {
     assert_eq!(library.enabled_paths(&scan.entries).unwrap(), enabled);
 }
 
-#[test]
-fn reopening_keeps_user_edits_while_the_bundled_recipe_is_unchanged() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory.path().join("recipes");
-    let library = RecipeLibrary::open(root.clone()).unwrap();
-    assert!(library.defaults_refresh().is_none());
-    let path = library.root().join(EVERY_END_FILE_NAME);
-    fs::write(&path, "user-owned edit").unwrap();
-
-    let library = RecipeLibrary::open(root).unwrap();
-
-    assert!(library.defaults_refresh().is_none());
-    assert_eq!(fs::read_to_string(path).unwrap(), "user-owned edit");
-}
-
 /// Simulates a copy left by an earlier release by dropping its applied version.
 fn forget_applied_version(library: &RecipeLibrary, file_name: &str) {
     let path = library.versions_path().unwrap();

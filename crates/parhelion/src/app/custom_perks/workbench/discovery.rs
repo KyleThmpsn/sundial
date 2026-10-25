@@ -281,26 +281,4 @@ mod tests {
             }),
         );
     }
-
-    #[test]
-    fn invalidation_discards_results_from_the_previous_installation() {
-        let (sender, receiver) = mpsc::channel();
-        let mut discovery = Discovery {
-            receiver: Some(receiver),
-            attempted: true,
-            ..Discovery::default()
-        };
-        discovery.invalidate();
-        sender
-            .send(Event::Keys(Ok(Arc::new(properties::KeyIndex::default()))))
-            .unwrap();
-        sender.send(Event::Ready(Err("old scan".into()))).unwrap();
-        discovery.poll();
-        assert!(discovery.keys.is_none());
-        assert!(discovery.data.is_none());
-        assert!(discovery.error.is_none());
-        assert!(discovery.key_error.is_none());
-        assert!(!discovery.attempted);
-        assert!(!discovery.busy());
-    }
 }

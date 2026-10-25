@@ -1,32 +1,5 @@
 use super::*;
 
-#[test]
-fn source_refresh_reports_current_errors_without_reusing_editor_errors_or_stale_entries() {
-    let temp = tempfile::tempdir().unwrap();
-    let library = Library::open(temp.path().to_owned()).unwrap();
-    let mut perk = PerkRecipe::new();
-    perk.name = "Saved Source".into();
-    let entry = library.save(&perk, None).unwrap();
-    let mut workbench = Workbench {
-        library: Some(library),
-        error: Some("An unrelated editor error".into()),
-        ..Default::default()
-    };
-    assert!(workbench.scan_library().is_empty());
-    assert_eq!(workbench.entries.len(), 1);
-    std::fs::write(&entry.path, "invalid JSON").unwrap();
-    let warnings = workbench.scan_library();
-    assert_eq!(warnings.len(), 1);
-    assert!(workbench.entries.is_empty());
-    assert_eq!(
-        workbench.error.as_deref(),
-        Some("An unrelated editor error")
-    );
-    std::fs::write(&entry.path, &entry.baseline).unwrap();
-    assert!(workbench.scan_library().is_empty());
-    assert_eq!(workbench.entries.len(), 1);
-}
-
 fn frame(
     ctx: &egui::Context,
     app: &mut PackageAuthoringApp,

@@ -50,6 +50,11 @@ pub(super) fn prepare(release: &Release, progress: &Progress) -> Result<Prepared
                 .ok_or("The executable has no parent folder.")?,
         )
         .map_err(|error| format!("Cannot stage the update beside Sundial: {error}"))?;
+    fs::write(
+        directory.path().join(files::OWNER),
+        target.to_string_lossy().as_bytes(),
+    )
+    .map_err(|error| format!("Cannot stage the update beside Sundial: {error}"))?;
     let old_digest = files::digest(&target)?;
     let payload = directory.path().join(PAYLOAD);
     let archive = directory.path().join("download");

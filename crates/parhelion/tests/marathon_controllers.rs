@@ -416,7 +416,7 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
         let carrier_descriptors = stock_bank.array(0x68, 32, Some(0x80809002))?.len();
         for (field, stride, class, what) in [
             (8, 4, 0x80808F48, "clips"),
-            (0x18, 2, 0x80800007, "clip auxiliary words"),
+            (0x18, 4, 0x80800007, "clip auxiliary words"),
             (0x68, 32, 0x80809002, "descriptors"),
         ] {
             ensure!(

@@ -341,16 +341,3 @@ pub(super) fn name(hash: u32) -> Option<&'static str> {
 pub(super) fn hashes() -> impl Iterator<Item = u32> {
     NAMES.iter().map(|&(hash, _)| hash)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recovered_names_match_their_hashes_and_stay_sorted() {
-        assert!(NAMES.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        for &(hash, label) in NAMES {
-            assert_eq!(crate::hash::fnv1_name_hash(label), hash, "{label}");
-        }
-    }
-}

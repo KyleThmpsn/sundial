@@ -182,6 +182,7 @@ pub struct MapLibraryEntry {
     /// The map's internal name, which its activity and packages carry.
     pub name: String,
     pub title: String,
+    pub destination: Option<String>,
     /// Whether the map converts another game's level.
     pub source: bool,
 }
@@ -384,6 +385,7 @@ impl RecipeLibrary {
                         path,
                         name: recipe.name,
                         title: recipe.title,
+                        destination: recipe.destination,
                         source: recipe.source.is_some(),
                     }),
                     Err(error) => scan.errors.push(error.to_string()),
@@ -514,7 +516,8 @@ impl RecipeLibrary {
 
     #[cfg(test)]
     pub fn save_existing(&self, path: &Path, recipe: &WeaponRecipe) -> Result<(), String> {
-        self.save_existing_checked(path, recipe, None)
+        self.save_existing_checked(path, recipe, None, false)
+            .map(|_| ())
     }
 
     /// Serializes library writers and checks external edits again before publication.
@@ -525,7 +528,22 @@ impl RecipeLibrary {
         baseline: &WeaponRecipe,
         recipe: &WeaponRecipe,
     ) -> Result<(), String> {
-        self.save_existing_checked(path, recipe, Some(baseline))
+        self.save_existing_checked(path, recipe, Some(baseline), false)
+            .map(|_| ())
+    }
+
+    /// [`Self::save_existing_if_unchanged`] for a write that replaces part of the reader's own
+    /// work, such as a reimport taking the conversion's sockets. The file it replaces is first
+    /// kept in a new folder under the library's `backups/recipes`, whose path it returns.
+    #[cfg(feature = "d2-model-importer")]
+    pub fn save_existing_with_backup(
+        &self,
+        path: &Path,
+        baseline: &WeaponRecipe,
+        recipe: &WeaponRecipe,
+    ) -> Result<PathBuf, String> {
+        self.save_existing_checked(path, recipe, Some(baseline), true)?
+            .ok_or_else(|| "The recipe was saved without a backup".into())
     }
 
     fn save_existing_checked(
@@ -533,7 +551,8 @@ impl RecipeLibrary {
         path: &Path,
         recipe: &WeaponRecipe,
         baseline: Option<&WeaponRecipe>,
-    ) -> Result<(), String> {
+        back_up: bool,
+    ) -> Result<Option<PathBuf>, String> {
         let _lock = self.lock()?;
         let target = self.confined_existing_path(path)?;
         self.ensure_unique_identity(recipe, Some(&target))?;
@@ -552,7 +571,23 @@ impl RecipeLibrary {
                 return Err("This recipe changed on disk after you opened it. Your draft is still here. Export it to a separate file, then reopen the library recipe to reconcile the changes.".into());
             }
         }
-        mutation::publish(&target, encoded.as_bytes(), Some(&original))
+        let backup = if back_up {
+            let folder = self.create_restore_backup()?;
+            let name = target
+                .file_name()
+                .ok_or("The recipe has no file name to back up")?;
+            sundial::storage::create_file(&folder.join(name), &original).map_err(|error| {
+                format!(
+                    "Could not back up the recipe in {}: {error}",
+                    folder.display()
+                )
+            })?;
+            Some(folder)
+        } else {
+            None
+        };
+        mutation::publish(&target, encoded.as_bytes(), Some(&original))?;
+        Ok(backup)
     }
 
     pub fn import(&self, source: &Path) -> Result<(PathBuf, WeaponRecipe), String> {

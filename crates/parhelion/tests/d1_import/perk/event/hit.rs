@@ -16,7 +16,17 @@ pub(super) fn check(
     assert_eq!(source.u32(s + 0x98)?, native.u32(n + 0xA0)?);
     assert_eq!(native.u32(n + 0x9C)?, 0x811C9DC5);
     assert_eq!(native.bytes::<3>(n + 0xC2)?, [0; 3]);
-    assert_eq!(native.u64(n + 0xC8)?, 0);
+    if source.u64(s + 0x188)? == 0 {
+        assert_eq!(native.u64(n + 0xC8)?, 0);
+        assert_eq!(native.u8(n + 6)?, 0);
+    } else {
+        let original = source.pointer(s + 0x188)?;
+        let counter = native.pointer(n + 0xC8)?;
+        assert_eq!(source.u32(original - 4)?, 0x80802D44);
+        assert_eq!(native.u32(counter - 4)?, 0x80803DF0);
+        assert_eq!(source.bytes::<12>(original)?, native.bytes::<12>(counter)?);
+        assert_eq!(native.u8(n + 6)?, 1);
+    }
     assert_eq!(native.u8(n + 0xA8)?, 0, "Object predicates must all pass");
     let predicates = native.array(n + 0xB0, 16, Some(0x80809316))?;
     assert_eq!(predicates.len(), 2);

@@ -11,6 +11,7 @@ use std::{
 };
 use tiger_pkg::{GameVersion, Package, PackagePlatform, TagHash, Version};
 mod decoder;
+mod index;
 mod pool;
 mod trace;
 pub use decoder::initialize_source_decoder;
@@ -43,14 +44,13 @@ impl PackageManager {
         version: GameVersion,
         platform: Option<PackagePlatform>,
     ) -> Result<Self, String> {
-        let metadata = tiger_pkg::PackageManager::new(path, version, platform)
-            .map_err(|e| format!("{e:#}"))?;
+        let tables = index::read(path.as_ref(), version, platform)?;
         Ok(Self {
-            package_dir: metadata.package_dir,
-            package_paths: metadata.package_paths.into_iter().collect(),
-            lookup: metadata.lookup,
-            version: metadata.version,
-            platform: metadata.platform,
+            package_dir: tables.package_dir,
+            package_paths: tables.package_paths,
+            lookup: tables.lookup,
+            version,
+            platform: tables.platform,
             identity: NEXT_READER.fetch_add(1, Ordering::Relaxed),
             trace: Mutex::new(None),
             local: HashMap::new(),

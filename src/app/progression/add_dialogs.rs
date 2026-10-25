@@ -100,7 +100,7 @@ pub(super) fn draw_add_investment_window(
         .show(ctx, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut state.add_query)
-                    .hint_text("Filter package definitions…")
+                    .hint_text("Filter Package Definitions…")
                     .desired_width(f32::INFINITY),
             );
             ui.horizontal(|ui| {

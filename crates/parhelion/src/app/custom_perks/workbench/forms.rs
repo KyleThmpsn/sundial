@@ -1733,7 +1733,9 @@ fn type_plugs(
 /// The effect menu's command for a separate trigger and its actions within the effect.
 fn behavior_group_command(ui: &mut egui::Ui) -> bool {
     ui.button("Add Behavior Group")
-        .on_hover_text("Another behavior in this effect. Only a main behavior starts on an event in game, so use Add Effect for one.")
+        .on_hover_text(
+            "Another behavior in this effect. Only the main behavior starts on an event.",
+        )
         .clicked()
 }
 

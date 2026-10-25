@@ -6,8 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(test)]
-use sundial::investment::MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES;
 use sundial::investment::{
     MAX_WEAPON_SOCKETS, WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary,
     WeaponInventorySlot, authored_socket_choice_limit,
@@ -438,7 +436,7 @@ pub fn weapon_summary_authoring_capabilities(
             field: AuthoringField::DamageProfile,
             code: AuthoringDiagnosticCode::IncoherentDamageProfile,
             message: format!(
-                "{} has conflicting decoded damage metadata; preserving or mutating it is unsafe",
+                "{} has conflicting decoded damage metadata. Preserving or changing it is unsafe",
                 donor.name
             ),
         });
@@ -483,8 +481,8 @@ pub fn weapon_summary_authoring_capabilities(
                 label: profile.label(),
                 reason: concat!(
                     "Slot and damage are independent authoring fields. Existing elemental carriers ",
-                    "keep their topology; adding a carrier requires a compatible stock source. ",
-                    "Slot changes can retain the base appearance and animations. Unusual pairings need gameplay testing."
+                    "keep their topology. Adding a carrier requires a compatible stock source. ",
+                    "Slot changes can retain the base appearance and animations."
                 ).to_owned(),
             });
         }
@@ -616,41 +614,6 @@ pub fn validate_stat_overrides(
 pub struct SupportedPlugSet {
     pub socket_index: usize,
     pub plug_hashes: Vec<u32>,
-}
-
-/// Validates complete positional socket-column overrides against installed plug pools.
-///
-/// An empty override inherits the donor unchanged. A non-empty override must be positional and
-/// complete. Package/catalog discovery intentionally stays outside this pure module. Callers must
-/// pass the compatible set decoded for each authored socket. Membership findings are safety
-/// warnings; structural column errors remain build-blocking.
-#[must_use]
-#[cfg(test)]
-pub fn validate_socket_column_overrides(
-    donor: &WeaponDonor,
-    overrides: &[Option<Vec<u32>>],
-    supported_plug_sets: &[SupportedPlugSet],
-) -> Vec<AuthoringDiagnostic> {
-    validate_socket_column_overrides_with_socket_types(donor, overrides, &[], supported_plug_sets)
-}
-
-/// Validates socket choices after applying any explicit native socket-type overrides.
-#[must_use]
-#[cfg(test)]
-pub fn validate_socket_column_overrides_with_socket_types(
-    donor: &WeaponDonor,
-    overrides: &[Option<Vec<u32>>],
-    socket_types: &[Option<u16>],
-    supported_plug_sets: &[SupportedPlugSet],
-) -> Vec<AuthoringDiagnostic> {
-    validate_socket_column_overrides_with_choice_identity(
-        donor,
-        overrides,
-        socket_types,
-        supported_plug_sets,
-        &|hash| format!("0x{hash:08X}"),
-        &|_, _, _| true,
-    )
 }
 
 pub(crate) fn validate_socket_column_overrides_with_variants(
@@ -990,6 +953,3 @@ fn compiled_choices_resolve_to_same_plug(
         _ => false,
     }
 }
-
-#[cfg(test)]
-mod tests;

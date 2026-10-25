@@ -377,11 +377,11 @@ fn validate(reference: &GraphReference, kind: &str) -> Result<(), String> {
             return Err("Choose a weapon appearance for weapon artwork".into());
         }
         reference
-            .validate(word(&graph["item_hash"])?)
+            .validate_opened(word(&graph["item_hash"])?)
             .map_err(|e| format!("{e:#}"))
     } else {
         reference
-            .validate_reusable(kind)
+            .validate_reusable_opened(kind)
             .map_err(|e| format!("{e:#}"))
     }
 }

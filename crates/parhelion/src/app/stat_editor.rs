@@ -1,9 +1,10 @@
 //! Focused stat editor controls; recipe mutation occurs on user actions.
 use super::*;
 mod contribution;
+mod magazine;
 pub(crate) mod table;
 use contribution::Contributions;
-pub(super) use contribution::starting_plugs;
+pub(super) use contribution::{starting_perks, starting_plugs};
 #[cfg(test)]
 mod tests;
 
@@ -176,7 +177,7 @@ fn draw_weapon_stat_row(
     columns: &StatColumns,
     row: &StatRow,
     (value, warning, in_game): (i32, Option<&str>, bool),
-    sources: &[contribution::Contribution],
+    (sources, reading): (&[contribution::Contribution], Option<&magazine::Reading>),
 ) -> (Option<i32>, Option<StatRowAction>) {
     let StatRow {
         stat,
@@ -189,7 +190,13 @@ fn draw_weapon_stat_row(
         let modified = added || removed || value != stat.value;
         let cells = columns.row(ui, &stat.name, modified);
         draw_stat_identity(ui, &cells, stat, (added, removed, in_game, warning));
-        draw_stat_reading(ui, &cells, stat, (value, removed, in_game), sources);
+        draw_stat_reading(
+            ui,
+            &cells,
+            stat,
+            (value, removed, in_game),
+            (sources, reading),
+        );
         if *from_plug {
             return (None, None);
         }
@@ -246,16 +253,24 @@ fn draw_stat_identity(
 /// The in-game reading, where Destiny's tooltip puts it: after the bar for a stat the game shows as
 /// one, and where the bar would start for one it shows as a number, such as Rounds Per Minute. A
 /// stat the game hides reads nothing past its raw value, which is all it has. A removed stat says
-/// so where its bar was.
+/// so where its bar was. A `reading` taken from the weapon itself replaces the display curve's,
+/// where the bar would start.
 fn draw_stat_reading(
     ui: &mut egui::Ui,
     cells: &StatCells,
     stat: &WeaponInvestmentStat,
     (value, removed, in_game): (i32, bool, bool),
-    sources: &[contribution::Contribution],
+    (sources, reading): (&[contribution::Contribution], Option<&magazine::Reading>),
 ) {
-    let base = stat.in_game_display_value(value);
-    let now = stat.in_game_display_value(contribution::total(value, sources));
+    let total = contribution::total(value, sources);
+    let curve = stat.in_game_display_value(total);
+    let (base, now) = reading.map_or(
+        (
+            i64::from(stat.in_game_display_value(value)),
+            i64::from(curve),
+        ),
+        |reading| (reading.base, reading.now),
+    );
     let color = if now > base {
         style::success_color(ui.visuals())
     } else if now < base {
@@ -263,14 +278,22 @@ fn draw_stat_reading(
     } else {
         ui.visuals().text_color()
     };
-    let breakdown = contribution::breakdown(value, sources, now);
+    let breakdown = match reading {
+        Some(reading) => format!(
+            "{}\n{}",
+            contribution::breakdown(value, sources, total),
+            reading.details
+        ),
+        None => contribution::breakdown(value, sources, curve),
+    };
+    let bar = bar_change(stat, value, removed, sources).filter(|_| reading.is_none());
     let (cell, text, hint) = if removed {
         (
             cells.bar,
             egui::RichText::new("Removed").color(style::secondary(ui.visuals())),
             "Removed from the weapon",
         )
-    } else if let Some((base, now)) = bar_change(stat, value, removed, sources) {
+    } else if let Some((base, now)) = bar {
         style::stat_bar(ui, cells.bar, (base, now), 100);
         ui.interact(cells.bar, ui.id().with("bar"), egui::Sense::hover())
             .on_hover_text(&breakdown);
@@ -407,16 +430,21 @@ pub(super) fn update_investment_stat_value(
 /// type's rates in some cases.
 pub(super) const ROUNDS_PER_MINUTE_HASH: u32 = 0xFF66_4809;
 
+/// Magazine's definition hash. Its row reads the inspect screen's count where the weapon's stat
+/// translator gives one, since the display curve does not.
+pub(super) const MAGAZINE_HASH: u32 = 0xE6BE_4C5A;
+
 /// Draws the stat table. `order` lists the stats the game shows, by definition index, in the
 /// order it shows them. `warnings` pairs a stat definition hash with why its in-game effect
-/// differs from what the table suggests.
+/// differs from what the table suggests. `magazine` is the Magazine row's reading, where the
+/// weapon gives one.
 pub(super) fn draw_investment_stats(
     ui: &mut egui::Ui,
     values: &mut Vec<WeaponStatOverride>,
     removed_definitions: &mut Vec<u16>,
     donor: &WeaponDonor,
     (show_internal_stats, order): (bool, &[u16]),
-    warnings: &[(u32, String)],
+    (warnings, magazine): (&[(u32, String)], Option<&magazine::Reading>),
     contributions: &Contributions,
 ) {
     ui.add_space(3.0);
@@ -549,8 +577,14 @@ pub(super) fn draw_investment_stats(
             .map(|(_, warning)| warning.as_str());
         // A weapon whose stat group is unknown counts every stat as shown.
         let in_game = order.is_empty() || order.contains(&stat.definition_index);
-        let (changed, action) =
-            draw_weapon_stat_row(ui, &columns, row, (value, warning, in_game), sources);
+        let count = magazine.filter(|_| stat.definition_hash == Some(MAGAZINE_HASH));
+        let (changed, action) = draw_weapon_stat_row(
+            ui,
+            &columns,
+            row,
+            (value, warning, in_game),
+            (sources, count),
+        );
         if let Some(value) = changed {
             edited = true;
             update_investment_stat_value(

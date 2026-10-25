@@ -348,6 +348,12 @@ impl Markers {
         }
         let index = self.index.clone().expect("index was checked");
         self.refresh_labels(discovery, &index);
+        let (searched, count_slot) = sundial::ui::catalog::search_bar(
+            ui,
+            &mut self.query,
+            "Search Markers, Objects, or Hashes",
+        );
+        self.reset |= searched;
         ui.horizontal_wrapped(|ui| {
             let before = self.mode;
             ui.selectable_value(&mut self.mode, Mode::Markers, "By Marker");
@@ -355,13 +361,12 @@ impl Markers {
             if before != self.mode {
                 self.reset = true;
             }
-            ui.separator();
-            ui.label("Search");
-            ui.add(egui::TextEdit::singleline(&mut self.query).desired_width(200.0));
-            if ui.button("Clear").clicked() {
-                self.query.clear();
+            if ui
+                .checkbox(&mut self.unnamed_only, "Unnamed Only")
+                .changed()
+            {
+                self.reset = true;
             }
-            ui.checkbox(&mut self.unnamed_only, "Unnamed Only");
             ui.weak(match self.mode {
                 Mode::Markers => {
                     format!("{} names, {} recovered", index.entries.len(), index.named())
@@ -373,9 +378,14 @@ impl Markers {
                 ),
             });
         });
-        ui.separator();
         let reset = std::mem::take(&mut self.reset);
         let rows = self.rows();
+        sundial::ui::catalog::toolbar_status(
+            ui,
+            count_slot,
+            sundial::ui::catalog::result_count(rows.len()),
+        );
+        ui.separator();
         let reveal = self.reveal.take();
         let keys: Vec<u64> = match self.mode {
             Mode::Markers => rows
@@ -403,7 +413,7 @@ impl Markers {
                 .unwrap_or_else(|| format!("0x{entity:08X}"))
         };
         let action = match self.mode {
-            Mode::Markers => list.draw(
+            Mode::Markers => list.draw_body(
                 ui,
                 |ui, row, selected| {
                     let entry = &index.entries[rows[row]];
@@ -416,6 +426,7 @@ impl Markers {
                 },
                 |ui, row| {
                     let entry = &index.entries[rows[row]];
+                    ui.heading(Self::marker_label(entry, marker_context));
                     marker_detail(
                         ui,
                         &index,
@@ -425,7 +436,7 @@ impl Markers {
                     )
                 },
             ),
-            Mode::Objects => list.draw(
+            Mode::Objects => list.draw_body(
                 ui,
                 |ui, row, selected| {
                     let object = &index.objects[rows[row]];
@@ -499,12 +510,6 @@ fn marker_detail(
                 action = Some(Action::Copy(format!("0x{:08X}", entry.hash)));
             }
             ui.end_row();
-            ui.label("Name");
-            match entry.name {
-                Some(name) => ui.label(name),
-                None => ui.weak("Not recovered"),
-            };
-            ui.end_row();
             ui.label("Objects");
             ui.label(entry.objects.to_string());
             ui.end_row();
@@ -519,7 +524,7 @@ fn marker_detail(
         return action;
     }
     ui.add_space(4.0);
-    ui.weak("On These Objects");
+    ui.strong("On These Objects");
     egui::Grid::new("marker-examples")
         .num_columns(3)
         .striped(true)
@@ -564,8 +569,8 @@ fn object_detail(
 ) -> Option<Action> {
     let mut action = None;
     let label = name_of(object.entity);
+    ui.heading(&label);
     ui.horizontal_wrapped(|ui| {
-        ui.strong(&label);
         if ui
             .button(format!("0x{:08X}", object.entity))
             .on_hover_text("Copy")
@@ -578,7 +583,7 @@ fn object_detail(
         }
     });
     ui.add_space(4.0);
-    ui.weak(format!("{} markers", object.markers.len()));
+    ui.strong(count(object.markers.len(), "Marker"));
     egui::Grid::new("object-markers")
         .num_columns(3)
         .striped(true)

@@ -7,11 +7,13 @@ use sundial::package_authoring::{
         NativeAssetResourcePatch,
     },
 };
+mod connected;
 mod dynamic;
 mod status;
 
 struct Modifier {
     component: u8,
+    ability: u16,
     input: u16,
     operation: u8,
     amount: f32,
@@ -51,20 +53,27 @@ fn envelope(count: usize) -> Result<u32> {
 
 fn input(component: u8, source: u16) -> Result<u16> {
     // Source talent operands and native stock modifier roles qualify these lanes.
-    // Barrel ordinals diverge after Damage. Player Mobility needs the separate
-    // additive tier-to-point conversion below. Other player stat units stay closed.
+    // Original compiled stat programs also qualify accuracy, both projectile-speed
+    // inputs and the full recoil range. Barrel ordinals diverge after Damage.
+    // Ability consumers preserve recharge input 0 and active drain input 2. Their
+    // slot is carried separately. Player Mobility needs the additive tier-to-point
+    // conversion below. Other player stat units stay closed.
     Ok(match (component, source) {
         (0, 0..=6 | 9..=15 | 17 | 19..=21)
         | (1, 0..=4)
-        | (2, 0..=9 | 11 | 13..=16 | 22..=25 | 32)
+        | (2, 0..=9 | 11 | 13..=16 | 22..=25 | 30 | 32)
         | (3, 0..=2)
         | (4, 0)
         | (5, 0..=7 | 9)
+        | (9, 0 | 2)
+        | (10, 5 | 6)
         | (13, 1)
         | (14, 0 | 1 | 3..=11 | 13..=15 | 17 | 18) => source,
         (2, 33) => 36,
         (2, 34) => 39,
-        (2, 42..=44 | 46 | 48 | 50..=52 | 60) => source + 12,
+        (2, 38) => 43,
+        (2, 39) => 47,
+        (2, 42..=52 | 60) => source + 12,
         (2, 57 | 58) => source + 13,
         _ => anyhow::bail!(
             "Source modifier component {component} input {source} needs a native input contract"
@@ -84,6 +93,25 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
         "Source modifier pattern has companions, connections or condition masks"
     );
     let owner = graph.u32(components[0])?;
+    ensure!(
+        graph
+            .array(0x68, 40, Some(0x80800370))?
+            .iter()
+            .all(|&at| graph.u32(at + 16).ok() == Some(owner)),
+        "Source modifier graph exports another owner"
+    );
+    modifier_owner(source, &graph, owner)
+}
+
+fn modifier_owner(source: &Source, graph: &Payload, owner: u32) -> Result<Vec<Modifier>> {
+    let indices = graph
+        .array(32, 12, Some(0x80800715))?
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, at)| (graph.u32(at).ok() == Some(owner)).then_some(index))
+        .collect::<Vec<_>>();
+    ensure!(indices.len() == 1, "Source modifier owner is ambiguous");
+    let component_index = indices[0] as u64;
     ensure!(
         source.reference(owner)? == 0x80800861,
         "Source modifier owner class differs"
@@ -123,7 +151,6 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
                 && p.u32(instance + 16)? == 0x8080205F
                 && p.u64(at + 0x28)? == 0
                 && p.u64(at + 0x48)? == 1
-                && p.u16(at + 0x50)? == 0
                 && p.bytes::<3>(at + 0x35)? == [0; 3]
                 && p.bytes::<3>(at + 0x55)? == [0; 3]
                 && p.u32(at + 0x58)? == 0
@@ -133,6 +160,23 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
             "Source modifier has stateful weight, metadata or a nonreciprocal pair"
         );
         let component = p.u8(at + 0x54)?;
+        let ability = p.u16(at + 0x50)?;
+        let ability = if component == 9 {
+            // Both dispatchers select an ability reference before its numeric input.
+            // Grenade, Super and Melee retain slots 0, 1 and 2. The source controller
+            // has fewer slots, so do not carry arbitrary selectors into the native bank.
+            ensure!(
+                ability <= 2,
+                "Source modifier ability slot has no native contract"
+            );
+            ability
+        } else {
+            ensure!(
+                ability == 0,
+                "Source modifier has unexpected ability metadata"
+            );
+            u16::MAX
+        };
         let input = input(component, p.u16(at + 0x52)?)?;
         let operation = p.u8(at + 0x34)?;
         let mut value = p.f32(at + 0x30)?;
@@ -140,6 +184,14 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
             value.is_finite() && operation <= 1,
             "Unsupported source modifier operation"
         );
+        if component == 10 {
+            // Both final timing consumers multiply by min(reviver, target). Only
+            // relative factors are qualified. Base-value producers differ between builds.
+            ensure!(
+                operation == 1,
+                "Source revival input requires a relative timing multiplier"
+            );
+        }
         if component == 13 {
             ensure!(
                 operation == 0,
@@ -167,6 +219,7 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
         );
         result.push(Modifier {
             component,
+            ability,
             input,
             operation,
             amount,
@@ -178,7 +231,12 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
     let exports = graph.array(0x68, 40, Some(0x80800370))?;
     let references = graph.array(0x78, 24, Some(0x80800790))?;
     ensure!(
-        exports.len() == rows.len() * 2 + 2 && references.len() == exports.len(),
+        exports
+            .iter()
+            .filter(|&&at| graph.u32(at + 16).ok() == Some(owner))
+            .count()
+            == rows.len() * 2 + 2
+            && references.len() == exports.len(),
         "Source modifier pattern exposes additional behavior"
     );
     let mut covered = BTreeSet::new();
@@ -188,6 +246,9 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
         expected_exports.extend([(instance, row + 0x18), (instance, row + 0x38)]);
     }
     for (&export, &reference) in exports.iter().zip(&references) {
+        if graph.u32(export + 16)? != owner {
+            continue;
+        }
         let class = graph.u32(export + 12)?;
         let offset = graph.u32(export + 4)? as usize;
         let input = graph.u32(export + 8)?;
@@ -205,7 +266,7 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
                 && graph.u32(export + 36)? == 0
                 && graph.u32(reference)? == owner
                 && graph.u32(reference + 4)? == 0
-                && graph.u64(reference + 16)? == 0
+                && graph.u64(reference + 16)? == component_index
                 && (bank || row)
                 && expected_exports.contains(&(target, parameter))
                 && graph.u32(export + 32)? == p.u32(parameter + 8)?
@@ -218,6 +279,40 @@ fn modifiers(source: &Source, tag: u32) -> Result<Vec<Modifier>> {
         "Source modifier parameter exports are incomplete"
     );
     Ok(result)
+}
+
+pub(super) fn armor_attachment(source: &Source, p: &Payload, at: usize) -> Result<()> {
+    match p.u8(at + 2)? {
+        1 | 2 => Ok(()),
+        0 => {
+            // Stock armor uses the action owner for player component modifiers too.
+            // A checked host stays in the same graph as its player modifier bank.
+            // A weapon component on an armor owner still has no runtime contract.
+            let tag = p.u32(at + 16)?;
+            let graph = source.read(tag)?;
+            let owners = graph.array(32, 12, Some(0x80800715))?;
+            let rows = if owners.len() == 2 {
+                let owner = source.read(graph.u32(owners[0])?)?;
+                ensure!(
+                    matches!(owner.u32(owner.pointer(24)? - 4)?, 0x80802698 | 0x808029C3),
+                    "Source armor attachment needs another host contract"
+                );
+                status::modifier_bank(source, &graph)?
+                    .context("Source armor host has no modifier bank")?
+                    .1
+            } else {
+                modifiers(source, tag)?
+            };
+            ensure!(
+                // The native resolver queries these interfaces from the same player
+                // unit. Revival selectors still require their relative-factor contract.
+                rows.iter().all(|row| matches!(row.component, 5 | 9 | 10)),
+                "Source armor owner attachment requires player component modifiers"
+            );
+            Ok(())
+        }
+        _ => anyhow::bail!("Source armor attachment has an unsupported target"),
+    }
 }
 
 pub(super) fn read(
@@ -255,17 +350,52 @@ pub(super) fn read(
         "Source attachment owner class differs"
     );
     let owner = source.read(owner_tag)?;
+    if owner.u32(owner.pointer(24)? - 4)? == 0x808029C3 {
+        let (tag, patches) = connected::read(source, native, &source_graph)?;
+        return Ok(vec![(
+            attachment(p, at, tag, None)?,
+            NativeAssetPatch {
+                action_index: 0,
+                source_graph: tag,
+                patches,
+                appends: Vec::new(),
+                remove_owners: Vec::new(),
+            },
+        )]);
+    }
     let (tag, patches, appends, hud_status) = if owner.u32(owner.pointer(24)? - 4)? == 0x80802698 {
+        if p.u8(at + 2)? == 0 {
+            armor_attachment(source, p, at)?;
+        }
         ensure!(
-            p.u8(at + 2)? == 1,
-            "Source status must attach to the player"
+            p.u8(at + 2)? <= 1,
+            "Source status must attach to a qualified player host"
         );
         status::read(source, native, &source_graph, &owner, owner_tag)?
     } else {
         let (tag, patches) = modifier_patch(native, &modifiers(source, source_tag)?)?;
         (tag, patches, Vec::new(), None)
     };
-    let action = Action::Attach {
+    let action = attachment(p, at, tag, hud_status)?;
+    Ok(vec![(
+        action,
+        NativeAssetPatch {
+            action_index: 0,
+            source_graph: tag,
+            patches,
+            appends,
+            remove_owners: Vec::new(),
+        },
+    )])
+}
+
+fn attachment(
+    p: &Payload,
+    at: usize,
+    tag: u32,
+    hud_status: Option<sundial::package_authoring::sandbox_perk::program::HudStatus>,
+) -> Result<Action> {
+    Ok(Action::Attach {
         asset: Asset {
             graph: tag,
             hud_status,
@@ -278,17 +408,7 @@ pub(super) fn read(
         },
         keys: [0x811C9DC5; 2],
         float_bits: [0; 4],
-    };
-    Ok(vec![(
-        action,
-        NativeAssetPatch {
-            action_index: 0,
-            source_graph: tag,
-            patches,
-            appends,
-            remove_owners: Vec::new(),
-        },
-    )])
+    })
 }
 
 fn modifier_patch(
@@ -306,6 +426,15 @@ fn modifier_patch(
         "Native modifier envelope has companions or connections"
     );
     let owner = graph.u32(owners[0])?;
+    Ok((tag, modifier_patches(native, &graph, owner, rows)?))
+}
+
+fn modifier_patches(
+    native: &mut Reader,
+    graph: &Payload,
+    owner: u32,
+    rows: &[Modifier],
+) -> Result<Vec<NativeAssetResourcePatch>> {
     let target = native.tag(owner, Some(0x80809C36))?;
     let settings = target.pointer(24)?;
     ensure!(
@@ -346,7 +475,7 @@ fn modifier_patch(
         let mut bytes = expected;
         bytes[40..44].copy_from_slice(&row.amount.to_le_bytes());
         bytes[44] = row.operation;
-        bytes[72..74].copy_from_slice(&u16::MAX.to_le_bytes());
+        bytes[72..74].copy_from_slice(&row.ability.to_le_bytes());
         bytes[74..76].copy_from_slice(&row.input.to_le_bytes());
         bytes[76] = row.component;
         patches.push(NativeAssetResourcePatch {
@@ -361,5 +490,5 @@ fn modifier_patch(
             imported_particle: None,
         });
     }
-    Ok((tag, patches))
+    Ok(patches)
 }

@@ -123,9 +123,18 @@ pub fn plain_bank(p: &Payload) -> Result<(usize, usize, Vec<usize>)> {
             p.u32(row + 8)? == 0 && p.0[row + 16..row + 72].iter().all(|v| *v == 0),
             "native channel bank contains special defaults"
         );
-        let dependencies = p.array(row + 80, 8, Some(0x8080000B))?;
+        // The mask is one 32-bit word per 32 declarations, and a channel without dependencies
+        // selects only its own declaration.
+        let words = p
+            .array(row + 80, 4, Some(0x8080000B))?
+            .into_iter()
+            .map(|at| p.u32(at))
+            .collect::<Result<Vec<_>>>()?;
         ensure!(
-            dependencies.len() == 1 && p.u64(dependencies[0])? == 1u64 << i,
+            words.len() == rows.len().div_ceil(32)
+                && words.iter().enumerate().all(|(word, bits)| {
+                    *bits == if word == i / 32 { 1 << (i % 32) } else { 0 }
+                }),
             "native channel has dependencies"
         );
     }

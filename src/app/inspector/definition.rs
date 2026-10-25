@@ -37,6 +37,8 @@ mod progression;
 mod reverse;
 mod runtime;
 mod state;
+#[cfg(test)]
+mod tests;
 mod unlocks;
 
 use collections::{

@@ -11,10 +11,6 @@ use super::*;
 use std::fmt::Write as _;
 use std::sync::mpsc;
 
-mod parallel;
-mod resize;
-mod review;
-
 const BUILDS: (u32, &str) = (0xA25B_8F8F, "Arc Logic");
 /// A Legendary whose game data carries no ammo type, so Collections refuses it without one.
 const NO_AMMO: (u32, &str) = (0x90D4_2800, "Rose");

@@ -435,11 +435,59 @@ impl SundialApp {
             } else if discard_and_exit {
                 if let Some(message) = self.package_authoring_exit_blocker() {
                     self.set_status(message, true);
-                } else {
+                } else if self.confirm_authoring_work_saved() {
                     self.exit_confirmed = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
+        }
+    }
+
+    /// Asked on the way out while Parhelion work kept outside its recipe, such as perk drafts,
+    /// could not be saved. Trying again exits once the work saves.
+    pub(super) fn draw_unsaved_authoring_work_confirmation(&mut self, ctx: &egui::Context) {
+        if self.confirmation != Some(ConfirmationDialog::UnsavedAuthoringWork) {
+            return;
+        }
+        let reason = self.unsaved_authoring_work.clone().unwrap_or_default();
+        let mut retry = false;
+        let mut exit = false;
+        let mut cancel = false;
+        let response = egui::Modal::new("unsaved_authoring_work".into()).show(ctx, |ui| {
+            ui.heading("Unsaved Parhelion Work");
+            ui.add_space(6.0);
+            ui.label(reason.as_str());
+            ui.label("Exiting now loses the edits made since the last save.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Try Again").clicked() {
+                    retry = true;
+                }
+                if ui.button("Exit Anyway").clicked() {
+                    exit = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        cancel |= response.should_close();
+        if retry {
+            self.confirmation = None;
+            exit = self.confirm_authoring_work_saved();
+        } else if exit || cancel {
+            self.confirmation = None;
+        }
+        if exit {
+            self.unsaved_authoring_work = None;
+            if let Some(message) = self.package_authoring_exit_blocker() {
+                self.set_status(message, true);
+            } else {
+                self.exit_confirmed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if cancel {
+            self.unsaved_authoring_work = None;
         }
     }
 }

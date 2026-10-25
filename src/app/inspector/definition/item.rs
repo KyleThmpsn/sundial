@@ -122,12 +122,9 @@ pub(super) fn draw_hash_item_matches(
     let matches = content.matches;
     if matches.item_package_metadata.is_some() || matches.item.is_some() {
         ui.add_space(4.0);
-        if page == ItemPage::Preview {
-            preview::draw(ui, &content, true, false);
-        }
         match page {
-            ItemPage::Overview => draw_overview_with_model(ui, &content),
-            ItemPage::Preview => {}
+            ItemPage::Overview => with_model(ui, &content, |ui| draw_overview(ui, &content)),
+            ItemPage::Preview => with_model(ui, &content, |ui| preview::draw(ui, &content)),
             ItemPage::Sockets => draw_sockets_page(ui, &content),
             ItemPage::Runtime => draw_runtime_page(ui, &content, runtime),
             ItemPage::Technical => draw_technical_page(ui, &content, runtime),
@@ -156,30 +153,37 @@ pub(super) fn draw_hash_item_matches(
     }
 }
 
-/// The narrowest the Overview's details get before the model gives up its column.
-const OVERVIEW_MIN_WIDTH: f32 = 380.0;
+/// The narrowest a page's details get before the model gives up its column.
+const DETAILS_MIN_WIDTH: f32 = 380.0;
 
-/// The Overview with the item's model in a column beside it, when the window has room for both.
-fn draw_overview_with_model(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
+/// A page's details with the item's model in a column beside them, or under them when the window
+/// is too narrow for both. An item with no model shows only the details.
+fn with_model(
+    ui: &mut egui::Ui,
+    content: &ItemInspection<'_>,
+    details: impl FnOnce(&mut egui::Ui),
+) {
+    if !preview::available(content) {
+        details(ui);
+        return;
+    }
     let width = ui.available_width();
     let side = (width * 0.45).clamp(280.0, 560.0);
     let gap = ui.spacing().item_spacing.x * 2.0;
-    if width - side - gap < OVERVIEW_MIN_WIDTH || !preview::available(content) {
-        draw_overview(ui, content);
+    if width - side - gap < DETAILS_MIN_WIDTH {
+        details(ui);
+        let side = width.min(560.0);
+        preview::inline(ui, content, egui::vec2(side, side * 0.75));
         return;
     }
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(width - side - gap);
-            draw_overview(ui, content);
+            details(ui);
         });
         ui.add_space(gap - ui.spacing().item_spacing.x);
         ui.vertical(|ui| {
             preview::inline(ui, content, egui::vec2(side, side * 0.75));
         });
     });
-}
-
-pub(super) fn draw_preview_button(ui: &mut egui::Ui, content: ItemInspection<'_>) {
-    preview::draw(ui, &content, false, true);
 }

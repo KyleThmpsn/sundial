@@ -4,10 +4,13 @@
 //! takes probes placed and valued from the converted level instead.
 //!
 //! Probes stand [`STANDING`] meters above the level's floors, near its spawn points and inside its
-//! structure clusters: the spawn points themselves, then the floor points farthest from every
-//! probe chosen so far. A campaign mission keeps its player starts at its beginning, so probes near
-//! the spawns alone left every later stretch without one, and the objects there took the donor's
-//! open-ground probe, bright even indoors. A point
+//! structure clusters: up to a [`SPAWN_SHARE`] of them at spawn points, then the floor points
+//! farthest from every probe chosen so far, near the spawn points and the squads' spawn points
+//! until [`NEAR_SPACING`] covers them and across the clusters after. Nightfall's clusters span
+//! about 15 by 20 km of backdrop, and probes spread across them left its canyon 76 m from the
+//! nearest. A campaign mission keeps its player starts at its
+//! beginning, so probes near the spawns alone left every later stretch without one, and the
+//! objects there took the donor's open-ground probe, bright even indoors. A point
 //! whose rays meet the back of a face more often than [`INSIDE`] lies inside geometry and is
 //! skipped. Each probe's value is the mean light arriving from [`RAYS`] directions over the whole
 //! sphere: an escaping ray brings the sky, the upper quarter of the lightmap's ambient light, and a
@@ -23,7 +26,7 @@
 use super::{bounds, cross, dot, sub, unit};
 use crate::halo_reach::level::{Level, lightmap::Atlas};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// How high above a floor a probe stands, in meters, about a player's chest.
 const STANDING: f32 = 1.2;
@@ -34,6 +37,15 @@ const FLOOR_FACING: f32 = 0.7;
 /// How far beyond the spawn points' bounds probes may stand, horizontally and vertically, in
 /// meters.
 const REGION_MARGIN: [f32; 3] = [32., 32., 16.];
+/// One in this many probes at most stands at a spawn point. Taking every probe there left
+/// Paradiso's 202 all on its 202 spawn points, and its caves drew objects by open-ground probes.
+const SPAWN_SHARE: usize = 4;
+/// The spacing the floors near the spawn points fill to before probes spread across the
+/// structure clusters, in meters. A Forge World variant's clusters span the whole 27 km world,
+/// where probes spread by distance alone would leave the variant's arena almost none.
+const NEAR_SPACING: f32 = 6.;
+/// The grid cell size squad spawn points mark nearby floor in, in meters.
+const NEAR_CELL: f32 = 8.;
 /// How far a ray looks for a face, in meters.
 const REACH: f32 = 120.;
 /// The cell size of the face grid, in meters.
@@ -56,7 +68,7 @@ const LOBE_RESPONSE: f32 = 0.75;
 /// The share of probes, those whose rays escape most often, that count as open.
 const OPEN_SHARE: f32 = 0.1;
 /// Destiny's sky visibility on open ground, and the range the map's values keep to.
-const OPEN_VISIBILITY: f32 = 0.505;
+pub(super) const OPEN_VISIBILITY: f32 = 0.505;
 const VISIBILITY_RANGE: [f32; 2] = [0.04, 0.8];
 const LUMINANCE: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
@@ -340,19 +352,22 @@ pub(super) fn lights(level: &Level, points: &[[f32; 3]]) -> Vec<f32> {
 }
 
 /// `count` probes for `level`, each a position in the map's coordinates (the level's moved by
-/// `offset`) and a sky visibility, and a report. `spawns` are the level's spawn points and
-/// `regions` the boxes of its structure clusters, in its own coordinates. None when the level has
-/// no spawn points or no floor near them.
+/// `offset`) and a sky visibility, the open probes' typical light that [`OPEN_VISIBILITY`] stands
+/// for, and a report. `spawns` are the level's spawn points, `squads` its AI squads' spawn points
+/// and `regions` the boxes of its structure clusters, in its own coordinates. None when the level
+/// has no spawn points or no floor near them.
 pub(super) fn probes(
     level: &Level,
     spawns: &[[f32; 3]],
+    squads: &[[f32; 3]],
     regions: &[([f32; 3], [f32; 3])],
     count: usize,
     offset: [f32; 3],
-) -> (Vec<[f32; 4]>, Value) {
+) -> (Vec<[f32; 4]>, Option<f32>, Value) {
     if spawns.is_empty() || count == 0 {
         return (
             Vec::new(),
+            None,
             json!({"reason": "The level has no spawn points or the donor no probes"}),
         );
     }
@@ -414,57 +429,54 @@ pub(super) fn probes(
     };
     let mut chosen = Vec::with_capacity(count);
     let mut rejected = 0usize;
-    for spawn in spawns {
-        if chosen.len() == count {
-            break;
-        }
-        let point = [spawn[0], spawn[1], spawn[2] + STANDING];
-        if usable(point) {
-            chosen.push(point);
-        } else {
-            rejected += 1;
-        }
-    }
-    let seeded = chosen.len();
-    // Farthest point sampling over the candidates.
-    let distance = |a: [f32; 3], b: [f32; 3]| {
-        let d = sub(a, b);
-        dot(d, d)
-    };
-    let mut nearest = candidates
+    let standing = spawns
         .iter()
-        .map(|&c| {
-            chosen
-                .iter()
-                .map(|&p| distance(c, p))
-                .fold(f32::INFINITY, f32::min)
-        })
+        .map(|spawn| [spawn[0], spawn[1], spawn[2] + STANDING])
         .collect::<Vec<_>>();
-    while chosen.len() < count {
-        let Some((index, _)) = nearest
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| **d >= 0.)
-            .max_by(|a, b| a.1.total_cmp(b.1))
-        else {
-            break;
-        };
-        let point = candidates[index];
-        nearest[index] = -1.;
-        if !usable(point) {
-            rejected += 1;
-            continue;
-        }
-        chosen.push(point);
-        for (slot, &candidate) in nearest.iter_mut().zip(&candidates) {
-            if *slot >= 0. {
-                *slot = slot.min(distance(candidate, point));
+    let seeds = count.div_ceil(SPAWN_SHARE).max(1);
+    spread(&mut chosen, &standing, seeds, 0., &usable, &mut rejected);
+    let seeded = chosen.len();
+    // Near play: within the spawn points' bounds, or within the margin of a squad's spawn point,
+    // to the nearest grid cell. A mission's player starts hold only its beginning, and its
+    // squads stand along the rest of the way.
+    let cell = |point: [f32; 3]| point.map(|v| (v / NEAR_CELL).floor() as i32);
+    let mut squad_cells = HashSet::<[i32; 3]>::new();
+    for point in squads {
+        let low = cell(std::array::from_fn(|k| point[k] - REGION_MARGIN[k]));
+        let high = cell(std::array::from_fn(|k| {
+            point[k] + REGION_MARGIN[k] + STANDING
+        }));
+        for x in low[0]..=high[0] {
+            for y in low[1]..=high[1] {
+                for z in low[2]..=high[2] {
+                    squad_cells.insert([x, y, z]);
+                }
             }
         }
     }
+    let (near_low, near_high) = spawn_region;
+    let near = candidates
+        .iter()
+        .copied()
+        .filter(|&point| {
+            (0..3).all(|k| point[k] >= near_low[k] && point[k] <= near_high[k])
+                || squad_cells.contains(&cell(point))
+        })
+        .collect::<Vec<_>>();
+    spread(
+        &mut chosen,
+        &near,
+        count,
+        NEAR_SPACING,
+        &usable,
+        &mut rejected,
+    );
+    let near_spawns = chosen.len() - seeded;
+    spread(&mut chosen, &candidates, count, 0., &usable, &mut rejected);
     if chosen.is_empty() {
         return (
             Vec::new(),
+            None,
             json!({"reason": "No usable floor point near the spawn points", "candidates": candidates.len(), "rejected": rejected}),
         );
     }
@@ -520,6 +532,7 @@ pub(super) fn probes(
         "probes": probes.len(),
         "placed": placed,
         "spawn_seeds": seeded,
+        "near_spawns": near_spawns,
         "candidates": candidates.len(),
         "rejected": rejected,
         "faces": scene.faces.len(),
@@ -542,5 +555,56 @@ pub(super) fn probes(
             }))
             .collect::<Vec<_>>(),
     });
-    (probes, report)
+    (probes, Some(reference), report)
+}
+
+/// Adds points of `pool` to `chosen` by farthest point sampling, each the one farthest from every
+/// point chosen, until `chosen` holds `count` or the farthest lies within `spacing` meters of one.
+/// Points `usable` refuses count as `rejected`.
+fn spread(
+    chosen: &mut Vec<[f32; 3]>,
+    pool: &[[f32; 3]],
+    count: usize,
+    spacing: f32,
+    usable: &dyn Fn([f32; 3]) -> bool,
+    rejected: &mut usize,
+) {
+    let distance = |a: [f32; 3], b: [f32; 3]| {
+        let d = sub(a, b);
+        dot(d, d)
+    };
+    let mut nearest = pool
+        .iter()
+        .map(|&c| {
+            chosen
+                .iter()
+                .map(|&p| distance(c, p))
+                .fold(f32::INFINITY, f32::min)
+        })
+        .collect::<Vec<_>>();
+    while chosen.len() < count {
+        let Some((index, &farthest)) = nearest
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| **d >= 0.)
+            .max_by(|a, b| a.1.total_cmp(b.1))
+        else {
+            break;
+        };
+        if farthest < spacing * spacing {
+            break;
+        }
+        let point = pool[index];
+        nearest[index] = -1.;
+        if !usable(point) {
+            *rejected += 1;
+            continue;
+        }
+        chosen.push(point);
+        for (slot, &candidate) in nearest.iter_mut().zip(pool) {
+            if *slot >= 0. {
+                *slot = slot.min(distance(candidate, point));
+            }
+        }
+    }
 }

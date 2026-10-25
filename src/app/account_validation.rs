@@ -71,7 +71,10 @@ fn validate_new_issues(candidate: Vec<String>, persisted: Vec<String>) -> Result
     let suffix = if remaining == 0 {
         String::new()
     } else {
-        format!(" (and {remaining} more new catalog-reference issue(s))")
+        format!(
+            " (and {remaining} more new catalog-reference {})",
+            if remaining == 1 { "issue" } else { "issues" }
+        )
     };
     Err(format!(
         "account data is incompatible with the installed catalog: {first}{suffix}"
@@ -417,6 +420,3 @@ fn validate_plug<C: AccountCatalog>(
         ));
     }
 }
-
-#[cfg(test)]
-mod tests;

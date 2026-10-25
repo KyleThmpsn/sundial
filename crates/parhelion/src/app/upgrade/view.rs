@@ -161,7 +161,7 @@ fn path(ui: &mut egui::Ui, label: &str, value: &Path) {
 fn actions(ui: &mut egui::Ui, state: &UpgradeUi, action: &mut Action) {
     ui.spacing_mut().button_padding = egui::vec2(12.0, 7.0);
     if state.busy() {
-        ui.add_enabled(false, egui::Button::new("Please Wait…"));
+        ui.add_enabled(false, egui::Button::new("Working…"));
         return;
     }
     if state.error.is_some() {

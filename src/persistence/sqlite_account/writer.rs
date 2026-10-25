@@ -35,12 +35,6 @@ pub(crate) struct SqliteRestoreReceipt {
     pub(crate) safety_backup: PathBuf,
 }
 
-pub(crate) fn save(
-    document: &mut SqliteAccountDocument,
-) -> Result<SqliteSaveReceipt, SqliteAccountError> {
-    save_with_backup(document, None)
-}
-
 pub(crate) fn save_checked(
     document: &mut SqliteAccountDocument,
     require_closed: impl FnMut() -> Result<(), String>,
@@ -48,6 +42,7 @@ pub(crate) fn save_checked(
     save_with_backup_checked(document, None, require_closed)
 }
 
+#[cfg(test)]
 pub(super) fn save_with_backup(
     document: &mut SqliteAccountDocument,
     backup: Option<PathBuf>,
@@ -158,18 +153,32 @@ pub(crate) fn validate_backup(backup: &Path) -> Result<(), SqliteAccountError> {
     compatible_backup_revision(backup).map(|_| ())
 }
 
+#[cfg(test)]
 pub(crate) fn restore_backup_safely(
     destination: &Path,
     backup: &Path,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-    restore_backup_safely_with_path(destination, backup, None)
+    restore_backup_checked(destination, backup, || Ok(()))
+}
+
+/// Replaces the account with `backup` after keeping an integrity-checked safety snapshot of it.
+/// Refused whenever `require_closed` reports the game running: before the snapshot, and again just
+/// before the restore, since a game started while the snapshot is written must keep its database.
+pub(crate) fn restore_backup_checked(
+    destination: &Path,
+    backup: &Path,
+    require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+    restore_backup_safely_with_path(destination, backup, None, require_closed)
 }
 
 fn restore_backup_safely_with_path(
     destination: &Path,
     backup: &Path,
     safety_backup: Option<PathBuf>,
+    mut require_closed: impl FnMut() -> Result<(), String>,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     compatible_backup_revision(backup)?;
     let safety_backup = if let Some(safety_backup) = safety_backup {
         create_integrity_checked_snapshot(destination, &safety_backup)?;
@@ -181,6 +190,7 @@ fn restore_backup_safely_with_path(
     };
     let expected =
         super::snapshot::capture_path(&safety_backup).map_err(SqliteAccountError::Backup)?;
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     super::snapshot::restore(destination, &expected, backup).map_err(|error| {
         SqliteAccountError::Backup(format!(
             "Could not restore the database: {error}. The recovery snapshot is at {}",

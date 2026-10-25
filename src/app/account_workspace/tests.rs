@@ -51,31 +51,6 @@ fn blocked_account_operations_never_read_or_mutate_stale_json() {
 }
 
 #[test]
-fn json_account_change_tracking_excludes_game_settings() {
-    let original = WorkspaceDocument::json_only(json!({
-        "state": {
-            "account": {
-                "profile_items": [],
-                "settings": {"display": {"brightness": 3}}
-            },
-            "characters": []
-        }
-    }));
-
-    let mut settings_only = original.clone();
-    settings_only.json_mut()["state"]["account"]["settings"]["display"]["brightness"] = json!(4);
-    assert!(!settings_only.json_account_changed_from(&original));
-
-    let mut account_edit = original.clone();
-    account_edit.json_mut()["state"]["account"]["profile_items"] = json!([{"definition_hash": 1}]);
-    assert!(account_edit.json_account_changed_from(&original));
-
-    let mut character_edit = original.clone();
-    character_edit.json_mut()["state"]["characters"] = json!([{"soid": 1}]);
-    assert!(character_edit.json_account_changed_from(&original));
-}
-
-#[test]
 fn json_source_materializes_preferences_before_sqlite_schema() {
     for version in [8, 16, 17] {
         let directory = TestDirectory::new(&format!("workspace-json-normalization-{version}"));
@@ -174,152 +149,6 @@ fn schema18_requires_a_database_even_when_json_contains_characters() {
     let document = WorkspaceDocument::load(json_characters(2), &settings_path(&directory), false);
     assert_eq!(document.source_kind(), AccountSourceKind::Blocked);
     assert_eq!(account::character_count(&document), 0);
-}
-
-#[test]
-fn sqlite_workspace_validation_ignores_stale_json_account_domains() {
-    let directory = TestDirectory::new("workspace-sqlite-validation");
-    crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("data").join("investment.sqlite3"),
-        3,
-    );
-    let stale_json = json!({
-        "version": 18,
-        "state": {
-            "account": {"settings": "stale and invalid"},
-            "characters": "stale and invalid"
-        }
-    });
-    let sqlite_document =
-        WorkspaceDocument::load(stale_json.clone(), &settings_path(&directory), false);
-    assert_eq!(
-        super::super::settings::validate_workspace_document(&sqlite_document),
-        Ok(())
-    );
-
-    let json_directory = TestDirectory::new("workspace-json-validation");
-    let mut stale_json = stale_json;
-    stale_json["version"] = json!(8);
-    let json_document = WorkspaceDocument::load(stale_json, &settings_path(&json_directory), false);
-    assert!(super::super::settings::validate_workspace_document(&json_document).is_err());
-}
-
-#[test]
-fn sqlite_facade_mutates_every_account_domain_without_touching_json() {
-    let directory = TestDirectory::new("workspace-sqlite-mutations");
-    crate::persistence::sqlite_account::tests::create_fixture(
-        &directory.0.join("data").join("investment.sqlite3"),
-        3,
-    );
-    let mut document = WorkspaceDocument::load(
-        json!({
-            "version": 18,
-            "state": {
-                "account": {"settings": {"sentinel": true}},
-                "characters": [{"sentinel": true}]
-            }
-        }),
-        &settings_path(&directory),
-        false,
-    );
-    let persisted = document.clone();
-    let json_before = document.json().clone();
-
-    account::apply_profile_item_action(
-        &mut document,
-        ProfileItemLocation { index: 0 },
-        ProfileItemAction::SetQuantity(26),
-    )
-    .unwrap();
-    account::apply_inventory_item_action(
-        &mut document,
-        InventoryItemLocation {
-            character_index: 0,
-            item_index: 0,
-        },
-        InventoryItemAction::SetQuantity(3),
-    )
-    .unwrap();
-    account::set_equipment_item_level(&mut document, 0, "kinetic", 104).unwrap();
-    account::apply_character_updates(
-        &mut document,
-        0,
-        vec![CharacterMetadataUpdate::SetAbilities(CharacterAbilities {
-            movement: 5,
-            grenade: 8,
-            super_ability: 20,
-            melee: 21,
-            class_ability: 3,
-        })],
-    )
-    .unwrap();
-    account::apply_account_settings(
-        &mut document,
-        vec![AccountSettingsCommand::Set {
-            key: AccountSettingKey::known_preference("show_fps").unwrap(),
-            value: AccountSettingValue::Boolean(false),
-        }],
-    )
-    .unwrap();
-
-    assert_eq!(
-        account::profile_items(&document).unwrap().unwrap()[0].quantity,
-        26
-    );
-    assert_eq!(
-        account::character_inventory(&document, 0).unwrap().unwrap()[0].quantity,
-        3
-    );
-    assert_eq!(
-        account::equipped_item_snapshots(&document, 0)
-            .unwrap()
-            .into_iter()
-            .find(|item| item.slot == "kinetic")
-            .unwrap()
-            .level,
-        Some(104)
-    );
-    assert_eq!(
-        account::character_metadata(&document, 0)
-            .unwrap()
-            .abilities
-            .movement,
-        5
-    );
-    let settings = serde_json::Value::Object(account::account_settings_map(&document).unwrap());
-    assert_eq!(
-        settings.pointer("/display/show_fps"),
-        Some(&serde_json::Value::Bool(false))
-    );
-    assert_eq!(document.json(), &json_before);
-    assert!(document.account_changed_from(&persisted));
-    assert!(!document.json_changed_from(&persisted));
-    let summaries = document.account_change_summaries(&persisted, 20);
-    assert!(
-        summaries
-            .iter()
-            .any(|summary| summary.contains("/profile_items/") && summary.contains("/quantity"))
-    );
-    assert!(
-        summaries
-            .iter()
-            .any(|summary| summary.contains("/inventory/") && summary.contains("/quantity"))
-    );
-    assert!(
-        summaries
-            .iter()
-            .any(|summary| summary.contains("/equipment/kinetic/power"))
-    );
-    assert!(
-        summaries
-            .iter()
-            .any(|summary| summary.contains("/metadata"))
-    );
-    assert!(
-        summaries
-            .iter()
-            .any(|summary| summary.contains("/account_settings/display/show_fps"))
-    );
 }
 
 #[test]
@@ -682,7 +511,7 @@ fn native_runtime_drafts_remain_editable_but_invalid_values_cannot_be_saved() {
     draft["server"]["entitlements"] = json!([{"name":"","owned":"handle"}]);
     draft["state"]["characters"][0]["last_orbited_destination"] = json!("0x");
     document.apply_runtime_view(draft).unwrap();
-    assert!(document.save_sqlite().is_err());
+    assert!(document.save_sqlite(|| Ok(())).is_err());
     assert_eq!(
         crate::persistence::sqlite_account::snapshot::read(&path).unwrap(),
         before

@@ -28,52 +28,6 @@ fn click(app: &mut SundialApp, ctx: &egui::Context, position: egui::Pos2) {
     }
 }
 
-#[test]
-fn profile_and_dismantle_deletions_record_one_edit_and_undo_without_a_frame() {
-    for runtime in 0..3 {
-        let sqlite = runtime == 1;
-        for dismantle in [false, true] {
-            let directory = TestDirectory::new("profile-action-history");
-            let mut app = profile_for_runtime(&directory, runtime);
-            seed_profile(&mut app, dismantle);
-            app.persisted_document = app.document.clone();
-            let original = app.document.clone();
-            let ctx = egui::Context::default();
-            ctx.enable_accesskit();
-            frame(&mut app, &ctx, vec![]);
-            let output = frame(&mut app, &ctx, vec![]);
-            if dismantle {
-                click(&mut app, &ctx, button(&output, "Dismantle Rewards").0);
-            }
-            let output = frame(&mut app, &ctx, vec![]);
-            let label = if dismantle {
-                "Delete dismantle policy"
-            } else {
-                "Delete shared item"
-            };
-            let (position, enabled) = button(&output, label);
-            assert!(enabled, "{sqlite} {dismantle}: {label}");
-            assert!(contains_text(&output, "Invalid Item"));
-            click(&mut app, &ctx, position);
-            assert_eq!(
-                app.undo_history.len(),
-                1,
-                "sqlite={sqlite}, dismantle={dismantle}, status={}",
-                app.status
-            );
-            assert!(app.document_repaint_pending);
-            assert!(app.dirty);
-            assert_ne!(app.document, original);
-            app.undo();
-            assert_eq!(app.document, original);
-            assert!(!app.dirty);
-            app.redo();
-            assert_ne!(app.document, original);
-            assert_eq!(app.undo_history.len(), 1);
-        }
-    }
-}
-
 fn profile_for_runtime(directory: &TestDirectory, runtime: u8) -> SundialApp {
     let mut app = for_source(directory, runtime == 1);
     if runtime == 2 {
@@ -87,41 +41,6 @@ fn profile_for_runtime(directory: &TestDirectory, runtime: u8) -> SundialApp {
         );
     }
     app
-}
-
-fn seed_profile(app: &mut SundialApp, dismantle: bool) {
-    // Keep one unknown item visible so deletion covers the recovery card too.
-    if dismantle {
-        for reward in account_workspace::dismantle_rewards(&app.document)
-            .unwrap()
-            .unwrap_or_default()
-            .into_iter()
-            .rev()
-        {
-            account_workspace::apply_dismantle_reward_action(
-                &mut app.document,
-                reward.location,
-                inventory::DismantleRewardAction::Remove,
-            )
-            .unwrap();
-        }
-        account_workspace::add_dismantle_reward(&mut app.document, 999).unwrap();
-    } else {
-        for item in account_workspace::profile_items(&app.document)
-            .unwrap()
-            .unwrap_or_default()
-            .into_iter()
-            .rev()
-        {
-            account_workspace::apply_profile_item_action(
-                &mut app.document,
-                item.location,
-                inventory::ProfileItemAction::Remove,
-            )
-            .unwrap();
-        }
-        account_workspace::add_profile_item(&mut app.document, 999, 2).unwrap();
-    }
 }
 
 fn reward_catalog() -> Manifest {
@@ -149,49 +68,6 @@ fn reward_catalog() -> Manifest {
             },
         )]),
     )
-}
-
-#[test]
-fn dawn_reward_queue_cancel_records_one_edit_and_supports_undo_redo() {
-    let directory = TestDirectory::new("dawn-reward-cancel-ui");
-    let mut app = profile_for_runtime(&directory, 2);
-    app.manifest = reward_catalog();
-    app.document
-        .dawn_account_mut()
-        .unwrap()
-        .queue_currency(
-            0,
-            3159615086,
-            50,
-            &crate::catalog::InventoryMetadata {
-                scope: crate::catalog::InventoryScope::Profile,
-                native_bucket_id: 0,
-                stackability: crate::catalog::ItemStackability::Stackable,
-                max_stack_size: Some(250000),
-                bucket_capacity: Some(1),
-            },
-        )
-        .unwrap();
-    app.persisted_document = app.document.clone();
-    let original = app.document.clone();
-    let ctx = egui::Context::default();
-    ctx.enable_accesskit();
-    frame(&mut app, &ctx, vec![]);
-    let output = frame(&mut app, &ctx, vec![]);
-    click(&mut app, &ctx, button(&output, "Reward Queue").0);
-    let output = frame(&mut app, &ctx, vec![]);
-    let (position, enabled) = button(&output, "Cancel");
-    assert!(enabled);
-    click(&mut app, &ctx, position);
-    assert!(app.document.dawn_account().unwrap().reward_debts()[0].delivered);
-    assert!(app.dirty);
-    assert_eq!(app.undo_history.len(), 1);
-    app.undo();
-    assert_eq!(app.document, original);
-    assert!(!app.dirty);
-    app.redo();
-    assert!(app.document.dawn_account().unwrap().reward_debts()[0].delivered);
-    assert_eq!(app.undo_history.len(), 1);
 }
 
 #[test]

@@ -632,37 +632,6 @@ fn ability_slot_bits_and_radar_range_are_named_from_the_perks_that_set_them() {
     }
 }
 
-/// Every client-recovered key name must hash to the key it is filed under. The names came
-/// from matching FNV-1 hashes in client memory, so this is the same check that found them
-/// and it fails loudly if an entry is ever mistyped.
-#[test]
-fn client_recovered_key_names_hash_to_their_keys() {
-    for (hash, name) in super::fields::keys::CLIENT_NAMES {
-        assert_eq!(crate::hash::fnv1_name_hash(name), *hash, "{name}");
-    }
-}
-
-/// Every named key whose evidence cites an engine name must hash from that name, whether the
-/// name came from the client scan or from hashing the checking perks' own words.
-#[test]
-fn engine_names_cited_as_key_evidence_hash_to_their_keys() {
-    let mut cited = 0;
-    for (_, _, entries) in super::fields::keys::SITES {
-        for key in *entries {
-            let Some(rest) = key.evidence.strip_prefix("The engine name ") else {
-                continue;
-            };
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
-                .collect();
-            assert_eq!(crate::hash::fnv1_name_hash(&name), key.hash, "{name}");
-            cited += 1;
-        }
-    }
-    assert!(cited > 0, "no key cites an engine name");
-}
-
 /// Every edit allocates its target afresh rather than writing through one that another node
 /// may share, so each one leaves the allocation it replaced behind. An authored program is
 /// stored as its block list, and `validate` counts every block against the allocation cap,

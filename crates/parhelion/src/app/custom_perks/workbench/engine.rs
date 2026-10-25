@@ -101,8 +101,10 @@ impl EngineCatalog {
                 }
                 let previous = self.view;
                 // Most used first. Markers read every object in the game, so they come last.
-                ui.horizontal_wrapped(|ui| {
-                    if experimental {
+                // Without experimental features Behavior Kinds is the only view, so there are
+                // no tabs.
+                if experimental {
+                    ui.horizontal_wrapped(|ui| {
                         if ui
                             .selectable_label(
                                 matches!(
@@ -120,9 +122,7 @@ impl EngineCatalog {
                         }
                         ui.selectable_value(&mut self.view, View::Assets, "Objects and Effects");
                         ui.selectable_value(&mut self.view, View::Perks, "Perk Effects");
-                    }
-                    ui.selectable_value(&mut self.view, View::Kinds, "Behavior Kinds");
-                    if experimental {
+                        ui.selectable_value(&mut self.view, View::Kinds, "Behavior Kinds");
                         ui.selectable_value(&mut self.view, View::Markers, "Markers");
                         crate::app::style::more_menu(ui, "Catalog", |ui| {
                             if ui.button("Scan Details…").clicked() {
@@ -140,8 +140,8 @@ impl EngineCatalog {
                                 ui.close();
                             }
                         });
-                    }
-                });
+                    });
+                }
                 if matches!(
                     self.view,
                     View::Scripts | View::Components | View::Paths | View::References
@@ -156,12 +156,6 @@ impl EngineCatalog {
                             ui.selectable_value(&mut self.view, view, label);
                         }
                     });
-                }
-                if (browser.discovery.error.is_some() || browser.discovery.stopped)
-                    && !browser.discovery.busy()
-                    && ui.button("Retry Scan").clicked()
-                {
-                    self.retry_requested = true;
                 }
                 if self.export.busy() {
                     ui.horizontal(|ui| {
@@ -187,8 +181,10 @@ impl EngineCatalog {
                 {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
+                // The scan's one status line, for every view.
                 if browser.discovery.busy() {
                     ui.horizontal(|ui| {
+                        ui.spinner();
                         ui.weak(if browser.discovery.stopped {
                             "Stopping after the current resource…"
                         } else {
@@ -197,6 +193,9 @@ impl EngineCatalog {
                                 .phase
                                 .map_or("Reading…", |phase| phase.label())
                         });
+                        if let Some((current, total)) = browser.discovery.progress {
+                            ui.weak(format!("{current} of {total}"));
+                        }
                         if ui
                             .add_enabled(!browser.discovery.stopped, egui::Button::new("Stop Scan"))
                             .clicked()
@@ -204,13 +203,15 @@ impl EngineCatalog {
                             self.stop_requested = true;
                         }
                     });
-                    if let Some((current, total)) = browser.discovery.progress {
-                        ui.weak(format!("Reading {current} of {total}"));
-                    } else {
-                        ui.weak("Reading…");
-                    }
-                } else if browser.discovery.stopped {
-                    ui.weak("Scan Stopped. Use Retry Scan to resume.");
+                } else if browser.discovery.stopped || browser.discovery.error.is_some() {
+                    ui.horizontal(|ui| {
+                        if browser.discovery.stopped {
+                            ui.weak("Scan stopped.");
+                        }
+                        if ui.button("Retry Scan").clicked() {
+                            self.retry_requested = true;
+                        }
+                    });
                 }
                 ui.separator();
                 ui.push_id(self.view, |ui| match self.view {
@@ -293,7 +294,7 @@ impl EngineCatalog {
                     if let Some(data) = &browser.discovery.data {
                         sundial::ui::catalog::scan::show(ui, data);
                     } else {
-                        ui.label("No catalog snapshot is available.");
+                        ui.label("No catalog snapshot.");
                     }
                 });
         }
@@ -321,14 +322,9 @@ impl EngineCatalog {
         );
     }
 
+    /// A view's body before the scan has data. A running scan reports on the status line.
     fn loading(ui: &mut egui::Ui, discovery: &discovery::Discovery) {
-        if discovery.busy() {
-            ui.spinner();
-            ui.label("Reading game content…");
-            if let Some((current, total)) = discovery.progress {
-                ui.small(format!("{current} of {total} resources"));
-            }
-        } else {
+        if !discovery.busy() {
             ui.label("No game content.");
         }
     }
@@ -372,13 +368,10 @@ impl EngineCatalog {
                         ui.close();
                     }
                 }
-                let inspect_label = match location {
-                    kinds::UseLocation::Menu => "Inspect References…",
-                    kinds::UseLocation::Footer => "Inspect…",
-                };
+                // Named after the window it opens.
                 if experimental
                     && ui
-                        .add_enabled(selected.is_some(), egui::Button::new(inspect_label))
+                        .add_enabled(selected.is_some(), egui::Button::new("Perks & Patterns…"))
                         .clicked()
                 {
                     inspect = selected.map(usize::from);

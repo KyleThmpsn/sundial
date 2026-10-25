@@ -71,9 +71,16 @@ fn draw_instance_rows(
 /// The card at the top of an item page, with the item's description under it.
 pub(super) fn draw_header(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
     let catalog = content.catalog;
+    // A display-only dummy says so where it says what it is, as the item editor's badge does.
+    let kind = catalog.item_kind_label(content.hash);
+    let kind = if catalog.is_dummy(content.hash) {
+        format!("Dummy {kind}")
+    } else {
+        kind.to_owned()
+    };
     let header = look::Header {
         title: content.resolved_name.as_deref().unwrap_or(UNNAMED),
-        kind: catalog.item_kind_label(content.hash),
+        kind: &kind,
         hash: content.hash,
         icon: content.hash,
         subtitle: catalog.package_item_type_name(content.hash),
@@ -106,7 +113,11 @@ fn item_crumbs(catalog: &Catalog, hash: u64) -> Vec<look::Crumb> {
 
 fn draw_facts(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
     if let Some(metadata) = content.matches.item_package_metadata {
-        draw_package_facts(ui, metadata);
+        let subclass = content
+            .matches
+            .item
+            .is_some_and(|item| item.bucket_hash == crate::catalog::SUBCLASS_BUCKET_HASH);
+        draw_package_facts(ui, metadata, subclass);
     }
     if let Some(item) = content.matches.item.filter(|item| item.class_type <= 2) {
         look::fact(ui, "Class", item_class_type_label(item.class_type));
@@ -115,15 +126,27 @@ fn draw_facts(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
     draw_owned_fact(ui, content);
 }
 
-fn draw_package_facts(ui: &mut egui::Ui, metadata: &ItemPackageMetadata) {
+fn draw_package_facts(ui: &mut egui::Ui, metadata: &ItemPackageMetadata, subclass: bool) {
     if let Some(ammo) = metadata.weapon_ammo_type {
         look::fact(ui, "Ammo", ammo.label());
     }
     if metadata.rarity != ItemRarity::Unknown {
         look::fact(ui, "Rarity", metadata.rarity.label());
     }
-    if let Some(damage_type) = metadata.damage_type {
-        look::fact(ui, "Damage Type", damage_type.label());
+    // A weapon's damage type comes from its damage descriptor, and a subclass's from its strings.
+    // Other items' strings hold 0 there too, which names nothing.
+    let damage_type = metadata
+        .damage_type
+        .map(crate::catalog::ItemDamageType::label)
+        .or_else(|| {
+            metadata
+                .display_damage_type
+                .filter(|_| subclass)
+                .and_then(crate::investment::WeaponDamageType::from_native)
+                .map(crate::investment::WeaponDamageType::label)
+        });
+    if let Some(damage_type) = damage_type {
+        look::fact(ui, "Damage Type", damage_type);
     }
     if let Some(power_cap) = metadata.power_cap {
         look::fact(ui, "Power Cap", power_cap.to_string());

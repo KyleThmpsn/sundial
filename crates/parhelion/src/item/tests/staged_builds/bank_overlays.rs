@@ -157,7 +157,7 @@ fn real_private_perk_applying_bank_keys_ships_the_banks() {
                     .iter()
                     .any(|parameter| parameter.name == *name),
                 Modifier::Charges(_) | Modifier::Melee { .. } | Modifier::Scalar { .. } => true,
-                Modifier::Fixed(_) | Modifier::Group(_) => false,
+                Modifier::Fixed(_) | Modifier::Group(_) | Modifier::Attack(_) => false,
             };
             listed && handler_slot(&stock, *modifier).unwrap().is_some()
         })

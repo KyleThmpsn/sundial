@@ -296,6 +296,7 @@ pub(super) fn handler_slot_in(
         return Ok(Some(HandlerIndex::new(next)));
     }
     let (class, kind) = match modifier {
+        Modifier::Attack(_) => (attack::CLASS, "movement attack"),
         Modifier::Group(_) => (group::CLASS, "grouped ability property"),
         Modifier::Fixed(body) => (body.class, "fixed ability property"),
         Modifier::Charges(_) => (CHARGE_DEFINITION_CLASS, "charge"),
@@ -308,6 +309,17 @@ pub(super) fn handler_slot_in(
         .filter(|row| row.modifier_class == class)
         .collect();
     let reading: BTreeSet<HandlerIndex> = match modifier {
+        Modifier::Attack(body) => {
+            body.validate()?;
+            let witnesses = same_class
+                .iter()
+                .filter(|r| r.key == body.template_key)
+                .collect::<Vec<_>>();
+            if witnesses.len() != 1 {
+                return Err("Movement attack has no unique handler witness".into());
+            }
+            witnesses.iter().map(|r| r.handler).collect()
+        }
         Modifier::Group(body) => {
             body.validate()?;
             let matches = same_class
@@ -326,10 +338,12 @@ pub(super) fn handler_slot_in(
                 .iter()
                 .filter(|r| r.key == body.template_key)
                 .collect::<Vec<_>>();
-            if matches.len() != 1 {
+            if matches.is_empty() || (body.selection.is_none() && matches.len() != 1) {
                 return Err("Fixed ability property has no unique handler witness".into());
             }
-            BTreeSet::from([matches[0].handler])
+            // Conditional alternatives may share a key and class. The checked template
+            // selects one row, and all such alternatives must agree on their local handler.
+            matches.iter().map(|r| r.handler).collect()
         }
         Modifier::Parameter { name, .. } => same_class
             .iter()

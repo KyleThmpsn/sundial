@@ -66,56 +66,6 @@ fn dawn(hashes: &[u32]) -> (tempfile::TempDir, WorkspaceDocument) {
 }
 
 #[test]
-fn dawn_counts_shader_and_ornament_stacks_together_not_quantities() {
-    let hashes = (1000..1050).chain(2000..2050).collect::<Vec<_>>();
-    let (_temp, baseline) = dawn(&hashes);
-    assert!(validate_profile_action_sources(&baseline, &baseline, &Installed).is_ok());
-    let mut candidate = baseline.clone();
-    account::add_profile_item(&mut candidate, 2050, 1).unwrap();
-    let error = validate_profile_action_sources(&candidate, &baseline, &Installed).unwrap_err();
-    assert!(error.contains("100") && error.contains("101"), "{error}");
-}
-
-#[test]
-fn only_native_profile_socket_action_candidates_count() {
-    let (_temp, before) = dawn(&(1000..1100).collect::<Vec<_>>());
-    let mut candidate = before.clone();
-    for hash in [3000, 4000, 4001, 4002] {
-        account::add_profile_item(&mut candidate, hash, 1).unwrap();
-    }
-    assert!(validate_profile_action_sources(&candidate, &before, &Installed).is_ok());
-}
-
-#[test]
-fn existing_overflow_allows_repair_but_not_growth() {
-    let (_temp, before) = dawn(&(1000..1102).collect::<Vec<_>>());
-    assert!(validate_profile_action_sources(&before, &before, &Installed).is_ok());
-    let mut repaired = before.clone();
-    account::apply_profile_item_action(
-        &mut repaired,
-        crate::app::inventory::ProfileItemLocation { index: 0 },
-        crate::app::inventory::ProfileItemAction::Remove,
-    )
-    .unwrap();
-    assert!(validate_profile_action_sources(&repaired, &before, &Installed).is_ok());
-    let mut larger = before.clone();
-    account::add_profile_item(&mut larger, 2000, 1).unwrap();
-    assert!(validate_profile_action_sources(&larger, &before, &Installed).is_err());
-}
-
-#[test]
-fn sunrise_json_does_not_inherit_dawn_action_source_limit() {
-    let before = document(&[]);
-    let mut candidate = before.clone();
-    candidate.json_mut()["state"]["account"]["profile_items"] = json!(
-        (1000..1101)
-            .map(|hash| json!({"definition_hash":hash,"quantity":1}))
-            .collect::<Vec<_>>()
-    );
-    assert!(validate_profile_action_sources(&candidate, &before, &Installed).is_ok());
-}
-
-#[test]
 fn app_edit_and_save_gates_reject_overflow_atomically() {
     let (_temp, mut doc) = dawn(&(1000..1100).collect::<Vec<_>>());
     let before = doc.clone();

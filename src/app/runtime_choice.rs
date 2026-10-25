@@ -182,35 +182,65 @@ impl SundialApp {
         let response = egui::Modal::new("choose_runtime_copy".into()).show(ctx, |ui| {
             ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 740.0));
             ui.heading("Choose a Runtime Copy");
-            egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 145.0).max(150.0)).show(ui, |ui| {
-                ui.label("Choose the copy whose settings and saved data you want to use. The DLL in the game folder takes precedence.");
-                let copies = &self.runtime_choice.inspection.copies;
-                if copies.len() == 2 && copies[0].dll_hash.is_some() && copies[0].dll_hash == copies[1].dll_hash {
-                    ui.add_space(6.0);
-                    ui.weak("Identical DLLs • Settings and saved data may differ");
-                }
-                for copy in copies {
-                    ui.add_space(8.0);
-                    egui::Frame::group(ui.style()).inner_margin(12.0).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        draw_copy(ui, copy);
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 145.0).max(150.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        "Choose the copy whose settings and saved data you want to use. The DLL \
+                         in the game folder takes precedence.",
+                    );
+                    let copies = &self.runtime_choice.inspection.copies;
+                    if copies.len() == 2
+                        && copies[0].dll_hash.is_some()
+                        && copies[0].dll_hash == copies[1].dll_hash
+                    {
+                        ui.add_space(6.0);
+                        ui.weak("Identical DLLs · Settings and saved data may differ");
+                    }
+                    for copy in copies {
                         ui.add_space(8.0);
-                        let enabled = blocked.is_none() && copy.selection_problem.is_none() && copies.len() == 2;
-                        let label = match copy.location {
-                            RuntimeLocation::Root => "Keep Game Folder Copy",
-                            RuntimeLocation::BinX64 => "Keep bin/x64 Copy",
-                        };
-                        ui.horizontal_wrapped(|ui| {
-                            if ui.add_enabled(enabled, egui::Button::new(label).wrap()).clicked() { selected = Some(copy.location); }
-                            if ui.add_enabled(blocked.is_none() && copy.bundled_schema.is_some() && copy.settings_hash.is_some(), egui::Button::new("Restore Default Settings…")).clicked() { reset = Some(copy.clone()); }
-                        });
-                    });
-                }
-                ui.add_space(8.0);
-                ui.label("The other DLL and its Sunrise folder are backed up to .sunrise/backups. Undo with Restore Runtime Backup in Installation preferences.");
-                if let Some(reason) = blocked { ui.colored_label(ui.visuals().warn_fg_color, reason); }
-                if let Some(error) = &self.runtime_choice.error { ui.colored_label(ui.visuals().error_fg_color, error); }
-            });
+                        egui::Frame::group(ui.style())
+                            .inner_margin(12.0)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                draw_copy(ui, copy);
+                                ui.add_space(8.0);
+                                let enabled = blocked.is_none()
+                                    && copy.selection_problem.is_none()
+                                    && copies.len() == 2;
+                                let label = match copy.location {
+                                    RuntimeLocation::Root => "Keep Game Folder Copy",
+                                    RuntimeLocation::BinX64 => "Keep bin/x64 Copy",
+                                };
+                                let resettable = blocked.is_none()
+                                    && copy.bundled_schema.is_some()
+                                    && copy.settings_hash.is_some();
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui
+                                        .add_enabled(enabled, egui::Button::new(label).wrap())
+                                        .clicked()
+                                    {
+                                        selected = Some(copy.location);
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            resettable,
+                                            egui::Button::new("Restore Default Settings…"),
+                                        )
+                                        .clicked()
+                                    {
+                                        reset = Some(copy.clone());
+                                    }
+                                });
+                            });
+                    }
+                    ui.add_space(8.0);
+                    ui.label(
+                        "The other DLL and its Sunrise folder are backed up to .sunrise/backups. \
+                         Undo with Restore Runtime Backup in Installation preferences.",
+                    );
+                    self.draw_runtime_problems(ui, blocked);
+                });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 refresh = ui.button("Refresh Comparison").clicked();
@@ -248,27 +278,51 @@ impl SundialApp {
         let response = egui::Modal::new("restore_runtime_defaults".into()).show(ctx, |ui| {
             ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 580.0));
             ui.heading("Restore Default Settings");
-            egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 180.0).max(120.0)).show(ui, |ui| {
-                ui.label(format!("Restore settings v{} from {} {} in {}?", plan.schema,
-                    plan.copy().name(), plan.copy().version.as_deref().unwrap_or("Unavailable"), plan.copy().location.label()));
-                ui.add_space(8.0);
-                ui.label(plan.copy().settings_path.display().to_string());
-                ui.label("The current settings.json is backed up to .sunrise/backups first.");
-                if plan.copy().dawn {
-                    ui.label("Replaces Dawn's runtime configuration, player identity and language. Dawn reads it on next start.");
-                    ui.label("Existing characters, inventory, equipment, progression and player preferences remain in player-state.db.");
-                } else if plan.schema < 18 {
-                    ui.colored_label(ui.visuals().warn_fg_color, "These defaults include the JSON account. Its saved progress and unlocks will return to defaults.");
-                    ui.label("Reinstall custom Parhelion packages afterward to restore their Collections entries and unlocks.");
-                } else {
-                    ui.label("The account in investment.sqlite3 is preserved.");
-                }
-                if let Some(reason) = blocked { ui.colored_label(ui.visuals().warn_fg_color, reason); }
-                if let Some(error) = &self.runtime_choice.error { ui.colored_label(ui.visuals().error_fg_color, error); }
-            });
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 180.0).max(120.0))
+                .show(ui, |ui| {
+                    ui.label(format!(
+                        "Restore settings v{} from {} {} in {}?",
+                        plan.schema,
+                        plan.copy().name(),
+                        plan.copy().version.as_deref().unwrap_or("Unavailable"),
+                        plan.copy().location.label()
+                    ));
+                    ui.add_space(8.0);
+                    ui.label(plan.copy().settings_path.display().to_string());
+                    ui.label("The current settings.json is backed up to .sunrise/backups first.");
+                    if plan.copy().dawn {
+                        ui.label(
+                            "Replaces Dawn's runtime configuration, player identity and language. \
+                             Dawn reads it on next start.",
+                        );
+                        ui.label(
+                            "Existing characters, inventory, equipment, progression and player \
+                             preferences remain in player-state.db.",
+                        );
+                    } else if plan.schema < 18 {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "These defaults include the JSON account. Its saved progress and \
+                             unlocks will return to defaults.",
+                        );
+                        ui.label(
+                            "Reinstall custom Parhelion packages afterward to restore their \
+                             Collections entries and unlocks.",
+                        );
+                    } else {
+                        ui.label("The account in investment.sqlite3 is preserved.");
+                    }
+                    self.draw_runtime_problems(ui, blocked);
+                });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                apply = ui.add_enabled(blocked.is_none(), egui::Button::new("Back Up and Restore Defaults")).clicked();
+                apply = ui
+                    .add_enabled(
+                        blocked.is_none(),
+                        egui::Button::new("Back Up and Restore Defaults"),
+                    )
+                    .clicked();
                 cancel = ui.button("Cancel").clicked();
             });
         });
@@ -300,6 +354,16 @@ impl SundialApp {
                 }
                 Err(error) => self.runtime_choice.error = Some(error),
             }
+        }
+    }
+
+    /// What stops the open runtime dialog, then the last error, under its body.
+    fn draw_runtime_problems(&self, ui: &mut egui::Ui, blocked: Option<&str>) {
+        if let Some(reason) = blocked {
+            ui.colored_label(ui.visuals().warn_fg_color, reason);
+        }
+        if let Some(error) = &self.runtime_choice.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
         }
     }
 
@@ -345,16 +409,30 @@ impl SundialApp {
         let response = egui::Modal::new("restore_runtime_backup".into()).show(ctx, |ui| {
             ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 620.0));
             ui.heading("Restore Runtime Backup");
-            egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 145.0).max(150.0)).show(ui, |ui| {
-                ui.label(format!("Backup: {}", plan.backup.display()));
-                ui.label("These archived files and folders will move back to their original locations:");
-                for path in &plan.paths { ui.label(path.display().to_string()); }
-                ui.label("Existing files are not replaced. A second runtime copy reopens the runtime choice.");
-                if let Some(reason) = blocked { ui.colored_label(ui.visuals().warn_fg_color, reason); }
-                if let Some(error) = &self.runtime_choice.error { ui.colored_label(ui.visuals().error_fg_color, error); }
-            });
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 145.0).max(150.0))
+                .show(ui, |ui| {
+                    ui.label(format!("Backup: {}", plan.backup.display()));
+                    ui.label(
+                        "These archived files and folders will move back to their original \
+                         locations:",
+                    );
+                    for path in &plan.paths {
+                        ui.label(path.display().to_string());
+                    }
+                    ui.label(
+                        "Existing files are not replaced. A second runtime copy reopens the \
+                         runtime choice.",
+                    );
+                    self.draw_runtime_problems(ui, blocked);
+                });
             ui.horizontal(|ui| {
-                restore = ui.add_enabled(blocked.is_none(), egui::Button::new("Restore Runtime Files")).clicked();
+                restore = ui
+                    .add_enabled(
+                        blocked.is_none(),
+                        egui::Button::new("Restore Runtime Files"),
+                    )
+                    .clicked();
                 cancel = ui.button("Cancel").clicked();
             });
         });

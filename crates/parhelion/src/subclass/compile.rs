@@ -6,14 +6,16 @@
 //! row. An effect that keeps its stock identity grants the stock row instead. An entry with values
 //! of its own gets a copy of its stock entity with the values changed, under an ability row of its
 //! own, and its pool equips that row. Recolored effects ride on the same copy. A perk in the list whose conditions name the copied
-//! ability by its stock entity names the copy instead: a custom perk once compiled, and a stock
-//! perk through a private copy that keeps its presentation and replaces it in its pool. The build
-//! supplies the private perk machinery, which private plugs share, through [`Planner`] and
-//! [`Compiler`].
+//! ability by its stock entity names the copy its entry follows instead: a custom perk once
+//! compiled, and a stock perk through a private copy that keeps its presentation and replaces it
+//! in its pool. The build supplies the private perk machinery, which private plugs share, through
+//! [`Planner`] and [`Compiler`].
+use std::collections::BTreeMap;
+
 use sundial::package_authoring::runtime::WeaponRuntimeValueOverride;
 use tiger_pkg::TagHash;
 
-use super::authoring::{AuthoredEntry, CompiledEntry, ResolvedList};
+use super::authoring::{AuthoredEntry, CompiledEntry, Follow, ResolvedList};
 use super::tables::SubclassTables;
 use super::{BankValue, EffectGrade, PaletteEdit, SpawnSwap, TintEdit};
 use crate::error::invalid;
@@ -64,6 +66,20 @@ pub(crate) struct AttachedGlyph {
     pub(crate) variants: Vec<(u32, u32)>,
 }
 
+/// Where the ability keys of an entry's perks move: each stock entity to the copy the entry
+/// follows. A key naming an `ambiguous` entity is refused.
+#[derive(Default)]
+pub(crate) struct Moves {
+    pub(crate) to: Vec<(u32, u32)>,
+    pub(crate) ambiguous: Vec<u32>,
+}
+
+impl Moves {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.to.is_empty() && self.ambiguous.is_empty()
+    }
+}
+
 /// How the build compiles them, into the same tables as the private plugs.
 pub(crate) trait Compiler {
     type Perk;
@@ -71,10 +87,10 @@ pub(crate) trait Compiler {
     fn report(&mut self, operation: &str);
     /// Compiles `perk` with each ability key that `moves` names moved from the stock entity to
     /// its copy. Returns its finished sandbox-perk row.
-    fn perk(&mut self, perk: &Self::Perk, moves: &[(u32, u32)]) -> AuthoringResult<u16>;
+    fn perk(&mut self, perk: &Self::Perk, moves: &Moves) -> AuthoringResult<u16>;
     /// Compiles `perk`, a private copy of a stock perk that names a moved ability, as `perk`
     /// does. Refuses one that names none.
-    fn retargeted(&mut self, perk: &Self::Perk, moves: &[(u32, u32)]) -> AuthoringResult<u16>;
+    fn retargeted(&mut self, perk: &Self::Perk, moves: &Moves) -> AuthoringResult<u16>;
     /// Copies the entity of `entry`, its label and stock entity, with `changes`, assigns the copy
     /// to `pattern`, and returns the copy.
     fn entity(
@@ -245,8 +261,8 @@ pub(crate) fn compile<C: Compiler>(
     };
     let mut compiled = vec![CompiledEntry::default(); list.entries.len()];
     // Entity copies first, so every perk of the list that names a copied ability can name the
-    // copy.
-    let mut moves = Vec::new();
+    // copy its entry follows. Alternatives may copy one ability each, so copies go by owner.
+    let mut copies = BTreeMap::new();
     for plan in plans {
         let Some(entity) = &plan.entity else {
             continue;
@@ -270,7 +286,7 @@ pub(crate) fn compile<C: Compiler>(
                 entity.pattern,
             )?;
             entry.row = Some(tables.append_ability(entity.row, entity.identity, entity.pattern)?);
-            moves.push((entity.source.0, copy.0));
+            copies.insert(list.entries[plan.entry].entry, copy.0);
             Ok(())
         })()
         .map_err(|error| error.context(label.to_owned()))?;
@@ -281,6 +297,7 @@ pub(crate) fn compile<C: Compiler>(
             compiler.report(&format!("Compiling Perks of {label}"));
         }
         (|| -> AuthoringResult<()> {
+            let moves = moves(&list.entries[plan.entry], &copies)?;
             for effect in &plan.effects {
                 entry.perks.push(match effect {
                     Effect::Stock(index) => *index,
@@ -297,6 +314,23 @@ pub(crate) fn compile<C: Compiler>(
         .map_err(|error| error.context(label.to_owned()))?;
     }
     Ok(compiled)
+}
+
+/// Where the ability keys of `entry`'s perks move, given each owner's copy.
+fn moves(entry: &AuthoredEntry, copies: &BTreeMap<u8, u32>) -> AuthoringResult<Moves> {
+    let mut moves = Moves::default();
+    for (&source, follow) in &entry.follows {
+        match follow {
+            Follow::Copy(owner) => {
+                let copy = copies.get(owner).ok_or_else(|| {
+                    invalid(format!("Subclass entry {owner} has no copy of its ability"))
+                })?;
+                moves.to.push((source, *copy));
+            }
+            Follow::Ambiguous => moves.ambiguous.push(source),
+        }
+    }
+    Ok(moves)
 }
 
 /// An authored entry's label and what it compiles to.

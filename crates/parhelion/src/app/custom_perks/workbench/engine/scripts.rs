@@ -17,12 +17,9 @@ impl Browser {
             self.source = Some(source);
             self.filtered_query = None;
         }
-        let width = (ui.available_width() - 120.0).max(160.0);
-        let changed = sundial::ui::catalog::search(
+        let (changed, count_slot) = sundial::ui::catalog::search_bar(
             ui,
             &mut self.query,
-            false,
-            width,
             "Search Object Behaviors, Paths, or Tags",
         );
         let query = self.query.trim().to_ascii_lowercase();
@@ -45,15 +42,11 @@ impl Browser {
                 .collect();
             self.filtered_query = Some(query);
         }
-        ui.weak(format!(
-            "{} {}",
-            self.matches.len(),
-            if self.matches.len() == 1 {
-                "Object Behavior"
-            } else {
-                "Object Behaviors"
-            }
-        ));
+        sundial::ui::catalog::toolbar_status(
+            ui,
+            count_slot,
+            sundial::ui::catalog::result_count(self.matches.len()),
+        );
         ui.separator();
         let keys = self
             .matches
@@ -74,30 +67,31 @@ impl Browser {
                 sundial::investment::draw_asset_choice_row_plain(
                     ui,
                     &script.title,
-                    &format!("Object Behavior · 0x{:08X}", script.tag),
+                    &script.path,
                     selected,
                 )
             },
             |ui, row| {
                 let script = &data.scripts[self.matches[row]];
                 ui.heading(&script.title);
-                ui.label("Object Behavior");
                 ui.label(&script.path);
                 ui.monospace(format!("Resource 0x{:08X}", script.tag));
-                if ui.button("Copy Resource Tag").clicked() {
-                    ui.ctx().copy_text(format!("0x{:08X}", script.tag));
-                }
-                if !script.stock_perks.is_empty() {
-                    ui.strong("Known Stock Uses");
+                let open = ui
+                    .horizontal(|ui| {
+                        let open = ui.button("Open Resource").clicked();
+                        if ui.button("Copy Resource Tag").clicked() {
+                            ui.ctx().copy_text(format!("0x{:08X}", script.tag));
+                        }
+                        open
+                    })
+                    .inner;
+                if script.stock_perks.is_empty() {
+                    ui.weak("No Stock Uses");
+                } else {
+                    ui.strong("Stock Uses");
                     ui.label(&script.stock_perks);
-                } else {
-                    ui.weak("No stock perk uses it.");
                 }
-                if ui.button("Open Resource").clicked() {
-                    Some(script.tag)
-                } else {
-                    None
-                }
+                open.then_some(script.tag)
             },
         )
     }

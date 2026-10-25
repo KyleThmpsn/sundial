@@ -152,9 +152,14 @@ impl SundialApp {
             })
             .count();
         if unmatched_count > 0 {
-            ui.weak(format!(
-                    "{unmatched_count} stored item(s) have no loadout slot. They stay in Character inventory."
-                ));
+            ui.weak(if unmatched_count == 1 {
+                "1 stored item has no loadout slot. It stays in Character inventory.".to_owned()
+            } else {
+                format!(
+                    "{unmatched_count} stored items have no loadout slot. They stay in Character \
+                     inventory."
+                )
+            });
         }
         ui.add_space(8.0);
 

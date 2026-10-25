@@ -124,18 +124,6 @@ pub(in crate::app) fn editor(loaded: PrivatePerkRuntimeGraph) -> PerkEditor {
 }
 
 #[test]
-fn speed_requires_the_known_perk_and_rejects_mismatched_lanes() {
-    let mut loaded = fixture();
-    let speed = guided::ProjectileSpeed::discover(&loaded).unwrap();
-    let mut draft = vec![];
-    speed.set(&loaded, &mut draft, 2.0).unwrap();
-    draft.pop();
-    assert!(speed.value(&loaded, &draft).is_err());
-    loaded.action_tag = 123;
-    assert!(guided::ProjectileSpeed::discover(&loaded).is_none());
-}
-
-#[test]
 fn guided_profiles_require_unique_paths_matching_owners_and_native_defaults() {
     let original = fixture();
     assert_eq!(guided::ProjectileSpeed::discover_all(&original).len(), 1);

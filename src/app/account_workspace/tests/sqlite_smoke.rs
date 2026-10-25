@@ -28,6 +28,7 @@ fn save_changed_sources(
                 &path.parent().unwrap().join("json-backups"),
             )
         },
+        || Ok(()),
     )
 }
 

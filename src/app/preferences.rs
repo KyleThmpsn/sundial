@@ -126,11 +126,7 @@ pub(super) struct Preferences {
     #[serde(default)]
     pub(super) experimental_power_above_cap: bool,
     #[serde(default)]
-    pub(super) experimental_extended_fov: bool,
-    #[serde(default)]
     pub(super) experimental_cross_class_subclasses: bool,
-    #[serde(default)]
-    pub(super) experimental_package_authoring: bool,
     #[serde(default)]
     pub(super) parhelion_warning_acknowledged: bool,
     #[serde(default)]
@@ -314,9 +310,7 @@ impl Default for Preferences {
             character_inventory_layout: CharacterInventoryLayout::Cards,
             experimental_progression: false,
             experimental_power_above_cap: false,
-            experimental_extended_fov: false,
             experimental_cross_class_subclasses: false,
-            experimental_package_authoring: false,
             parhelion_warning_acknowledged: false,
             show_parhelion_experimental_options: false,
             troubleshooting_logging: false,

@@ -1051,7 +1051,7 @@ impl PackageAuthoringApp {
             || !overrides.dye_texture_edits.is_empty();
         ui.horizontal_wrapped(|ui| {
             style::heading(ui, "Dyes", customized)
-                .on_hover_text("Six surfaces for each gear type. All Gear sets them all");
+                .on_hover_text("Six surfaces for each gear type. All Gear sets them all.");
             ui.menu_button("Copy from Shader…", |ui| {
                 if let Some(hash) = shader_list(ui, shaders, &mut self.gear_plug_query, None) {
                     *take = Some((hash, None));

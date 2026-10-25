@@ -150,7 +150,7 @@ impl fmt::Display for ParseHexHashError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "Expected a canonical hash such as 0x89ABCDEF; got {:?}",
+            "Expected a canonical hash such as 0x89ABCDEF, got {:?}",
             self.0
         )
     }

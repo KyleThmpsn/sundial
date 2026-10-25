@@ -222,11 +222,11 @@ pub(super) fn draw_controls(
                 changed |= match &mut replacement.hue_range_degrees {
                     Some(degrees) => ui
                         .add(egui::Slider::new(degrees, 0..=MAX_HUE_RANGE_DEGREES).text("Hue range").suffix("°"))
-                        .on_hover_text("0° matches only the source hue. Widen to take neighbouring hues with a soft transition. Greys and near-greys are never matched by hue.")
+                        .on_hover_text("0° matches only the source hue. Greys never match by hue.")
                         .changed(),
                     None => ui
                         .add(egui::Slider::new(&mut replacement.range_percent, 0..=100).text("Color range").suffix("%"))
-                        .on_hover_text("0% matches the exact source color before adjustments. Increase to include nearby shades with a soft transition. Replacement colors are applied last. The strongest match wins. Replacements never chain.")
+                        .on_hover_text("0% matches only the exact source color. The strongest match wins and replacements never chain.")
                         .changed(),
                 };
             });

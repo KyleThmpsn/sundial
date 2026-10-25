@@ -97,26 +97,55 @@ impl PerkEditor {
         ui.strong("Action Scalars");
         for (index, source) in choices.into_iter().enumerate() {
             ui.push_id(("action-scalar", index), |ui| {
-                let existing = self.action_draft.iter().position(|value| same_locator(value, &source));
-                let mut value = existing.map_or(source.clone(), |index| self.action_draft[index].clone());
+                let existing = self
+                    .action_draft
+                    .iter()
+                    .position(|value| same_locator(value, &source));
+                let mut value =
+                    existing.map_or(source.clone(), |index| self.action_draft[index].clone());
                 let original = source_bits(&loaded.action_payload, &source);
-                let valid_source = original.as_ref().is_ok_and(|bits| *bits == value.expected_bits);
+                let valid_source = original
+                    .as_ref()
+                    .is_ok_and(|bits| *bits == value.expected_bits);
                 let label = format!("Action Scalar {}", index + 1);
-                let hint = format!("Node {} · occurrence {} · member +0x{:X} · boxed type {}", source.node_type_handle, source.node_occurrence, source.value_pointer_offset, source.value_type_handle);
+                let hint = format!(
+                    "Node {} · occurrence {} · member +0x{:X} · boxed type {}",
+                    source.node_type_handle,
+                    source.node_occurrence,
+                    source.value_pointer_offset,
+                    source.value_type_handle
+                );
                 Workbench::property_row(ui, &label, &hint, |ui| {
                     let mut number = f32::from_bits(value.value_bits);
-                    if ui.add_enabled(valid_source, egui::DragValue::new(&mut number).speed(0.01)).changed() {
+                    if ui
+                        .add_enabled(valid_source, egui::DragValue::new(&mut number).speed(0.01))
+                        .changed()
+                    {
                         value.value_bits = number.to_bits();
-                        if let Some(index) = existing { self.action_draft.remove(index); }
-                        if value.value_bits != value.expected_bits { self.action_draft.push(value.clone()); }
+                        if let Some(index) = existing {
+                            self.action_draft.remove(index);
+                        }
+                        if value.value_bits != value.expected_bits {
+                            self.action_draft.push(value.clone());
+                        }
                     }
-                    if let Ok(bits) = original { ui.weak(format!("Original: {}", f32::from_bits(bits))); }
+                    if let Ok(bits) = original {
+                        ui.weak(format!("Original: {}", f32::from_bits(bits)));
+                    }
                     if crate::app::style::reset(ui, existing.is_some()) {
-                        self.action_draft.retain(|value| !same_locator(value, &source));
+                        self.action_draft
+                            .retain(|value| !same_locator(value, &source));
                     }
                 });
-                if !valid_source { ui.colored_label(ui.visuals().error_fg_color, "Saved action locator or expected value no longer matches. Reset this edit."); }
-                if !number_is_finite(value.value_bits) { ui.colored_label(ui.visuals().error_fg_color, "Enter a finite action value."); }
+                if !valid_source {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "The saved locator or value no longer matches. Reset this edit.",
+                    );
+                }
+                if !number_is_finite(value.value_bits) {
+                    ui.colored_label(ui.visuals().error_fg_color, "Enter a finite value.");
+                }
             });
         }
     }

@@ -8,6 +8,18 @@ use std::{
 
 pub(super) const PREFIX: &str = ".sundial-update-";
 pub(super) const PLAN: &str = "plan.json";
+/// Names the executable a workspace was made for, written as soon as the workspace exists.
+/// Another executable in the same folder holds its own update lock, so its workspace is never
+/// this one's to remove, even before its plan is written.
+pub(super) const OWNER: &str = "owner";
+
+/// The executable `directory` was made for, where its workspace says.
+pub(super) fn owner(directory: &Path) -> Option<PathBuf> {
+    fs::read(directory.join(OWNER))
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .map(PathBuf::from)
+}
 pub(super) const PAYLOAD: &str = "payload";
 pub(super) const RUNNER: &str = if cfg!(windows) {
     "runner.exe"

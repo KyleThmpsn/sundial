@@ -171,10 +171,11 @@ pub(crate) fn expand_socket_columns(
                 randomized_selection_program: Vec::new(),
                 reusable_choices: None,
             });
-        column.lead_with(plug);
+        let moved = column.lead_with(plug);
+        crate::item::follow_moved_variants(&mut expanded.socket_plug_variants, lane, &moved);
     }
     // A weapon has one frame. A borrowed frame replaces the host's rather than sitting ahead of
-    // it, so the intrinsic lane holds the borrowed frames alone. A plug carrying a custom perk
+    // it, so the intrinsic lane holds the borrowed frames alone. A choice carrying a custom perk
     // the author wrote is their own frame, not the donor's, so it stays and its perk is carried
     // to wherever the trim leaves it: a variant addresses its plug by position, and a stale
     // position is refused by the compiler rather than silently landing on another plug.
@@ -187,34 +188,31 @@ pub(crate) fn expand_socket_columns(
         if types.get(lane) != Some(&INTRINSIC_SOCKET_TYPE) {
             continue;
         }
-        let authored = expanded
-            .socket_plug_variants
-            .iter()
-            .filter(|variant| usize::from(variant.socket_index) == lane)
-            .map(|variant| variant.source_plug_hash)
-            .collect::<BTreeSet<_>>();
         let Some(column) = expanded.socket_columns[lane].as_mut() else {
             continue;
         };
         if !column.choices.iter().any(|choice| claimed.contains(choice)) {
             continue;
         }
-        column
-            .choices
-            .retain(|choice| claimed.contains(choice) || authored.contains(choice));
-        let choices = column.choices.clone();
-        for variant in &mut expanded.socket_plug_variants {
-            if usize::from(variant.socket_index) != lane {
-                continue;
-            }
-            if let Some(index) = choices
-                .iter()
-                .position(|choice| *choice == variant.source_plug_hash)
-                && let Ok(index) = u16::try_from(index)
-            {
-                variant.choice_index = index;
-            }
-        }
+        let authored = authored_choices(&expanded.socket_plug_variants, lane, &column.choices);
+        let moved = column
+            .retain_choices(|index, choice| claimed.contains(&choice) || authored.contains(&index));
+        crate::item::follow_moved_variants(&mut expanded.socket_plug_variants, lane, &moved);
     }
     Ok(expanded)
+}
+
+/// The choices on `lane` that carry a custom perk: those a variant addresses with its own plug.
+fn authored_choices(
+    variants: &[crate::item::WeaponSocketPlugVariantOverride],
+    lane: usize,
+    choices: &[u32],
+) -> BTreeSet<usize> {
+    variants
+        .iter()
+        .filter(|variant| usize::from(variant.socket_index) == lane)
+        .map(|variant| (usize::from(variant.choice_index), variant.source_plug_hash))
+        .filter(|(index, plug)| choices.get(*index) == Some(plug))
+        .map(|(index, _)| index)
+        .collect()
 }

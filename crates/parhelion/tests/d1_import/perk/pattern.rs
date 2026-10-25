@@ -1,5 +1,6 @@
 //! Follow a private attachment through its component and compare the numeric contract.
 use super::*;
+mod connected;
 mod hud;
 
 /// Read actual source/emitted programs and compare the resulting modifiers. A source bank
@@ -56,7 +57,11 @@ pub(super) fn dynamic(
     let mut remaining = std::collections::BTreeMap::new();
     for row in rows {
         let component = owner.u8(row + 84)?;
-        let destination = (component, input(stock, component, owner.u16(row + 82)?)?);
+        let destination = (
+            component,
+            ability(&owner, row)?,
+            input(reader, stock, component, owner.u16(row + 82)?)?,
+        );
         assert!(remaining.insert(destination, row).is_none());
     }
     let mut consumed = 0;
@@ -82,13 +87,17 @@ pub(super) fn dynamic(
         let rows = target.array(target.pointer(24)? + 88, 88, Some(0x80803B06))?;
         assert!(!rows.is_empty());
         for to in rows {
-            let destination = (target.u8(to + 76)?, target.u16(to + 74)?);
+            let destination = (
+                target.u8(to + 76)?,
+                target.u16(to + 72)?,
+                target.u16(to + 74)?,
+            );
             let from = remaining
                 .remove(&destination)
                 .ok_or("Extra or duplicate modifier")?;
             let operation = owner.u8(from + 52)?;
             assert_eq!(target.u8(to + 44)?, operation);
-            assert_eq!(target.u16(to + 72)?, u16::MAX);
+            assert_eq!(target.u16(to + 72)?, ability(&owner, from)?);
             let amount = owner.f32(from + 48)?
                 * unit(reader, stock, owner.u8(from + 84)?, owner.u16(from + 82)?)?;
             let factor = target.f32(to + 40)?;
@@ -159,12 +168,35 @@ pub(super) fn check(
     let graph = reader.read(source.u32(s + 16)?)?;
     let owners = graph.array(32, 12, Some(0x80800715))?;
     if owners.len() == 2 {
+        let owner = reader.read(graph.u32(owners[0])?)?;
+        if owner.u32(owner.pointer(24)? - 4)? == 0x808029C3 {
+            return connected::check(reader, stock, emitted, &graph, native.u32(n + 16)?);
+        }
+        let companion = reader.read(graph.u32(owners[1])?)?;
+        if companion.u32(companion.pointer(24)? - 4)? == 0x808020DE {
+            let tag = native.u32(n + 16)?;
+            status(reader, stock, emitted, &owner, tag, 2)?;
+            let converted = emitted.tag(tag, Some(0x80809C0F))?;
+            let targets = converted.array(16, 12, Some(0x80809C04))?;
+            assert_eq!(targets.len(), 2);
+            let tag = converted.u32(targets[1])?;
+            assert!(stock.tag(tag, None).is_err());
+            let target = emitted.tag(tag, Some(0x80809C36))?;
+            return modifier_rows(
+                reader,
+                stock,
+                &companion,
+                &target,
+                tag,
+                companion.array(companion.pointer(24)? + 96, 96, Some(0x8080205F))?,
+            );
+        }
         return conditional_status(reader, stock, emitted, &graph, native.u32(n + 16)?);
     }
     assert_eq!(owners.len(), 1);
     let owner = reader.read(graph.u32(owners[0])?)?;
     if owner.u32(owner.pointer(24)? - 4)? == 0x80802698 {
-        return status(reader, stock, emitted, &owner, native.u32(n + 16)?);
+        return status(reader, stock, emitted, &owner, native.u32(n + 16)?, 1);
     }
     let rows = owner.array(owner.pointer(24)? + 96, 96, Some(0x8080205F))?;
     let graph_tag = native.u32(n + 16)?;
@@ -181,15 +213,26 @@ pub(super) fn check(
         "Modifier must be private"
     );
     let target = emitted.tag(target_tag, Some(0x80809C36))?;
+    modifier_rows(reader, stock, &owner, &target, target_tag, rows)
+}
+
+fn modifier_rows(
+    reader: &Source,
+    stock: &mut Reader,
+    owner: &Payload,
+    target: &Payload,
+    target_tag: u32,
+    rows: Vec<usize>,
+) -> CheckResult<()> {
     let settings = target.array(target.pointer(24)? + 88, 88, Some(0x80803B06))?;
     assert_eq!(rows.len(), settings.len());
     for (from, to) in rows.into_iter().zip(settings) {
         assert_eq!(owner.u8(from + 84)?, target.u8(to + 76)?);
         assert_eq!(
-            input(stock, owner.u8(from + 84)?, owner.u16(from + 82)?)?,
+            input(reader, stock, owner.u8(from + 84)?, owner.u16(from + 82)?)?,
             target.u16(to + 74)?
         );
-        assert_eq!(target.u16(to + 72)?, u16::MAX);
+        assert_eq!(target.u16(to + 72)?, ability(owner, from)?);
         let op = owner.u8(from + 52)?;
         assert_eq!(op, target.u8(to + 44)?);
         let amount = owner.f32(from + 48)?
@@ -226,9 +269,51 @@ pub(super) fn check(
     Ok(())
 }
 
+/// Original dispatchers select a signed ability slot before selecting its numeric input.
+/// Other component interfaces ignore that field and use the native unused sentinel.
+fn ability(owner: &Payload, row: usize) -> CheckResult<u16> {
+    if owner.u8(row + 84)? == 9 {
+        let slot = owner.u16(row + 80)?;
+        assert!(slot <= 2, "Unqualified ability slot");
+        Ok(slot)
+    } else {
+        assert_eq!(owner.u16(row + 80)?, 0);
+        Ok(u16::MAX)
+    }
+}
+
 /// Independent native layout oracles for the ordinal changes. Read the actual
 /// stock modifier rows for precision, directional recoil and paired flinch.
-fn input(stock: &mut Reader, component: u8, source: u16) -> CheckResult<u16> {
+fn input(reader: &Source, stock: &mut Reader, component: u8, source: u16) -> CheckResult<u16> {
+    if component == 10 {
+        assert!(matches!(source, 5 | 6));
+        // Original provider records join these selectors to the concrete numeric
+        // getter. The final timing consumers use the smaller of inputs five and six.
+        for (provider, interface, implementation) in [
+            (
+                std::sync::Arc::new(reader.read(0x80A74685)?),
+                0x80802764,
+                0x8080246C,
+            ),
+            (
+                stock.tag(0x80BB274F, Some(0x80809C54))?,
+                0x80803B56,
+                0x80803B53,
+            ),
+        ] {
+            assert_eq!(provider.u32(12)?, interface);
+            let methods = provider.array(16, 24, None)?;
+            assert_eq!(methods.len(), 6);
+            assert_eq!(provider.u32(methods[0])?, implementation);
+            assert_eq!(provider.u32(methods[0] + 4)?, 2);
+            assert_eq!(provider.u32(methods[2])?, implementation);
+            assert_eq!(provider.u32(methods[2] + 4)?, 4);
+        }
+        return Ok(source);
+    }
+    if component == 2 && matches!(source, 30 | 38 | 39 | 45 | 47 | 49) {
+        return compiled_input(reader, stock, source);
+    }
     // These owners are reached from the native finished perk catalog, including
     // Fan Fire, Thunderer, Zen Moment, Dornröschen and Strange Protractor.
     let witness = match (component, source) {
@@ -246,6 +331,7 @@ fn input(stock: &mut Reader, component: u8, source: u16) -> CheckResult<u16> {
         (5, 6) => Some((0x80BB7424, 2)),
         (5, 7) => Some((0x80BB7424, 3)),
         (5, 9) => Some((0x80BC57D6, 0)),
+        (9, 0) => Some((0x80FEF68E, 0)),
         (13, 1) => Some((0x81532C99, 0)),
         (14, 15) => Some((0x80FF05F5, 1)),
         _ => None,
@@ -275,6 +361,92 @@ fn input(stock: &mut Reader, component: u8, source: u16) -> CheckResult<u16> {
     Ok(owner.u16(rows[index] + 74)?)
 }
 
+/// Original compiled stat programs independently identify these destination inputs.
+/// No importer mapping or authored recipe supplies the expected native ordinal.
+fn compiled_input(reader: &Source, stock: &mut Reader, input: u16) -> CheckResult<u16> {
+    let (source_tag, native_tag) = if matches!(input, 38 | 39) {
+        (0x80AA2D68, 0x8152A4F5)
+    } else {
+        (0x80AA2D0A, 0x80FF0147)
+    };
+    let source = reader.read(source_tag)?;
+    let native = stock.tag(native_tag, Some(0x80809C36))?;
+    let from = compiled_entries(&source, 0x80800184, 0x80802945, 0x80802013)?;
+    let to = compiled_entries(&native, 0x80809FBD, 0x80803975, 0x80803981)?;
+    let speed = if input == 38 {
+        Some(compiled_input(reader, stock, 39)?)
+    } else {
+        None
+    };
+    let mut destinations = BTreeSet::new();
+    for (mut row, stat) in from
+        .into_iter()
+        .filter(|(r, _)| r[0] == 2 && r[1] == u32::from(input))
+    {
+        if let Some(speed) = speed {
+            assert_eq!(
+                (row[3], row[4], row[5], row[13]),
+                (2, 2, 39, 0.5f32.to_bits())
+            );
+            row[5] = u32::from(speed);
+        }
+        // Entry order and destination ordinal are the only independent fields.
+        row[1] = 0;
+        row[19] = 0;
+        let mut matched = false;
+        for (candidate, target_stat) in &to {
+            let mut body = *candidate;
+            let destination = body[1];
+            body[1] = 0;
+            body[19] = 0;
+            if row == body && stat == *target_stat {
+                destinations.insert(u16::try_from(destination)?);
+                matched = true;
+            }
+        }
+        assert!(matched, "Original stat route has no native equivalent");
+    }
+    assert_eq!(
+        destinations.len(),
+        1,
+        "Stat translator does not uniquely identify input {input}"
+    );
+    Ok(*destinations.first().unwrap())
+}
+
+fn compiled_entries(
+    owner: &Payload,
+    marker: u32,
+    group: u32,
+    entry: u32,
+) -> CheckResult<Vec<([u32; 20], Option<u32>)>> {
+    let mut entries = Vec::new();
+    for at in (12..owner.0.len().saturating_sub(24)).step_by(4) {
+        if owner.u32(at)? != group || owner.u32(at - 12)? != marker {
+            continue;
+        }
+        let count = usize::try_from(owner.u64(at - 8)?)?;
+        assert!((1..32).contains(&count));
+        for group in (at + 8..at + 8 + count * 48).step_by(48) {
+            let stats = owner.array(group, 56, None)?;
+            for row in owner.array(group + 16, 80, Some(entry))? {
+                let mut words = [0; 20];
+                for (index, word) in words.iter_mut().enumerate() {
+                    *word = owner.u32(row + index * 4)?;
+                }
+                let stat = words[7]
+                    .checked_sub(0x1E00)
+                    .and_then(|channel| stats.get(channel as usize / 32))
+                    .map(|&row| owner.u32(row + 32))
+                    .transpose()?;
+                entries.push((words, stat));
+            }
+        }
+    }
+    assert!(!entries.is_empty());
+    Ok(entries)
+}
+
 fn unit(reader: &Source, stock: &mut Reader, component: u8, input: u16) -> CheckResult<f32> {
     if (component, input) != (13, 1) {
         return Ok(1.0);
@@ -293,20 +465,36 @@ fn unit(reader: &Source, stock: &mut Reader, component: u8, input: u16) -> Check
     Ok(target.f32(n + 40)? / source.f32(s + 48)?)
 }
 
+fn host_competition(source: &Payload, target: &Payload) -> CheckResult<()> {
+    let s = source.pointer(24)?;
+    let n = target.pointer(24)?;
+    let priority = i32::from_le_bytes(source.bytes::<4>(s + 0x17C)?);
+    assert_eq!(target.u8(n + 0x58)?, source.u8(s + 0xB0)?);
+    assert_eq!(target.bytes::<3>(n + 0x59)?, [0; 3]);
+    assert_eq!(target.f32(n + 0x5C)?, priority as f32);
+    let instance = usize::try_from(target.u64(n + 0x50)?)?;
+    assert_eq!(target.u32(n + 0x4C)?, 0x80803A60);
+    assert_eq!(target.u32(instance + 4)?, 0x80803A61);
+    assert_eq!(target.u64(instance + 8)?, (n + 0x48) as u64);
+    Ok(())
+}
+
 fn status(
     reader: &Source,
     stock: &mut Reader,
     emitted: &mut Reader,
     source: &Payload,
     graph: u32,
+    owner_count: usize,
 ) -> CheckResult<()> {
     assert!(stock.tag(graph, None).is_err());
     let graph = emitted.tag(graph, Some(0x80809C0F))?;
     let owners = graph.array(16, 12, Some(0x80809C04))?;
-    assert_eq!(owners.len(), 1);
+    assert_eq!(owners.len(), owner_count);
     let tag = graph.u32(owners[0])?;
     assert!(stock.tag(tag, None).is_err());
     let target = emitted.tag(tag, Some(0x80809C36))?;
+    host_competition(source, &target)?;
     let from = source.pointer(24)? + 0xF0;
     let to = target.pointer(24)? + 0xE0;
     assert_eq!(target.u32(target.pointer(24)? - 4)?, 0x80804205);
@@ -388,6 +576,7 @@ fn conditional_status(
         let a = source.pointer(24)?;
         let b = target.pointer(24)?;
         if source.u32(a - 4)? == 0x80802698 {
+            host_competition(&source, &target)?;
             assert_eq!(target.u32(b - 4)?, 0x80804205);
             let (h, k) = (a + 0xF0, b + 0xE0);
             hud::check(

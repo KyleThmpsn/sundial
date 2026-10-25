@@ -529,7 +529,7 @@ fn remove_ring(ui: &mut egui::Ui, index: usize) -> bool {
 fn preview_square(ui: &mut egui::Ui) -> egui::Rect {
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(PREVIEW), egui::Sense::hover());
     named_control(response, "Pattern Preview").on_hover_text(
-        "Reference circle is 100% spread. Wider patterns scale to fit. Exact placement varies",
+        "Reference circle is 100% spread. Wider patterns scale to fit. Exact placement varies.",
     );
     rect
 }

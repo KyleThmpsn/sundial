@@ -56,6 +56,31 @@ fn enter(app: &mut PackageAuthoringApp, ctx: &egui::Context, name: &str, value: 
     );
 }
 
+/// Scrolls the activity fields by `delta` points with the pointer over the text `over`, then lets
+/// the scroll animation settle.
+fn scroll(app: &mut PackageAuthoringApp, ctx: &egui::Context, over: &str, delta: f32) {
+    let output = frame(app, ctx, vec![]);
+    let at = label(&output, over)
+        .unwrap_or_else(|| panic!("Missing {over}"))
+        .center();
+    frame(
+        app,
+        ctx,
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, delta),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            },
+        ],
+    );
+    for _ in 0..30 {
+        frame(app, ctx, vec![]);
+    }
+}
+
 #[test]
 #[allow(clippy::cognitive_complexity)]
 fn activity_library_edit_save_selection_and_conflict_lifecycle() {
@@ -84,10 +109,14 @@ fn activity_library_edit_save_selection_and_conflict_lifecycle() {
     click(&mut app, &ctx, "Example Activity");
     enter(&mut app, &ctx, "Activity Title", "Changed Activity");
     enter(&mut app, &ctx, "Activity Internal Name", "pvp_changed");
+    enter(&mut app, &ctx, "Activity Destination", "Reach Arenas");
     click(&mut app, &ctx, "Automatic");
     click(&mut app, &ctx, "Blocked");
+    // The switches sit below the fields' visible height.
+    scroll(&mut app, &ctx, "Vehicle Summoning", -200.0);
     click(&mut app, &ctx, "Ambient Audio");
     click(&mut app, &ctx, "Death Boundaries");
+    scroll(&mut app, &ctx, "Vehicle Summoning", 200.0);
     let pixels = image::RgbaImage::from_pixel(32, 18, image::Rgba([7, 37, 91, 255]));
     app.activity_editor.as_mut().unwrap().recipe.image =
         Some(crate::presentation::Artwork::from_source(pixels).unwrap());
@@ -102,11 +131,13 @@ fn activity_library_edit_save_selection_and_conflict_lifecycle() {
     let saved: serde_json::Value = serde_json::from_slice(&saved_bytes).unwrap();
     assert_eq!(saved["title"], "Changed Activity");
     assert_eq!(saved["name"], "pvp_changed");
+    assert_eq!(saved["destination"], "Reach Arenas");
     assert_eq!(saved["source"], source);
     assert_eq!(saved["options"]["vehicle_summoning"], false);
     assert_eq!(saved["options"]["ambient_audio"], false);
     assert_eq!(saved["options"]["death_boundaries"], false);
     let reloaded = crate::map::load_recipe(&path).unwrap();
+    assert_eq!(reloaded.destination.as_deref(), Some("Reach Arenas"));
     assert_eq!(
         reloaded.image.unwrap().pixels().get_pixel(0, 0).0,
         [7, 37, 91, 255]

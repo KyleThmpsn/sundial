@@ -21,7 +21,34 @@ struct PrivatePlugSource {
     classification_perk_index: Option<usize>,
 }
 
-/// Reads the classification template from a donor, recording its one visible finished perk.
+/// Chooses a visible row only when the donor's visible perks agree on tooltip grouping.
+fn tooltip_perk(
+    sources: &sources::ProjectSources,
+    indices: &[u16],
+) -> AuthoringResult<Option<usize>> {
+    let mut selected = None;
+    let mut category = None;
+    for &index in indices {
+        let row =
+            finished_sandbox_perk_at(&sources.stock_finished_sandbox_perks, usize::from(index))
+                .map_err(invalid)?;
+        let Some(detail) = row.detail else { continue };
+        if read_u16(&detail, 0)? == u16::MAX {
+            continue;
+        }
+        let value = read_u32(&detail, 20)?;
+        if category.is_some_and(|previous| previous != value) {
+            return Err(invalid(
+                "Classification donor has conflicting visible tooltip groups",
+            ));
+        }
+        category = Some(value);
+        selected.get_or_insert(usize::from(index));
+    }
+    Ok(selected)
+}
+
+/// Reads the classification template and a representative visible finished perk.
 fn read_plug_classification(
     sources: &sources::ProjectSources,
     hash: u32,
@@ -63,23 +90,7 @@ fn read_plug_classification(
         )?),
         "classification source strings",
     )?;
-    for perk in weapon_sandbox_perks(&definition)? {
-        let row =
-            finished_sandbox_perk_at(&sources.stock_finished_sandbox_perks, usize::from(perk))
-                .map_err(invalid)?;
-        if row
-            .detail
-            .as_ref()
-            .is_some_and(|detail| read_u16(detail, 0).ok() != Some(u16::MAX))
-            && classification_perk_index
-                .replace(usize::from(perk))
-                .is_some()
-        {
-            return Err(invalid(
-                "Classification donor has more than one visible finished perk",
-            ));
-        }
-    }
+    *classification_perk_index = tooltip_perk(sources, &weapon_sandbox_perks(&definition)?)?;
     crate::plug_classification::PlugClassification::from_template(&definition, &strings)
 }
 
@@ -179,6 +190,39 @@ fn read_private_plug_source(
         .classification_donor_hash
         .map(|hash| read_plug_classification(sources, hash, &mut classification_perk_index))
         .transpose()?;
+    if variant.replace_effects && !variant.sandbox_perks.is_empty() {
+        // Independent programs can borrow finished rows from a different kind of perk.
+        // The visible tooltip belongs to the plug's classification, not that runtime carrier.
+        if variant.classification_donor_hash.is_none() {
+            classification_perk_index = tooltip_perk(sources, &perk_indices)?;
+        }
+        if classification_perk_index.is_none() {
+            let layout = match classification {
+                Some(layout) => layout,
+                None => crate::plug_classification::PlugClassification::from_template(
+                    &definition,
+                    &strings,
+                )?,
+            };
+            if layout.category == 0x67FB_A961 {
+                return Err(invalid(
+                    "Intrinsic classification donor has no visible tooltip row",
+                ));
+            }
+            // Stat-only layouts such as barrels have no finished-perk presentation.
+            // Borrow the ordinary trait's neutral grouping without changing the plug itself.
+            read_plug_classification(
+                sources,
+                crate::perk::DEFAULT_PLUG_LAYOUT,
+                &mut classification_perk_index,
+            )?;
+            if classification_perk_index.is_none() {
+                return Err(invalid(
+                    "Default trait classification has no visible tooltip row",
+                ));
+            }
+        }
+    }
     Ok(PrivatePlugSource {
         cosmetic,
         item_index,
@@ -1217,7 +1261,7 @@ impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_, '_> {
     fn perk(
         &mut self,
         perk: &ResolvedPrivateSandboxPerk,
-        moves: &[(u32, u32)],
+        moves: &crate::subclass::compile::Moves,
     ) -> AuthoringResult<u16> {
         self.append(perk, moves).map(|(index, _)| index)
     }
@@ -1225,7 +1269,7 @@ impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_, '_> {
     fn retargeted(
         &mut self,
         perk: &ResolvedPrivateSandboxPerk,
-        moves: &[(u32, u32)],
+        moves: &crate::subclass::compile::Moves,
     ) -> AuthoringResult<u16> {
         let (index, moved) = self.append(perk, moves)?;
         if moved == 0 {
@@ -1327,20 +1371,24 @@ fn author_copy(
     )?;
     // The damage type reaches the graphs' damage profiles through private copies, and the
     // projectiles swapped in take it too, unless their swaps name a type of their own. A
-    // projectile two swaps fire is copied once, so their types must agree.
+    // projectile two swaps fire is copied once, so the types they deal must agree.
     let mut typed = Vec::with_capacity(replacements.len());
     for &replacement in &replacements {
         let modes = swaps
             .iter()
             .filter(|swap| swap.replacement == replacement)
-            .filter_map(|swap| swap.damage_type.map(crate::subclass::damage_mode))
+            .map(|swap| {
+                swap.damage_type
+                    .map(crate::subclass::damage_mode)
+                    .or(damage_type)
+            })
             .collect::<std::collections::BTreeSet<_>>();
         if modes.len() > 1 {
             return Err(invalid(format!(
                 "{name} fires projectile 0x{replacement:08X} with two damage types"
             )));
         }
-        typed.push((replacement, modes.into_iter().next()));
+        typed.push((replacement, modes.into_iter().next().flatten()));
     }
     if damage_type.is_some() || typed.iter().any(|(_, mode)| mode.is_some()) {
         progress.start(&format!("Changing Damage Type: {name}"));
@@ -1430,7 +1478,7 @@ impl RecordCompiler<'_, '_, '_> {
     fn append(
         &mut self,
         perk: &ResolvedPrivateSandboxPerk,
-        moves: &[(u32, u32)],
+        moves: &crate::subclass::compile::Moves,
     ) -> AuthoringResult<(u16, usize)> {
         let first = self.catalog.private_perk_runtime_new_tags.len();
         let (index, action) = append_effect_at(
@@ -1455,8 +1503,21 @@ impl RecordCompiler<'_, '_, '_> {
                 == action
             {
                 let payload = &mut self.catalog.private_perk_runtime_new_tags[ordinal].payload;
-                let moved = sundial::package_authoring::ability_reference::retarget(payload, moves)
-                    .map_err(invalid)?;
+                if let Some((_, entity)) =
+                    sundial::package_authoring::ability_reference::references(payload)
+                        .map_err(invalid)?
+                        .into_iter()
+                        .find(|(_, entity)| moves.ambiguous.contains(entity))
+                {
+                    return Err(validation(format!(
+                        "A Specific Ability condition names ability 0x{entity:08X}, but this \
+                         entry is selected beside more than one form of it. Give the perk to each \
+                         alternative instead"
+                    )));
+                }
+                let moved =
+                    sundial::package_authoring::ability_reference::retarget(payload, &moves.to)
+                        .map_err(invalid)?;
                 return Ok((index, moved));
             }
         }

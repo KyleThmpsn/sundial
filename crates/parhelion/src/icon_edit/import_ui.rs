@@ -24,9 +24,7 @@ impl ImageImport {
         let result = match receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                Err("Image import stopped unexpectedly. Please try again.".to_owned())
-            }
+            Err(TryRecvError::Disconnected) => Err("Image import stopped unexpectedly.".to_owned()),
         };
         self.pending = None;
         self.accept(result, draft);

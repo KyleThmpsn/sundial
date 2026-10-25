@@ -47,7 +47,7 @@ fn choices(
             ui,
             &mut query,
             false,
-            ui.available_width() - 60.0,
+            ui.available_width() - super::CLEAR_WIDTH,
             "Search Labels",
         );
     });

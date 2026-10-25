@@ -82,10 +82,14 @@ struct Shared {
     atmosphere: Option<String>,
     /// The symbol of the distance lookup the map's atmosphere names.
     atmosphere_lookup: Option<String>,
+    /// The symbol of the open image the map's atmosphere names at `+0x9C`.
+    atmosphere_image: Option<String>,
     /// The level's occlusion probes, each a position and a sky visibility.
     occlusion: Vec<[f32; 4]>,
     /// The level's cubemap volumes.
     cubemaps: Vec<parhelion_import::halo_reach::level::native::CubemapVolume>,
+    /// The level's lights.
+    lights: Vec<parhelion_import::halo_reach::level::native::lights::MapLight>,
     light: Option<[f32; 3]>,
     /// The nodes no area's chain reaches, which every area loads.
     everywhere: BTreeSet<usize>,
@@ -111,6 +115,7 @@ impl Shared {
             .chain(area.ambience.as_deref())
             .chain(self.atmosphere.as_deref())
             .chain(self.atmosphere_lookup.as_deref())
+            .chain(self.atmosphere_image.as_deref())
             .chain(self.cubemaps.iter().map(|volume| volume.texture.as_str()))
             .collect()
     }
@@ -163,6 +168,24 @@ impl Shared {
     }
 }
 
+/// The chain's lights for converted `lights` of map `name`, each with an occlusion identifier of
+/// its own.
+fn map_lights(
+    lights: &[parhelion_import::halo_reach::level::native::lights::MapLight],
+    name: &str,
+) -> Vec<chain::Light> {
+    lights
+        .iter()
+        .enumerate()
+        .map(|(index, light)| chain::Light {
+            position: light.position,
+            range: light.range,
+            color: light.color,
+            identity: fnv1a64(&format!("parhelion/map/{name}/light/{index}")) as u32 | 1,
+        })
+        .collect()
+}
+
 fn fnv1a64(text: &str) -> u64 {
     text.bytes().fold(0xCBF2_9CE4_8422_2325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
@@ -212,6 +235,7 @@ impl Geometry {
         let sky = chain.sky_templates(manager)?;
         let atmosphere = chain.atmosphere_volume()?;
         let atmosphere_lookup = chain.atmosphere_lookup()?;
+        let atmosphere_image = chain.atmosphere_image()?;
         let occlusion_probes = chain.occlusion_probes()?;
         let cubemaps = chain.cubemaps();
         let maps = sundial::package_authoring::parhelion_data_directory()
@@ -272,6 +296,7 @@ impl Geometry {
             }),
             atmosphere,
             atmosphere_lookup,
+            atmosphere_image,
             occlusion_probes,
             cubemaps,
         };
@@ -348,6 +373,7 @@ impl Geometry {
                 converted
             };
         chain.set_light(converted.light);
+        chain.set_lights(map_lights(&converted.lights, name));
         if converted.areas.len() != areas.len()
             || converted
                 .areas
@@ -374,8 +400,10 @@ impl Geometry {
             visibility: converted.visibility,
             atmosphere: converted.atmosphere,
             atmosphere_lookup: converted.atmosphere_lookup,
+            atmosphere_image: converted.atmosphere_image,
             occlusion: converted.occlusion,
             cubemaps: converted.cubemaps,
+            lights: converted.lights,
             light: converted.light,
             everywhere: BTreeSet::new(),
             source: source.clone(),
@@ -415,6 +443,7 @@ impl Geometry {
         }
         let mut chain = Chain::load(directory, manager, companions, world, name)?;
         chain.set_light(self.shared.light);
+        chain.set_lights(map_lights(&self.shared.lights, name));
         Self::assemble(chain, self.shared.clone(), index, name, None, None)
     }
 
@@ -830,6 +859,12 @@ impl Geometry {
             .as_deref()
             .map(tag)
             .transpose()?;
+        let image = self
+            .shared
+            .atmosphere_image
+            .as_deref()
+            .map(tag)
+            .transpose()?;
         let cubemaps = self
             .shared
             .cubemaps
@@ -856,6 +891,7 @@ impl Geometry {
             sounds,
             atmosphere,
             lookup,
+            image,
             &self.shared.occlusion,
             clusters,
             &cubemaps,

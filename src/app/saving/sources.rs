@@ -88,9 +88,12 @@ pub(in crate::app) fn save_changed_sources(
         json_changed,
         account_changed,
         save_json,
+        || super::super::settings::require_game_closed(super::super::platform::destiny_is_running()),
     )
 }
 
+/// Saves the changed sources with `save_json` for settings and `require_closed` as the account
+/// writer's game check, which it runs again after its backup and just before it commits.
 pub(in crate::app) fn save_changed_sources_with_json(
     document: &mut WorkspaceDocument,
     persisted_document: &WorkspaceDocument,
@@ -103,6 +106,7 @@ pub(in crate::app) fn save_changed_sources_with_json(
         &serde_json::Value,
         bool,
     ) -> Result<SaveJsonResult, SaveJsonError>,
+    require_closed: impl FnMut() -> Result<(), String>,
 ) -> Result<WorkspaceSaveReceipt, WorkspaceSaveError> {
     let mut context = SaveContext {
         document,
@@ -114,7 +118,7 @@ pub(in crate::app) fn save_changed_sources_with_json(
         &mut context,
         json_changed,
         account_changed,
-        |context| context.document.save_account(),
+        |context| context.document.save_account(require_closed),
         |context| save_context_json(context, save_json),
         |context, receipt| {
             context.document.rollback_account_save(receipt)?;

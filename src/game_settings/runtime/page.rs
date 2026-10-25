@@ -219,16 +219,6 @@ fn draw_group(
     changed
 }
 
-#[cfg(test)]
-pub(super) fn draw_field(
-    ui: &mut egui::Ui,
-    document: &mut Value,
-    field: Field,
-    account_available: bool,
-) -> bool {
-    draw_field_with_trace(ui, document, field, account_available, false)
-}
-
 fn draw_field_with_trace(
     ui: &mut egui::Ui,
     document: &mut Value,
@@ -269,7 +259,11 @@ fn draw_field_with_trace(
                 ui.label(field.label);
                 let mut number = value.as_u64().unwrap_or(min);
                 requested = ui
-                    .add(egui::DragValue::new(&mut number).range(min..=max).clamp_existing_to_range(false))
+                    .add(
+                        egui::DragValue::new(&mut number)
+                            .range(min..=max)
+                            .clamp_existing_to_range(false),
+                    )
                     .changed();
                 value = Value::from(number);
             }
@@ -288,11 +282,18 @@ fn draw_field_with_trace(
                     .selected_text(choice_label(&selected))
                     .show_ui(ui, |ui| {
                         for choice in choices {
-                            if *choice == "trace" && !trace_logging && value.as_str() != Some("trace") {
+                            if *choice == "trace"
+                                && !trace_logging
+                                && value.as_str() != Some("trace")
+                            {
                                 continue;
                             }
                             requested |= ui
-                                .selectable_value(&mut selected, (*choice).to_owned(), choice_label(choice))
+                                .selectable_value(
+                                    &mut selected,
+                                    (*choice).to_owned(),
+                                    choice_label(choice),
+                                )
                                 .changed();
                         }
                     });
@@ -304,7 +305,7 @@ fn draw_field_with_trace(
         crate::ui::help::info(ui, field.help);
         if document.pointer(field.path).is_none() {
             ui.label(egui::RichText::new("Using Default").small().weak())
-                .on_hover_text("No value is saved for this setting, so Sunrise uses its built-in default. Change this control to save your own value.");
+                .on_hover_text("Not saved. Sunrise uses its built-in default.");
         }
     });
     let error_id = ui.make_persistent_id(("runtime-error", field.path));

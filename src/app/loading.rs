@@ -262,7 +262,11 @@ impl SundialApp {
         );
     }
 
-    pub(super) fn apply_install_load(&mut self, pending: PendingInstallLoad, manifest: Manifest) {
+    pub(super) fn apply_install_load(
+        &mut self,
+        pending: PendingInstallLoad,
+        mut manifest: Manifest,
+    ) {
         let PendingInstallLoad {
             install_path,
             settings_path,
@@ -273,6 +277,7 @@ impl SundialApp {
         self.settings_path = settings_path;
         self.settings_layout = settings_layout;
         self.runtime_state = RuntimeState::inspect(&self.install_path);
+        manifest.adopt_package_access(&self.manifest, self.package_authoring_open);
         self.manifest = manifest;
         self.armor_stats_adjuster = equipment::ArmorStatsAdjusterState::default();
         self.hash_inspection.reset();
@@ -383,7 +388,11 @@ impl SundialApp {
                                 self.apply_install_load(pending, manifest);
                             }
                         }
-                        (CatalogTaskKind::Rebuild, Ok(manifest)) => {
+                        (CatalogTaskKind::Rebuild, Ok(mut manifest)) => {
+                            // Previews and viewers keep the access they were handed, so the
+                            // rebuilt catalog takes it over rather than leaving them paused.
+                            manifest
+                                .adopt_package_access(&self.manifest, self.package_authoring_open);
                             self.manifest = manifest;
                             self.armor_stats_adjuster =
                                 equipment::ArmorStatsAdjusterState::default();

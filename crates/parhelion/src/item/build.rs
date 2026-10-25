@@ -473,6 +473,8 @@ fn compile_canonical(
                 }),
             &runtime.impacts,
             &rows,
+            runtime.private_perk_allocator,
+            &mut runtime.private_perk_tags,
         )?;
         // The build's own copies of ability entities follow their banks' moves too.
         crate::ability::banks::retarget_new_tags(

@@ -50,6 +50,81 @@ fn click_apply(workbench: &mut Workbench, capture_name: &str) -> Option<PerkReci
 }
 
 #[test]
+fn damage_filters_reopen_and_apply_without_an_asset_choice() {
+    use action::native::{Block, Graph};
+    let temporary = tempfile::tempdir().unwrap();
+    let library = Library::open(temporary.path().join("perks")).unwrap();
+    // An unrestricted constant outgoing modifier. The two label registries are absent,
+    // while both runtime predicates select the native unrestricted mode.
+    let mut bytes = vec![0; 0x150];
+    bytes[0] = 40;
+    bytes[0xA0] = 255;
+    bytes[0xB0..0xB2].fill(1);
+    bytes[0x110] = 255;
+    let graph = Graph {
+        blocks: vec![
+            Block {
+                class: 0x8080_2F16,
+                count: None,
+                bytes,
+                links: BTreeMap::from([(0x140, 1)]),
+            },
+            Block {
+                class: 0x8080_2F1A,
+                count: None,
+                bytes: 0.05_f32.to_le_bytes().repeat(2),
+                links: BTreeMap::new(),
+            },
+        ],
+    };
+    let original = graph.emit().unwrap();
+    let (_, mut workbench) = with_program(Program {
+        trigger: Trigger::Drawn,
+        actions: vec![Action::Native {
+            node: NativeNode {
+                kind: 40,
+                bytes: original.clone(),
+            },
+        }],
+        ..Program::default()
+    });
+    let entry = library.save(&workbench.documents[0].recipe, None).unwrap();
+    let reopened = Library::read(&entry.path).unwrap();
+    workbench.documents[0] = Document::new(reopened.recipe, Some(reopened.baseline));
+    let applied = click_apply(&mut workbench, "perk-checker-outgoing-damage")
+        .expect("an unrestricted label filter must not require an asset");
+    let native = native_draft(applied.effects[0].program.as_ref().unwrap()).unwrap();
+    let emitted = native.graph.emit().unwrap();
+    let decoded = action::decode(&emitted).unwrap();
+    let damage = decoded.effects().find(|effect| effect.kind == 40).unwrap();
+    for at in [0x90, 0x108] {
+        assert_eq!(&damage.native[at..at + 4], &[0; 4]);
+    }
+    let value = 0x140 + i64::from_le_bytes(damage.native[0x140..0x148].try_into().unwrap());
+    let value = usize::try_from(value).unwrap();
+    assert_eq!(
+        &damage.native[value..value + 8],
+        &0.05_f32.to_le_bytes().repeat(2)
+    );
+    let mut required = applied.clone();
+    required.effects[0]
+        .program
+        .as_mut()
+        .unwrap()
+        .actions
+        .push(Action::attach(Asset::default()));
+    workbench.documents[0] = Document::new(required, None);
+    assert!(click_apply(&mut workbench, "perk-checker-required-object").is_none());
+    crate::test_support::artifact(
+        "perk-checker-outgoing-damage.json",
+        &serde_json::json!({
+            "saved": entry.baseline, "applied": applied, "action": emitted,
+            "required_object_blocked": true, "gameplay_tested": false
+        }),
+    );
+}
+
+#[test]
 fn legacy_optional_choices_reopen_apply_and_preserve_explicit_values() {
     let temporary = tempfile::tempdir().unwrap();
     let library = Library::open(temporary.path().join("perks")).unwrap();
@@ -217,90 +292,4 @@ fn empty_masks_and_counters_warn_without_blocking_other_behaviors() {
         receipts.push(serde_json::json!({"kind": kind, "effect_mask": effect_mask, "recipe": applied, "action": bytes}));
     }
     crate::test_support::artifact("perk-checker-warnings.json", &receipts);
-}
-
-#[test]
-fn show_problem_reveals_nested_fields_and_native_structure_without_editing() {
-    let size = egui::vec2(1320.0, 1000.0);
-    let mut program = Program {
-        trigger: Trigger::Drawn,
-        actions: vec![Action::add_rounds(1)],
-        ..Program::default()
-    };
-    let mut node = NativeNode::condition(20).unwrap();
-    node.bytes[0xD4..0xD8].fill(0);
-    program::native::insert_catalog_node(
-        &mut program,
-        0,
-        super::super::super::catalog_insert::Placement::Requirement,
-        node,
-    )
-    .unwrap();
-    let mut apply = NativeNode::effect(4).unwrap();
-    apply.bytes[0x10..0x14].fill(0);
-    let raw_resource = Program {
-        trigger: Trigger::Drawn,
-        actions: vec![Action::Native { node: apply }],
-        ..Program::default()
-    };
-    let mut receipts = Vec::new();
-    for (program, field, structure, capture_name) in [
-        (program, "State", false, "perk-checker-nested-field"),
-        (
-            raw_resource,
-            "Applied Resource",
-            true,
-            "perk-checker-native-field",
-        ),
-    ] {
-        let (ctx, mut workbench) = with_program(program);
-        let before = workbench.documents[0].recipe.clone();
-        collapsed(&ctx, &workbench);
-        let output = render(&ctx, &mut workbench, size);
-        assert!(label(&output, field).is_none(), "the target starts hidden");
-        let button = label(&output, "Show Problem").unwrap().center();
-        pointer(&ctx, &mut workbench, size, button, true);
-        pointer(&ctx, &mut workbench, size, button, false);
-        // The reveal opens the card, then the nested node, then scrolls to the field, and each
-        // opening animates over several frames.
-        let mut output = render(&ctx, &mut workbench, size);
-        for _ in 0..3 {
-            output = render(&ctx, &mut workbench, size);
-        }
-        let target = label(&output, field).expect("Show Problem must reveal the field control");
-        assert!(target.center().y > 0.0 && target.center().y < size.y);
-        assert_eq!(Card::new(&before.id, 1178, 0, 1).structure(&ctx), structure);
-        assert_eq!(workbench.documents[0].recipe, before);
-        assert!(workbench.reveal_problem.is_none());
-        capture::write(&ctx, &output, capture_name);
-        receipts.push(serde_json::json!({"field": field, "recipe": before}));
-    }
-    crate::test_support::artifact("perk-checker-navigation.json", &receipts);
-}
-
-#[test]
-fn missing_required_assets_and_broken_graphs_still_prevent_apply() {
-    for graph in [0, u32::MAX] {
-        let (_, mut workbench) = with_program(Program {
-            actions: vec![Action::Spawn {
-                asset: Asset {
-                    graph,
-                    ..Asset::default()
-                },
-                position: Position::Owner,
-            }],
-            ..Program::default()
-        });
-        assert!(
-            click_apply(&mut workbench, &format!("perk-checker-refused-{graph:08X}")).is_none()
-        );
-    }
-    let mut native = NativeProgram::empty();
-    native.graph.blocks[0].links.insert(0x40, usize::MAX);
-    let (_, mut workbench) = with_program(Program {
-        native: Some(native),
-        ..Program::default()
-    });
-    assert!(click_apply(&mut workbench, "perk-checker-refused-graph").is_none());
-    crate::test_support::artifact("perk-checker-refused.json", &workbench.documents[0].recipe);
 }

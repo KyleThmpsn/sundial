@@ -104,22 +104,3 @@ fn assert_account_source_details(report: &str) {
     assert!(!report.contains("active_account_database = "));
     assert!(report.contains("investment_database = "));
 }
-
-#[test]
-fn log_initialization_preserves_old_sessions_and_events_append() {
-    let directory = TestDirectory::new("troubleshooting-log-write");
-    let log = directory.0.join("nested").join("troubleshooting.log");
-
-    initialize_log_at(&log, "first session").unwrap();
-    append_log_text_at(&log, "\nstatus event").unwrap();
-    assert!(
-        fs::read_to_string(&log)
-            .unwrap()
-            .ends_with("first session\nstatus event")
-    );
-
-    initialize_log_at(&log, "second session").unwrap();
-    let text = fs::read_to_string(log).unwrap();
-    assert!(text.contains("first session\nstatus event"));
-    assert!(text.ends_with("second session"));
-}

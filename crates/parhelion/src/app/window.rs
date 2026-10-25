@@ -162,5 +162,11 @@ impl PackageAuthoringUtility for Parhelion {
     fn save_on_exit(&mut self) {
         #[cfg(feature = "d2-model-importer")]
         self.app.importer.save_view();
+        // A last try for drafts the reader chose to exit without.
+        self.app.perk_workbench.unsaved_drafts();
+    }
+
+    fn unsaved_work(&mut self) -> Option<String> {
+        self.app.perk_workbench.unsaved_drafts()
     }
 }

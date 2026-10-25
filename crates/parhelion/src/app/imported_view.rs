@@ -48,11 +48,13 @@ fn read(recipe: &WeaponRecipe) -> Read {
                 .as_u64()
                 .and_then(|hash| u32::try_from(hash).ok())
                 .ok_or("Imported weapon identity missing")?;
-            reference.validate(item).map_err(|e| format!("{e:#}"))
+            reference
+                .validate_opened(item)
+                .map_err(|e| format!("{e:#}"))
         } else {
             let kind = crate::imported::kind(recipe.kind).ok_or("Unsupported source item kind")?;
             reference
-                .validate_reusable(kind)
+                .validate_reusable_opened(kind)
                 .map_err(|e| format!("{e:#}"))
         }
     };

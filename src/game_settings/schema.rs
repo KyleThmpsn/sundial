@@ -60,6 +60,8 @@ pub(super) const VERTICAL_SYNC_INTERVAL_KEY: &str = "vertical_sync_interval";
 pub(super) const FIELD_OF_VIEW_KEY: &str = "field_of_view";
 pub(super) const FIELD_OF_VIEW_MINIMUM: u64 = sundial_account::FIELD_OF_VIEW_MINIMUM;
 pub(super) const FIELD_OF_VIEW_MAXIMUM: u64 = sundial_account::FIELD_OF_VIEW_MAXIMUM;
+/// Destiny's own settings menu stops here. Sunrise accounts store values up to the maximum.
+pub(super) const FIELD_OF_VIEW_MENU_MAXIMUM: u64 = 105;
 pub(super) const KEY_BINDING_SOURCE_KEY: &str = "key_binding_source";
 
 // Older schemas only expose these preferences when they already contain them. Supported schemas

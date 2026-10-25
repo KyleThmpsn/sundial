@@ -676,7 +676,7 @@ impl PackageAuthoringApp {
         )
         .on_hover_text(
             "Shaders with an animated glow also light this weapon's glowing parts, such as sights \
-             and vents. Other parts stay as they are",
+             and vents. Other parts stay as they are.",
         )
         .on_disabled_hover_text("Imported models keep their own materials.");
     }
@@ -1128,7 +1128,7 @@ impl PackageAuthoringApp {
                 .horizontal_wrapped(|ui| {
                     style::heading(ui, "Weapon Stats", !donor_exact).on_hover_text(
                         "Each row includes the starting perks in its displayed value. The field \
-                         edits the weapon's own raw value. Hover a reading for its breakdown",
+                         edits the weapon's own raw value. Hover a reading for its breakdown.",
                     );
                     !donor_exact && style::reset_icon(ui, "Reset Weapon Stats")
                 })
@@ -1147,11 +1147,19 @@ impl PackageAuthoringApp {
                         );
                     self.draw_stat_group_picker(ui, Some(donor));
                 });
-            let warnings = self
+            let contributions = starting_plugs(self.catalog.as_ref(), &self.recipe, donor);
+            let magazine = self.magazine_reading(ui.ctx(), donor, &contributions);
+            let mut warnings = self
                 .rate_conversion_warning(donor)
                 .map(|warning| (super::stat_editor::ROUNDS_PER_MINUTE_HASH, warning))
                 .into_iter()
                 .collect::<Vec<_>>();
+            if magazine.as_ref().is_some_and(|reading| reading.now <= 0) {
+                warnings.push((
+                    super::stat_editor::MAGAZINE_HASH,
+                    "The game hides the Magazine row at 0".to_owned(),
+                ));
+            }
             // In the order the game lists the stats of the group the weapon displays with.
             let order = self
                 .recipe
@@ -1162,14 +1170,13 @@ impl PackageAuthoringApp {
                 .map_or_else(Vec::new, |(group, catalog)| {
                     catalog.stat_display_order(group)
                 });
-            let contributions = starting_plugs(self.catalog.as_ref(), &self.recipe, donor);
             draw_investment_stats(
                 ui,
                 &mut self.recipe.overrides.investment_stats,
                 &mut self.recipe.overrides.removed_investment_stats,
                 donor,
                 (self.show_internal_stats, &order),
-                &warnings,
+                (&warnings, magazine.as_ref()),
                 &contributions,
             );
         } else {

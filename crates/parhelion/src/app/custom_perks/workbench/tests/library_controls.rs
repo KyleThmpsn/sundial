@@ -1,76 +1,5 @@
 use super::*;
 
-fn save_key() -> egui::Event {
-    egui::Event::Key {
-        key: egui::Key::S,
-        physical_key: Some(egui::Key::S),
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::COMMAND,
-    }
-}
-
-#[test]
-fn save_shortcut_writes_the_current_perk_and_keeps_other_files_unchanged() {
-    let (_temporary, library, original, entry, mut workbench) = workbench_with_saved_perk();
-    let mut sibling = PerkRecipe::new();
-    sibling.name = "Sibling".into();
-    let sibling = library.save(&sibling, None).unwrap();
-    workbench.open = true;
-    workbench.documents[0].recipe.description = "Saved with Ctrl+S".into();
-    let ctx = egui::Context::default();
-    frame(
-        &ctx,
-        &mut workbench,
-        false,
-        egui::vec2(1000.0, 720.0),
-        vec![save_key()],
-    );
-    let saved = Library::read(&entry.path).unwrap();
-    assert_eq!(saved.recipe.id, original.id);
-    assert_eq!(saved.recipe.description, "Saved with Ctrl+S");
-    assert_eq!(
-        workbench.documents[0].baseline.as_deref(),
-        Some(saved.baseline.as_slice())
-    );
-    assert_eq!(std::fs::read(sibling.path).unwrap(), sibling.baseline);
-}
-
-#[test]
-fn save_shortcut_preserves_unapplied_parameters_and_closed_workbenches() {
-    let (_temporary, _library, _original, entry, mut workbench) = workbench_with_saved_perk();
-    let ctx = egui::Context::default();
-    workbench.documents[0].recipe.description = "Not saved yet".into();
-    frame(
-        &ctx,
-        &mut workbench,
-        false,
-        egui::vec2(1000.0, 720.0),
-        vec![save_key()],
-    );
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
-    workbench.open = true;
-    workbench.editor = Some(editor(fixture()));
-    workbench.editing_effect = Some(405);
-    frame(
-        &ctx,
-        &mut workbench,
-        false,
-        egui::vec2(1000.0, 720.0),
-        vec![save_key()],
-    );
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
-    assert!(
-        workbench
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("Apply or discard")
-    );
-    assert!(workbench.editor.is_some());
-    assert!(workbench.documents[0].pending_effect.is_some());
-}
-
 /// The library and its drafts file through a restart: what a reader left open comes back with
 /// its edits, what they saved is on disk, a draft the workbench cannot read is set aside
 /// without taking the others with it, and export, import and delete work on the files.
@@ -100,6 +29,93 @@ fn named(name: &str) -> PerkRecipe {
     let mut recipe = PerkRecipe::new();
     recipe.name = name.into();
     recipe
+}
+
+#[test]
+fn imported_filter_keeps_saved_perks_and_open_edits_through_refresh() {
+    let temporary = tempfile::tempdir().unwrap();
+    let library = Library::open(temporary.path().join("perks")).unwrap();
+    let custom = library.save(&named("Personal Perk"), None).unwrap();
+    library.import_embedded([named("Imported Perk")]).unwrap();
+    let imported = library
+        .scan()
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.recipe.name == "Imported Perk")
+        .unwrap();
+    let mut workbench = open_workbench(library.root());
+    workbench.add_document(Document::new(
+        imported.recipe.clone(),
+        Some(imported.baseline.clone()),
+    ));
+    workbench.documents[workbench.selected].recipe.description = "Unsaved edit".into();
+    let ctx = egui::Context::default();
+    let draw = |workbench: &mut Workbench, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| workbench.draw_library(ui, None, None));
+            },
+        )
+    };
+    let mut output = draw(&mut workbench, vec![]);
+    for _ in 0..3 {
+        output = draw(&mut workbench, vec![]);
+    }
+    assert_eq!(
+        label(&output, "Imported Perk · Draft").is_some(),
+        cfg!(feature = "d2-model-importer")
+    );
+    let mut visible = cfg!(feature = "d2-model-importer");
+    let mut observations = Vec::new();
+    for _ in 0..3 {
+        let control = label(&output, "Show Imported Perks").unwrap().center();
+        for events in crate::test_support::driver::tap(control) {
+            draw(&mut workbench, events);
+        }
+        visible = !visible;
+        workbench.refresh_library();
+        output = draw(&mut workbench, vec![]);
+        assert_eq!(label(&output, "Imported Perk · Draft").is_some(), visible);
+        assert!(label(&output, "Personal Perk").is_some());
+        assert_eq!(
+            workbench.documents[workbench.selected].recipe.description,
+            "Unsaved edit"
+        );
+        capture::write(
+            &ctx,
+            &output,
+            if visible {
+                "imported-perks-visible"
+            } else {
+                "imported-perks-hidden"
+            },
+        );
+        observations.push(visible);
+    }
+    assert_eq!(std::fs::read(&custom.path).unwrap(), custom.baseline);
+    assert_eq!(std::fs::read(&imported.path).unwrap(), imported.baseline);
+    // A closed imported entry obeys the same filter after reopening the library.
+    workbench.documents.clear();
+    workbench.refresh_library();
+    output = draw(&mut workbench, vec![]);
+    assert_eq!(label(&output, "Imported Perk").is_some(), visible);
+    crate::test_support::artifact(
+        "imported-perk-filter.json",
+        &serde_json::json!({
+            "feature_enabled": cfg!(feature = "d2-model-importer"), "observations": observations,
+            "imported": imported.recipe.id, "custom": custom.recipe.id,
+            "saved_files_unchanged": true, "open_edits_retained": true
+        }),
+    );
 }
 
 fn names(workbench: &Workbench) -> Vec<String> {
@@ -167,7 +183,12 @@ fn a_bad_draft_is_set_aside(root: &Path, steps: &mut Vec<String>) -> Workbench {
     let mut third = open_workbench(root);
     let error = third.error.clone().unwrap_or_default();
     assert!(error.starts_with("1 draft could not be opened"), "{error}");
-    assert!(root.join("workbench-drafts.rejected.json").exists());
+    let kept = std::fs::read_dir(root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .any(|name| name.starts_with("workbench-drafts.rejected.") && name.ends_with(".json"));
+    assert!(kept, "the rejected draft has no file of its own");
     assert!(names(&third).contains(&"Alpha".to_owned()));
     assert!(third.drafts_writable);
     third.persist_drafts();

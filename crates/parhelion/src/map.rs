@@ -70,6 +70,17 @@ pub(crate) struct Picture {
 const SCHEMA: u32 = 1;
 /// Sunrise keeps an internal name in 40 bytes with its terminator.
 const MAX_NAME_LENGTH: usize = 39;
+/// The longest destination label a map's localization entry takes, in bytes.
+const MAX_DESTINATION_LENGTH: usize = 96;
+/// The fixed destination rows of the definition and display tables.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) const DESTINATION_ROWS: usize = 48;
+
+fn destination_label_valid(label: &str) -> bool {
+    !label.trim().is_empty()
+        && label.len() <= MAX_DESTINATION_LENGTH
+        && !label.chars().any(char::is_control)
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -222,6 +233,15 @@ impl MapRecipe {
                 )));
             }
         }
+        if self
+            .destination
+            .as_deref()
+            .is_some_and(|label| !destination_label_valid(label))
+        {
+            return Err(invalid(format!(
+                "Destination must be 1 to {MAX_DESTINATION_LENGTH} bytes without control characters"
+            )));
+        }
         if self.title.trim().is_empty() || self.description.trim().is_empty() {
             return Err(invalid(format!(
                 "Map {} needs a title and a description",
@@ -316,6 +336,34 @@ pub(crate) fn image_choices(directory: &Path) -> Result<Vec<ImageChoice>, String
                 preview: picture::preview(&manager, &icons, row).map_err(|error| error.to_string()),
             })
             .collect())
+    };
+    load().map_err(|error| error.to_string())
+}
+
+/// How many destination rows the packages leave for authored labels, read from the same source
+/// tables the build uses.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn blank_destination_rows(directory: &Path) -> Result<usize, String> {
+    use crate::tag_payload::{read_tag, read_u32};
+    use sundial::package_authoring::{open_shadowkeep_package_manager, resolve_live_named_tag};
+    use tiger_pkg::TagHash;
+    let manager = open_shadowkeep_package_manager(directory)?;
+    let load = || -> AuthoringResult<usize> {
+        let tag = resolve_live_named_tag(&manager, "investment_globals", None).map_err(invalid)?;
+        let globals = read_tag(&manager, tag, "investment globals")?;
+        let root = read_tag(
+            &manager,
+            TagHash(read_u32(&globals, 0x10)?),
+            "investment root",
+        )?;
+        let activities = read_tag(
+            &manager,
+            TagHash(read_u32(&root, 8 + 4 * 16)?),
+            "activity table",
+        )?;
+        Ok(destination::rows(&manager, &root, &globals, &activities)?
+            .available
+            .len())
     };
     load().map_err(|error| error.to_string())
 }

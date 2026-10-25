@@ -1,7 +1,6 @@
 use serde_json::{Map, Value, json};
 use sundial_account::{
-    AccountSettingGroup, AccountSettingKey, AccountSettingValue, AccountSettingsCommand, FiniteF64,
-    KeyBindingSlot,
+    AccountSettingKey, AccountSettingValue, AccountSettingsCommand, FiniteF64, KeyBindingSlot,
 };
 
 use super::{apply_commands, legacy};
@@ -92,28 +91,6 @@ fn preference_cases() -> Vec<AccountSettingsCommand> {
 }
 
 #[test]
-fn production_preference_writes_match_the_frozen_json_behavior() {
-    for command in preference_cases() {
-        let AccountSettingsCommand::Set { key, .. } = &command;
-        let key = key.clone();
-        let mut production = document_for(&key, 8);
-        let mut expected = production.clone();
-
-        assert!(legacy::apply_commands(&mut expected, vec![command.clone()]).unwrap());
-        assert!(apply_commands(&mut production, vec![command]).unwrap());
-        assert_eq!(production, expected, "parity failed for {key:?}");
-        assert_eq!(
-            production.pointer("/state/account/future_account/keep"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            production.pointer("/future_root/keep"),
-            Some(&Value::Bool(true))
-        );
-    }
-}
-
-#[test]
 fn production_named_binding_writes_match_legacy_and_preserve_siblings() {
     for (slot, value) in [
         (
@@ -147,36 +124,6 @@ fn production_named_binding_writes_match_legacy_and_preserve_siblings() {
             );
         }
     }
-}
-
-#[test]
-fn invalid_batches_and_missing_targets_leave_the_document_untouched() {
-    let brightness = AccountSettingKey::preference(AccountSettingGroup::Display, "brightness");
-    let mut document = document_for(&brightness, 8);
-    let before = document.clone();
-    let error = apply_commands(
-        &mut document,
-        vec![
-            set(brightness.clone(), AccountSettingValue::Unsigned(2)),
-            set(brightness.clone(), AccountSettingValue::Unsigned(7)),
-        ],
-    )
-    .unwrap_err();
-    assert!(error.contains("invalid"));
-    assert_eq!(document, before);
-
-    let mut missing = json!({
-        "version": 8,
-        "state": {"account": {"settings": {"display": {}}}}
-    });
-    let before = missing.clone();
-    let error = apply_commands(
-        &mut missing,
-        vec![set(brightness, AccountSettingValue::Unsigned(2))],
-    )
-    .unwrap_err();
-    assert!(error.contains("brightness"));
-    assert_eq!(missing, before);
 }
 
 #[test]

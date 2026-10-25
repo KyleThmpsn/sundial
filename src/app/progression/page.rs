@@ -231,7 +231,7 @@ pub(super) fn draw_investment(
 pub(super) fn draw_filter(ui: &mut egui::Ui, query: &mut String) {
     ui.add(
         egui::TextEdit::singleline(query)
-            .hint_text("Filter rows…")
+            .hint_text("Filter Rows…")
             .desired_width(300.0),
     );
 }

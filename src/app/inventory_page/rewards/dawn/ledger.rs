@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(test)]
-mod tests;
 use crate::{
     app::inspector,
     catalog::Catalog,

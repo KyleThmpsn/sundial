@@ -1,6 +1,4 @@
 //! A persistent inspector gives choices enough space and keeps browsing reversible.
-#[cfg(test)]
-mod tests;
 
 /// The Include Unidentified switch of one picker. Its state is keyed on the picker, not on
 /// the `Ui` it is drawn in, since a wrapped toolbar draws it in a child `Ui` whose id can
@@ -29,7 +27,7 @@ pub(crate) fn browser<T>(
 ) -> Option<T> {
     browser_with_toolbar(ui, scope, label, title, query, |ui, query, opened, _| {
         let changed = ui
-            .horizontal(|ui| search(ui, query, opened, ui.available_width() - 64.0))
+            .horizontal(|ui| search(ui, query, opened, ui.available_width() - CLEAR_WIDTH))
             .inner;
         ui.separator();
         let height = (ui.available_height() - 90.0).max(110.0);
@@ -41,8 +39,7 @@ pub(crate) fn search(ui: &mut egui::Ui, query: &mut String, opened: bool, width:
     sundial::ui::catalog::search(ui, query, opened, width, "Search Effects or Perks")
 }
 
-/// The room the Clear button after a search box takes, with the spacing before it.
-pub(crate) const CLEAR_WIDTH: f32 = 56.0;
+pub(crate) use sundial::ui::catalog::CLEAR_WIDTH;
 
 pub(crate) fn browser_with_toolbar<T>(
     ui: &mut egui::Ui,

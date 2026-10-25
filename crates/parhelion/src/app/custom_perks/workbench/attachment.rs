@@ -255,7 +255,6 @@ impl Change {
                 target.socket,
                 &inherited,
                 choices,
-                None,
             );
             weapon.overrides.socket_plug_variants.retain(|entry| {
                 usize::from(entry.socket_index) != target.socket

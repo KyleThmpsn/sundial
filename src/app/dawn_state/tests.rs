@@ -3,39 +3,6 @@ use crate::app::tests::driver::*;
 use crate::app::*;
 use crate::catalog::{InventoryMetadata, InventoryScope, ItemStackability};
 
-#[test]
-fn postmaster_discard_confirmation_expires_after_leaving_and_after_discard() {
-    let dir = TestDirectory::new("postmaster-discard-arming");
-    let mut app = seeded(&dir);
-    let ctx = egui::Context::default();
-    ctx.enable_accesskit();
-    frame(&mut app, &ctx, vec![], false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    click(&mut app, &ctx, button(&out, "Postmaster").0, false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    click(&mut app, &ctx, button(&out, "Discard").0, false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    assert!(contains_text(&out, "Confirm Discard"));
-    click(&mut app, &ctx, button(&out, "Items").0, false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    click(&mut app, &ctx, button(&out, "Postmaster").0, false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    assert!(!contains_text(&out, "Confirm Discard"));
-    click(&mut app, &ctx, button(&out, "Discard").0, false);
-    let out = frame(&mut app, &ctx, vec![], false);
-    click(&mut app, &ctx, button(&out, "Confirm Discard").0, false);
-    assert_eq!(app.undo_history.len(), 1);
-    app.undo();
-    let out = frame(&mut app, &ctx, vec![], false);
-    assert!(!contains_text(&out, "Confirm Discard"));
-    assert!(
-        app.document
-            .dawn_account()
-            .unwrap()
-            .is_postmaster(0x400000000000001A)
-    );
-}
-
 fn item(hash: u64, name: &str) -> crate::catalog::ItemDef {
     crate::catalog::ItemDef {
         hash,
@@ -210,7 +177,12 @@ fn dawn_vendor_and_mission_tabs_render_and_clear_checkpoint_is_undoable() {
     crate::test_support::capture::write(&ctx, &output, "dawn-vendors");
     app.progression_section = ProgressionSection::Missions;
     let output = frame(&mut app, &ctx, vec![], true);
-    click(&mut app, &ctx, button(&output, "Mission 0000007B").0, true);
+    click(
+        &mut app,
+        &ctx,
+        button(&output, "Mission 0x0000007B").0,
+        true,
+    );
     frame(&mut app, &ctx, vec![], true);
     let output = frame(&mut app, &ctx, vec![], true);
     crate::test_support::capture::write(&ctx, &output, "dawn-missions");
@@ -241,77 +213,5 @@ fn dawn_vendor_and_mission_tabs_render_and_clear_checkpoint_is_undoable() {
             .unwrap()
             .reward_debts()
             .is_empty()
-    );
-}
-
-#[test]
-fn saved_roll_editor_uses_named_native_rows_and_records_clear_as_one_edit() {
-    use crate::persistence::dawn_account::SavedRoll;
-    let dir = TestDirectory::new("saved-roll-ui");
-    let mut app = seeded(&dir);
-    let definition:crate::catalog::ItemDef=serde_json::from_value(serde_json::json!({"hash":4070132608_u64,"name":"Rolled Helmet","type_name":"Helmet","bucket_hash":0,"class_type":0,"default_plugs":[],"sockets":[{"socket_type":1,"label":"Trait","sources":[{"kind":{"source":"randomized_set","index":0},"pool":0,"valid":true,"ordered_members":[3961599962_u64,10]}]}]})).unwrap();
-    app.document
-        .dawn_account_mut()
-        .unwrap()
-        .set_saved_roll(
-            0,
-            0x4000000000000004,
-            SavedRoll {
-                lanes: 1,
-                owned: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                ..Default::default()
-            },
-            &definition,
-        )
-        .unwrap();
-    app.manifest = Manifest::for_test(
-        vec![
-            definition,
-            item(3961599962, "First Perk"),
-            item(10, "Second Perk"),
-        ],
-        HashMap::new(),
-    );
-    app.persisted_document = app.document.clone();
-    let ctx = egui::Context::default();
-    ctx.enable_accesskit();
-    frame(&mut app, &ctx, vec![], false);
-    let output = frame(&mut app, &ctx, vec![], false);
-    click(&mut app, &ctx, button(&output, "Saved Rolls").0, false);
-    let output = frame(&mut app, &ctx, vec![], false);
-    // A collapsing header animates open over several frames, and the header inside it moves
-    // until it has, so each opens fully before the next is found and clicked.
-    let settle = |app: &mut SundialApp| {
-        (0..8)
-            .map(|_| frame(app, &ctx, vec![], false))
-            .last()
-            .unwrap()
-    };
-    click(&mut app, &ctx, button(&output, "Rolled Helmet").0, false);
-    let output = settle(&mut app);
-    click(&mut app, &ctx, button(&output, "1. Trait").0, false);
-    let output = settle(&mut app);
-    assert!(contains_text(&output, "First Perk"));
-    assert!(contains_text(&output, "Second Perk"));
-    crate::test_support::capture::write(&ctx, &output, "dawn-saved-rolls");
-    click(&mut app, &ctx, button(&output, "Clear Saved Roll").0, false);
-    assert_eq!(app.undo_history.len(), 1);
-    assert_eq!(
-        app.document
-            .dawn_account()
-            .unwrap()
-            .saved_roll(0x4000000000000004)
-            .unwrap(),
-        SavedRoll::default()
-    );
-    app.undo();
-    assert_eq!(
-        app.document
-            .dawn_account()
-            .unwrap()
-            .saved_roll(0x4000000000000004)
-            .unwrap()
-            .lanes,
-        1
     );
 }

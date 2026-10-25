@@ -215,33 +215,6 @@ pub(super) fn follow(ctx: &egui::Context, owner: egui::Id, request: Request) {
     }
 }
 
-pub(super) fn clear_source(ctx: &egui::Context, owner: egui::Id) {
-    let shared = shared(ctx);
-    if let Ok(mut preview) = shared.lock()
-        && preview.owner == Some(owner)
-    {
-        preview.request = None;
-        preview.source_selection = None;
-        preview.navigation.clear();
-        // The pending receiver still drains, so stopping here only ends an unwanted read sooner.
-        if let Some(load) = preview.load.take() {
-            load.stop();
-        }
-        preview.load_started = None;
-        preview.load_time = None;
-        preview.status = None;
-        preview.asset_entry = None;
-        preview.model = None;
-        preview.texture = None;
-        preview.asset_textures.clear();
-        preview.stop_audio();
-        preview.audio_pending = None;
-        preview.audio_status = None;
-        preview.selection = None;
-        ctx.request_repaint_of(viewport_id());
-    }
-}
-
 pub(super) fn viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("model-preview-window")
 }

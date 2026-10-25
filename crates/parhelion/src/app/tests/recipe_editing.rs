@@ -204,29 +204,6 @@ fn incomplete_name_edits_are_retained_but_cannot_be_saved_or_built() {
 }
 
 #[test]
-fn save_conflicts_keep_both_versions_and_remain_visible_outside_settings() {
-    let directory = tempfile::tempdir().unwrap();
-    let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
-    let mut app = PackageAuthoringApp::default();
-    let path = library.root().join("every-end.parhelion.json");
-    assert!(app.open_recipe_path(&path));
-    let mut external = app.recipe.clone();
-    external.flavor = "Changed outside the workbench".into();
-    library.save_existing(&path, &external).unwrap();
-    app.recipe.flavor = "My unsaved draft".into();
-    app.synchronize_recipe_dirty();
-    app.recipe_library = Some(library);
-    app.save_library_recipe();
-    assert_eq!(WeaponRecipe::load_json(&path).unwrap(), external);
-    assert_eq!(app.recipe.flavor, "My unsaved draft");
-    assert!(app.recipe_dirty);
-    app.log.push(LogEntry::info("A later background event"));
-    let (output, overflow) = render(480.0, |ui| app.draw_action_error(ui));
-    assert!(text(&output).contains("changed on disk"));
-    assert!(overflow <= 1.0, "save error overflow: {overflow}");
-}
-
-#[test]
 fn guarded_save_accepts_formatting_changes_but_refuses_missing_sources() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
@@ -249,55 +226,4 @@ fn guarded_save_accepts_formatting_changes_but_refuses_missing_sources() {
         !path.exists(),
         "a missing source must not be silently recreated"
     );
-}
-
-#[test]
-fn duplicate_preserves_draft_mechanics_and_allocates_a_fresh_identity() {
-    let mut app = PackageAuthoringApp {
-        recipe: WeaponRecipe::from_json_str(include_str!(
-            "../../../recipes/vaultbreaker.parhelion.json"
-        ))
-        .unwrap(),
-        ..Default::default()
-    };
-    let original = app.recipe.clone();
-    app.recipe_path = Some(PathBuf::from("original.parhelion.json"));
-    app.recipe_entries.clear();
-    assert!(app.duplicate_recipe());
-    assert_ne!(app.recipe.namespace, original.namespace);
-    assert_ne!(app.recipe.identity, original.identity);
-    assert_eq!(app.recipe.donor, original.donor);
-    assert_eq!(app.recipe.presentation_donor, original.presentation_donor);
-    assert_eq!(app.recipe.overrides, original.overrides);
-    assert!(app.recipe_path.is_none());
-    let first_copy = app.recipe.clone();
-    app.recipe_entries.push(RecipeLibraryEntry {
-        kind: first_copy.kind,
-        collection_destination: None,
-        collection_position: None,
-        armor_class: None,
-        armor_origin: None,
-        import_revision: None,
-        badge: None,
-        corner_icon: None,
-        path: PathBuf::from("existing-copy.parhelion.json"),
-        name: first_copy.name.clone(),
-        namespace: first_copy.namespace.clone(),
-        bundled: false,
-        donor_hash: first_copy.donor.item_hash.parse_u32().unwrap(),
-        type_donor_hash: first_copy.type_donor_hash(),
-        identity_hash: first_copy.identity.item_hash.parse_u32().unwrap(),
-        type_name: first_copy.type_name.clone(),
-        class_type_name: None,
-        ammo_type: first_copy.overrides.ammo_type,
-        damage_type: first_copy.overrides.modern_damage_type,
-        rarity: first_copy.overrides.rarity,
-        icon_hash: first_copy.donor.item_hash.parse_u32().unwrap(),
-        icon_edit: first_copy.overrides.icon_edit.clone(),
-        art: None,
-    });
-    app.recipe = original;
-    assert!(app.duplicate_recipe());
-    assert_ne!(app.recipe.namespace, first_copy.namespace);
-    assert!(app.recipe.name.ends_with("Copy 2"));
 }

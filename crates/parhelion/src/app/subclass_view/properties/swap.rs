@@ -68,16 +68,27 @@ pub(super) fn swap_row(
     });
     if chosen != current {
         // The values of the projectile no longer swapped in go with it, unless the ability's own
-        // tree holds the same graph.
+        // tree or a projectile another place still fires holds the same graph.
         if let Some(old) = current {
-            let graphs = properties
-                .trees
-                .get(&old)
-                .and_then(|tree| tree.as_ref().ok())
-                .map_or_else(|| BTreeSet::from([old]), |tree| tree_graphs(tree));
+            let graphs_of = |graph: u32| {
+                properties
+                    .trees
+                    .get(&graph)
+                    .and_then(|tree| tree.as_ref().ok())
+                    .map_or_else(|| BTreeSet::from([graph]), |tree| tree_graphs(tree))
+            };
+            let graphs = graphs_of(old);
+            let kept = edits
+                .spawn_swaps
+                .iter()
+                .filter(|swap| !swaps.contains(&(swap.graph, swap.replaced)))
+                .flat_map(|swap| graphs_of(swap.replacement))
+                .collect::<BTreeSet<_>>();
             edits.ability_values.retain(|value| {
                 value.locator.graph_tag.is_none_or(|tag| {
-                    !graphs.contains(&tag.get()) || own_graphs.contains(&tag.get())
+                    !graphs.contains(&tag.get())
+                        || own_graphs.contains(&tag.get())
+                        || kept.contains(&tag.get())
                 })
             });
         }

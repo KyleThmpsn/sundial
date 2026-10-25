@@ -257,7 +257,7 @@ fn interaction_events(frame: usize, mode: &str, previous: &egui::FullOutput) -> 
                 egui::Shape::Text(text)
                     if text.galley.job.text.starts_with("Search")
                         || text.galley.job.text.starts_with("Name, type,")
-                        || text.galley.job.text.starts_with("Filter rows") =>
+                        || text.galley.job.text.starts_with("Filter Rows") =>
                 {
                     Some(text.pos + egui::vec2(15.0, 5.0))
                 }

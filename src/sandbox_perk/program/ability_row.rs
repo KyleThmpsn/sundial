@@ -5,6 +5,13 @@ use crate::ability::bank::{self, Modifier};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AbilityRowModifier {
+    Attack {
+        #[serde(with = "super::hex_key")]
+        template_key: u32,
+        selection: bank::FixedSelection,
+        /// Fixed outgoing amounts for the template's two routes, stored as Float32 bits.
+        amounts: [u32; 2],
+    },
     Group {
         #[serde(with = "super::hex_key")]
         template_key: u32,
@@ -17,6 +24,8 @@ pub enum AbilityRowModifier {
         #[serde(with = "super::hex_key")]
         class: u32,
         words: [u32; 8],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selection: Option<bank::FixedSelection>,
     },
     Charges {
         count: u8,
@@ -66,6 +75,14 @@ impl AbilityRow {
 
     fn identity(&self) -> u32 {
         let body = match self.modifier {
+            AbilityRowModifier::Attack {
+                template_key,
+                selection,
+                amounts,
+            } => format!(
+                "attack.{template_key:08x}.{:08x}.{}.{:08x}.{:08x}.{:08x}",
+                selection.name, selection.priority, selection.required_key, amounts[0], amounts[1]
+            ),
             AbilityRowModifier::Group {
                 template_key,
                 count,
@@ -82,15 +99,24 @@ impl AbilityRow {
                 template_key,
                 class,
                 words,
+                selection,
             } => {
-                format!(
+                let body = format!(
                     "fixed.{template_key:08x}.{class:08x}.{}",
                     words
                         .iter()
                         .map(|v| format!("{v:08x}"))
                         .collect::<Vec<_>>()
                         .join(".")
-                )
+                );
+                // Existing serialized rows omit selection and retain their original key.
+                match selection {
+                    Some(s) => format!(
+                        "{body}.selection.{:08x}.{}.{:08x}",
+                        s.name, s.priority, s.required_key
+                    ),
+                    None => body,
+                }
             }
             AbilityRowModifier::Charges { count } => format!("charges.{count}"),
             AbilityRowModifier::Scalar {
@@ -124,6 +150,24 @@ impl AbilityRow {
             return Err("Private ability row has an invalid identity or bank scope".into());
         }
         let valid = match self.modifier {
+            AbilityRowModifier::Attack {
+                template_key,
+                selection,
+                amounts,
+            } => {
+                self.slot == AbilityTarget::Movement
+                    && self.mode == 255
+                    && bank::AttackModifier {
+                        template_key,
+                        selection,
+                        damage: None,
+                    }
+                    .validate()
+                    .is_ok()
+                    && amounts
+                        .iter()
+                        .all(|&v| f32::from_bits(v).is_finite() && f32::from_bits(v) > 0.0)
+            }
             AbilityRowModifier::Group {
                 template_key,
                 count,
@@ -139,10 +183,12 @@ impl AbilityRow {
                 template_key,
                 class,
                 words,
+                selection,
             } => bank::FixedModifier {
                 template_key,
                 class,
                 words,
+                selection,
             }
             .validate()
             .is_ok(),
@@ -192,6 +238,7 @@ impl AbilityRow {
             AbilityRowModifier::Scalar { .. }
                 | AbilityRowModifier::Fixed { .. }
                 | AbilityRowModifier::Group { .. }
+                | AbilityRowModifier::Attack { .. }
         ) {
             // Exercise the shared writer's structural checks. Numeric rows require
             // flattened inputs and a local provider. Fixed bodies require reciprocal
@@ -203,6 +250,15 @@ impl AbilityRow {
 
     pub fn value(&self) -> Modifier {
         match self.modifier {
+            AbilityRowModifier::Attack {
+                template_key,
+                selection,
+                ..
+            } => Modifier::Attack(bank::AttackModifier {
+                template_key,
+                selection,
+                damage: None,
+            }),
             AbilityRowModifier::Group {
                 template_key,
                 count,
@@ -216,10 +272,12 @@ impl AbilityRow {
                 template_key,
                 class,
                 words,
+                selection,
             } => Modifier::Fixed(bank::FixedModifier {
                 template_key,
                 class,
                 words,
+                selection,
             }),
             AbilityRowModifier::Charges { count } => Modifier::Charges(i64::from(count)),
             AbilityRowModifier::Scalar {

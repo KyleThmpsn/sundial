@@ -17,6 +17,7 @@ pub use model::{
     WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride, WeaponVariableDamage,
 };
 pub(crate) use model::{SubclassBuildDetails, SubclassEntryBuild, WeaponBuildDetails};
+pub(crate) use model::{follow_choices, follow_moved_variants, moved_choices};
 mod custom_runtime;
 pub(crate) use custom_runtime::{BarrelDefaults, barrel_defaults, splice_writes};
 mod emission;

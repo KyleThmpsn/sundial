@@ -136,21 +136,41 @@ pub(super) fn backup_one_original(
     }
 }
 
+/// Keeps the generation's validated recipes beside its package backup: weapon recipes at the top
+/// of the recipe folder and map recipes in its `maps` folder, so a map and a weapon that share a
+/// file name never meet. An existing file is never replaced.
 pub(super) fn backup_recipe_snapshots(
     validated: &ValidatedRun,
     backup_directory: &Path,
 ) -> Result<Option<PathBuf>, String> {
-    if !validated.backup_recipe_snapshots || validated.selected_recipe_files.is_empty() {
+    if !validated.backup_recipe_snapshots
+        || (validated.selected_recipe_files.is_empty() && validated.selected_map_files.is_empty())
+    {
         return Ok(None);
     }
     let recipe_backup_directory = backup_directory.join(RECIPE_BACKUP_DIRECTORY);
-    fs::create_dir(&recipe_backup_directory).map_err(|error| {
-        format!(
-            "Could not create recipe backup directory {}: {error}",
-            recipe_backup_directory.display()
-        )
-    })?;
-    for relative_path in &validated.selected_recipe_files {
+    let map_backup_directory = recipe_backup_directory.join("maps");
+    for directory in std::iter::once(&recipe_backup_directory)
+        .chain((!validated.selected_map_files.is_empty()).then_some(&map_backup_directory))
+    {
+        fs::create_dir(directory).map_err(|error| {
+            format!(
+                "Could not create recipe backup directory {}: {error}",
+                directory.display()
+            )
+        })?;
+    }
+    let recipes = validated
+        .selected_recipe_files
+        .iter()
+        .map(|path| (path, &recipe_backup_directory))
+        .chain(
+            validated
+                .selected_map_files
+                .iter()
+                .map(|path| (path, &map_backup_directory)),
+        );
+    for (relative_path, directory) in recipes {
         let source = validated.staged_run_directory.join(relative_path);
         sundial::package_authoring::mod_content::checked_path(
             &validated.staged_run_directory,
@@ -162,7 +182,7 @@ pub(super) fn backup_recipe_snapshots(
         let file_name = Path::new(relative_path)
             .file_name()
             .ok_or_else(|| format!("Staged recipe path has no filename: {relative_path}"))?;
-        let target = recipe_backup_directory.join(file_name);
+        let target = directory.join(file_name);
         let copied = copy_file_create_new(&source, &target).map_err(|error| {
             format!(
                 "Could not back up staged recipe {}: {error}",

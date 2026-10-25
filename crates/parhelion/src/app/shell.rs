@@ -251,6 +251,20 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_recipe_library_actions(&mut self, ui: &mut egui::Ui, replaced: &mut bool) {
+        for (label, redo, key) in [("Undo", false, egui::Key::Z), ("Redo", true, egui::Key::Y)] {
+            let shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key);
+            if ui
+                .add_enabled(
+                    self.recipe_history_available(redo),
+                    egui::Button::new(label).shortcut_text(ui.ctx().format_shortcut(&shortcut)),
+                )
+                .clicked()
+            {
+                self.restore_recipe_history(ui.ctx(), redo);
+                ui.close();
+            }
+        }
+        ui.separator();
         if ui
             .button("Duplicate")
             .on_hover_text(

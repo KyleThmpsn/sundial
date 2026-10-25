@@ -32,6 +32,8 @@ pub(super) fn check(
     // row and runtime assignment. Source bytes, not the authored program,
     // are the independent oracle for the supported scalar effects.
     let root = readback.tag(globals.u32(16)?, None)?;
+    let stat_definitions = readback.tag(root.u32(8 + 95 * 16)?, None)?;
+    let stat_rows = stat_definitions.array(8, 32, Some(0x80807D09))?;
     let items = readback.tag(root.u32(8 + 48 * 16)?, None)?;
     let item_rows = items.array(8, 24, Some(0x80807BE8))?;
     let finished = readback.tag(globals.u32(16 + 71 * 16)?, Some(0x80805C97))?;
@@ -221,7 +223,8 @@ pub(super) fn check(
                 ),
             "Private choice inherited donor effects"
         );
-        // The private plug carries exactly the source deltas as equipped stat rows.
+        // Follow the source values and emitted stat identities independently of the
+        // report. The Armor policy contributes ten native points per plain source unit.
         let stats = plug.array(plug.pointer(0x70)?, 0x28, Some(0x80803033))?;
         let adjustments = translated["stat_adjustments"]
             .as_array()
@@ -235,20 +238,52 @@ pub(super) fn check(
             .into_iter()
             .map(|row| {
                 Ok((
-                    u64::from(plug.u8(row)?),
+                    u64::from(
+                        stat_definitions.u32(
+                            *stat_rows
+                                .get(usize::from(plug.u8(row)?))
+                                .ok_or("Private plug stat index leaves the definition table")?,
+                        )?,
+                    ),
                     i64::from(i32::from_le_bytes(plug.bytes::<4>(row + 4)?)),
                 ))
             })
             .collect::<CheckResult<Vec<_>>>()?;
-        let mut expected_stats = adjustments
+        let source_node = source_grid["talents"]["nodes"]
+            .as_array()
+            .ok_or("Source nodes")?
             .iter()
-            .map(|row| {
-                Ok((
-                    row["definition_index"].as_u64().ok_or("Stat index")?,
-                    row["value"].as_i64().ok_or("Stat value")?,
-                ))
-            })
-            .collect::<CheckResult<Vec<_>>>()?;
+            .find(|n| n["index"] == translated["node"])
+            .ok_or("Source node")?;
+        let source_step = source_node["steps"]
+            .as_array()
+            .ok_or("Source steps")?
+            .iter()
+            .find(|s| s["index"] == translated["step"])
+            .ok_or("Source step")?;
+        let source_stats = source_step["variants"][0]["stat_adjustments"]
+            .as_array()
+            .ok_or("Source stats")?;
+        assert_eq!(source_stats.len(), adjustments.len());
+        let mut expected_stats = Vec::new();
+        for (original, adjusted) in source_stats.iter().zip(adjustments) {
+            let raw = Payload(hex::decode(
+                original["record"].as_str().ok_or("Stat bytes")?,
+            )?);
+            let multiplier = if receipt["graph"]["kind"] == "armor" {
+                assert_eq!(original["hash"].as_u64(), Some(0x1769266F));
+                10i64
+            } else {
+                1
+            };
+            let expected = i64::from(i32::from_le_bytes(raw.bytes::<4>(0)?)) * multiplier;
+            expected_stats.push((
+                original["hash"].as_u64().ok_or("Source stat hash")?,
+                expected,
+            ));
+            assert_eq!(adjusted["source_hash"], original["hash"]);
+            assert_eq!(adjusted["value"].as_i64(), Some(expected));
+        }
         actual_stats.sort_unstable();
         expected_stats.sort_unstable();
         assert_eq!(
@@ -421,7 +456,28 @@ pub(super) fn check(
                         assert_eq!(action.bytes::<4>(n)?, [5, 0, 0, 0]);
                         assert_eq!(source.bytes::<8>(s + 4)?, action.bytes::<8>(n + 4)?);
                         assert_eq!(action.bytes::<12>(n + 12)?, [0; 12]);
-                        assert_eq!(source.u32(s + 24)?, u32::MAX);
+                        if source.u32(s + 24)? != u32::MAX {
+                            // A source default-orb alias must become the native service's
+                            // default selection, never a dangling source package reference.
+                            let configuration = source_reader.classes(0x80802257);
+                            assert_eq!(configuration.len(), 1);
+                            let globals = source_reader.read(configuration[0])?;
+                            let default = source_reader.read(globals.u32(0xC8)?)?;
+                            let selected = source_reader.read(source.u32(s + 24)?)?;
+                            assert_eq!(default.u64(0x20)?, selected.u64(0x20)?);
+                            let selected_owners = selected.array(0x20, 12, Some(0x80800715))?;
+                            let default_owners = default.array(0x20, 12, Some(0x80800715))?;
+                            for (selected_row, default_row) in
+                                selected_owners.into_iter().zip(default_owners)
+                            {
+                                let selected = source_reader.read(selected.u32(selected_row)?)?;
+                                let default = source_reader.read(default.u32(default_row)?)?;
+                                assert_eq!(
+                                    selected.u32(selected.pointer(24)? - 4)?,
+                                    default.u32(default.pointer(24)? - 4)?
+                                );
+                            }
+                        }
                         assert_eq!(action.u32(n + 24)?, u32::MAX);
                         assert_eq!(action.u32(n + 28)?, 0);
                     }
@@ -483,8 +539,14 @@ pub(super) fn check(
                         assert_eq!(action.u8(n + 0xa0)?, 255);
                         assert_eq!(action.bytes::<2>(n + 0xb0)?, [1; 2]);
                         for (original, emitted) in [(0x170, 0x120), (0x180, 0x130)] {
-                            assert_eq!(source.u64(s + original)?, 0);
-                            assert_eq!(action.u64(n + emitted)?, 0);
+                            let originals = source.array(s + original, 12, Some(0x80802069))?;
+                            let rows = action.array(n + emitted, 12, Some(0x80803E22))?;
+                            assert_eq!(originals.len(), rows.len());
+                            for (original, row) in originals.into_iter().zip(rows) {
+                                assert_eq!(source.bytes::<12>(original)?, action.bytes::<12>(row)?);
+                                assert_eq!(action.u8(row)?, 0);
+                                assert_eq!(action.u8(row + 8)?, 255);
+                            }
                         }
                         let value = action.pointer(n + 0x140)?;
                         assert_eq!(action.u32(value - 4)?, 0x80802f1a);
@@ -525,7 +587,11 @@ pub(super) fn check(
                     }
                     9 => {
                         assert_eq!(action.u8(n)?, 10);
+                        assert_eq!(action.u32(n - 4)?, 0x808029ED);
+                        assert_eq!(source.u8(s + 1)?, action.u8(n + 1)?);
                         assert_eq!(source.u8(s + 2)?, action.u8(n + 2)?);
+                        assert_eq!(source.u8(s + 3)?, action.u8(n + 3)?);
+                        assert_eq!(source.u32(s + 4)?, action.u32(n + 4)?);
                         assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
                         let code = action.array(n + 0x18, 1, Some(0x80800009))?;
                         assert_eq!(

@@ -65,6 +65,7 @@ fn imported_vehicles_reopen_and_keep_the_editor_responsive() {
         sundial::ui::model_preview::Options {
             play_animations: false,
             show_fps: false,
+            ..Default::default()
         },
     );
     let mut app = PackageAuthoringApp {

@@ -2,7 +2,6 @@
 use super::*;
 use crate::app::custom_perks::workbench::tests::capture;
 mod projectile;
-mod refresh;
 mod stock;
 mod vehicle;
 

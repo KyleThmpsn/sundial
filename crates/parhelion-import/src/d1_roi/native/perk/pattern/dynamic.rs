@@ -71,7 +71,7 @@ pub(super) fn read(
         let mut destinations = BTreeSet::new();
         ensure!(
             rows.iter()
-                .all(|r| destinations.insert((r.component, r.input))),
+                .all(|r| destinations.insert((r.component, r.ability, r.input))),
             "Split dynamic bank repeats a destination whose registration order is unqualified"
         );
         // Each driver reads the input independently. Exclude capacity/stat feedback

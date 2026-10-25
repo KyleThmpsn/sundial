@@ -39,21 +39,17 @@ impl SundialApp {
         let Some(backup) = self.pending_sqlite_restore.take() else {
             return;
         };
-        match platform::destiny_is_running() {
-            Ok(true) => {
-                self.set_status(
-                    "Not restored: close Destiny 2 before replacing investment.sqlite3, then try again",
-                    true,
-                );
-                return;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                self.set_status(format!("Not restored: {error}"), true);
-                return;
-            }
-        }
-        match self.document.restore_sqlite_backup_safely(&backup) {
+        let require_closed = || match platform::destiny_is_running() {
+            Ok(true) => Err(
+                "close Destiny 2 before replacing investment.sqlite3, then try again".to_owned(),
+            ),
+            Ok(false) => Ok(()),
+            Err(error) => Err(error),
+        };
+        match self
+            .document
+            .restore_sqlite_backup_safely(&backup, require_closed)
+        {
             Ok(safety_backup) => {
                 if self.reload() {
                     let warning = self

@@ -37,7 +37,9 @@ use crate::{
 use super::world::{BubbleName, Owner, renamed_counted};
 
 mod cubemaps;
+mod lights;
 pub(super) use cubemaps::Cubemap;
+pub(super) use lights::Light;
 
 const MAP_ROOT_CLASS: u32 = 0x8080_91DE;
 /// The map root names its bubble layout here, whose counted name is the world's.
@@ -177,8 +179,19 @@ const SUN: u32 = 0x8080_6F61;
 const SUN_RECORD: usize = 0x10;
 const SUN_MATERIALS: usize = 0x1C;
 const SUN_FLARE: usize = 0x20;
+/// The lens flare record class, and how far into a sun or atmosphere resource its references are
+/// sought.
+const LENS_FLARE_RECORD: u32 = 0x8080_6F68;
+const FLARE_SEARCH: usize = 0x140;
 const SUN_RECORD_CLASS: u32 = 0x8080_6F64;
 const SUN_TRACKS: usize = 0x10;
+/// The sun record's leading floats, read as the sun's time of day windows: `mission_proton`'s
+/// `(0, 1, 0, 1)`, Midtown's `(1, 0, 1, 0)` and Distant Shore's `(0.667, 0.833, 0.667, 0.833)`.
+/// With Midtown's, Breakneck's and Paradiso's global lighting sun (row 62 from
+/// `GlobalLighting+0x10`) read zero in game, as Midtown lights itself through time of day channels
+/// that a converted map does not drive, and with `mission_proton`'s Nightfall's read 15.1. Every
+/// map's sun takes `mission_proton`'s. The windows reading is an inference from those values.
+const SUN_WINDOWS: [f32; 4] = [0., 1., 0., 1.];
 const SUN_TRACK_SLOTS: usize = 4;
 const SUN_TRACK_CLASS: u32 = 0x8080_8EF3;
 const SUN_TRACK_DIRECTIONS: usize = 0x30;
@@ -188,9 +201,16 @@ const SUN_DIRECTION_CLASS: u32 = 0x8080_0090;
 /// table.
 const ATMOSPHERE: u32 = 0x8080_7086;
 const ATMOSPHERE_VOLUME: usize = 0x90;
+/// A second volume, or none, which the sky reflection generator samples beside the first and
+/// blends toward by global channel 43. Midtown names one (`80B91A92`) and Distant Shore none, so a
+/// map that replaced only the first could take Midtown's own sky in its players' light.
+const ATMOSPHERE_SECOND_VOLUME: usize = 0x94;
 /// The atmosphere's 2D distance lookup, 16 by 1,024 in Distant Shore's, which a map whose
 /// surfaces draw their own fog replaces with a black copy.
 const ATMOSPHERE_LOOKUP: usize = 0x98;
+/// The atmosphere's 64 by 64 grayscale image (`8080708B`), which differs by donor, and which a map
+/// with its own atmosphere volume replaces with an open copy (`atmosphere::open_image`).
+const ATMOSPHERE_IMAGE: usize = 0x9C;
 /// A placement resource for the donor's static ambient occlusion, naming its record at `+0x10`.
 /// The record names three buffers at `+0x08`, `+0x20` and `+0x38`, which hold the occlusion of
 /// the donor's own static geometry, and at `+0x50` an array of probes that indexed draws read
@@ -548,6 +568,11 @@ pub(super) struct Chain {
     /// Without a sky in the donor's bubble, a sky table of another world ([`SKY_WORLDS`]), whose
     /// copy the map's own container places to hold the map's sky.
     borrowed_sky: Option<Slot>,
+    /// The light collection table and point light the map's lights copy, Distant Shore's whatever
+    /// the donor ([`lights::LIGHT_WORLD`]).
+    light_template: Option<lights::Template>,
+    /// The map's own lights.
+    lights: Vec<Light>,
     /// The donor parent's bounds records, in order, each that bounds something as the type-16
     /// owner the map's copy widens to hold the level ([`widened_bounds`]).
     bounds_rows: Vec<(TagHash, Option<Owner>)>,
@@ -596,6 +621,56 @@ fn world_sky(manager: &PackageManager, world: &str) -> AuthoringResult<Option<Sl
         }
     }
     Ok(None)
+}
+
+/// The light template of the first table among those `containers` list that places a light
+/// collection with a point light ([`lights::template`]). A table that cannot serve is passed over,
+/// as the map's lights are optional.
+fn light_template(
+    manager: &PackageManager,
+    containers: &[TagHash],
+) -> AuthoringResult<Option<lights::Template>> {
+    for &container in containers {
+        if class(manager, container) != Some(CONTAINER_CLASS) {
+            continue;
+        }
+        let payload = read_tag(manager, container, "map container")?;
+        if read_u64(&payload, CONTAINER_TABLES)? == 0 {
+            continue;
+        }
+        let (count, _, rows, _) = array_at(&payload, CONTAINER_TABLES)?;
+        for index in 0..count {
+            let table = read_u32(&payload, rows + index * 4)?;
+            if let Ok(Some(template)) = lights::template(manager, table) {
+                return Ok(Some(template));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The containers the bubbles of world `world` place.
+fn world_containers(manager: &PackageManager, world: &str) -> AuthoringResult<Vec<TagHash>> {
+    let Ok((root, _)) = super::donor_tag(manager, &format!("map:{world}:root")) else {
+        return Ok(Vec::new());
+    };
+    let root = read_tag(manager, root, "map root")?;
+    let mut containers = Vec::new();
+    for parent in tag_rows(manager, &root, ROOT_PARENTS)? {
+        if class(manager, parent) != Some(BUBBLE_PARENT_CLASS) {
+            continue;
+        }
+        let bubble = TagHash(read_u32(
+            &read_tag(manager, parent, "bubble parent")?,
+            PARENT_BUBBLE,
+        )?);
+        if class(manager, bubble) != Some(BUBBLE_CLASS) {
+            continue;
+        }
+        let bubble = read_tag(manager, bubble, "bubble")?;
+        containers.extend(tag_rows(manager, &bubble, BUBBLE_CONTAINERS)?);
+    }
+    Ok(containers)
 }
 
 /// The first table without rows among those `containers` list, which stands in for the donor's
@@ -885,49 +960,7 @@ fn mixed_slot(
         .collect::<Vec<_>>();
     let mut moved = retained.len() != kinds.len();
     if moved {
-        let mut rows = Vec::with_capacity(retained.len() * ROW_SIZE);
-        let mut pointers = Vec::with_capacity(retained.len() * ROW_POINTERS.len());
-        for &(index, _) in &retained {
-            let row = table_rows + index * ROW_SIZE;
-            rows.extend_from_slice(&bytes[row..row + ROW_SIZE]);
-            for offset in ROW_POINTERS {
-                let field = row + offset;
-                let relative = read_i64(&bytes, field)?;
-                let target = if relative == 0 {
-                    None
-                } else {
-                    Some(
-                        field
-                            .checked_add_signed(relative as isize)
-                            .filter(|&at| at < bytes.len())
-                            .ok_or_else(|| {
-                                invalid("The donor placement pointer is outside its table")
-                            })?,
-                    )
-                };
-                pointers.push((offset, target));
-            }
-        }
-        // Keep inline resources at their original offsets. Only the active placement array
-        // changes, so resource-local pointers and shared resource targets remain intact.
-        append_native_array(
-            &mut bytes,
-            TABLE_ROWS,
-            TABLE_ROW_CLASS,
-            retained.len(),
-            &rows,
-        )?;
-        table_rows = array_at(&bytes, TABLE_ROWS)?.2;
-        for (index, (offset, target)) in pointers.into_iter().enumerate() {
-            if let Some(target) = target {
-                write_relative_pointer(
-                    &mut bytes,
-                    table_rows + index / ROW_POINTERS.len() * ROW_SIZE + offset,
-                    target,
-                )?;
-            }
-        }
-        bytes = synchronize_payload_size(bytes)?;
+        (bytes, table_rows) = retain_rows(bytes, table_rows, &retained)?;
     }
     let mut sun = None;
     let mut atmosphere = None;
@@ -944,6 +977,24 @@ fn mixed_slot(
         if leftovers[index] {
             bury(&mut bytes, row);
             moved = true;
+        }
+    }
+    // The donor's lens flares draw the donor's sun, wherever its sun and atmosphere name them:
+    // Distant Shore's sun at `+0x20`, `mission_proton`'s at `+0x24` and its atmosphere at `+0x11C`.
+    let named = sun
+        .as_ref()
+        .map(|(resource, ..)| *resource)
+        .into_iter()
+        .chain(atmosphere)
+        .collect::<Vec<_>>();
+    for resource in named {
+        let end = (resource + FLARE_SEARCH).min(bytes.len());
+        for field in (resource..end.saturating_sub(3)).step_by(4) {
+            let tag = read_u32(&bytes, field)?;
+            if class(manager, TagHash(tag)) == Some(LENS_FLARE_RECORD) {
+                write_u32(&mut bytes, field, u32::MAX)?;
+                moved = true;
+            }
         }
     }
     Ok(
@@ -967,6 +1018,58 @@ fn mixed_slot(
             None
         },
     )
+}
+
+/// Placement table `bytes` with only its `retained` rows of those at `table_rows`, in a new
+/// active placement array, and where that array's rows start.
+fn retain_rows(
+    mut bytes: Vec<u8>,
+    table_rows: usize,
+    retained: &[(usize, &u32)],
+) -> AuthoringResult<(Vec<u8>, usize)> {
+    let mut rows = Vec::with_capacity(retained.len() * ROW_SIZE);
+    let mut pointers = Vec::with_capacity(retained.len() * ROW_POINTERS.len());
+    for &(index, _) in retained {
+        let row = table_rows + index * ROW_SIZE;
+        rows.extend_from_slice(&bytes[row..row + ROW_SIZE]);
+        for offset in ROW_POINTERS {
+            let field = row + offset;
+            let relative = read_i64(&bytes, field)?;
+            let target = if relative == 0 {
+                None
+            } else {
+                Some(
+                    field
+                        .checked_add_signed(relative as isize)
+                        .filter(|&at| at < bytes.len())
+                        .ok_or_else(|| {
+                            invalid("The donor placement pointer is outside its table")
+                        })?,
+                )
+            };
+            pointers.push((offset, target));
+        }
+    }
+    // Keep inline resources at their original offsets. Only the active placement array
+    // changes, so resource-local pointers and shared resource targets remain intact.
+    append_native_array(
+        &mut bytes,
+        TABLE_ROWS,
+        TABLE_ROW_CLASS,
+        retained.len(),
+        &rows,
+    )?;
+    let table_rows = array_at(&bytes, TABLE_ROWS)?.2;
+    for (index, (offset, target)) in pointers.into_iter().enumerate() {
+        if let Some(target) = target {
+            write_relative_pointer(
+                &mut bytes,
+                table_rows + index / ROW_POINTERS.len() * ROW_SIZE + offset,
+                target,
+            )?;
+        }
+    }
+    Ok((synchronize_payload_size(bytes)?, table_rows))
 }
 
 /// A copy of donor spawn set table `table` whose rows name the map's own spawn set, when a set it
@@ -1073,9 +1176,13 @@ fn sun_track(donor: &[u8], direction: [f32; 3]) -> AuthoringResult<Vec<u8>> {
     Ok(payload)
 }
 
-/// A copy of donor sun record `donor` whose every track is `track`.
+/// A copy of donor sun record `donor` whose every track is `track` and whose sun shines all day
+/// ([`SUN_WINDOWS`]).
 fn sun_record(donor: &[u8], track: TagHash) -> AuthoringResult<Vec<u8>> {
     let mut payload = donor.to_vec();
+    for (k, value) in SUN_WINDOWS.into_iter().enumerate() {
+        write_u32(&mut payload, k * 4, value.to_bits())?;
+    }
     for slot in 0..SUN_TRACK_SLOTS {
         let field = SUN_TRACKS + slot * 4;
         if read_u32(donor, field)? != u32::MAX {
@@ -2009,6 +2116,8 @@ impl Chain {
         let containers = tag_rows(manager, &bubble.payload, BUBBLE_CONTAINERS)?;
         let empty = empty_table(manager, &containers)?;
         let sound_points = sound_points(manager, &containers)?;
+        let light_template =
+            light_template(manager, &world_containers(manager, lights::LIGHT_WORLD)?)?;
         let kept = containers
             .into_iter()
             .map(|tag| keep(directory, manager, companions, tag, empty, false))
@@ -2062,6 +2171,8 @@ impl Chain {
             sound_points,
             light: None,
             borrowed_sky,
+            light_template,
+            lights: Vec::new(),
             bounds_rows,
         })
     }
@@ -2092,6 +2203,12 @@ impl Chain {
     /// atmosphere volume recolors and stands in for.
     pub(super) fn atmosphere_volume(&self) -> AuthoringResult<Option<u32>> {
         self.atmosphere_field(ATMOSPHERE_VOLUME)
+    }
+
+    /// The image of the atmosphere the donor places beside its sun, which the map's open copy
+    /// stands in for.
+    pub(super) fn atmosphere_image(&self) -> AuthoringResult<Option<u32>> {
+        self.atmosphere_field(ATMOSPHERE_IMAGE)
     }
 
     /// The distance lookup of the atmosphere the donor places beside its sun, which the map's
@@ -2127,6 +2244,7 @@ impl Chain {
     pub(super) fn entries(&self) -> usize {
         FIXED_ENTRIES
             + if self.borrowed_sky.is_some() { 2 } else { 0 }
+            + lights::entries(self.placed_lights())
             + 2 * self
                 .bounds_rows
                 .iter()
@@ -2196,6 +2314,19 @@ impl Chain {
     /// Sets the direction the map's baked light mostly comes from, which its sun takes.
     pub(super) fn set_light(&mut self, light: Option<[f32; 3]>) {
         self.light = light;
+    }
+
+    /// Sets the map's own lights, which its container places when a light template was found.
+    pub(super) fn set_lights(&mut self, lights: Vec<Light>) {
+        self.lights = lights;
+    }
+
+    /// The lights the map's container places.
+    fn placed_lights(&self) -> &[Light] {
+        match self.light_template {
+            Some(_) => &self.lights,
+            None => &[],
+        }
     }
 
     /// The direction the map's sun takes: its baked light's, when that lies above the horizon.
@@ -2342,6 +2473,7 @@ impl Chain {
         sounds: Option<TagHash>,
         atmosphere: Option<TagHash>,
         lookup: Option<TagHash>,
+        image: Option<TagHash>,
         occlusion: &[[f32; 4]],
         clusters: Option<&[u16]>,
         cubemaps: &[Cubemap],
@@ -2492,9 +2624,21 @@ impl Chain {
                                 if let (Some(row), Some(volume)) = (atmosphere_resource, atmosphere)
                                 {
                                     write_u32(&mut payload, row + ATMOSPHERE_VOLUME, volume.0)?;
+                                    if read_u32(&payload, row + ATMOSPHERE_SECOND_VOLUME)?
+                                        != u32::MAX
+                                    {
+                                        write_u32(
+                                            &mut payload,
+                                            row + ATMOSPHERE_SECOND_VOLUME,
+                                            volume.0,
+                                        )?;
+                                    }
                                 }
                                 if let (Some(row), Some(lookup)) = (atmosphere_resource, lookup) {
                                     write_u32(&mut payload, row + ATMOSPHERE_LOOKUP, lookup.0)?;
+                                }
+                                if let (Some(row), Some(image)) = (atmosphere_resource, image) {
+                                    write_u32(&mut payload, row + ATMOSPHERE_IMAGE, image.0)?;
                                 }
                                 // New tags are written in the order their entries were taken.
                                 let mut copies = Vec::new();
@@ -2618,11 +2762,22 @@ impl Chain {
                 own_collection,
             ));
         }
+        // The map's lights take the entries after a borrowed sky's, and the map's own container
+        // places their table.
+        let base = next + borrowed.len();
+        let (lit, techniques) = match &self.light_template {
+            Some(template) if !self.lights.is_empty() => (
+                template.tags(&self.lights, &|offset| at(base + offset))?,
+                template.techniques(),
+            ),
+            _ => (Vec::new(), Vec::new()),
+        };
         let mut container_payload = self.container.payload.clone();
         let (_, _, _, table_class) = array_at(&container_payload, CONTAINER_TABLES)?;
         let tables = std::iter::once(table)
             .chain(sounds)
             .chain(borrowed.first().map(|(_, _, tag)| *tag))
+            .chain(lit.first().map(|(_, _, tag)| *tag))
             .flat_map(|tag| tag.0.to_le_bytes())
             .collect::<Vec<_>>();
         append_native_array(
@@ -2653,6 +2808,10 @@ impl Chain {
             TagHash(self.statics.templates.shadow),
         ]);
         loads.extend(borrowed.iter().map(|(_, _, tag)| *tag));
+        // The map's lights draw with the template's stock techniques, which the container loads
+        // as the template's container loads them.
+        loads.extend(lit.iter().map(|(_, _, tag)| *tag));
+        loads.extend(techniques);
         // The bubble's companion loads each copy and its companion, or, for a copy without one,
         // the tables it adds.
         let mut bubble_loads = loads[4..6].to_vec();
@@ -2681,7 +2840,7 @@ impl Chain {
             for (tag, owner) in &self.bounds_rows {
                 match owner {
                     Some(owner) => {
-                        let at_entry = next + borrowed.len() + 2 * own_bounds.len();
+                        let at_entry = next + borrowed.len() + lit.len() + 2 * own_bounds.len();
                         let (own, own_companion) = (at(at_entry)?, at(at_entry + 1)?);
                         let widened = widened_bounds(&owner.payload, pieces)?
                             .unwrap_or_else(|| owner.payload.clone());
@@ -2796,7 +2955,7 @@ impl Chain {
                 tags.push(spec(template, payload));
             }
         }
-        for (template, payload, _) in borrowed {
+        for (template, payload, _) in borrowed.into_iter().chain(lit) {
             tags.push(spec(template, payload));
         }
         for (owner, payload, own, own_companion) in own_bounds {

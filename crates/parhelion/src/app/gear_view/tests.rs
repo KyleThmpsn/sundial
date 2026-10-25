@@ -38,7 +38,6 @@ mod armor_collections;
 mod emblem;
 mod emblem_trackers;
 #[cfg(feature = "d2-model-importer")]
-mod imported_preview;
 #[cfg(feature = "d2-model-importer")]
 mod imported_vehicle;
 mod shader;
@@ -254,7 +253,7 @@ use sundial::ui::model_preview::{Appearance, SurfaceOverride, still};
 
 const WIDTH: f32 = 1320.0;
 /// Tall enough to keep an ability's Technical section, under its Gameplay cards, in view.
-const HEIGHT: f32 = 1800.0;
+const HEIGHT: f32 = 2600.0;
 
 /// One authored item and what the build must carry for it.
 struct Authored {

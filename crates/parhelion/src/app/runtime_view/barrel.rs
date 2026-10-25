@@ -1,4 +1,5 @@
-//! Gameplay Barrel controls, read from the same composed owner the build edits.
+//! Gameplay Barrel controls and the Weapon tab's Magazine count, read from the same composed
+//! owners the build edits.
 use super::*;
 use crate::item::BarrelDefaults;
 use crate::weapon::burst::{Column, ROUNDS_PER_MINUTE_HASH};
@@ -10,9 +11,11 @@ struct Source {
     key: RuntimeGraphKey,
     splices: Vec<(u32, Option<u16>, u32)>,
     overrides: WeaponRecipeOverrides,
+    /// The sandbox perks the weapon starts with, for the Magazine count's modifiers.
+    perks: Vec<u16>,
 }
 
-type Read = Result<Option<BarrelDefaults>, String>;
+pub(in crate::app) type Read = Result<Option<BarrelDefaults>, String>;
 
 #[derive(Default)]
 pub(in crate::app) struct BarrelControls {
@@ -99,19 +102,27 @@ fn read_defaults(source: &Source) -> Read {
     crate::item::barrel_defaults(
         &manager,
         &entity.payload,
-        entity.weapon_translation_group_hash,
+        (
+            entity.weapon_translation_group_hash,
+            entity.weapon_content_group_hash,
+        ),
         &overrides,
         &splices,
+        &source.perks,
     )
     .map_err(|error| error.to_string())
 }
 
 impl PackageAuthoringApp {
-    fn barrel_source(&self) -> Result<Option<Source>, String> {
+    fn barrel_source(&self, donor: Option<&WeaponDonor>) -> Result<Option<Source>, String> {
         let Some(key) = self.runtime_graph_key() else {
             return Ok(None);
         };
         let splices = self.component_splice_list()?;
+        let perks = donor.map_or_else(Vec::new, |donor| {
+            crate::app::stat_editor::starting_perks(self.catalog.as_ref(), &self.recipe, donor)
+                .indices
+        });
         Ok(Some(Source {
             packages: self.packages.clone(),
             key,
@@ -122,7 +133,26 @@ impl PackageAuthoringApp {
                 raw_payload_patches: self.recipe.overrides.raw_payload_patches.clone(),
                 ..Default::default()
             },
+            perks,
         }))
+    }
+
+    /// The composed Barrel and Magazine reading for the weapon as built, starting the read where
+    /// none is current. None while it loads.
+    pub(in crate::app) fn barrel_reading(
+        &mut self,
+        ctx: &egui::Context,
+        donor: Option<&WeaponDonor>,
+    ) -> Option<Read> {
+        match self.barrel_source(donor) {
+            Ok(Some(source)) => self.barrel_controls.poll(
+                ctx,
+                &source,
+                self.install_receiver.is_none() && self.catalog.is_some(),
+            ),
+            Ok(None) => Some(Ok(None)),
+            Err(error) => Some(Err(error)),
+        }
     }
 
     /// The Barrel Settings card, for a weapon. `donor` holds the stats the weapon is built with.
@@ -142,15 +172,7 @@ impl PackageAuthoringApp {
         ui: &mut egui::Ui,
         donor: Option<&WeaponDonor>,
     ) {
-        let defaults = match self.barrel_source() {
-            Ok(Some(source)) => self.barrel_controls.poll(
-                ui.ctx(),
-                &source,
-                self.install_receiver.is_none() && self.catalog.is_some(),
-            ),
-            Ok(None) => Some(Ok(None)),
-            Err(error) => Some(Err(error)),
-        };
+        let defaults = self.barrel_reading(ui.ctx(), donor);
         let burst = match &defaults {
             Some(Ok(Some(defaults))) => defaults
                 .bullets_per_shot

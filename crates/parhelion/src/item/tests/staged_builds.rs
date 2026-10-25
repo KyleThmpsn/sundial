@@ -44,6 +44,7 @@ mod rolled_columns;
 mod socket_expansion;
 mod stock;
 mod subclass_hud;
+mod tooltip;
 mod weapon_properties;
 
 /// Whether a stock view must carry the Oodle runtime, or links it only when the install has one.

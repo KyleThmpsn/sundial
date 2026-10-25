@@ -223,7 +223,14 @@ fn condition_line(condition: &DecodedCondition, depth: usize) -> SummaryLine {
 
 fn effect_line(effect: &DecodedEffect) -> SummaryLine {
     let catalog = effect.catalog();
-    let mut detail = effect.facts.iter().map(Fact::render).collect::<Vec<_>>();
+    let mut detail = effect
+        .facts
+        .iter()
+        .map(|fact| match (effect.kind, fact.label, &fact.value) {
+            (6, "Mode", FactValue::Selector(mode)) => host_mode(*mode),
+            _ => fact.render(),
+        })
+        .collect::<Vec<_>>();
     if effect.kind == 8
         && let Some(role) = component_role(effect)
     {
@@ -263,6 +270,19 @@ fn effect_line(effect: &DecodedEffect) -> SummaryLine {
         depth: 0,
         asset: effect.referenced_tag,
     }
+}
+
+/// Set Host Mode's byte, with the damage type the stock plugs that set each value give it.
+fn host_mode(mode: u8) -> String {
+    use crate::ability::damage::{ARC, KINETIC, SOLAR, VOID};
+    let name = match mode {
+        KINETIC => " · Kinetic",
+        SOLAR => " · Solar",
+        ARC => " · Arc",
+        VOID => " · Void",
+        _ => "",
+    };
+    format!("Mode: {mode}{name}")
 }
 
 fn fact_value<'a>(facts: &'a [Fact], label: &str) -> Option<&'a FactValue> {

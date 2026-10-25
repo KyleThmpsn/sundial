@@ -89,16 +89,39 @@ const ARRIVAL_FIELDS: &[Field] = &[
 ];
 
 pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value, capabilities: Capabilities) -> bool {
-    ui.horizontal(|ui| { ui.strong("Activity Destinations"); crate::ui::help::info(ui, "Use indices and package names from the installed game. Choose Apply to keep your changes or Cancel to discard them."); });
+    ui.horizontal(|ui| {
+        ui.strong("Activity Destinations");
+        crate::ui::help::info(ui, "Indices and package names from the installed game.");
+    });
     let mut changed = false;
     egui::CollapsingHeader::new("Default Destination").show(ui, |ui| {
         match optional_value(document, activity::DESTINATION) {
-            Err(error) => { ui.colored_label(ui.visuals().error_fg_color, error); }
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
             Ok(value) => {
-                let fallback = json!({"reason":-1,"source_activity_index":-1,"activity_index":20,"package_name":"city_tower_social_d2","bubble_count":8,"stateful_bubble_mask":"0xCF","initial_slice_set":48,"spawn_set_hash":"0x811C9DC5"});
+                let fallback = json!({
+                    "reason": -1,
+                    "source_activity_index": -1,
+                    "activity_index": 20,
+                    "package_name": "city_tower_social_d2",
+                    "bubble_count": 8,
+                    "stateful_bubble_mask": "0xCF",
+                    "initial_slice_set": 48,
+                    "spawn_set_hash": "0x811C9DC5"
+                });
                 let source = value.unwrap_or(&fallback);
-                if value.is_none() { ui.label("No override is authored. Apply to create a destination override."); }
-                if let Some(Action::Apply(value)) = form::draw(ui, "destination", source, DESTINATION_FIELDS, false, activity::validate_destination) {
+                if value.is_none() {
+                    ui.weak("No override. Apply creates one.");
+                }
+                if let Some(Action::Apply(value)) = form::draw(
+                    ui,
+                    "destination",
+                    source,
+                    DESTINATION_FIELDS,
+                    false,
+                    activity::validate_destination,
+                ) {
                     changed |= report(ui, activity::set_destination(document, value));
                 }
             }

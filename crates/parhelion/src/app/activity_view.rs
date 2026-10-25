@@ -14,6 +14,8 @@ pub(super) struct Editor {
     choices_job: Option<Receiver<Result<Vec<crate::map::ImageChoice>, String>>>,
     choose_image: bool,
     image_query: String,
+    blank_rows: Option<Result<usize, String>>,
+    blank_rows_job: Option<Receiver<Result<usize, String>>>,
 }
 
 enum Action {
@@ -50,6 +52,8 @@ impl Editor {
             choices_job: None,
             choose_image: false,
             image_query: String::new(),
+            blank_rows: None,
+            blank_rows_job: None,
         })
     }
 
@@ -71,7 +75,8 @@ impl Editor {
         }
     }
 
-    fn fields(&mut self, ui: &mut egui::Ui, packages: &Path) {
+    /// `labels` are the destination labels of the build's other maps.
+    fn fields(&mut self, ui: &mut egui::Ui, packages: &Path, labels: &BTreeSet<String>) {
         ui.label("Title");
         named_control(
             ui.text_edit_singleline(&mut self.recipe.title),
@@ -92,6 +97,17 @@ impl Editor {
             ),
             "Activity Description",
         );
+        ui.label("Destination");
+        let mut label = self.recipe.destination.clone().unwrap_or_default();
+        if named_control(
+            ui.add(egui::TextEdit::singleline(&mut label).hint_text("Donor Destination")),
+            "Activity Destination",
+        )
+        .changed()
+        {
+            self.recipe.destination = (!label.trim().is_empty()).then_some(label);
+        }
+        self.draw_destination_rows(ui, packages, labels);
         ui.separator();
         ui.label("Vehicle Summoning");
         egui::ComboBox::from_id_salt("activity-vehicle-summoning")
@@ -125,6 +141,82 @@ impl Editor {
         self.draw_image(ui, packages);
     }
 
+    /// The destination rows still free once every label of the build takes one. Maps that share a
+    /// label share its row.
+    fn draw_destination_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        packages: &Path,
+        labels: &BTreeSet<String>,
+    ) {
+        if self.blank_rows.is_none() && self.blank_rows_job.is_none() {
+            let (sender, receiver) = mpsc::channel();
+            let packages = packages.to_owned();
+            let context = ui.ctx().clone();
+            let read = sundial::ui::model_preview::PackageRead::start();
+            let spawned = thread::Builder::new()
+                .name("destination-rows".into())
+                .spawn(move || {
+                    let _read = read;
+                    let _ = sender.send(crate::map::blank_destination_rows(&packages));
+                    context.request_repaint();
+                });
+            match spawned {
+                Ok(_) => self.blank_rows_job = Some(receiver),
+                Err(error) => self.blank_rows = Some(Err(error.to_string())),
+            }
+        }
+        if let Some(receiver) = &self.blank_rows_job {
+            match receiver.try_recv() {
+                Ok(rows) => {
+                    self.blank_rows = Some(rows);
+                    self.blank_rows_job = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.blank_rows = Some(Err("Could not read destination rows".into()));
+                    self.blank_rows_job = None;
+                }
+                Err(TryRecvError::Empty) => {
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                }
+            }
+        }
+        let used = labels
+            .iter()
+            .map(String::as_str)
+            .chain(self.recipe.destination.as_deref())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let total = crate::map::DESTINATION_ROWS;
+        // One line in every state, so the fields below stay put when the read finishes.
+        match &self.blank_rows {
+            None => {
+                ui.weak("Reading destination rows…");
+            }
+            Some(Err(error)) => {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Could not read destination rows.",
+                )
+                .on_hover_text(error);
+            }
+            Some(Ok(blank)) if used > *blank => {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!(
+                        "This build needs {used} destination rows. {blank} of {total} are free."
+                    ),
+                );
+            }
+            Some(Ok(blank)) => {
+                ui.weak(format!(
+                    "{} of {total} destination rows are free.",
+                    blank - used
+                ));
+            }
+        }
+    }
+
     fn poll_images(&mut self) {
         if let Some(((), image)) = self.images.poll() {
             match crate::presentation::Artwork::from_source(image.pixels().clone()) {
@@ -141,7 +233,7 @@ impl Editor {
     fn draw_image(&mut self, ui: &mut egui::Ui, packages: &Path) {
         ui.strong("Activity Image");
         if !self.recipe.donor.starts_with("pvp_") {
-            ui.weak("Image selection is available for private-match activities. Mission launcher artwork is not editable here yet.");
+            ui.weak("Only private-match activities take an image.");
             return;
         }
         if let Some(image) = &self.recipe.image {
@@ -322,7 +414,7 @@ impl Editor {
             ui.spinner();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        ui.weak("Private-match portrait and landscape artwork. Uploaded images are saved inside the recipe and cropped for both views.");
+        ui.weak("Saved in the recipe and cropped for portrait and landscape.");
     }
 }
 
@@ -359,6 +451,12 @@ impl PackageAuthoringApp {
         let Some(editor) = &mut self.activity_editor else {
             return;
         };
+        let labels = self
+            .map_entries
+            .iter()
+            .filter(|map| map.path != editor.path && self.enabled_recipe_paths.contains(&map.path))
+            .filter_map(|map| map.destination.clone())
+            .collect::<BTreeSet<_>>();
         editor.poll_images();
         if editor.images.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -383,7 +481,7 @@ impl PackageAuthoringApp {
                     .max_height((ui.available_height() - footer_height).clamp(0.0, 660.0))
                     .show(ui, |ui| {
                         ui.add_enabled_ui(!busy && editor.pending.is_none(), |ui| {
-                            editor.fields(ui, &self.packages)
+                            editor.fields(ui, &self.packages, &labels)
                         });
                     });
                 let footer_top = ui.cursor().top();

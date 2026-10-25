@@ -2,72 +2,6 @@
 use crate::app::tests::driver::*;
 use crate::app::*;
 use serde_json::json;
-use sundial_account::{AccountSettingKey, AccountSettingValue, AccountSettingsCommand};
-
-#[test]
-fn reverting_a_setting_clears_unsaved_state_for_both_sources() {
-    for sqlite in [false, true] {
-        let directory = TestDirectory::new("reverted-dirty-state");
-        let mut app = for_source(&directory, sqlite);
-        let original =
-            account_workspace::account_settings_map(&app.document).unwrap()["display"]["show_fps"]
-                .as_bool()
-                .unwrap();
-        for value in [!original, original] {
-            assert!(
-                account_workspace::apply_account_settings(
-                    &mut app.document,
-                    vec![AccountSettingsCommand::Set {
-                        key: AccountSettingKey::known_preference("show_fps").unwrap(),
-                        value: AccountSettingValue::Boolean(value),
-                    },]
-                )
-                .unwrap()
-            );
-            app.record_edit("Show FPS Updated");
-            assert_eq!(app.has_unsaved_changes(), value != original);
-        }
-        assert_eq!(app.document, app.persisted_document);
-        app.raw_json.push(' ');
-        app.json_editor.mark_modified();
-        assert!(
-            app.has_unsaved_changes(),
-            "An unapplied JSON draft still needs attention"
-        );
-    }
-}
-
-#[test]
-fn undo_clamps_character_selection_after_undoing_added_characters() {
-    let directory = TestDirectory::new("undo-character-selection");
-    let mut app = for_source(&directory, false);
-    app.document.json_mut()["state"]["characters"]
-        .as_array_mut()
-        .unwrap()
-        .truncate(1);
-    app.persisted_document = app.document.clone();
-    app.sync_raw_json();
-    let before = app.document.clone();
-    let mut added = before.json().clone();
-    let mut character = added["state"]["characters"][0].clone();
-    character["soid"] = json!(99);
-    character["equipment"] = json!({});
-    character["inventory"] = json!([]);
-    added["state"]["characters"]
-        .as_array_mut()
-        .unwrap()
-        .push(character);
-    app.raw_json = added.to_string();
-    assert!(app.apply_raw_json(), "{}", app.status);
-    app.selected_character = 1;
-    app.undo();
-    assert_eq!(app.character_count(), 1);
-    assert_eq!(app.selected_character, 0);
-    assert!(!app.dirty);
-    app.redo();
-    assert_eq!(app.character_count(), 2);
-    assert!(app.selected_character < app.character_count());
-}
 
 #[test]
 fn raw_json_cannot_change_the_active_account_source() {
@@ -132,7 +66,7 @@ fn native_runtime_projection_preserves_inactive_container_values() {
             document.apply_runtime_view(view).unwrap();
             assert_eq!(document.json(), &source);
             app.document = document;
-            app.document.save_sqlite().unwrap();
+            app.document.save_sqlite(|| Ok(())).unwrap();
             let reopened = WorkspaceDocument::load(source, &app.settings_path, false);
             assert_eq!(
                 reopened.runtime_view()["state"]["characters"][0]["level"],

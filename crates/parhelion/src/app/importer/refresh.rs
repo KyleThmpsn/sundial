@@ -186,7 +186,7 @@ impl PackageAuthoringApp {
                 ui.label(egui::RichText::new("Importer · Library").color(muted));
                 ui.label(egui::RichText::new("Reimport Recipes").size(24.0).strong());
                 ui.label(format!(
-                    "{} were converted by an older importer. Your edits are kept.",
+                    "{} were converted by an older importer. Sockets and perks come from the new conversion, and a recipe they change is backed up first. Your other edits are kept.",
                     state.pending.len()
                 ));
                 choices(ui, state, &outside_build, &mut requests);

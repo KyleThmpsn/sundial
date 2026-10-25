@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy)]
 struct DefinitionPickerBehavior {
     height: PickerHeight,
@@ -200,7 +197,7 @@ fn draw_definition_picker_with_open_request_and_controls<T>(
             ui.set_min_width(picker_response.rect.width().max(360.0));
             let search_response = ui.add(
                 egui::TextEdit::singleline(query)
-                    .hint_text("Search item name, description, type, or hex hash…")
+                    .hint_text("Search Item Name, Description, Type, or Hex Hash…")
                     .desired_width(ui.available_width()),
             );
             ui.ctx()

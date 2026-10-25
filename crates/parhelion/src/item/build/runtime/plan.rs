@@ -23,7 +23,7 @@ pub(in crate::item::build) struct Payloads {
     runtime_asset_tags: Vec<TagHash>,
     /// The badge artwork's entries in the primary asset package, which the HUD icons end.
     badge_tag_count: usize,
-    private_perk_allocator: AppendedTagAllocator,
+    pub(in crate::item::build) private_perk_allocator: AppendedTagAllocator,
 }
 
 fn label_dictionaries(

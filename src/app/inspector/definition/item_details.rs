@@ -625,7 +625,7 @@ fn art_class_text(class: i8) -> String {
         0 => "Titan",
         1 => "Hunter",
         2 => "Warlock",
-        _ => "Unknown class",
+        _ => "Unknown Class",
     };
     format!("{label} ({class})")
 }
@@ -654,7 +654,7 @@ fn dye_rows(metadata: &ItemPackageMetadata) -> Vec<Vec<String>> {
 fn dye_row(stage: usize, index: usize, key: i8, value: u16) -> Vec<String> {
     vec![
         ["Custom", "Default", "Locked"].get(stage).map_or_else(
-            || format!("Unknown lane {stage}"),
+            || format!("Unknown Lane {stage}"),
             |label| (*label).to_owned(),
         ),
         (index + 1).to_string(),
@@ -711,7 +711,7 @@ pub(super) fn draw_hash_item_rows(
         filter_field(
             ui,
             egui::Id::new(("item_rows_filter", id)),
-            "Filter by Name, Type or Hash",
+            "Filter by Name, Type, or Hash",
         )
     } else {
         String::new()

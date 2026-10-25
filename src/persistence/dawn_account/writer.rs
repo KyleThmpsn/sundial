@@ -29,16 +29,30 @@ pub(crate) struct DawnSaveReceipt {
 /// The revision the document loaded must still be the one on disk. Dawn advances that value on
 /// every commit, so a mismatch means the runtime wrote while the editor held the account and the
 /// save is refused rather than overwriting it.
+#[cfg(test)]
 pub(crate) fn save(
     document: &mut DawnAccountDocument,
 ) -> Result<DawnSaveReceipt, DawnAccountError> {
+    save_checked(document, || Ok(()))
+}
+
+/// [`save`], refused whenever `require_closed` reports the game running: before the backup, and
+/// again just before the commit, since a game started during the save must not receive it.
+pub(crate) fn save_checked(
+    document: &mut DawnAccountDocument,
+    mut require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<DawnSaveReceipt, DawnAccountError> {
+    require_closed().map_err(DawnAccountError::Unwritable)?;
     let mut candidate = document.clone();
-    let receipt = save_candidate(&mut candidate)?;
+    let receipt = save_candidate(&mut candidate, &mut require_closed)?;
     *document = candidate;
     Ok(receipt)
 }
 
-fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt, DawnAccountError> {
+fn save_candidate(
+    document: &mut DawnAccountDocument,
+    require_closed: &mut impl FnMut() -> Result<(), String>,
+) -> Result<DawnSaveReceipt, DawnAccountError> {
     let backup = create_backup(&document.path)?;
     // The active account must still exist after its backup was taken.
     let mut connection = Connection::open_with_flags(
@@ -141,6 +155,7 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     super::schema_guard::extensions_unchanged(&before_state, &committed_state)?;
     let committed = serde_json::to_vec(&committed_state)
         .map_err(|error| DawnAccountError::Unwritable(error.to_string()))?;
+    require_closed().map_err(DawnAccountError::Unwritable)?;
     transaction.commit()?;
 
     document.metadata.account_revision = revision + 1;

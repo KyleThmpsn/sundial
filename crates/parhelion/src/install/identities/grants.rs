@@ -22,9 +22,10 @@ pub(in crate::install) struct GrantedItem {
 }
 
 /// The authored subclasses and shaders an installed generation holds, read from its native
-/// item tables, so no manifest is needed. A subclass names its class through its socket-entry
-/// list, as the catalog reads it: every list keeps its base's class-base entry, whose pool
-/// differs by class, so the stock list sharing that pool names the class.
+/// item tables, so no manifest is needed. A subclass goes to the class its equip condition
+/// names. One without a condition goes to every class and is equipped on its base's class,
+/// which its socket-entry list names, as the catalog reads it: every list keeps its base's
+/// class-base entry, whose pool differs by class, so the stock list sharing that pool names it.
 pub(in crate::install) fn installed_grants(
     target: &Path,
     hashes: &BTreeSet<u32>,
@@ -38,30 +39,34 @@ pub(in crate::install) fn installed_grants(
                 continue;
             }
             let (definition, kind) = tables.definition(hash, definition_tag)?;
-            let class_type = match kind {
+            // Equip conditions persist the class choice even when the manifest is unavailable.
+            let (class_type, every_class) = match kind {
                 Some(crate::ItemKind::Subclass) => {
-                    Some(subclass_class(&tables, &mut pools, hash, &definition)?)
+                    match sundial::package_authoring::investment_schema::subclass_equipment_class(
+                        &definition,
+                    ) {
+                        Ok(Some(class)) => (Some(class), false),
+                        condition => (
+                            Some(subclass_class(&tables, &mut pools, hash, &definition)?),
+                            condition.is_ok(),
+                        ),
+                    }
                 }
-                Some(crate::ItemKind::Shader) => None,
+                Some(crate::ItemKind::Shader) => (None, false),
                 _ => continue,
             };
             grants.push(GrantedItem {
                 item_hash: hash,
                 definition_tag,
                 class_type,
-                // Equip conditions persist the choice even when the manifest is unavailable.
-                every_class: kind == Some(crate::ItemKind::Subclass)
-                    && sundial::package_authoring::investment_schema::subclass_equipment_class(
-                        &definition,
-                    )
-                    .is_ok_and(|class| class.is_none()),
+                every_class,
             });
         }
         Ok(grants)
     })
 }
 
-/// The class an installed subclass is for: the class of the stock list whose class-base pool
+/// The class of an installed subclass's base: the class of the stock list whose class-base pool
 /// its list keeps. The stock pools are read once, on the first subclass.
 fn subclass_class(
     tables: &Tables<'_>,

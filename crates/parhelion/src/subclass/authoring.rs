@@ -139,9 +139,22 @@ pub(crate) struct AuthoredEntry {
     /// The ability's own entity with values changed, which the build copies under an ability
     /// row of the entry's own.
     pub(crate) entity: Option<AbilityEntity>,
-    /// Stock perks its pool grants whose conditions name an ability the list copies. The build
+    /// What its perks' conditions name in place of the stock entity of each ability the list
+    /// copies.
+    pub(crate) follows: BTreeMap<u32, Follow>,
+    /// Stock perks its pool grants whose conditions name an ability it follows. The build
     /// replaces each with a private copy that names the copy.
     pub(crate) retargeted: Vec<u16>,
+}
+
+/// The copy of an ability an entry's perks name in place of its stock entity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Follow {
+    /// The copy of the entry at this place in the list.
+    Copy(u8),
+    /// The entry is selected beside more than one form of the ability, two copies or a copy and
+    /// the stock one, and a condition key names only one.
+    Ambiguous,
 }
 
 /// The stock ability row an entry's pool equips, the entity it names, and the values the copy
@@ -809,6 +822,7 @@ fn author_entry(
         modifiers: Vec::new(),
         removed_modifiers,
         entity,
+        follows: BTreeMap::new(),
         retargeted: Vec::new(),
     })
 }
@@ -1031,8 +1045,8 @@ pub(crate) fn authored_text<'a>(
 
 /// A copied ability takes an ability row and an entity of its own. Records elsewhere in the list
 /// that apply their keys to its stock row follow the row, and stock perks whose conditions name
-/// its stock entity follow the entity through private copies. Each entry holding either takes a
-/// pool of its own, as an authored entry with no edits.
+/// its stock entity follow the entity through private copies, the copy each entry follows. Each
+/// entry holding either takes a pool of its own, as an authored entry with no edits.
 fn carry_copies(
     sources: &Sources<'_>,
     (list, display): (&[u8], &[u8]),
@@ -1063,20 +1077,11 @@ fn carry_copies(
     if copied.is_empty() {
         return Ok(());
     }
-    let mut naming = Naming {
-        sources,
-        entities: copied.iter().map(|(_, entity, _)| *entity).collect(),
-        known: BTreeMap::new(),
-    };
-    for entry in authored.iter_mut() {
-        entry.retargeted = naming
-            .perks(&entry.pool)
-            .map_err(|error| error.context(entry.label.clone()))?;
-    }
     let held = authored
         .iter()
         .map(|entry| entry.entry)
         .collect::<BTreeSet<_>>();
+    let mut others = Vec::new();
     for (index, &entry) in list_entries.iter().enumerate() {
         let index =
             u8::try_from(index).map_err(|_| invalid("Subclass entry index does not fit 8 bits"))?;
@@ -1090,6 +1095,38 @@ fn carry_copies(
             continue;
         }
         let pool = read_tag(sources.manager, pool_template, "subclass pool")?;
+        others.push((index, entry, pool));
+    }
+    // Where a copied ability is still selected stock: the other entries whose pools equip its row.
+    let mut stock = Vec::new();
+    let pools = authored
+        .iter()
+        .filter(|entry| entry.entity.is_none())
+        .map(|entry| (entry.entry, entry.pool.as_slice()))
+        .chain(
+            others
+                .iter()
+                .map(|(index, _, pool)| (*index, pool.as_slice())),
+        );
+    for (index, pool) in pools {
+        if let Some(&row) = native::equipped_rows(pool)?.first()
+            && let Some(entity) = (sources.entity_of)(row)?
+            && copied.iter().any(|&(_, source, _)| source == entity.0)
+        {
+            stock.push((entity.0, index));
+        }
+    }
+    let mut naming = Naming {
+        sources,
+        known: BTreeMap::new(),
+    };
+    for entry in authored.iter_mut() {
+        entry.follows = follow_copies(&list_entries, entry.entry, &copied, &stock)?;
+        entry.retargeted = naming
+            .perks(&entry.pool, &entry.follows)
+            .map_err(|error| error.context(entry.label.clone()))?;
+    }
+    for (index, entry, pool) in others {
         let label = format!("Subclass entry {index}");
         let mut applies = false;
         for &(row, _, owner) in &copied {
@@ -1097,8 +1134,9 @@ fn carry_copies(
                 applies |= native::applies_to_row(&pool, row)?;
             }
         }
+        let follows = follow_copies(&list_entries, index, &copied, &stock)?;
         let retargeted = naming
-            .perks(&pool)
+            .perks(&pool, &follows)
             .map_err(|error| error.context(label.clone()))?;
         if !applies && retargeted.is_empty() {
             continue;
@@ -1115,7 +1153,7 @@ fn carry_copies(
             entry: index,
             label,
             key: format!("entry-{index}"),
-            pool_template,
+            pool_template: TagHash(entry.pool),
             pool,
             record_template,
             record: read_tag(sources.manager, record_template, "subclass node record")?,
@@ -1125,10 +1163,58 @@ fn carry_copies(
             modifiers: Vec::new(),
             removed_modifiers: Vec::new(),
             entity: None,
+            follows,
             retargeted,
         });
     }
     Ok(())
+}
+
+/// What the perks of the entry at `index` name in place of each copied ability's stock entity:
+/// its own copy, or else the one copy it is selected beside. An entry that holds the stock
+/// ability itself keeps naming it, and alternatives that hold the ability in two forms leave it
+/// ambiguous. `copied` holds each copy's row, stock entity and owner, `stock` each entry that
+/// equips a copied ability's stock entity.
+fn follow_copies(
+    entries: &[Entry],
+    index: u8,
+    copied: &[(u8, u32, u8)],
+    stock: &[(u32, u8)],
+) -> AuthoringResult<BTreeMap<u32, Follow>> {
+    let entry = entry_at(entries, index)?;
+    let mut follows = BTreeMap::new();
+    for &(_, source, _) in copied {
+        if follows.contains_key(&source) || stock.contains(&(source, index)) {
+            continue;
+        }
+        if copied
+            .iter()
+            .any(|&(_, each, owner)| each == source && owner == index)
+        {
+            follows.insert(source, Follow::Copy(index));
+            continue;
+        }
+        let mut copies = Vec::new();
+        for &(_, each, owner) in copied {
+            if each == source && !exclusive(entry, entry_at(entries, owner)?) {
+                copies.push(owner);
+            }
+        }
+        let mut stock_beside = false;
+        for &(each, holder) in stock {
+            stock_beside |= each == source && !exclusive(entry, entry_at(entries, holder)?);
+        }
+        match copies[..] {
+            [] => {}
+            [owner] if !stock_beside => {
+                follows.insert(source, Follow::Copy(owner));
+            }
+            _ => {
+                follows.insert(source, Follow::Ambiguous);
+            }
+        }
+    }
+    Ok(follows)
 }
 
 /// Whether two entries are alternatives Dawn never selects together: one group, different plug
@@ -1347,28 +1433,24 @@ fn check_buckets(
     Ok(())
 }
 
-/// Which stock perks name a copied ability's entity, each perk read once.
+/// The abilities stock perks name, each perk read once.
 struct Naming<'a, 'b> {
     sources: &'a Sources<'b>,
-    entities: BTreeSet<u32>,
-    known: BTreeMap<u16, bool>,
+    known: BTreeMap<u16, Vec<u32>>,
 }
 
 impl Naming<'_, '_> {
-    /// The perks a pool grants whose conditions name a copied ability.
-    fn perks(&mut self, pool: &[u8]) -> AuthoringResult<Vec<u16>> {
+    /// The perks a pool grants whose conditions name an ability `follows` holds.
+    fn perks(&mut self, pool: &[u8], follows: &BTreeMap<u32, Follow>) -> AuthoringResult<Vec<u16>> {
         let mut named = Vec::new();
         for perk in native::granted_perks(pool)? {
-            let names = if let Some(names) = self.known.get(&perk).copied() {
-                names
-            } else {
-                let names = (self.sources.ability_references)(perk)?
-                    .iter()
-                    .any(|entity| self.entities.contains(entity));
-                self.known.insert(perk, names);
-                names
+            let entities = match self.known.entry(perk) {
+                std::collections::btree_map::Entry::Occupied(known) => known.into_mut(),
+                std::collections::btree_map::Entry::Vacant(unknown) => {
+                    unknown.insert((self.sources.ability_references)(perk)?)
+                }
             };
-            if names {
+            if entities.iter().any(|entity| follows.contains_key(entity)) {
                 named.push(perk);
             }
         }

@@ -147,9 +147,10 @@ pub fn draw_graph(ui: &mut egui::Ui, graph: &WeaponRuntimeGraph, options: &mut R
                         resource.owner_tag, resource.concrete_class
                     ));
                     if !resource.alias_bindings.is_empty() {
+                        let others = resource.alias_bindings.len();
                         ui.label(format!(
-                            "Shared by {} other binding(s)",
-                            resource.alias_bindings.len()
+                            "Shared by {others} other {}",
+                            if others == 1 { "binding" } else { "bindings" }
                         ))
                         .on_hover_text(
                             resource

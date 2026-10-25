@@ -64,6 +64,7 @@ pub(in crate::app) fn app(install_path: PathBuf) -> SundialApp {
         pending_sqlite_restore: None,
         pending_sqlite_reset: None,
         exit_confirmed: false,
+        unsaved_authoring_work: None,
         dirty: false,
         undo_history: Vec::new(),
         redo_history: Vec::new(),

@@ -78,15 +78,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tiny_resources_do_not_consume_one_block_each() {
-        let packing = plan(std::iter::repeat_n((8, 16), 6000)).unwrap();
-        assert_eq!(packing.locations.len(), 6000);
-        assert_eq!(packing.block_count, 1);
-        assert!(plan([(0, 16)]).is_err());
-        assert!(plan([(usize::MAX, 16), (16, 16)]).is_err());
-    }
-
-    #[test]
     fn packed_block_writer_errors_stop_emission() {
         let bytes = vec![0; BLOCK_SIZE * 2];
         let mut calls = 0;

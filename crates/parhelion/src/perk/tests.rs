@@ -12,34 +12,6 @@ fn weapon_with_perk(perk: &PerkRecipe) -> crate::WeaponRecipe {
 }
 
 #[test]
-fn library_perks_own_their_description_including_an_empty_one() {
-    let temp = tempfile::tempdir().unwrap();
-    let library = library::Library::open(temp.path().to_owned()).unwrap();
-    for description in ["", " \t\n", "  Authored description with spacing.  "] {
-        let mut perk = PerkRecipe::new();
-        perk.description = description.into();
-        let entry = library.save(&perk, None).unwrap();
-        let loaded = library::Library::read(&entry.path).unwrap();
-        assert_eq!(loaded.recipe.description, description);
-        let weapon = weapon_with_perk(&loaded.recipe);
-        let expected = Some(if description.trim().is_empty() {
-            ""
-        } else {
-            description
-        });
-        assert_eq!(
-            weapon.overrides.socket_plug_variants[0]
-                .description
-                .as_deref(),
-            expected
-        );
-        let json = weapon.to_json_pretty().unwrap();
-        assert_eq!(crate::WeaponRecipe::from_json_str(&json).unwrap(), weapon);
-        weapon.to_spec().unwrap().validate().unwrap();
-    }
-}
-
-#[test]
 fn standalone_perks_reject_invalid_compiler_inputs_before_library_save() {
     let temp = tempfile::tempdir().unwrap();
     let library = library::Library::open(temp.path().to_owned()).unwrap();

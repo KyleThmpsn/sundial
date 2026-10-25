@@ -518,10 +518,11 @@ pub(super) fn bank(carrier: &Carrier, clips: &[u32], rows: &[Row]) -> Result<Pay
         .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
         .collect::<BTreeSet<_>>();
     let mut clip_rows = array_rows(&bank, 8, 4, 0x80808F48)?;
-    let mut auxiliary = array_rows(&bank, 0x18, 2, 0x80800007)?;
+    // One signed 32-bit word per clip, class 0x80800007. A clip without one holds -1.
+    let mut auxiliary = array_rows(&bank, 0x18, 4, 0x80800007)?;
     let mut descriptors = array_rows(&bank, 0x68, 32, 0x80809002)?;
     ensure!(
-        clip_rows.len() / 4 == auxiliary.len() / 2,
+        clip_rows.len() / 4 == auxiliary.len() / 4,
         "Native clip auxiliary map differs"
     );
     let first_clip = clip_rows.len() / 4;
@@ -537,7 +538,7 @@ pub(super) fn bank(carrier: &Carrier, clips: &[u32], rows: &[Row]) -> Result<Pay
     );
     for clip in clips {
         clip_rows.extend(clip.to_le_bytes());
-        auxiliary.extend(u16::MAX.to_le_bytes());
+        auxiliary.extend(u32::MAX.to_le_bytes());
     }
     for row in rows {
         ensure!(
@@ -552,7 +553,7 @@ pub(super) fn bank(carrier: &Carrier, clips: &[u32], rows: &[Row]) -> Result<Pay
         descriptors.extend(bytes);
     }
     append(&mut bank.0, 8, 0x80808F48, &clip_rows, 4)?;
-    append(&mut bank.0, 0x18, 0x80800007, &auxiliary, 2)?;
+    append(&mut bank.0, 0x18, 0x80800007, &auxiliary, 4)?;
     append(&mut bank.0, 0x68, 0x80809002, &descriptors, 32)?;
     Ok(bank)
 }

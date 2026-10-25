@@ -1,6 +1,6 @@
 //! Recipe changes happen after controls have selected one command.
 use super::super::{
-    LogEntry, materialize_socket_column, recipe_socket_choices, remove_base_socket,
+    LogEntry, materialize_socket_column, recipe_socket_choices, remove_base_socket, remove_choice,
     remove_last_added_socket, restore_socket_column, set_recipe_socket_column, set_socket_role,
     shift_socket_choice_queries_after_removal,
 };
@@ -152,19 +152,16 @@ fn edit_choice(
                 "{} must retain a default plug",
                 socket.label
             )));
-        } else {
-            let mut updated = current.clone();
-            if choice_index < updated.len() {
-                updated.remove(choice_index);
-                set_recipe_socket_column(
-                    recipe,
-                    donor.sockets.len(),
-                    socket.index,
-                    inherited,
-                    updated,
-                    Some(choice_index),
-                );
-                shift_socket_choice_queries_after_removal(queries, choice_index);
+        } else if choice_index < current.len() {
+            match remove_choice(
+                recipe,
+                donor.sockets.len(),
+                socket.index,
+                inherited,
+                choice_index,
+            ) {
+                Ok(()) => shift_socket_choice_queries_after_removal(queries, choice_index),
+                Err(error) => log.push(LogEntry::error(error)),
             }
         }
         return RowContinuation::Finished;
@@ -223,7 +220,6 @@ fn edit_choice(
         socket.index,
         inherited,
         updated,
-        None,
     );
     if let Some(private) = private {
         super::super::super::custom_perks::attach_picked_perk(

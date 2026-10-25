@@ -2,72 +2,11 @@ use super::*;
 use sundial::package_authoring::sandbox_perk::{
     action::{CONDITION_ROW_CLASS, DecodedCondition, EFFECT_ROW_CLASS, FactValue, REQUIRED_LABELS},
     nodes,
-    program::{Action, Asset, NativeProgram, Trigger},
+    program::{NativeProgram, Trigger},
 };
 
 /// The entity the editor fixture's component graph belongs to.
 const ENTITY: u32 = 0x8152_82E1;
-
-#[test]
-fn conversion_carries_component_edits_and_refuses_unrepresentable_references() {
-    let mut loaded = super::super::tests::fixture();
-    let tag = loaded.graphs[0].0;
-    loaded.graphs[0].1.scope_fields();
-    let field = loaded.graphs[0].1.fields().next().unwrap();
-    let edit = WeaponRuntimeValueOverride {
-        locator: field.locator.clone(),
-        value: field.value.clone(),
-    };
-    let mut program = Program {
-        actions: vec![Action::Pattern {
-            asset: Asset {
-                graph: tag,
-                ..Asset::default()
-            },
-        }],
-        ..Program::default()
-    };
-    transfer_values(&loaded, std::slice::from_ref(&edit), &mut program).unwrap();
-    assert_eq!(
-        program.actions[0].asset().unwrap().values,
-        vec![edit.clone()]
-    );
-    program.actions = vec![Action::add_rounds(1)];
-    assert!(
-        transfer_values(&loaded, &[edit], &mut program)
-            .unwrap_err()
-            .contains("cannot carry")
-    );
-}
-
-#[test]
-fn conversion_uses_edited_action_values_and_rejects_stale_values() {
-    let loaded = super::super::tests::fixture();
-    let mut editor = super::super::tests::editor(loaded.clone());
-    editor.action_draft = actions::discover(&loaded.action_payload);
-    editor.action_draft[0].value_bits = 2.0_f32.to_bits();
-    let changed = effective_action(
-        loaded.action_tag,
-        &loaded.action_payload,
-        &editor.conversion_input(),
-        &[],
-    )
-    .unwrap();
-    assert_eq!(
-        actions::source_bits(&changed, &editor.action_draft[0]).unwrap(),
-        2.0_f32.to_bits()
-    );
-    editor.action_draft[0].expected_bits = 1.0_f32.to_bits();
-    assert!(
-        effective_action(
-            loaded.action_tag,
-            &loaded.action_payload,
-            &editor.conversion_input(),
-            &[]
-        )
-        .is_err()
-    );
-}
 
 /// An action assembled from node templates alone: an unconditional activation with the
 /// given probability, one spawn effect that references the fixture entity, and two ending

@@ -1,55 +1,6 @@
-use crate::app::tests::driver::*;
 use crate::app::*;
 use crate::test_support::TestDirectory;
 use std::fs;
-
-#[test]
-fn sqlite_default_restore_preserves_only_inactive_json_account_domains() {
-    let mut defaults = serde_json::json!({
-        "version": 8,
-        "state": {
-            "account": {"settings": {"from": "defaults"}},
-            "characters": [{"from": "defaults"}],
-            "server": {"port": 1}
-        }
-    });
-    let source = serde_json::json!({
-        "version": 8,
-        "state": {
-            "account": {"settings": {"sentinel": true}},
-            "characters": "stale but untouched",
-            "server": {"port": 2}
-        }
-    });
-
-    preserve_inactive_json_account_domains(&mut defaults, &source);
-
-    assert_eq!(
-        defaults.pointer("/state/account/settings/sentinel"),
-        Some(&serde_json::json!(true))
-    );
-    assert_eq!(
-        defaults.pointer("/state/characters"),
-        Some(&serde_json::json!("stale but untouched"))
-    );
-    assert_eq!(
-        defaults.pointer("/state/server/port"),
-        Some(&serde_json::json!(1))
-    );
-}
-
-#[test]
-fn sqlite_default_restore_does_not_create_missing_json_account_domains() {
-    let mut defaults = serde_json::json!({
-        "state": {"account": {}, "characters": [], "server": {}}
-    });
-
-    preserve_inactive_json_account_domains(&mut defaults, &serde_json::json!({"state": {}}));
-
-    assert!(defaults.pointer("/state/account").is_none());
-    assert!(defaults.pointer("/state/characters").is_none());
-    assert!(defaults.pointer("/state/server").is_some());
-}
 
 #[test]
 fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
@@ -84,39 +35,4 @@ fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {
             .unwrap_err()
             .contains("Account source is incompatible")
     );
-}
-
-#[test]
-fn accepting_a_loaded_source_cannot_record_or_restore_the_previous_source() {
-    let directory = TestDirectory::new("history-source-boundary");
-    let mut app = app(directory.0.clone());
-    let previous = app.document.clone();
-    let entry = DocumentHistoryEntry {
-        document: previous.clone(),
-        label: "Old Account".into(),
-    };
-    app.undo_history.push(entry.clone());
-    app.redo_history.push(entry);
-    let next = WorkspaceDocument::json_only(
-        serde_json::json!({"version": 8, "state": {"characters": [], "sentinel": "new account"}}),
-    );
-    app.replace_loaded_document(next.clone());
-    assert!(app.undo_history.is_empty());
-    assert!(app.redo_history.is_empty());
-    app.undo();
-    assert_eq!(app.document, next);
-    assert!(!app.dirty);
-    assert!(!app.settings_path.exists());
-}
-
-#[test]
-fn applying_stale_json_preserves_the_current_document_and_the_draft() {
-    let directory = TestDirectory::new("json-draft-conflict");
-    let mut app = app(directory.0.clone());
-    let draft = app.raw_json.clone();
-    app.document.json_mut()["state"]["sentinel"] = serde_json::json!(true);
-    let current = app.document.clone();
-    assert!(!app.apply_raw_json());
-    assert_eq!(app.document, current);
-    assert_eq!(app.raw_json, draft);
 }

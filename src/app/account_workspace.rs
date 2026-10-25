@@ -426,10 +426,17 @@ impl WorkspaceDocument {
         Ok(())
     }
 
-    pub(super) fn save_sqlite(&mut self) -> Result<SqliteSaveReceipt, String> {
+    /// Writes the edited SQLite account, refused while `require_closed` reports the game running.
+    /// The writer asks again after its validation and backup and just before it commits, since
+    /// a game started meanwhile must not receive the account.
+    pub(super) fn save_sqlite(
+        &mut self,
+        require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<SqliteSaveReceipt, String> {
         match &mut self.account {
             AccountDocument::Sqlite(document) => {
-                sqlite_persistence::save_document(document).map_err(|error| error.to_string())
+                sqlite_persistence::save_document_checked(document, require_closed)
+                    .map_err(|error| error.to_string())
             }
             AccountDocument::Dawn(_) => {
                 Err("internal error: a Dawn account is saved through player-state.db".to_owned())
@@ -441,11 +448,19 @@ impl WorkspaceDocument {
         }
     }
 
-    /// Writes the edited account through the adapter that owns its file.
-    pub(super) fn save_account(&mut self) -> Result<AccountSaveReceipt, String> {
+    /// Writes the edited account through the adapter that owns its file, refused at each of
+    /// the writer's checks while `require_closed` reports the game running.
+    pub(super) fn save_account(
+        &mut self,
+        require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<AccountSaveReceipt, String> {
         match &self.account {
-            AccountDocument::Dawn(_) => self.save_dawn().map(AccountSaveReceipt::Dawn),
-            _ => self.save_sqlite().map(AccountSaveReceipt::Sqlite),
+            AccountDocument::Dawn(_) => self
+                .save_dawn_checked(require_closed)
+                .map(AccountSaveReceipt::Dawn),
+            _ => self
+                .save_sqlite(require_closed)
+                .map(AccountSaveReceipt::Sqlite),
         }
     }
 
@@ -460,11 +475,22 @@ impl WorkspaceDocument {
         }
     }
 
-    /// Writes an edited Dawn account back to player-state.db.
+    /// Writes an edited Dawn account back to player-state.db, with no game check.
+    #[cfg(test)]
     pub(super) fn save_dawn(&mut self) -> Result<dawn_persistence::DawnSaveReceipt, String> {
+        self.save_dawn_checked(|| Ok(()))
+    }
+
+    /// Writes an edited Dawn account back to player-state.db, refused while `require_closed`
+    /// reports the game running, including just before the commit.
+    fn save_dawn_checked(
+        &mut self,
+        require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<dawn_persistence::DawnSaveReceipt, String> {
         match &mut self.account {
             AccountDocument::Dawn(document) => {
-                dawn_persistence::save(document).map_err(|error| error.to_string())
+                dawn_persistence::save_checked(document, require_closed)
+                    .map_err(|error| error.to_string())
             }
             _ => {
                 Err("internal error: the selected account source is not player-state.db".to_owned())
@@ -481,8 +507,14 @@ impl WorkspaceDocument {
         sqlite_persistence::validate_backup(backup).map_err(|error| error.to_string())
     }
 
-    pub(super) fn restore_sqlite_backup_safely(&self, backup: &Path) -> Result<PathBuf, String> {
-        sqlite_persistence::restore_backup_safely(&self.database_path, backup)
+    /// Replaces the SQLite account with `backup`, refused while `require_closed` reports the game
+    /// running, both before the safety snapshot and just before the restore.
+    pub(super) fn restore_sqlite_backup_safely(
+        &self,
+        backup: &Path,
+        require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<PathBuf, String> {
+        sqlite_persistence::restore_backup_checked(&self.database_path, backup, require_closed)
             .map(|receipt| receipt.safety_backup)
             .map_err(|error| error.to_string())
     }

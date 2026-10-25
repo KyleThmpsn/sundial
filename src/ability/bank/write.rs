@@ -15,8 +15,6 @@ const SCRIPT_DEFINITION_SIZE: usize = 40;
 /// +0x30 before its attack record. Attack selection follows +0x28 when it is not zero, so a
 /// shorter block puts the appended record's marker there and the client faults on it.
 const ATTACK_DEFINITION_SIZE: usize = 0x38;
-/// An instance modifier: the header, a pointer back to its instance row, and zeros.
-const INSTANCE_MODIFIER_SIZE: usize = 40;
 /// The name of a row with no name, FNV-1's offset basis, as the Dodge charge row is named.
 const NO_NAME: u32 = 0x811C_9DC5;
 
@@ -50,6 +48,7 @@ pub(super) fn put_pointer(out: &mut [u8], at: usize, target: usize) -> Result<()
 /// What a modifier is called when the bank cannot take it.
 pub(super) fn modifier_kind(modifier: Modifier) -> &'static str {
     match modifier {
+        Modifier::Attack(_) => "movement attack",
         Modifier::Group(_) => "grouped ability property",
         Modifier::Fixed(_) => "fixed ability property",
         Modifier::Charges(_) => "charge",
@@ -61,12 +60,9 @@ pub(super) fn modifier_kind(modifier: Modifier) -> &'static str {
 
 pub(super) fn modifier_classes(modifier: Modifier) -> Result<ModifierClasses, String> {
     let (definition, instance, definition_size) = match modifier {
+        Modifier::Attack(_) => (attack::CLASS, attack::CLASS + 1, 32),
         Modifier::Group(_) => (group::CLASS, group::TWIN, 40),
-        Modifier::Fixed(body) => (
-            body.class,
-            body.class + 1,
-            (16 + body.byte_len()?).next_multiple_of(8),
-        ),
+        Modifier::Fixed(body) => (body.class, body.class + 1, body.definition_size()?),
         Modifier::Charges(_) => (
             CHARGE_DEFINITION_CLASS,
             CHARGE_INSTANCE_CLASS,
@@ -99,6 +95,7 @@ pub(super) fn listed_parameter(
 ) -> Result<Option<Parameter>, String> {
     match modifier {
         Modifier::Charges(_)
+        | Modifier::Attack(_)
         | Modifier::Melee { .. }
         | Modifier::Scalar { .. }
         | Modifier::Fixed(_)
@@ -139,7 +136,7 @@ pub(super) fn open_definition_region(
         .iter()
         .map(|&definition_class| {
             let at = open_block(&mut out, definition_class);
-            out.resize(at + INSTANCE_MODIFIER_SIZE, 0);
+            out.resize(at + fixed::instance_size(definition_class), 0);
             at
         })
         .collect();
@@ -288,6 +285,19 @@ pub(super) fn write_rows(
                 put_u32(out, definition_row + ROW_KEY, row.key);
                 put_u32(out, definition_row + ROW_NAME, NO_NAME);
                 put_u32(out, definition_row + ROW_FLAGS, 0xFF);
+                let selection = match row.body {
+                    Body::Fixed(body) => body.selection,
+                    Body::Movement(_, selection) => Some(selection),
+                    _ => None,
+                };
+                if let Some(selection) = selection {
+                    put_u32(out, definition_row + ROW_NAME, selection.name);
+                    put_u32(
+                        out,
+                        definition_row + ROW_FLAGS,
+                        u32::from(selection.priority),
+                    );
+                }
                 put_u32(out, definition_row + ROW_HANDLER, row.handler.get());
                 put_u32(out, definition_row + ROW_MODE, 0xFF);
                 (row.modifier_instance, row.modifier_definition, row.gate)
@@ -390,10 +400,15 @@ pub(super) fn write_modifier_pair(out: &mut [u8], owner: u32, row: &Added) -> Re
         modifier_instance as u64,
     );
     match row.body {
+        Body::Movement(roots, _) => {
+            put_pointer(out, modifier_definition + 16, roots[0])?;
+            put_pointer(out, modifier_definition + 24, roots[1])?;
+        }
         Body::Fixed(body) => {
             for (i, &word) in body.words[..body.byte_len()? / 4].iter().enumerate() {
                 put_u32(out, modifier_definition + 16 + i * 4, word);
             }
+            body.write_nested(out, owner, modifier_definition, modifier_instance)?;
         }
         Body::Charges(charges) => {
             put_u64(out, modifier_definition + CHARGE_VALUE, charges as u64);
@@ -476,7 +491,11 @@ pub(super) fn check_read_back(
                 let row = &added[new];
                 PropertyRow {
                     key: row.key,
-                    name: NO_NAME,
+                    name: match row.body {
+                        Body::Movement(_, selection) => selection.name,
+                        Body::Fixed(body) => body.selection.map_or(NO_NAME, |s| s.name),
+                        _ => NO_NAME,
+                    },
                     handler: row.handler,
                     modifier_class: row.classes.definition,
                     charge: match row.body {

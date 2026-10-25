@@ -100,10 +100,7 @@ pub(super) fn draw(
                 ] {
                     ui.monospace(format!("{label}: 0x{tag:08X}"));
                 }
-                ui.label(format!(
-                    "Link Location: {} bytes from the start of the containing resource (0x{:X})",
-                    reference.offset, reference.offset
-                ));
+                ui.monospace(format!("Link Offset: 0x{:X}", reference.offset));
             });
             ui.horizontal_wrapped(|ui| {
                 copy_tag(ui, "Copy Source Tag", reference.source);

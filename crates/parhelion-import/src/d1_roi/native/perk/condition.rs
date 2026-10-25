@@ -17,6 +17,34 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<Option<Nat
     if (class, kind) == (0x80803101, 20) {
         return player::read(p, at).map(Some);
     }
+    if (class, kind) == (0x808030DB, 33) {
+        ensure!(
+            (0.0..=1.0).contains(&p.f32(at)?) && p.u8(at + 4)? == 255 && p.u8(at + 6)? == 0,
+            "Source event-label condition has unqualified probability or state"
+        );
+        // Source 76DE10 reads the event object's label set directly. Native 107C790
+        // reads it after the object's four-byte prefix. Both use the +58 predicate.
+        let mut bytes = vec![0; 0x68];
+        bytes[..8].copy_from_slice(&p.bytes::<8>(at)?);
+        bytes[5] = 32;
+        bytes[0x58] = 255;
+        let mut graph = Graph {
+            blocks: vec![Block {
+                class: 0x80803DF8,
+                count: None,
+                bytes,
+                links: BTreeMap::new(),
+            }],
+        };
+        label::translate(source, p, at + 8, &mut graph, 8)?;
+        graph
+            .validate_node(NodeKind::Condition(32))
+            .map_err(anyhow::Error::msg)?;
+        return Ok(Some(NativeNode {
+            kind: 32,
+            bytes: graph.emit().map_err(anyhow::Error::msg)?,
+        }));
+    }
     if (class, kind) == (0x808030D4, 12) {
         ensure!(
             (0.0..=1.0).contains(&p.f32(at)?)

@@ -6,7 +6,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
     ensure!(
         (0.0..=1.0).contains(&p.f32(at)?)
             && p.u8(at + 4)? == 0xFF
-            && p.u8(at + 6)? == 0
+            && p.u8(at + 6)? == u8::from(p.u64(at + 0x188)? != 0)
             && p.u8(at + 0x94)? & !7 == 0
             && p.u8(at + 0x95)? <= 1
             && p.bytes::<2>(at + 0x96)? == [0; 2]
@@ -14,7 +14,7 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
             && p.u8(at + 0x9C)? <= 1
             && p.bytes::<3>(at + 0x9D)? == [0; 3]
             && p.bytes::<11>(at + 0x175)? == [0; 11]
-            && p.bytes::<15>(at + 0x181)? == [0; 15],
+            && p.bytes::<7>(at + 0x181)? == [0; 7],
         "Source hit requires state, timeout, slot or extended ownership translation"
     );
     let mut bytes = vec![0; 0xD0];
@@ -35,6 +35,35 @@ pub(super) fn read(source: &Source, p: &Payload, at: usize) -> Result<NativeNode
             links: BTreeMap::new(),
         }],
     };
+    if p.u64(at + 0x188)? != 0 {
+        let counter = p.pointer(at + 0x188)?;
+        let marker = counter
+            .checked_sub(4)
+            .context("Source hit counter marker")?;
+        let minimum = p.f32(counter)?;
+        let maximum = p.f32(counter + 4)?;
+        let seconds = p.f32(counter + 8)?;
+        ensure!(
+            p.u32(marker)? == 0x80802D44
+                && (0.0..=16_777_216.0).contains(&minimum)
+                && (minimum..=16_777_216.0).contains(&maximum)
+                && minimum.fract() == 0.0
+                && maximum.fract() == 0.0
+                && (0.0..=3600.0).contains(&seconds),
+            "Source hit counter needs a bounded literal target count and timeout"
+        );
+        // Source 76B630 and native 107D4F0 count hits independently per target,
+        // retain inclusive bounds and refresh the timeout on each accepted hit.
+        // The native runtime owns state allocation and its three-target cache.
+        // On overflow it evicts the earliest deadline, unlike D1's first slot.
+        graph.blocks[0].links.insert(0xC8, 1);
+        graph.blocks.push(Block {
+            class: 0x80803DF0,
+            count: None,
+            bytes: p.bytes::<12>(counter)?.to_vec(),
+            links: BTreeMap::new(),
+        });
+    }
     filter::damage(source, p, at + 8, at + 0xE0, &mut graph, 8)?;
     let mut labels = Graph {
         blocks: vec![Block {

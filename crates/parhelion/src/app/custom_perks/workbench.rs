@@ -20,7 +20,7 @@ mod duplicate;
 mod engine;
 mod forms;
 mod guidance;
-pub(in crate::app::custom_perks) mod history;
+pub(in crate::app) mod history;
 use crate::artwork_browser as icons;
 mod library;
 mod markers;
@@ -220,13 +220,23 @@ pub(in crate::app) struct Workbench {
     initialized: bool,
     draft_baseline: Option<Vec<u8>>,
     drafts_writable: bool,
-    /// Why the last draft write failed. Autosave tries again on the next edit.
+    /// Why the last draft write failed, or where a window that lost the drafts file keeps its own.
     drafts_error: Option<String>,
+    /// When the last draft write failed. While set the latest drafts exist only here, and
+    /// autosave tries them again.
+    drafts_retry: Option<std::time::Instant>,
+    /// Drafts file entries that do not open and could not be kept in a file of their own. Every
+    /// write of the drafts file carries them, so autosave never drops them.
+    unopened_drafts: Vec<serde_json::Value>,
     /// This window's own drafts file, named after it, once another window wrote the shared
     /// drafts file since this one last did. Autosave writes there for the rest of the session.
     drafts_set_aside: Option<String>,
     library: Option<Library>,
     entries: Vec<Entry>,
+    /// Saved item import identities, shared by library entries and open drafts.
+    imported_perks: BTreeSet<String>,
+    /// None uses the build feature's initial value until the checkbox is drawn.
+    show_imported_perks: Option<bool>,
     /// Each saved perk's problem, by path, with the modified time and size it was checked at.
     /// A library holds hundreds of perks, too many to check on every frame.
     library_issues: BTreeMap<PathBuf, (Option<SystemTime>, usize, Option<String>)>,
@@ -528,6 +538,7 @@ impl Workbench {
         choices: &[WeaponSandboxPerkChoice],
     ) {
         self.poll_duplicate(ctx, choices);
+        self.retry_drafts(ctx);
         self.engine.export.poll();
         self.verification.poll();
         self.poll_stock_programs();
@@ -732,22 +743,53 @@ impl Workbench {
                     .unwrap_or(40.0);
                 let body_height = (ui.available_height() - footer_height).clamp(240.0, tallest);
                 let width = ui.available_width();
-                let library_width = (width * 0.26).clamp(220.0, 290.0).min(width * 0.40);
+                // Dragging the divider sets the column's width, and a double click returns it to
+                // the default. It is remembered across sessions.
+                let library_width_id = egui::Id::new("perk-workbench-library-width");
+                let narrowest = 160.0_f32.min(width * 0.40);
+                let widest = (width * 0.60).max(narrowest);
+                let library_width = ctx
+                    .data_mut(|data| data.get_persisted::<f32>(library_width_id))
+                    .unwrap_or_else(|| (width * 0.26).clamp(220.0, 290.0).min(width * 0.40))
+                    .clamp(narrowest, widest);
                 let editor_width =
                     (width - library_width - ui.spacing().item_spacing.x * 3.0 - 2.0).max(120.0);
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), body_height),
                     egui::Layout::left_to_right(egui::Align::Min),
                     |ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(library_width, body_height),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.set_width(library_width);
-                                self.draw_library(ui, catalog, donor.map(|donor| (weapon, donor)));
-                            },
+                        // The column keeps its width whatever its rows lay out, so the editor
+                        // always starts at the same place. Anything wider is clipped.
+                        let (_, rect) = ui.allocate_space(egui::vec2(library_width, body_height));
+                        let mut library = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::top_down(egui::Align::Min)),
                         );
-                        ui.separator();
+                        library.set_clip_rect(rect.intersect(ui.clip_rect()));
+                        self.draw_library(
+                            &mut library,
+                            catalog,
+                            donor.map(|donor| (weapon, donor)),
+                        );
+                        let (rect, divider) = ui.allocate_exact_size(
+                            egui::vec2(ui.spacing().item_spacing.x, body_height),
+                            egui::Sense::click_and_drag(),
+                        );
+                        let divider = divider.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                        if divider.double_clicked() {
+                            ctx.data_mut(|data| data.remove::<f32>(library_width_id));
+                        } else if divider.dragged() {
+                            let dragged =
+                                (library_width + divider.drag_delta().x).clamp(narrowest, widest);
+                            ctx.data_mut(|data| data.insert_persisted(library_width_id, dragged));
+                        }
+                        let stroke = if divider.hovered() || divider.dragged() {
+                            ui.visuals().widgets.hovered.fg_stroke
+                        } else {
+                            ui.visuals().widgets.noninteractive.bg_stroke
+                        };
+                        ui.painter().vline(rect.center().x, rect.y_range(), stroke);
                         ui.allocate_ui_with_layout(
                             egui::vec2(editor_width, body_height),
                             egui::Layout::top_down(egui::Align::Min),

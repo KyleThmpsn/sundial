@@ -62,7 +62,7 @@ impl Inspector {
             }
         } else if self.pending.contains_key(&tag) {
             ui.spinner();
-            ui.label("Reading Component Fields…");
+            ui.label("Reading component fields…");
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         } else if self.packages.is_none() {

@@ -72,11 +72,12 @@ pub fn extend(
     holds: &[Hold],
 ) -> Result<()> {
     let mut clips = rows(bank, 8, 4, 0x80808F48)?;
-    let mut auxiliary = rows(bank, 24, 2, 0x80800007)?;
+    // One signed 32-bit word per clip, class 0x80800007. A clip without one holds -1.
+    let mut auxiliary = rows(bank, 24, 4, 0x80800007)?;
     for tag in extra_tags {
         ensure!(![0, u32::MAX].contains(tag), "Empty holding clip tag");
         clips.extend(tag.to_le_bytes());
-        auxiliary.extend(u16::MAX.to_le_bytes());
+        auxiliary.extend(u32::MAX.to_le_bytes());
     }
     let ordinals = clips
         .chunks_exact(4)
@@ -84,7 +85,7 @@ pub fn extend(
         .map(|(i, b)| (u32::from_le_bytes(b.try_into().unwrap()), i))
         .collect::<BTreeMap<_, _>>();
     append(&mut bank.0, 8, 0x80808F48, &clips, 4)?;
-    append(&mut bank.0, 24, 0x80800007, &auxiliary, 2)?;
+    append(&mut bank.0, 24, 0x80800007, &auxiliary, 4)?;
     let groups = layers.array(8, 24, Some(0x80803724))?;
     let group_names = groups
         .iter()

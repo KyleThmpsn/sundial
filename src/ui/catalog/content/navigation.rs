@@ -369,7 +369,6 @@ impl Navigation {
         class: u32,
     ) -> Option<Destination> {
         ui.heading(reference::type_name(class));
-        ui.label("Resources that share this engine data type.");
         ui.monospace(format!("Class 0x{class:08X}"));
         let tags = self
             .classes
@@ -424,9 +423,7 @@ fn uses_controls(ui: &mut egui::Ui, uses: &mut Uses<'_>) {
         UsesState::Idle | UsesState::Failed(_) => {
             if ui
                 .small_button("Find All Uses")
-                .on_hover_text(
-                    "Reads every package once for the resources that reference this one. Later reads come from the disk.",
-                )
+                .on_hover_text("Reads every package the first time.")
                 .clicked()
             {
                 uses.requested = true;
@@ -436,9 +433,7 @@ fn uses_controls(ui: &mut egui::Ui, uses: &mut Uses<'_>) {
             ui.weak(format!("Reading {done} of {total} packages"));
             if ui
                 .small_button("Stop")
-                .on_hover_text(
-                    "The packages read so far stay on the disk, so asking again resumes after them.",
-                )
+                .on_hover_text("Packages already read are kept.")
                 .clicked()
             {
                 uses.stopped = true;

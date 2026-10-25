@@ -1,33 +1,6 @@
 use super::*;
 use crate::hash::fnv1_name_hash as fnv1;
 
-/// A recovered name is only a name if it hashes to the key it is filed under. This is what
-/// makes the table safe to extend by hand.
-#[test]
-fn every_recovered_name_hashes_to_its_key() {
-    assert!(names::NAMES.windows(2).all(|pair| pair[0].0 < pair[1].0));
-    assert!(
-        names::PATH_NAMES
-            .windows(2)
-            .all(|pair| pair[0].0 < pair[1].0)
-    );
-    for (hash, name) in names::NAMES.iter().chain(names::PATH_NAMES) {
-        assert_eq!(fnv1(name), *hash, "{name}");
-    }
-    let hashes: BTreeSet<_> = names::NAMES
-        .iter()
-        .chain(names::PATH_NAMES)
-        .map(|(hash, _)| *hash)
-        .collect();
-    assert_eq!(
-        hashes.len(),
-        names::NAMES.len() + names::PATH_NAMES.len(),
-        "duplicate key in the table"
-    );
-    assert_eq!(marker_name(0xF2A0_71CC), Some("primary_fire"));
-    assert_eq!(marker_name(0), None);
-}
-
 /// Builds one marker-set component: a data struct at 0x20 whose descriptor at +0xB0 owns a
 /// 16-byte array header followed by fixed-stride rows.
 fn component(markers: &[(u32, [f32; 3])]) -> Vec<u8> {

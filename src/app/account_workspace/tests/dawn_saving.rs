@@ -52,6 +52,7 @@ fn mixed_save_failure_then_retry_persists_dawn_preferences_and_bindings() {
                 may_have_committed: false,
             })
         },
+        || Ok(()),
     )
     .err()
     .unwrap();
@@ -72,6 +73,7 @@ fn mixed_save_failure_then_retry_persists_dawn_preferences_and_bindings() {
                 &path.parent().unwrap().join("json-backups"),
             )
         },
+        || Ok(()),
     )
     .unwrap();
     let reopened = WorkspaceDocument::load(persisted.json().clone(), &settings, true);
@@ -128,6 +130,7 @@ fn mixed_save_failure_does_not_rollback_over_a_new_runtime_write() {
                 may_have_committed: false,
             })
         },
+        || Ok(()),
     )
     .err()
     .unwrap();

@@ -749,13 +749,20 @@ impl PackageAuthoringApp {
     fn draw_importer_welcome(&mut self, ui: &mut egui::Ui, idle: bool) {
         ui.add_space(ui.available_height() * 0.25);
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new("Choose a Source Folder").heading().weak());
+            ui.label(
+                egui::RichText::new("Choose a Source Folder")
+                    .heading()
+                    .weak(),
+            );
             style::hint(ui, self.importer.source.welcome());
-            style::hint(ui, if self.importer.source == Source::Roi {
-                "Only the Xbox One build is supported."
-            } else {
-                "Imports become editable recipes in your library. Build and install them when you are ready."
-            });
+            style::hint(
+                ui,
+                if self.importer.source == Source::Roi {
+                    "Only the Xbox One build is supported."
+                } else {
+                    "Imports become editable recipes in your library."
+                },
+            );
             ui.add_space(8.0);
             if ui
                 .add_enabled(idle, style::primary(ui, "Choose Folder…"))
@@ -1248,7 +1255,8 @@ fn import_workers(weapons: usize) -> usize {
 
 /// Merges a converted recipe into an existing library entry for the same item, keeping the
 /// authored gameplay and narrative edits, or saves it as a new entry. The perk sockets always
-/// come from the conversion, with the base they were built on.
+/// come from the conversion, with the base they were built on, so the entry they replace is
+/// first kept in the library's backups whenever the merge changes them.
 fn save_imported_recipe(
     library: &RecipeLibrary,
     existing: &[(PathBuf, u32)],
@@ -1329,7 +1337,17 @@ fn save_imported_recipe(
         }
         keep_bundled_selection(&baseline, &mut updated);
         validate_projectile_selection(&updated)?;
-        library.save_existing_if_unchanged(path, &baseline, &updated)?;
+        // Custom perks and socket edits live in the same fields as the generated layout, so
+        // taking the conversion's replaces them. The earlier entry stays recoverable.
+        let replaced = baseline.overrides.socket_columns != updated.overrides.socket_columns
+            || baseline.overrides.socket_plug_variants != updated.overrides.socket_plug_variants
+            || baseline.overrides.base_sandbox_perks != updated.overrides.base_sandbox_perks
+            || baseline.donor != updated.donor;
+        if replaced {
+            library.save_existing_with_backup(path, &baseline, &updated)?;
+        } else {
+            library.save_existing_if_unchanged(path, &baseline, &updated)?;
+        }
         return Ok(path.clone());
     }
     validate_projectile_selection(&recipe)?;

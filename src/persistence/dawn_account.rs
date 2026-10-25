@@ -40,7 +40,9 @@ pub(crate) use rewards::RewardDebt;
 pub(crate) use rewards::{EDITOR_MISSION, supports_currency};
 pub(crate) use rolls::SavedRoll;
 pub(crate) use unlocks::apply_authored_unlocks;
-pub(crate) use writer::{DawnSaveReceipt, rollback_save, save};
+#[cfg(test)]
+pub(crate) use writer::save;
+pub(crate) use writer::{DawnSaveReceipt, rollback_save, save_checked};
 
 /// The storage-neutral account state one player-state database holds.
 #[derive(Clone, Debug, PartialEq, Eq)]

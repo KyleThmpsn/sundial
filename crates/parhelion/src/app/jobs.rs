@@ -421,6 +421,7 @@ impl PackageAuthoringApp {
             if self.bind_default_mod() {
                 if !self.recipe_dirty && self.recipe_path.is_none() {
                     self.recipe_baseline = self.recipe.clone();
+                    self.reset_recipe_history();
                 }
                 self.advance_recipe_revision();
             }
@@ -459,6 +460,7 @@ impl PackageAuthoringApp {
             self.recipe.set_donor(hash, name);
             if !self.recipe_dirty && self.recipe_path.is_none() {
                 self.recipe_baseline = self.recipe.clone();
+                self.reset_recipe_history();
             }
             self.advance_recipe_revision();
         }
@@ -954,17 +956,17 @@ impl PackageAuthoringApp {
                         }
                     },
                 );
-                let header_cache_status = if report.invalidated_package_header_caches.is_empty() {
-                    "no client package-header cache was present".to_owned()
-                } else {
-                    format!(
-                        "{} client package-header cache(s) invalidated",
-                        report.invalidated_package_header_caches.len()
-                    )
+                let header_cache_status = match report.invalidated_package_header_caches.len() {
+                    0 => "no client package-header cache was present".to_owned(),
+                    1 => "1 client package-header cache invalidated".to_owned(),
+                    count => format!("{count} client package-header caches invalidated"),
                 };
                 self.log.push(LogEntry::info(format!(
-                    "Installed {} authored packages to {}. Backup: {}. {}. {}",
-                    report.artifacts.len(),
+                    "Installed {} to {}. Backup: {}. {}. {}",
+                    match report.artifacts.len() {
+                        1 => "1 authored package".to_owned(),
+                        count => format!("{count} authored packages"),
+                    },
                     report
                         .mod_directory
                         .as_deref()
@@ -981,9 +983,11 @@ impl PackageAuthoringApp {
                     )));
                 }
                 if !report.removed_obsolete_packages.is_empty() {
+                    let count = report.removed_obsolete_packages.len();
                     self.log.push(LogEntry::info(format!(
-                        "Removed {} obsolete authored runtime package(s). Originals are in the installation backup",
-                        report.removed_obsolete_packages.len()
+                        "Removed {count} obsolete authored runtime {}. Originals are in the \
+                         installation backup",
+                        if count == 1 { "package" } else { "packages" }
                     )));
                 }
                 self.log_install_housekeeping(&report);

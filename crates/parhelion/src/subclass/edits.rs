@@ -492,15 +492,13 @@ impl EntryEdits {
         {
             return Err(format!("{context} holds no ability of its own"));
         }
-        // A projectile two places spawn is copied once, so the places must agree on its type.
+        // A projectile two places spawn is copied once, so the places must agree on the type it
+        // deals: their own, or else the ability's.
+        let dealt = |swap: &SpawnSwap| swap.damage_type.or(self.damage_type);
         if let Some(swap) = self.spawn_swaps.iter().find(|swap| {
-            self.spawn_swaps.iter().any(|other| {
-                other.replacement == swap.replacement
-                    && other
-                        .damage_type
-                        .zip(swap.damage_type)
-                        .is_some_and(|(theirs, own)| theirs != own)
-            })
+            self.spawn_swaps
+                .iter()
+                .any(|other| other.replacement == swap.replacement && dealt(other) != dealt(swap))
         }) {
             return Err(format!(
                 "{context} fires projectile 0x{:08X} with two damage types",

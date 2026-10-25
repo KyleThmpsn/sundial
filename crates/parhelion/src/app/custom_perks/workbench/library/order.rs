@@ -58,6 +58,14 @@ impl Workbench {
                 },
             );
         }
+        changed |= ui
+            .checkbox(
+                self.show_imported_perks
+                    .get_or_insert(cfg!(feature = "d2-model-importer")),
+                "Show Imported Perks",
+            )
+            .on_hover_text("Include perks imported from saved item recipes.")
+            .changed();
         if changed || before != self.library_order {
             self.reveal_document = true;
         }
@@ -105,6 +113,11 @@ impl Workbench {
             .map(|(index, entry)| (PerkSource::Entry(index), &entry.recipe, entry.modified));
         let mut rows = documents
             .chain(entries)
+            .filter(|(_, recipe, _)| {
+                self.show_imported_perks
+                    .unwrap_or(cfg!(feature = "d2-model-importer"))
+                    || !self.imported_perks.contains(&recipe.id)
+            })
             .map(|(source, recipe, modified)| {
                 (
                     source,

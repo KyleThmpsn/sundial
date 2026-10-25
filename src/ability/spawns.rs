@@ -14,6 +14,7 @@ use crate::entity::{
     WEAPON_ENTITY_CLASS, weapon_component_binding_hashes, weapon_component_bindings,
 };
 use crate::package_payload::u32_at;
+use crate::package_runtime::is_valid_package_tag;
 use crate::package_runtime::reader::PackageManager;
 use crate::sandbox_perk::entity::catalog::Catalog;
 
@@ -221,7 +222,7 @@ pub(super) fn places(
         let payload = manager.read_tag(owner)?;
         for at in (0..payload.len().saturating_sub(3)).step_by(4) {
             let value = u32_at(&payload, at)?;
-            if value == owner || !(0x8080_0000..0x8200_0000).contains(&value) {
+            if value == owner || !is_valid_package_tag(tiger_pkg::TagHash(value)) {
                 continue;
             }
             if manager

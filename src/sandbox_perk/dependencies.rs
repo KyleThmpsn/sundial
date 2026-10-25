@@ -83,7 +83,9 @@ pub struct Behavior {
 }
 
 impl Behavior {
-    fn read(payload: &[u8]) -> Option<Self> {
+    /// Reads one action payload, or nothing when the action does not decode.
+    #[must_use]
+    pub fn read(payload: &[u8]) -> Option<Self> {
         let decoded = super::action::decode(payload).ok()?;
         let summary = super::action::ActionSummary::new(&decoded);
         let details = reading::sections(&summary);
@@ -189,7 +191,7 @@ pub fn cached_cancellable(
         crate::sandbox_perk::CACHE_DIRECTORY,
         // Bumped when the decoded behavior digest changes shape or wording, since the
         // headline, support and editability of every perk are cached here.
-        "dependencies-v17",
+        "dependencies-v18",
         &CACHE,
         || inspect_cancellable(manager, cancel, progress),
         |_| true,

@@ -81,16 +81,6 @@ pub struct NodeKind {
 }
 
 impl NodeKind {
-    /// Compiler coverage and understanding of runtime behavior are separate evidence axes.
-    pub const fn semantics(&self) -> &'static str {
-        if !self.has_layout() {
-            "Unverified Native Layout"
-        } else if self.occurrences == 0 {
-            "Registered Consumer with Gameplay Limits"
-        } else {
-            "Traced Operation with Field Limits"
-        }
-    }
     /// Whether a concrete native declaration is recovered, including registered
     /// kinds absent from the surveyed stock actions. `occurrences` remains the census.
     #[must_use]

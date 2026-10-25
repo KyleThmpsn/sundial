@@ -3,7 +3,7 @@ use super::*;
 mod conditional;
 mod hud;
 
-fn pair(
+pub(super) fn pair(
     p: &Payload,
     owner: u32,
     instance: usize,
@@ -27,7 +27,7 @@ fn pair(
     Ok(())
 }
 
-fn constant(p: &Payload, at: usize) -> Result<[u8; 16]> {
+fn constant(p: &Payload, at: usize, indefinite: bool) -> Result<[u8; 16]> {
     let code = p
         .array(at + 24, 1, Some(0x80800009))?
         .into_iter()
@@ -46,7 +46,7 @@ fn constant(p: &Payload, at: usize) -> Result<[u8; 16]> {
     let bits = p.u32(values[0])?;
     ensure!(
         f32::from_bits(bits).is_finite()
-            && f32::from_bits(bits) >= 0.0
+            && (f32::from_bits(bits) >= 0.0 || (indefinite && f32::from_bits(bits) == -1.0))
             && (1..4).all(|n| p.u32(values[0] + n * 4).ok() == Some(bits)),
         "Source status needs a finite constant scalar"
     );
@@ -54,6 +54,7 @@ fn constant(p: &Payload, at: usize) -> Result<[u8; 16]> {
 }
 
 struct Status {
+    competition: [u8; 8],
     hud: [u8; 12],
     duration: [u8; 20],
     timer: [u8; 8],
@@ -66,6 +67,7 @@ fn validate(
     p: &Payload,
     owner: u32,
     companion: Option<&conditional::Companion>,
+    bank: Option<(u32, usize)>,
 ) -> Result<Status> {
     let live = p.pointer(16)?;
     let settings = p.pointer(24)?;
@@ -118,9 +120,19 @@ fn validate(
             && p.u64(settings + 0xE8)? == u32::MAX as u64
             && p.u32(settings + 0xA8)? == 0x3C18FBCE
             && p.u32(settings + 0xAC)? == 0
-            && p.u64(settings + 0xB0)? == 4,
-        "Source status host has a state program or another owner scope"
+            && matches!(p.u64(settings + 0xB0)?, 0 | 4),
+        "Source status host has a state program or unqualified competition flags"
     );
+    // D1 keeps the competition mask on the host and uses the HUD's signed priority.
+    // Native 3A61 owns both fields, with a Float32 priority. Keep integer ordering exact.
+    let priority = i32::from_le_bytes(p.bytes::<4>(hud + 0x8C)?);
+    ensure!(
+        (-16_777_216..=16_777_216).contains(&priority),
+        "Source status competition priority cannot be represented exactly"
+    );
+    let mut competition = [0; 8];
+    competition[0] = p.u8(settings + 0xB0)?;
+    competition[4..].copy_from_slice(&(priority as f32).to_le_bytes());
     let outputs = graph.array(0x30, 88, Some(0x8080054E))?;
     ensure!(
         outputs.len() == if companion.is_some() { 2 } else { 1 }
@@ -196,12 +208,19 @@ fn validate(
     let refs = graph.array(0x78, 24, Some(0x80800790))?;
     // The unused host input at +90 is not exported by this compiled form.
     ensure!(
-        exports.len() == declarations.len() - 1 + if companion.is_some() { 4 } else { 0 }
+        exports.len()
+            == declarations.len() - 1
+                + if companion.is_some() { 4 } else { 0 }
+                + bank.map_or(0, |(_, count)| count * 2 + 2)
             && refs.len() == exports.len(),
         "Source status export count differs"
     );
     let mut seen = BTreeSet::new();
     for (&at, &reference) in exports.iter().zip(&refs) {
+        if bank.is_some_and(|(owner, _)| graph.u32(at + 16).ok() == Some(owner)) {
+            // The modifier reader checks every reciprocal row and export separately.
+            continue;
+        }
         if let Some(companion) = companion
             && graph.u32(at + 16)? == companion.owner
         {
@@ -247,9 +266,9 @@ fn validate(
     );
     let count = match companion {
         Some(companion) => companion.threshold,
-        None => constant(p, hud + 0xA0)?,
+        None => constant(p, hud + 0xA0, false)?,
     };
-    let seconds = constant(p, duration + 0x138)?;
+    let seconds = constant(p, duration + 0x138, bank.is_some())?;
     ensure!(
         p.u64(hud + 0x120)? == 5
             && p.u64(hud + 0x130)? == 0
@@ -260,6 +279,7 @@ fn validate(
     );
 
     Ok(Status {
+        competition,
         hud: p.bytes(hud + 0x88)?,
         duration: p.bytes(duration + 0xA0)?,
         timer: p.bytes(controller + 0x78)?,
@@ -276,6 +296,22 @@ pub(super) type Hosted = (
     Option<sundial::package_authoring::sandbox_perk::program::HudStatus>,
 );
 
+pub(super) fn modifier_bank(
+    source: &Source,
+    graph: &Payload,
+) -> Result<Option<(u32, Vec<Modifier>)>> {
+    let owners = graph.array(32, 12, Some(0x80800715))?;
+    if owners.len() != 2 {
+        return Ok(None);
+    }
+    let tag = graph.u32(owners[1])?;
+    let p = source.read(tag)?;
+    if p.u32(p.pointer(24)? - 4)? != 0x808020DE {
+        return Ok(None);
+    }
+    Ok(Some((tag, modifier_owner(source, graph, tag)?)))
+}
+
 pub(super) fn read(
     source: &Source,
     native: &mut Reader,
@@ -283,15 +319,31 @@ pub(super) fn read(
     p: &Payload,
     owner: u32,
 ) -> Result<Hosted> {
-    let companion = if graph.u64(32)? == 2 {
+    let bank = modifier_bank(source, graph)?;
+    let companion = if graph.u64(32)? == 2 && bank.is_none() {
         Some(conditional::read(source, graph, p, owner)?)
     } else {
         None
     };
-    let status = validate(graph, p, owner, companion.as_ref())?;
+    let status = validate(
+        graph,
+        p,
+        owner,
+        companion.as_ref(),
+        bank.as_ref().map(|(tag, rows)| (*tag, rows.len())),
+    )?;
     let name = u32::from_le_bytes(status.hud[..4].try_into()?);
     let hud_status = hud::read(source, native, name)?;
-    let tag = if companion.is_some() {
+    let tag = if let Some((_, rows)) = &bank {
+        match rows.len() {
+            1 => 0x80FF05F0,
+            2 => 0x8161E50E,
+            3 => 0x8161E47B,
+            4 => 0x8161E480,
+            5 => 0x80C19A4F,
+            _ => anyhow::bail!("Status modifier count needs a native allocation"),
+        }
+    } else if companion.is_some() {
         0x80BC5880
     } else {
         0x80BC31BC
@@ -299,7 +351,12 @@ pub(super) fn read(
     let graph = native.tag(tag, Some(0x80809C0F))?;
     let owners = graph.array(16, 12, Some(0x80809C04))?;
     ensure!(
-        owners.len() == if companion.is_some() { 2 } else { 1 },
+        owners.len()
+            == if companion.is_some() || bank.is_some() {
+                2
+            } else {
+                1
+            },
         "Native status envelope has companion components"
     );
     let target_owner = graph.u32(owners[0])?;
@@ -307,6 +364,16 @@ pub(super) fn read(
     let root = target.pointer(24)?;
     let h = root + 0xE0;
     let d = h + 0x148;
+    let sequence = root + 0x48;
+    let sequence_live = usize::try_from(target.u64(sequence + 8)?)?;
+    ensure!(
+        target.u32(sequence)? == target_owner
+            && target.u32(sequence + 4)? == 0x80803A60
+            && target.u32(sequence_live)? == target_owner
+            && target.u32(sequence_live + 4)? == 0x80803A61
+            && target.u64(sequence_live + 8)? == sequence as u64,
+        "Native status competition pair differs"
+    );
     ensure!(
         target.u32(root - 4)? == 0x80804205
             && target.u32(h + 4)? == 0x80804211
@@ -365,6 +432,7 @@ pub(super) fn read(
         });
         Ok(())
     };
+    replace(root + 0x58, status.competition.to_vec())?;
     if hud_status.is_some() {
         // The private HUD builder patches the name separately. Leave its expected stock
         // bytes intact and avoid overlapping that patch with priority and display flags.
@@ -397,6 +465,14 @@ pub(super) fn read(
             conditional::patch(native, &graph, &target, target_owner, &companion)?;
         patches.extend(extra);
         appends.push(append);
+    }
+    if let Some((_, rows)) = bank {
+        patches.extend(modifier_patches(
+            native,
+            &graph,
+            graph.u32(owners[1])?,
+            &rows,
+        )?);
     }
     Ok((tag, patches, appends, hud_status))
 }

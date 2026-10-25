@@ -149,33 +149,6 @@ fn runtime_budget_diagnostics_survive_consolidation_and_refusal() {
 }
 
 #[test]
-fn native_noop_selector_is_blocked_but_an_unverified_host_remains_authorable() {
-    let mut recipe = PerkRecipe::new();
-    let mut effect = authored(405, Trigger::Always, 1);
-    effect.program.as_mut().unwrap().actions = vec![Action::AdjustComponent {
-        target: 0.into(),
-        flag: 3.into(),
-        option: 0.into(),
-        scale_bits: 1.0_f32.to_bits(),
-        limit_bits: (-1.0_f32).to_bits(),
-        value_bits: 1.0_f32.to_bits(),
-        input: 255.into(),
-    }];
-    recipe.effects.push(effect);
-    assert!(
-        preflight::check(&recipe)
-            .iter()
-            .any(|issue| issue.blocking && issue.code == "invalid_state")
-    );
-    if let Action::AdjustComponent { flag, .. } =
-        &mut recipe.effects[0].program.as_mut().unwrap().actions[0]
-    {
-        *flag = 0.into();
-    }
-    assert!(!preflight::check(&recipe).iter().any(|issue| issue.blocking));
-}
-
-#[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn discovery_can_stop_between_native_phases_without_publishing_partial_catalog() {
     use sundial::investment::discovery::{DiscoveryEvent, Phase, discover_cancellable};

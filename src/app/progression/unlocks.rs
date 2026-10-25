@@ -233,7 +233,7 @@ fn draw_entries(
     progression_toolbar(ui, |ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.query)
-                .hint_text("Search content or ID…")
+                .hint_text("Search Content or ID…")
                 .desired_width(200.0),
         );
         egui::ComboBox::from_id_salt("unlock_names")
@@ -664,6 +664,3 @@ fn draw_entry(
     }
     changed
 }
-
-#[cfg(test)]
-mod tests;

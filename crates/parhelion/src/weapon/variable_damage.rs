@@ -189,7 +189,8 @@ pub(crate) fn expand_overrides(
         randomized_selection_program: Vec::new(),
         reusable_choices: None,
     });
-    column.lead_with(FUNDAMENTALS_PLUG_HASH);
+    let moved = column.lead_with(FUNDAMENTALS_PLUG_HASH);
+    crate::item::follow_moved_variants(&mut expanded.socket_plug_variants, lane, &moved);
     if expanded
         .socket_plug_variants
         .iter()

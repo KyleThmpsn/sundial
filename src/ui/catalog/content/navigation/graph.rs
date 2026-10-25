@@ -116,23 +116,21 @@ impl View {
             hidden,
             types,
         } = &self.cached.as_ref().expect("graph cache populated").1;
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "{} {} · {} {}",
-                nodes.len(),
-                if nodes.len() == 1 {
-                    "resource"
-                } else {
-                    "resources"
-                },
-                edges.len(),
-                if edges.len() == 1 { "link" } else { "links" }
-            ));
-            if *hidden > 0 {
-                ui.label(format!("{hidden} Hidden"))
-                    .on_hover_text("Limit 40");
-            }
-        });
+        let mut counts = format!(
+            "{} {} · {} {}",
+            nodes.len(),
+            if nodes.len() == 1 {
+                "resource"
+            } else {
+                "resources"
+            },
+            edges.len(),
+            if edges.len() == 1 { "link" } else { "links" }
+        );
+        if *hidden > 0 {
+            counts.push_str(&format!(" · {hidden} hidden (40 max)"));
+        }
+        ui.weak(counts);
         let font_height = ui.text_style_height(&egui::TextStyle::Body);
         let metrics = (
             font_height.to_bits(),

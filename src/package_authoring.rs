@@ -267,15 +267,16 @@ pub mod ability_bank {
     pub use crate::ability::bank::{
         AbilityTarget, CHARGE_DEFINITION_CLASS, CHARGE_INSTANCE_CLASS, CHARGE_ROWS,
         CLASS_ABILITY_CHARGE_KEY, CLASS_ABILITY_SLOT, ChargeRow, DEFINITION_ROW_CLASS,
-        FixedModifier, GRENADE_SLOT, GroupEntry, GroupModifier, HandlerIndex, INSTANCE_ROW_CLASS,
-        JUMP_SLOT, MELEE_CHARGE_KEY, MELEE_DAMAGE_PROFILE, MELEE_SLOT, MOVEMENT_SLOT, Modifier,
-        PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
-        SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS, SLOT_PARAMETERS, SUPER_SLOT,
-        StockParameter, UNPLACED_BANKS, bank_name, bank_names, bank_owner, block_count,
-        handler_slot, instance_shift, parameter_abilities, parameter_kind, parameter_label,
-        parameter_meaning, parameter_name, parameters, property_rows, register_bank_names,
-        retarget_references, row_modifiers, slot_banks, slot_name, slot_parameters, tuning_key,
-        validate, with_charge_row, with_property_row, with_property_row_mode,
+        FixedModifier, FixedSelection, GRENADE_SLOT, GroupEntry, GroupModifier, HandlerIndex,
+        INSTANCE_ROW_CLASS, JUMP_SLOT, MELEE_CHARGE_KEY, MELEE_DAMAGE_PROFILE, MELEE_SLOT,
+        MOVEMENT_SLOT, Modifier, PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind,
+        ParameterName, PropertyRow, SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS,
+        SLOT_PARAMETERS, SUPER_SLOT, StockParameter, UNPLACED_BANKS, bank_name, bank_names,
+        bank_owner, block_count, handler_slot, instance_shift, parameter_abilities, parameter_kind,
+        parameter_label, parameter_meaning, parameter_name, parameters, property_rows,
+        register_bank_names, retarget_references, row_modifiers, slot_banks, slot_name,
+        slot_parameters, tuning_key, validate, with_charge_row, with_property_row,
+        with_property_row_mode,
     };
 }
 
@@ -440,6 +441,13 @@ pub trait PackageAuthoringUtility: Send {
 
     /// Writes view state that normally saves on focus loss. Sundial can exit with the utility open.
     fn save_on_exit(&mut self) {}
+
+    /// Writes again any work kept outside the recipe whose last save failed, such as perk
+    /// drafts, and returns why some is still unsaved. Sundial asks before exiting while it is.
+    /// A closed utility keeps this work, so Sundial asks whether or not the window is open.
+    fn unsaved_work(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Creates a directory when needed and opens it in the platform file browser.

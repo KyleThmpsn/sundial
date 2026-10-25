@@ -1448,7 +1448,7 @@ impl PackageAuthoringApp {
             .show_header(ui, |ui| {
                 ui.weak("Actions").on_hover_text(
                     "Single actions played from another frame's animations. The rest follow \
-                     Animations",
+                     Animations.",
                 );
                 if mixed > 0 {
                     ui.weak(format!("{mixed} Mixed"));

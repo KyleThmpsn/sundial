@@ -10,8 +10,8 @@ use crate::AuthoringResult;
 use crate::error::invalid;
 use crate::item::{WeaponAmmoType, WeaponRuntimeResourcePatch};
 
-const CONTENT_BINDING: u32 = 0x5F0D_D954;
-const CONTENT_INSTANCE: u32 = 0x8080_3ACB;
+pub(crate) const CONTENT_BINDING: u32 = 0x5F0D_D954;
+pub(crate) const CONTENT_INSTANCE: u32 = 0x8080_3ACB;
 const CONTENT_DEFINITION: u32 = 0x8080_3AC9;
 const PROPERTY_CLASS: u32 = 0x8080_3ACF;
 const DEFINITION_SIZE: usize = 0x270;
@@ -73,6 +73,24 @@ pub(crate) fn property_offsets(data: &[u8], definition: usize) -> AuthoringResul
     Ok(properties)
 }
 
+/// The weapon-content definition the component instance at `instance` points at, a typed
+/// reference within its owner `owner_tag`.
+pub(crate) fn definition(data: &[u8], owner_tag: u32, instance: usize) -> AuthoringResult<usize> {
+    instance
+        .checked_add(0xA0)
+        .filter(|end| *end <= data.len())
+        .ok_or_else(|| invalid("Native ammo component is truncated"))?;
+    if u32::from_le_bytes(bytes(data, instance)?) != owner_tag
+        || u32::from_le_bytes(bytes(data, instance + 4)?) != CONTENT_DEFINITION
+    {
+        return Err(invalid(
+            "Native ammo definition must be a typed reference within the same owner",
+        ));
+    }
+    usize::try_from(u64::from_le_bytes(bytes(data, instance + 8)?))
+        .map_err(|_| invalid("Native ammo definition offset overflow"))
+}
+
 /// Resolve after component grafts. Normal owner cloning/retargeting applies these edits privately.
 pub(crate) fn patches(
     manager: &PackageManager,
@@ -95,19 +113,7 @@ pub(crate) fn patches(
         .map_err(|error| invalid(error.to_string()))?;
     let instance = usize::try_from(binding.resource_offset)
         .map_err(|_| invalid("Native ammo component offset overflow"))?;
-    instance
-        .checked_add(0xA0)
-        .filter(|end| *end <= owner.len())
-        .ok_or_else(|| invalid("Native ammo component is truncated"))?;
-    if u32::from_le_bytes(bytes(&owner, instance)?) != binding.owner_tag
-        || u32::from_le_bytes(bytes(&owner, instance + 4)?) != CONTENT_DEFINITION
-    {
-        return Err(invalid(
-            "Native ammo definition must be a typed reference within the same owner",
-        ));
-    }
-    let definition = usize::try_from(u64::from_le_bytes(bytes(&owner, instance + 8)?))
-        .map_err(|_| invalid("Native ammo definition offset overflow"))?;
+    let definition = definition(&owner, binding.owner_tag, instance)?;
     let replacement = [1, ammo as u8 - 1];
     property_offsets(&owner, definition)?
         .into_iter()

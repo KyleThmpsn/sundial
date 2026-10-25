@@ -81,6 +81,8 @@ impl PackageAuthoringApp {
         self.backup_recipe_snapshots = backup_preferences.backup_recipe_snapshots;
         self.show_preview_fps = backup_preferences.show_preview_fps;
         self.play_preview_animations = backup_preferences.play_preview_animations;
+        self.load_preview_models = backup_preferences.load_preview_models;
+        self.ability_notice_dismissed = backup_preferences.ability_notice_dismissed;
         self.log = log;
     }
 
@@ -558,6 +560,78 @@ impl PackageAuthoringApp {
         self.recipe_revision = self.recipe_revision.wrapping_add(1);
     }
 
+    /// Records what changed since the last frame as an undo step. Changes from one continuing drag
+    /// or one focused text field join the same step. Discard Changes is an ordinary step.
+    pub(super) fn record_recipe_history(&mut self, ctx: &egui::Context) {
+        if self.recipe != self.recorded_recipe {
+            let before = std::mem::replace(&mut self.recorded_recipe, self.recipe.clone());
+            self.recipe_history.record(before, ctx);
+        }
+    }
+
+    /// History belongs to the open recipe. Opening, creating, importing or duplicating a recipe
+    /// starts it again, while saving keeps it, as perk documents do.
+    pub(super) fn reset_recipe_history(&mut self) {
+        self.recipe_history = Default::default();
+        self.recorded_recipe.clone_from(&self.recipe);
+    }
+
+    /// Whether a build, install or library job, or an open perk edit, holds the recipe still.
+    pub(super) fn recipe_editing_locked(&self) -> bool {
+        self.build_receiver.is_some()
+            || self.library_state.busy()
+            || self.install_receiver.is_some()
+            || self.perk_workbench.editing()
+    }
+
+    pub(super) fn recipe_history_available(&self, redo: bool) -> bool {
+        !self.recipe_editing_locked() && self.recipe_history.available(redo)
+    }
+
+    pub(super) fn restore_recipe_history(&mut self, ctx: &egui::Context, redo: bool) {
+        if self.recipe_editing_locked() {
+            return;
+        }
+        self.record_recipe_history(ctx);
+        if !self.recipe_history.restore(&mut self.recipe, redo) {
+            return;
+        }
+        self.recorded_recipe.clone_from(&self.recipe);
+        // A name still being corrected belongs to the state left behind.
+        self.invalid_weapon_name = None;
+        self.barrel_controls.invalidate();
+        self.runtime_donors.invalidate();
+        self.synchronize_recipe_dirty();
+    }
+
+    /// Ctrl+Z undoes and Ctrl+Y or Ctrl+Shift+Z redoes while the pointer is over the editor
+    /// rather than a window. A focused text field keeps the keys for its own undo.
+    pub(super) fn recipe_history_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input()
+            || ctx.memory(|memory| memory.top_modal_layer().is_some())
+            || egui::Popup::is_any_open(ctx)
+        {
+            return;
+        }
+        let over_editor = ctx
+            .input(|input| input.pointer.latest_pos())
+            .and_then(|pointer| ctx.layer_id_at(pointer))
+            .is_none_or(|layer| layer.order == egui::Order::Background);
+        if !over_editor {
+            return;
+        }
+        if ctx.input_mut(|input| {
+            input.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::Z,
+            ) || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+        }) {
+            self.restore_recipe_history(ctx, true);
+        } else if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+            self.restore_recipe_history(ctx, false);
+        }
+    }
+
     pub(super) fn discard_recipe_changes(&mut self) {
         self.recipe = self.recipe_baseline.clone();
         self.advance_recipe_revision();
@@ -609,6 +683,9 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn open_recipe_path(&mut self, path: &Path) -> bool {
+        // The preview and source card of an imported recipe share one hashed check per opening.
+        #[cfg(feature = "d2-model-importer")]
+        parhelion_import::forget_opened();
         match WeaponRecipe::load_json(path) {
             Ok(recipe) => {
                 self.recipe = recipe;
@@ -618,6 +695,7 @@ impl PackageAuthoringApp {
                 self.recipe_path = Some(path.to_path_buf());
                 self.recipe_requires_initial_save = false;
                 self.recipe_dirty = false;
+                self.reset_recipe_history();
                 self.clear_dependent_picker_queries();
                 self.scroll_recipe_to_top = true;
                 self.invalidate_results();
@@ -658,6 +736,7 @@ impl PackageAuthoringApp {
         self.recipe_path = None;
         self.recipe_requires_initial_save = true;
         self.recipe_dirty = true;
+        self.reset_recipe_history();
         self.clear_dependent_picker_queries();
         self.scroll_recipe_to_top = true;
         self.invalidate_results();
@@ -680,6 +759,7 @@ impl PackageAuthoringApp {
         self.recipe_path = None;
         self.recipe_requires_initial_save = false;
         self.recipe_dirty = false;
+        self.reset_recipe_history();
         self.clear_dependent_picker_queries();
         self.scroll_recipe_to_top = true;
         self.invalidate_results();
@@ -817,6 +897,7 @@ impl PackageAuthoringApp {
                 self.advance_recipe_revision();
                 self.recipe_path = Some(destination.clone());
                 self.recipe_dirty = false;
+                self.reset_recipe_history();
                 self.clear_dependent_picker_queries();
                 self.scroll_recipe_to_top = true;
                 self.invalidate_results();

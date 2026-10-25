@@ -48,7 +48,7 @@ pub fn installed_item_hashes(packages: &Path) -> Result<BTreeSet<u32>, String> {
     identities::installed_item_hashes(&packages)
 }
 #[cfg(test)]
-pub(crate) use replacement::{test_review, test_review_with_slots};
+pub(crate) use replacement::test_review_with_slots;
 mod uninstall;
 pub use uninstall::{
     UninstallPlan, UninstallReport, preview_uninstall, preview_uninstall_with_account_cleanup,
@@ -305,10 +305,11 @@ impl fmt::Display for InstallError {
             if rollback.succeeded() {
                 formatter.write_str(" (the previous package set was restored)")?;
             } else {
+                let count = rollback.errors.len();
                 write!(
                     formatter,
-                    " (rollback encountered {} error(s))",
-                    rollback.errors.len()
+                    " (rollback encountered {count} {})",
+                    if count == 1 { "error" } else { "errors" }
                 )?;
                 write!(formatter, ": {}", rollback.errors.join("; "))?;
             }
@@ -337,6 +338,8 @@ struct ValidatedRun {
     mods: Vec<crate::mod_family::Member>,
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
+    /// The staged map recipes, validated and pinned beside the weapon recipes.
+    selected_map_files: Vec<String>,
     staged_inputs: validation::staged::Inputs,
     packages: Vec<validation::package::Checked>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
@@ -941,6 +944,7 @@ struct ValidatedManifest {
     mission_scripts: Vec<ArtifactMetadata>,
     mods: Vec<crate::mod_family::Member>,
     selected_recipe_files: Vec<String>,
+    selected_map_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
     plug_variants: Vec<replacement::StockPlugVariant>,

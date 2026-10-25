@@ -103,20 +103,44 @@ impl Workbench {
         let issues = self.selected_diagnostics();
         let mut open = true;
         let mut merge = false;
-        egui::Window::new("Perk Diagnostics").id(egui::Id::new("perk-diagnostics"))
-            .open(&mut open).default_width(700.0).default_height(560.0).vscroll(true)
+        egui::Window::new("Perk Diagnostics")
+            .id(egui::Id::new("perk-diagnostics"))
+            .open(&mut open)
+            .default_width(700.0)
+            .default_height(560.0)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.heading(&recipe.name);
-                ui.label(format!("Runtime Budget: {} of {} Effects Active", recipe.effects.len().min(crate::perk::SANDBOX_PERK_CAPACITY), recipe.effects.len()));
+                ui.label(format!(
+                    "Runtime Budget: {} of {} Effects Active",
+                    recipe.effects.len().min(crate::perk::SANDBOX_PERK_CAPACITY),
+                    recipe.effects.len()
+                ));
                 ui.weak(format!("Destination: {}", self.item_kind.label()));
-                if issues.is_empty() { ui.label("No problems found."); }
+                if issues.is_empty() {
+                    ui.label("No problems found.");
+                }
                 for (index, issue) in issues.iter().enumerate() {
                     ui.push_id(index, |ui| {
                         ui.separator();
-                        ui.colored_label(if issue.blocking { ui.visuals().error_fg_color } else { ui.visuals().warn_fg_color }, &issue.message);
+                        let color = if issue.blocking {
+                            ui.visuals().error_fg_color
+                        } else {
+                            ui.visuals().warn_fg_color
+                        };
+                        ui.colored_label(color, &issue.message);
                         if let Some(location) = &issue.location
-                            && let Some(position) = recipe.effects.iter().position(|effect| effect.source_perk_index == location.effect)
-                            && ui.add_enabled(self.editor.is_none(), egui::Button::new(format!("Open Effect {}", position + 1))).clicked() {
+                            && let Some(position) = recipe
+                                .effects
+                                .iter()
+                                .position(|effect| effect.source_perk_index == location.effect)
+                            && ui
+                                .add_enabled(
+                                    self.editor.is_none(),
+                                    egui::Button::new(format!("Open Effect {}", position + 1)),
+                                )
+                                .clicked()
+                        {
                             self.reveal_problem = Some(location.clone());
                             self.open = true;
                             self.page = Page::Effects;
@@ -125,22 +149,46 @@ impl Workbench {
                 }
                 ui.separator();
                 ui.heading("Consolidate Compatible Actions").on_hover_text(
-                    "Combines actions with the same trigger and lifetime. Moved actions run after the destination's.",
+                    "Combines actions with the same trigger and lifetime. Moved actions run after \
+                     the destination's.",
                 );
                 if recipe.effects.len() >= 2 {
-                    self.consolidation.0 = self.consolidation.0.min(recipe.effects.len() - 1);
-                    self.consolidation.1 = self.consolidation.1.min(recipe.effects.len() - 1);
+                    let last = recipe.effects.len() - 1;
+                    self.consolidation.0 = self.consolidation.0.min(last);
+                    self.consolidation.1 = self.consolidation.1.min(last);
                     ui.horizontal(|ui| {
-                        for (id, label, selected) in [("merge-into", "Into", &mut self.consolidation.0), ("merge-from", "From", &mut self.consolidation.1)] {
-                            egui::ComboBox::from_id_salt(id).selected_text(format!("{label} Effect {}", *selected + 1)).show_ui(ui, |ui| {
-                                for index in 0..recipe.effects.len() { ui.selectable_value(selected, index, format!("Effect {}", index + 1)); }
-                            });
+                        for (id, label, selected) in [
+                            ("merge-into", "Into", &mut self.consolidation.0),
+                            ("merge-from", "From", &mut self.consolidation.1),
+                        ] {
+                            egui::ComboBox::from_id_salt(id)
+                                .selected_text(format!("{label} Effect {}", *selected + 1))
+                                .show_ui(ui, |ui| {
+                                    for index in 0..recipe.effects.len() {
+                                        ui.selectable_value(
+                                            selected,
+                                            index,
+                                            format!("Effect {}", index + 1),
+                                        );
+                                    }
+                                });
                         }
                     });
                     let mut preview = recipe.clone();
-                    let result = preflight::consolidate(&mut preview, self.consolidation.0, self.consolidation.1);
-                    merge = ui.add_enabled(result.is_ok() && self.editor.is_none(), egui::Button::new("Consolidate Actions")).clicked();
-                    if let Err(reason) = result { ui.weak(reason); }
+                    let result = preflight::consolidate(
+                        &mut preview,
+                        self.consolidation.0,
+                        self.consolidation.1,
+                    );
+                    merge = ui
+                        .add_enabled(
+                            result.is_ok() && self.editor.is_none(),
+                            egui::Button::new("Consolidate Actions"),
+                        )
+                        .clicked();
+                    if let Err(reason) = result {
+                        ui.weak(reason);
+                    }
                 }
             });
         self.diagnostics_open = open;

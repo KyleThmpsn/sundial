@@ -208,13 +208,14 @@ impl View {
         let packages = directory.path().join("packages");
         fs::create_dir(&packages).map_err(|e| e.to_string())?;
         link_stock(install, &packages, retired)?;
+        let mut unlinked = 0;
         for path in &plan.primary {
-            link_or_copy(
+            unlinked += usize::from(link_or_copy(
                 path,
                 &packages.join(path.file_name().ok_or("Package has no filename")?),
-            )?;
+            )?);
         }
-        let layers = link_layers(directory.path(), plan.patches)?;
+        let layers = link_layers(directory.path(), plan.patches, &mut unlinked)?;
         // Cache identities must include providers that share a filename in different mods, and
         // the mods left out for their configuration.
         let refused_ids = refused
@@ -240,7 +241,11 @@ impl View {
                 .collect(),
             actions: plan.actions,
             refused,
-            notices: plan.notices,
+            notices: plan
+                .notices
+                .into_iter()
+                .chain(copy_notice(unlinked))
+                .collect(),
         })
     }
 
@@ -293,16 +298,17 @@ fn link_stock(install: &Path, packages: &Path, retired: &[String]) -> Result<(),
 fn link_layers(
     directory: &Path,
     patches: Vec<content::Patch>,
+    unlinked: &mut usize,
 ) -> Result<Vec<content::Layer>, String> {
     let mut layers = Vec::new();
     for (index, patch) in patches.into_iter().enumerate() {
         let layer = directory.join(format!("layer-{index}/packages"));
         fs::create_dir_all(&layer).map_err(|e| e.to_string())?;
         for path in patch.parents.iter().chain(std::iter::once(&patch.source)) {
-            link_or_copy(
+            *unlinked += usize::from(link_or_copy(
                 path,
                 &layer.join(path.file_name().ok_or("Package has no filename")?),
-            )?;
+            )?);
         }
         layers.push(content::Layer {
             packages: layer,
@@ -415,13 +421,18 @@ fn link(source: &Path, target: &Path) -> Result<(), String> {
     })
 }
 
-fn link_or_copy(source: &Path, target: &Path) -> Result<(), String> {
+/// Links `source` at `target`, or copies it where it can't be linked, such as from another
+/// drive. Returns whether the link was refused for permission. A Windows link needs permission
+/// to change the file's attributes, so a file only administrators may change is copied unless
+/// Sundial runs elevated.
+fn link_or_copy(source: &Path, target: &Path) -> Result<bool, String> {
     if target.try_exists().map_err(|e| e.to_string())? {
         return Err("A mod package aliases an installed package file".into());
     }
-    if fs::hard_link(source, target).is_ok() {
-        return Ok(());
-    }
+    let refused = match fs::hard_link(source, target) {
+        Ok(()) => return Ok(false),
+        Err(error) => error.kind() == std::io::ErrorKind::PermissionDenied,
+    };
     let mut output = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -429,5 +440,18 @@ fn link_or_copy(source: &Path, target: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let mut input = File::open(source).map_err(|e| e.to_string())?;
     std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(refused)
+}
+
+/// Every new view copies these packages again, at each start and after each mod change, so the
+/// report says why loading is slow and how to let them link.
+fn copy_notice(unlinked: usize) -> Option<String> {
+    let packages = match unlinked {
+        0 => return None,
+        1 => "1 mod package is".to_owned(),
+        count => format!("{count} mod packages are"),
+    };
+    Some(format!(
+        "{packages} copied each time Sundial reads mods, because Windows refused to link them. Give your Windows account write access to them so they can be linked."
+    ))
 }

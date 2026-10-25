@@ -27,6 +27,8 @@ pub(super) struct ArtPage {
     pictures: BTreeMap<Key, Result<egui::TextureHandle, String>>,
     loading: Option<(Key, Receiver<Result<image::RgbaImage, String>>)>,
     files: ImageFiles<ArtPart>,
+    /// The source a running import replaces, which must still be the picture's when it finishes.
+    replacing: Option<ArtImage>,
 }
 
 impl ArtPage {
@@ -75,12 +77,30 @@ impl ArtPage {
         None
     }
 
-    /// Takes a finished import into the recipe, for the picture it was started for.
+    /// Takes a finished import into the recipe, for the picture it was started for, unless that
+    /// picture took another source meanwhile.
     fn poll(&mut self, recipe: &mut WeaponRecipe) {
-        if let Some((part, image)) = self.files.poll() {
+        if let Some((part, image)) = self.files.poll()
+            && source(recipe, part) == self.replacing.as_ref()
+        {
             set_part(recipe, part, Some(ArtImage::Image { image }));
         }
     }
+
+    /// Drops a running import or export.
+    pub(super) fn cancel(&mut self) {
+        self.files = ImageFiles::default();
+        self.replacing = None;
+    }
+}
+
+/// Where one picture comes from, or `None` for the base's.
+fn source(recipe: &WeaponRecipe, part: ArtPart) -> Option<&ArtImage> {
+    recipe
+        .overrides
+        .screen_art
+        .as_ref()
+        .and_then(|art| art.part(part))
 }
 
 fn load(packages: &Path, (container, part): Key) -> Result<image::RgbaImage, String> {
@@ -168,13 +188,7 @@ impl PackageAuthoringApp {
             let container = self.art_container(hash)?;
             page.picture(ctx, &self.packages, (container, taken))?.ok()
         };
-        match self
-            .recipe
-            .overrides
-            .screen_art
-            .as_ref()
-            .and_then(|art| art.part(part))
-        {
+        match source(&self.recipe, part) {
             None => Shown {
                 texture: base.and_then(|base| stock(base, part)),
                 source: "Base".to_owned(),
@@ -378,6 +392,7 @@ impl PackageAuthoringApp {
             set_part(&mut self.recipe, part, choice);
         }
         if import {
+            page.replacing = source(&self.recipe, part).cloned();
             page.files.import(
                 part,
                 format!("Import {} Screen Art", part.label()),

@@ -23,7 +23,7 @@ fn inspector_corner_viewer_keeps_access_and_invalidates_after_its_source_closes(
             |ui| {
                 super::super::super::inspected_pop_out(
                     ui,
-                    id,
+                    (id, id),
                     over,
                     packages.path(),
                     (appearance.clone(), "Guarded Model"),

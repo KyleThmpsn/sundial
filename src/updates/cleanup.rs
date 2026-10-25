@@ -80,6 +80,10 @@ fn workspaces(parent: &Path) -> Result<Vec<PathBuf>, String> {
 /// or after one failed without restoring it. That is the one workspace kept: replacement
 /// began, no receipt was written, and the executable matches neither side of the plan.
 fn disposable(directory: &Path, target: &Path) -> bool {
+    // Another executable beside this one holds its own lock, not the one held here.
+    if files::owner(directory).is_some_and(|owner| owner != target) {
+        return false;
+    }
     let plan = Plan::read(directory).ok();
     if plan.as_ref().is_some_and(|plan| plan.target != target) {
         return false;
@@ -112,7 +116,7 @@ fn abandoned_staging(directory: &Path) -> bool {
             return false;
         };
         if !kind.is_file()
-            || !["download", files::PAYLOAD, files::RUNNER]
+            || !["download", files::OWNER, files::PAYLOAD, files::RUNNER]
                 .iter()
                 .any(|name| entry.file_name() == *name)
         {
@@ -140,7 +144,14 @@ fn remove(directory: &Path) -> bool {
 /// and the plan. A folder left half removed then still judges as finished with, rather than
 /// holding a backup it can no longer vouch for.
 fn remove_ordered(directory: &Path) -> std::io::Result<()> {
-    let markers = [REPLACEMENT_STARTED, RECEIPTS[0], RECEIPTS[1], PLAN];
+    // The owner goes last, so a folder left half removed still names whose it is.
+    let markers = [
+        REPLACEMENT_STARTED,
+        RECEIPTS[0],
+        RECEIPTS[1],
+        PLAN,
+        files::OWNER,
+    ];
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         if markers.iter().any(|marker| entry.file_name() == *marker) {

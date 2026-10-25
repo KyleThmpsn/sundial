@@ -43,16 +43,17 @@ pub fn extend(
         "Character bank extension has no clips"
     );
     let mut clips = rows(bank, 8, 4, 0x80808F48)?;
-    let mut auxiliary = rows(bank, 24, 2, 0x80800007)?;
+    // One signed 32-bit word per clip, class 0x80800007. A clip without one holds -1.
+    let mut auxiliary = rows(bank, 24, 4, 0x80800007)?;
     let mut descriptors = rows(bank, 0x68, 32, 0x80809002)?;
     let mut dispatch = rows(layers, 40, 2, 0x80800006)?;
     ensure!(
-        clips.len() / 4 == auxiliary.len() / 2 && descriptors.len() / 32 == dispatch.len() / 2,
+        clips.len() / 4 == auxiliary.len() / 4 && descriptors.len() / 32 == dispatch.len() / 2,
         "Extended character bank arrays disagree"
     );
     for (data, source, field, stride, class) in [
         (&clips, original, 8, 4, 0x80808F48),
-        (&auxiliary, original, 24, 2, 0x80800007),
+        (&auxiliary, original, 24, 4, 0x80800007),
         (&descriptors, original, 0x68, 32, 0x80809002),
         (&dispatch, original_layers, 40, 2, 0x80800006),
     ] {
@@ -111,7 +112,7 @@ pub fn extend(
         indices.push(descriptors.len() / 32);
         descriptors.extend(descriptor);
         clips.extend(private.to_le_bytes());
-        auxiliary.extend(u16::MAX.to_le_bytes());
+        auxiliary.extend(u32::MAX.to_le_bytes());
         // A complete authored body pose must not also inherit a donor stance or
         // action correction. Dynamic control parents and final constraints remain.
         ensure!(
@@ -129,7 +130,7 @@ pub fn extend(
     let mut layers = layers.clone();
     let mut directions = directions.clone();
     append(&mut bank.0, 8, 0x80808F48, &clips, 4)?;
-    append(&mut bank.0, 24, 0x80800007, &auxiliary, 2)?;
+    append(&mut bank.0, 24, 0x80800007, &auxiliary, 4)?;
     append(&mut bank.0, 0x68, 0x80809002, &descriptors, 32)?;
     append(&mut layers.0, 40, 0x80800006, &dispatch, 2)?;
     for (field, aliases) in direction_aliases {

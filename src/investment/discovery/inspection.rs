@@ -27,7 +27,7 @@ pub enum RuntimeTarget {
 #[derive(Debug)]
 pub enum LoadedDetails {
     Weapon(WeaponRuntimeGraph),
-    Perk(PerkDetails),
+    Perk(Box<PerkDetails>),
     Dye(crate::dyes::WeaponDyeColors),
 }
 
@@ -40,6 +40,8 @@ pub struct PerkDetails {
 #[derive(Debug)]
 pub struct PerkAction {
     pub tag: u32,
+    /// The action read in plain words, when it decodes.
+    pub behavior: Option<crate::sandbox_perk::dependencies::Behavior>,
     pub graphs: Vec<PerkGraph>,
 }
 
@@ -72,7 +74,9 @@ pub fn load(install: &Path, target: RuntimeTarget) -> Result<LoadedDetails, Stri
             )
             .map(LoadedDetails::Weapon)
         }
-        RuntimeTarget::Perk(index) => load_perk(&manager, index).map(LoadedDetails::Perk),
+        RuntimeTarget::Perk(index) => load_perk(&manager, index)
+            .map(Box::new)
+            .map(LoadedDetails::Perk),
         RuntimeTarget::Dye(_) => {
             unreachable!("dye reads are handled before opening runtime packages")
         }
@@ -113,6 +117,7 @@ fn load_perk(manager: &PackageManager, index: u16) -> Result<PerkDetails, String
                 .collect();
             PerkAction {
                 tag: action.action_tag.0,
+                behavior: crate::sandbox_perk::dependencies::Behavior::read(&action.action_payload),
                 graphs,
             }
         });

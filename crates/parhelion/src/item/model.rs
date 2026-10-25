@@ -626,16 +626,125 @@ pub struct WeaponSocketColumnOverride {
 }
 
 impl WeaponSocketColumnOverride {
-    /// Puts `plug` first, as the column's default. The choices that were swappable stay swappable
-    /// beside it.
-    pub(crate) fn lead_with(&mut self, plug: u32) {
-        let position = self.choices.iter().position(|choice| *choice == plug);
-        self.choices.retain(|choice| *choice != plug);
-        self.choices.insert(0, plug);
-        if let Some(count) = &mut self.reusable_choices
-            && position.is_none_or(|position| position >= usize::from(*count))
+    /// Puts `plug` first, as the column's default, and returns each earlier choice's new index.
+    /// The choices that were swappable stay swappable beside it.
+    pub(crate) fn lead_with(&mut self, plug: u32) -> Vec<Option<usize>> {
+        let first = self.choices.iter().position(|choice| *choice == plug);
+        let order = std::iter::once((plug, first))
+            .chain(
+                self.choices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, choice)| **choice != plug)
+                    .map(|(index, choice)| (*choice, Some(index))),
+            )
+            .collect();
+        self.rebuild(order)
+    }
+
+    /// Keeps the choices `keep` accepts by index and plug, and returns each earlier choice's new
+    /// index.
+    pub(crate) fn retain_choices(
+        &mut self,
+        mut keep: impl FnMut(usize, u32) -> bool,
+    ) -> Vec<Option<usize>> {
+        let order = self
+            .choices
+            .iter()
+            .enumerate()
+            .filter(|(index, choice)| keep(*index, **choice))
+            .map(|(index, choice)| (*choice, Some(index)))
+            .collect();
+        self.rebuild(order)
+    }
+
+    fn rebuild(&mut self, order: Vec<(u32, Option<usize>)>) -> Vec<Option<usize>> {
+        let origins = order.iter().map(|(_, origin)| *origin).collect::<Vec<_>>();
+        follow_choices(
+            &origins,
+            &mut self.choice_weight_bits,
+            &mut self.choice_conditions,
+            &mut self.reusable_choices,
+        );
+        let moved = moved_choices(&origins, self.choices.len());
+        self.choices = order.into_iter().map(|(plug, _)| plug).collect();
+        moved
+    }
+}
+
+/// Carries a column's per-choice weights, conditions and swappable lead onto rebuilt choices.
+///
+/// `origins` gives each new choice the index it had before, or `None` for a plug new to the
+/// column. Choices are followed by where they came from rather than by their plug, since two
+/// custom perks can share one template plug. A new plug weighs 1.0, has no condition and is
+/// swappable, as a plug placed in a column leads it. The lead stays a prefix that ends at the
+/// last swappable choice.
+pub(crate) fn follow_choices<C: Clone>(
+    origins: &[Option<usize>],
+    weight_bits: &mut Vec<u32>,
+    conditions: &mut Vec<Vec<C>>,
+    reusable_choices: &mut Option<u16>,
+) {
+    if !weight_bits.is_empty() {
+        *weight_bits = origins
+            .iter()
+            .map(|origin| {
+                origin
+                    .and_then(|old| weight_bits.get(old).copied())
+                    .unwrap_or(1.0_f32.to_bits())
+            })
+            .collect();
+    }
+    if !conditions.is_empty() {
+        *conditions = origins
+            .iter()
+            .map(|origin| {
+                origin
+                    .and_then(|old| conditions.get(old).cloned())
+                    .unwrap_or_default()
+            })
+            .collect();
+    }
+    if let Some(count) = reusable_choices {
+        let lead = usize::from(*count);
+        let end = origins
+            .iter()
+            .rposition(|origin| origin.is_none_or(|old| old < lead))
+            .map_or(1, |last| last + 1);
+        *count = u16::try_from(end).unwrap_or(u16::MAX).max(1);
+    }
+}
+
+/// The new index of each of a column's `before` earlier choices, `None` for one that left.
+pub(crate) fn moved_choices(origins: &[Option<usize>], before: usize) -> Vec<Option<usize>> {
+    let mut moved = vec![None; before];
+    for (new, old) in origins.iter().enumerate() {
+        if let Some(slot) = old.and_then(|old| moved.get_mut(old)) {
+            *slot = Some(new);
+        }
+    }
+    moved
+}
+
+/// Moves each custom perk on `socket_index` to its plug's new index after the lane was rebuilt.
+/// One whose plug left keeps its stale position, which the compiler refuses rather than letting
+/// it land on another plug.
+pub(crate) fn follow_moved_variants(
+    variants: &mut [WeaponSocketPlugVariantOverride],
+    socket_index: usize,
+    moved: &[Option<usize>],
+) {
+    for variant in variants
+        .iter_mut()
+        .filter(|variant| usize::from(variant.socket_index) == socket_index)
+    {
+        if let Some(index) = moved
+            .get(usize::from(variant.choice_index))
+            .copied()
+            .flatten()
+            .and_then(|index| u16::try_from(index).ok())
         {
-            *count = count.saturating_add(1);
+            variant.choice_index = index;
         }
     }
 }

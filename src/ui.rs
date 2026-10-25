@@ -43,8 +43,58 @@ pub(crate) fn icon_font(ui: &eframe::egui::Ui, size: f32) -> eframe::egui::FontI
 }
 
 /// An amber notice with an information icon, a `title` and a wrapped `message`, across the width
-/// it is given, as the JSON Editor's account notice and the ability editor's use it.
+/// it is given, as the JSON Editor's account notice uses it.
 pub fn notice(ui: &mut eframe::egui::Ui, title: &str, message: &str) {
+    use eframe::egui;
+    notice_frame(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.label(egui::RichText::new(egui_phosphor::regular::INFO).font(icon_font(ui, 18.0)));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.strong(title);
+                ui.add(egui::Label::new(message).wrap());
+            });
+        });
+    });
+}
+
+/// The same notice as untitled text beside the icon, with a close button at its end, as the
+/// ability editor uses it. Returns whether the close button was clicked.
+pub fn dismissible_notice(ui: &mut eframe::egui::Ui, message: &str) -> bool {
+    use eframe::egui;
+    let mut dismissed = false;
+    notice_frame(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.label(egui::RichText::new(egui_phosphor::regular::INFO).font(icon_font(ui, 18.0)));
+            let close = egui::Button::new(
+                egui::RichText::new(egui_phosphor::regular::X).font(icon_font(ui, 14.0)),
+            )
+            .frame(false);
+            let close_width = ui.spacing().interact_size.y;
+            let text_width =
+                (ui.available_width() - close_width - ui.spacing().item_spacing.x).max(0.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(text_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(text_width);
+                    ui.add(egui::Label::new(message).wrap());
+                },
+            );
+            let response = ui
+                .add_sized(egui::vec2(close_width, close_width), close)
+                .on_hover_text("Dismiss");
+            // Read out as what it does, not as the glyph.
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss")
+            });
+            dismissed = response.clicked();
+        });
+    });
+    dismissed
+}
+
+fn notice_frame(ui: &mut eframe::egui::Ui, content: impl FnOnce(&mut eframe::egui::Ui)) {
     use eframe::egui;
     let (background, border, foreground) = if ui.visuals().dark_mode {
         (
@@ -68,16 +118,7 @@ pub fn notice(ui: &mut eframe::egui::Ui, title: &str, message: &str) {
             ui.set_width(ui.available_width());
             ui.visuals_mut().override_text_color = Some(foreground);
             ui.spacing_mut().item_spacing.x = 10.0;
-            ui.horizontal_top(|ui| {
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::INFO).font(icon_font(ui, 18.0)),
-                );
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.strong(title);
-                    ui.add(egui::Label::new(message).wrap());
-                });
-            });
+            content(ui);
         });
     ui.add_space(8.0);
 }

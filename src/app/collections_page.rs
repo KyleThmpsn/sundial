@@ -204,7 +204,7 @@ pub(super) fn draw_content(
         let width = (ui.available_width() * 0.25).clamp(160.0, 260.0);
         ui.add(
             egui::TextEdit::singleline(&mut state.query)
-                .hint_text("Name, type, path, index, hash, or condition…")
+                .hint_text("Name, Type, Path, Index, Hash, or Condition…")
                 .desired_width(width),
         );
         egui::ComboBox::from_id_salt("collection_status_filter")

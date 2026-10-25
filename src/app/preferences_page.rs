@@ -215,7 +215,7 @@ impl SundialApp {
                 ui.add_space(6.0);
                 match selected_tab {
                     PreferencesTab::Interface => self.draw_interface_preferences(ui, ctx),
-                    PreferencesTab::Editing => self.draw_editing_preferences(ui, ctx),
+                    PreferencesTab::Editing => self.draw_editing_preferences(ui),
                     PreferencesTab::Installation => self.draw_installation_preferences(ui, ctx),
                     PreferencesTab::SavingRecovery => self.draw_saving_recovery_preferences(ui),
                 }
@@ -317,11 +317,7 @@ impl SundialApp {
         preferences_changed
     }
 
-    pub(super) fn draw_editing_preferences(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-    ) -> bool {
+    pub(super) fn draw_editing_preferences(&mut self, ui: &mut egui::Ui) -> bool {
         let mut preferences_changed = false;
 
         ui.horizontal(|ui| {
@@ -407,36 +403,6 @@ impl SundialApp {
 
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Experimental");
-        let mut enable_parhelion = self.preferences.experimental_package_authoring;
-        let package_authoring_response = ui
-            .horizontal(|ui| {
-                let response =
-                    ui.checkbox(&mut enable_parhelion, "Enable Parhelion Package Authoring");
-                crate::ui::help::info(
-                    ui,
-                    "Build custom weapons from stock weapons, perks and appearances.",
-                );
-                response
-            })
-            .inner;
-        if package_authoring_response.changed() {
-            preferences_changed |= self.request_parhelion_enabled(enable_parhelion);
-        }
-        if self.preferences.experimental_package_authoring && ui.button("Open Parhelion").clicked()
-        {
-            self.open_package_authoring(ctx);
-        }
-        if !self.dawn_account_runtime() {
-            ui.add_space(6.0);
-            preferences_changed |= ui
-                .checkbox(
-                    &mut self.preferences.experimental_extended_fov,
-                    "Allow Field of View up to 155",
-                )
-                .changed();
-            ui.label("Needs Sunrise settings v16 or newer. Saved values are kept when off.");
-        }
-        ui.add_space(6.0);
         let power_above_cap_response = ui
             .horizontal(|ui| {
                 let response = ui.checkbox(
@@ -738,7 +704,7 @@ impl SundialApp {
             if account_source.kind != AccountSourceKind::Json && !dawn {
                 reset_account = ui
                     .button("Reset Account Database…")
-                    .on_hover_text("Reset characters, inventory, progression and account preferences to Sunrise defaults. A full recovery backup is made first")
+                    .on_hover_text("Reset characters, inventory, progression and account preferences to Sunrise defaults. A full recovery backup is made first.")
                     .clicked();
                 if matches!(
                     account_source.kind,
@@ -746,7 +712,7 @@ impl SundialApp {
                 ) {
                     restore_account = ui
                         .button("Restore Backup…")
-                        .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first")
+                        .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first.")
                         .clicked();
                 }
             }

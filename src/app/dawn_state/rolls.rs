@@ -17,7 +17,7 @@ impl SundialApp {
             .unwrap_or_default();
         ui.add(
             egui::TextEdit::singleline(&mut query)
-                .hint_text("Search items…")
+                .hint_text("Search Items…")
                 .desired_width(320.0),
         );
         ui.data_mut(|d| d.insert_temp(query_id, query.clone()));

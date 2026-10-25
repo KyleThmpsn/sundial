@@ -198,7 +198,7 @@ pub(super) fn draw_key_bindings(
     ui.add_space(6.0);
     ui.add(
         egui::TextEdit::singleline(&mut state.action_search)
-            .hint_text("Search actions…")
+            .hint_text("Search Actions…")
             .desired_width(320.0),
     );
     ui.add_space(8.0);
@@ -314,7 +314,7 @@ pub(super) fn binding_picker(
             ui.add_space(4.0);
             ui.add(
                 egui::TextEdit::singleline(&mut picker.query)
-                    .hint_text("Search key names…")
+                    .hint_text("Search Key Names…")
                     .desired_width(380.0),
             );
             ui.separator();

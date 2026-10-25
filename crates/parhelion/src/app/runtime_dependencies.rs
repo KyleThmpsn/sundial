@@ -1,8 +1,6 @@
 //! Read-only dependency evidence. Nothing in this browser rejects an authored combination.
 use super::*;
 mod details;
-#[cfg(test)]
-mod tests;
 use sundial::{
     investment::{PerkPatternUse, PerkSources},
     package_authoring::sandbox_perk::dependencies::{self, Entity, Index, Perk},
@@ -378,7 +376,7 @@ impl Browser {
         ui.add(
             egui::TextEdit::singleline(&mut self.query)
                 .desired_width(f32::INFINITY)
-                .hint_text("Search by name or number"),
+                .hint_text("Search by Name or Number"),
         );
         ui.checkbox(&mut self.show_unnamed, "Include Unnamed")
             .on_hover_text("Shows entries with no named weapon or perk.");

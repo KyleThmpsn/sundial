@@ -22,6 +22,8 @@ pub(crate) struct ParhelionPreferences {
     pub backup_recipe_snapshots: bool,
     pub show_preview_fps: bool,
     pub play_preview_animations: bool,
+    pub load_preview_models: bool,
+    pub ability_notice_dismissed: bool,
 }
 
 impl Default for ParhelionPreferences {
@@ -33,6 +35,8 @@ impl Default for ParhelionPreferences {
             backup_recipe_snapshots: true,
             show_preview_fps: false,
             play_preview_animations: true,
+            load_preview_models: true,
+            ability_notice_dismissed: false,
         }
     }
 }

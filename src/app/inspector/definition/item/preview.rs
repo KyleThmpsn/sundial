@@ -100,7 +100,10 @@ pub(super) fn inline(ui: &mut egui::Ui, content: &ItemInspection<'_>, size: egui
         dyes: resolved.dyes,
     };
     let packages = content.catalog.install_path().join("packages");
-    let id = egui::Id::new(("inspector-model", content.hash, ui.ctx().viewport_id()));
+    // One still per Inspector window rather than per item, so browsing keeps one model and one
+    // read at a time. The viewer it opens belongs to the item and stays on it.
+    let id = egui::Id::new(("inspector-model", ui.ctx().viewport_id(), ui.layer_id().id));
+    let owner = egui::Id::new(("inspector-model", content.hash, ui.ctx().viewport_id()));
     model_preview::still::placeholder(ui.ctx(), id, None);
     let access = content.catalog.inspection_access();
     let response = model_preview::still::show_inspected(
@@ -113,7 +116,7 @@ pub(super) fn inline(ui: &mut egui::Ui, content: &ItemInspection<'_>, size: egui
     );
     model_preview::inspected_pop_out(
         ui,
-        id,
+        (id, owner),
         response.rect,
         &packages,
         (
@@ -125,51 +128,46 @@ pub(super) fn inline(ui: &mut egui::Ui, content: &ItemInspection<'_>, size: egui
     true
 }
 
-pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: bool, button: bool) {
+/// The Appearance page's details: where the look comes from and which model row is shown. The
+/// model itself is drawn beside them by the page.
+pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>) {
     let Some(Resolved {
         saved,
         plugs,
         ornament,
         rows,
-        dyes,
+        ..
     }) = resolve(content)
     else {
-        if button {
-            model_preview::inspected_unavailable(ui);
-        }
-        if details {
-            look::empty_state(ui, "No Model");
-        }
+        look::empty_state(ui, "No Model");
         return;
     };
-    if details {
-        let catalog = content.catalog;
-        look::properties(ui, ("preview-appearance", content.hash), |p| {
-            p.text(
-                "Appearance",
-                if saved.is_some_and(Value::is_array) {
-                    "Saved Plugs"
-                } else {
-                    "Catalog Defaults"
-                },
-            );
-            if let Some((hash, _)) = ornament {
-                p.link("Ornament", catalog, hash, item_name(catalog, hash));
+    let catalog = content.catalog;
+    look::properties(ui, ("preview-appearance", content.hash), |p| {
+        p.text(
+            "Appearance",
+            if saved.is_some_and(Value::is_array) {
+                "Saved Plugs"
+            } else {
+                "Catalog Defaults"
+            },
+        );
+        if let Some((hash, _)) = ornament {
+            p.link("Ornament", catalog, hash, item_name(catalog, hash));
+        }
+        for (hash, metadata) in &plugs {
+            if !is_ornament(catalog, *hash)
+                && metadata
+                    .translation_dye_rows
+                    .iter()
+                    .any(|rows| !rows.is_empty())
+            {
+                p.link("Colors", catalog, *hash, item_name(catalog, *hash));
             }
-            for (hash, metadata) in &plugs {
-                if !is_ornament(catalog, *hash)
-                    && metadata
-                        .translation_dye_rows
-                        .iter()
-                        .any(|rows| !rows.is_empty())
-                {
-                    p.link("Colors", catalog, *hash, item_name(catalog, *hash));
-                }
-            }
-        });
-    }
+        }
+    });
     let mut index = variant(ui, content.hash, &rows);
-    if details && rows.len() > 1 {
+    if rows.len() > 1 {
         look::properties(ui, ("preview-model-variant", content.hash), |p| {
             p.custom("Model", |ui| {
                 egui::ComboBox::from_id_salt("preview-model-variant")
@@ -183,19 +181,6 @@ pub(super) fn draw(ui: &mut egui::Ui, content: &ItemInspection<'_>, details: boo
         });
         let variant_id = variant_id(ui, content.hash);
         ui.data_mut(|data| data.insert_temp(variant_id, index));
-    }
-    if button {
-        model_preview::inspected_weapon(
-            ui,
-            &content.catalog.install_path().join("packages"),
-            Appearance {
-                arrangement: rows[index].arrangement,
-                dye_textures: Vec::new(),
-                dyes,
-            },
-            content.resolved_name.as_deref().unwrap_or("Model Preview"),
-            content.catalog.inspection_access(),
-        );
     }
 }
 

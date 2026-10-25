@@ -298,7 +298,9 @@ impl PackageAuthoringApp {
             "Review Installation"
         });
         if restoring {
-            ui.label("Installs the build you last installed for this runtime again, without a rebuild. If it no longer fits this installation, the review says why. Choose Back to Build to build instead.");
+            ui.label(
+                "Installs the build you last installed for this runtime again, without a rebuild.",
+            );
         }
         egui::ScrollArea::vertical()
             .id_salt("install-review-contents")

@@ -144,10 +144,8 @@ impl SundialApp {
                         self.select_view(view);
                     }
                 }
-                if self.preferences.experimental_package_authoring
-                    && ui.button("Open Parhelion").clicked()
-                {
-                    self.open_package_authoring(ctx);
+                if ui.button("Open Parhelion").clicked() {
+                    self.request_open_parhelion(ctx);
                 }
                 let footer = sidebar_footer(ui, available_update);
                 self.about_open |= footer.about.clicked();

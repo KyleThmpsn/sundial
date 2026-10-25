@@ -41,6 +41,7 @@ mod atmosphere;
 mod cubemaps;
 mod fog;
 mod junctions;
+pub mod lights;
 mod occlusion;
 mod props;
 pub mod sky;
@@ -125,6 +126,9 @@ pub struct Templates {
     pub atmosphere: Option<u32>,
     /// The distance lookup the donor's atmosphere names, which the map's black copy replaces.
     pub atmosphere_lookup: Option<u32>,
+    /// The 64 by 64 image the donor's atmosphere names at `+0x9C`, which the map's open copy
+    /// replaces.
+    pub atmosphere_image: Option<u32>,
     /// How many occlusion probes the map's copy of the donor's occlusion record takes from the
     /// level, when the donor places one.
     pub occlusion_probes: Option<usize>,
@@ -218,11 +222,18 @@ pub struct Converted {
     /// The symbol of the black distance lookup the map's atmosphere names in place of the donor's,
     /// when the donor names one and the level's surfaces draw their own fog.
     pub atmosphere_lookup: Option<String>,
+    /// The symbol of the open image the map's atmosphere names at `+0x9C` in place of the donor's.
+    #[serde(default)]
+    pub atmosphere_image: Option<String>,
     /// The level's occlusion probes, each a position in the map's coordinates and a sky
     /// visibility, as many as `Templates::occlusion_probes` asks for, or none.
     pub occlusion: Vec<[f32; 4]>,
     /// The level's cubemap volumes, when the donor places volumes and the level has baked light.
     pub cubemaps: Vec<CubemapVolume>,
+    /// The level's lights, each a position in the map's coordinates, a range in meters and a color
+    /// in Destiny's units ([`lights`]).
+    #[serde(default)]
+    pub lights: Vec<lights::MapLight>,
     /// The connected areas, when converted as a campaign map's ([`convert_areas`]). The first's
     /// spawns and world are `spawns` and `world`.
     #[serde(default)]
@@ -1638,21 +1649,6 @@ pub fn convert_areas(
         None => json!({"status":"undecoded","reason":"No mission audio decoder configured",
             "playback":"unsupported"}),
     };
-    // The atmosphere takes the sun's color where Destiny's sun lights the surfaces in its place.
-    let light_color = sun.map(|sun| {
-        let peak = sun.intensity.into_iter().fold(0f32, f32::max);
-        sun.intensity.map(|v| v / peak)
-    });
-    let (atmosphere, atmosphere_report) = match (templates.atmosphere, light_color) {
-        (Some(volume), Some(color)) => {
-            let (symbol, report) = atmosphere::add(&mut native, &mut graph, volume, color)?;
-            (Some(symbol), report)
-        }
-        _ => (
-            None,
-            json!({"reason": "The donor names no atmosphere volume or the level has no baked light"}),
-        ),
-    };
     // Lightmapped surfaces draw the level's fog, or none where Reach drew none, so Destiny's fog
     // gives way on the map.
     let (atmosphere_lookup, lookup_report) = match (
@@ -1669,7 +1665,7 @@ pub fn convert_areas(
         ),
     };
     report("Preparing Lighting and Occlusion Probes");
-    let (occlusion, occlusion_report) = match templates.occlusion_probes {
+    let (occlusion, open_light, occlusion_report) = match templates.occlusion_probes {
         Some(count) => occlusion::probes(
             &level,
             &area_spawns
@@ -1677,13 +1673,46 @@ pub fn convert_areas(
                 .flatten()
                 .map(|spawn| sub(spawn.position, offset))
                 .collect::<Vec<_>>(),
+            &super::squads::read_squads(&cache, [0.; 3], super::loaded_bsps(&cache, zone_sets)?)?
+                .into_iter()
+                .flat_map(|squad| squad.points)
+                .map(|point| point.spawn.position)
+                .collect::<Vec<_>>(),
             &super::interior_boxes(&cache, &tags)?,
             count,
             offset,
         ),
         None => (
             Vec::new(),
+            None,
             json!({"reason": "The donor places no occlusion probes"}),
+        ),
+    };
+    // The atmosphere takes the sun's color where Destiny's sun lights the surfaces in its place,
+    // and the open probes' light as the sky's brightness.
+    let light_color = sun.map(|sun| {
+        let peak = sun.intensity.into_iter().fold(0f32, f32::max);
+        sun.intensity.map(|v| v / peak)
+    });
+    let (atmosphere, atmosphere_report) = match (templates.atmosphere, light_color) {
+        (Some(volume), Some(color)) => {
+            let sky = open_light.map(|light| atmosphere::sky_luminance(light, radiance));
+            let (symbol, report) = atmosphere::add(&mut native, &mut graph, volume, color, sky)?;
+            (Some(symbol), report)
+        }
+        _ => (
+            None,
+            json!({"reason": "The donor names no atmosphere volume or the level has no baked light"}),
+        ),
+    };
+    let (atmosphere_image, image_report) = match (templates.atmosphere_image, &atmosphere) {
+        (Some(image), Some(_)) => {
+            let (symbol, report) = atmosphere::open_image(&mut native, &mut graph, image)?;
+            (Some(symbol), report)
+        }
+        _ => (
+            None,
+            json!({"reason": "The donor names no atmosphere image or the map keeps the donor's atmosphere"}),
         ),
     };
     report("Converting Reflection Cubemaps");
@@ -1703,6 +1732,20 @@ pub fn convert_areas(
             Vec::new(),
             json!({"reason": "The donor places no cubemap volumes or the level has no baked light"}),
         )
+    };
+    report("Reading Lights");
+    let (lights, lights_report) = match level.lightmap.as_ref() {
+        Some(atlas) => lights::read(
+            &cache,
+            super::loaded_bsps(&cache, zone_sets)?,
+            offset,
+            radiance,
+            atlas.level,
+        )?,
+        None => (
+            Vec::new(),
+            json!({"reason": "The level has no baked light"}),
+        ),
     };
     report("Converting Posed Props");
     let (props, prop_materials) = props::build(
@@ -1919,9 +1962,11 @@ pub fn convert_areas(
         "ambience": ambience_report,
         "atmosphere": atmosphere_report,
         "atmosphere_lookup": lookup_report,
+        "atmosphere_image": image_report,
         "fog": fog_report,
         "occlusion": occlusion_report,
         "cubemaps": cubemaps_report,
+        "lights": lights_report,
         "analytical_light_direction": light,
         "analytical_light_color": light_color,
         "analytical_sun": sun,
@@ -1950,8 +1995,10 @@ pub fn convert_areas(
         visibility: area_rows[0].visibility.clone(),
         atmosphere,
         atmosphere_lookup,
+        atmosphere_image,
         occlusion,
         cubemaps,
+        lights,
         areas: if split_areas { area_rows } else { Vec::new() },
         report,
     })

@@ -4,6 +4,8 @@ use sundial::package_authoring::ability_modifier;
 use sundial::package_authoring::sandbox_perk::program::{
     AbilityRow, AbilityRowModifier, PropertyOperation,
 };
+mod attack;
+mod effect;
 mod evade;
 mod fixed;
 mod group;
@@ -221,6 +223,61 @@ impl Catalog {
                         .context("Native ability bank has no qualified property slot")?;
                     let payload = native.tag(bank, Some(0x80809C36))?;
                     validate_row(&ability.data, at)?;
+                    if ability.data.u32(ability.data.pointer(at + 32)? - 4)? == 0x80802AA8 {
+                        ensure!(
+                            slot == sundial::package_authoring::ability_bank::AbilityTarget::Melee,
+                            "Contact-effect bridge requires the melee ability bank"
+                        );
+                        let (selected, effect) =
+                            effect::lower(source, native, &ability.data, at, &payload)?;
+                        ensure!(
+                            keys.insert(selected),
+                            "Source grants overlap one native ability property"
+                        );
+                        report.push(json!({"source_grant":index,"source_key":key,"source_ability":ordinal,
+                            "source_pattern":ability.pattern,"source_bank":ability.bank,"source_property_offset":at,
+                            "native_bank":bank,"slot":slot.byte(),"property_key":selected,
+                            "parameter_index":null,"route":"native_melee_effect","balance":"native","effect":effect}));
+                        program.actions.insert(
+                            0,
+                            Action::AbilityProperty {
+                                target: slot,
+                                key: selected,
+                                option: PropertyOperation::Apply,
+                            },
+                        );
+                        continue;
+                    }
+                    if ability.data.u32(ability.data.pointer(at + 32)? - 4)? == 0x80803198 {
+                        let (modifier, attacks) =
+                            attack::lower(source, native, &ability.data, at, &payload)?;
+                        let row = AbilityRow::new(
+                            bank,
+                            slot,
+                            u8::try_from(ability.data.u32(at + 16)?)?,
+                            modifier,
+                        );
+                        row.check_bank(&payload.0).map_err(anyhow::Error::msg)?;
+                        let selected = row.key;
+                        ensure!(
+                            keys.insert(selected),
+                            "Source grants overlap one native ability property"
+                        );
+                        report.push(json!({"source_grant":index,"source_key":key,"source_ability":ordinal,
+                            "source_pattern":ability.pattern,"source_bank":ability.bank,"source_property_offset":at,
+                            "native_bank":bank,"slot":slot.byte(),"property_key":selected,
+                            "parameter_index":null,"route":"private_attack_pair","balance":"source_amounts_native_feedback","attacks":attacks}));
+                        program.actions.insert(
+                            0,
+                            Action::AbilityProperty {
+                                target: slot,
+                                key: selected,
+                                option: PropertyOperation::Apply,
+                            },
+                        );
+                        program.ability_rows.push(row);
+                        continue;
+                    }
                     if ability.data.u32(ability.data.pointer(at + 32)? - 4)? == 0x808030C8 {
                         let graph = ability.native_graph.context("Native movement graph")?;
                         let selected =
@@ -283,11 +340,15 @@ impl Catalog {
 }
 
 fn validate_row(data: &Payload, row: usize) -> Result<()> {
+    let conditional = matches!(
+        data.u32(data.pointer(row + 32)? - 4)?,
+        0x8080209C | 0x808028B8 | 0x80803198 | 0x80802AA8
+    );
     ensure!(
-        data.bytes::<4>(row + 8)? == [255, 0, 0, 0]
-            && data.u32(row + 20)? == 0
+        data.u32(row + 20)? == 0
             && matches!(data.u32(row + 16)?, 1 | 255)
-            && data.u64(row + 24)? == 0,
+            && (conditional
+                || (data.bytes::<4>(row + 8)? == [255, 0, 0, 0] && data.u64(row + 24)? == 0)),
         "Source ability property has a gate or unqualified flags"
     );
     Ok(())
@@ -302,7 +363,8 @@ fn modifiers(
     let at = data.pointer(row + 32)?;
     match data.u32(at - 4)? {
         0x8080296E => group::lower(source, data, row, native),
-        0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 => fixed::lower(data, row, native),
+        0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365
+        | 0x808028B8 | 0x80802B72 => fixed::lower(data, row, native),
         0x8080235E => scalar::lower(source, data, row, native),
         0x80802254 => Ok(vec![(
             AbilityRowModifier::Charges {

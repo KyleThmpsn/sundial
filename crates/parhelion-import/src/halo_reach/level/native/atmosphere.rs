@@ -1,10 +1,20 @@
-//! The map's atmosphere lookup volume, recolored to the level's own light. A map keeps its donor's
-//! atmosphere component (`80807086`), whose volume texture at `+0x90` feeds Destiny's sky lookups
-//! and colors its sun and sky light on players and other dynamic objects. The copy's texels come
-//! from [`CLEAR_VOLUME`] when it has the donor's shape, else from the donor's, and each keeps its
-//! luminance and alpha and takes the hue of the scenario sky's analytical light.
-//! Its distance lookup at `+0x98` takes a black copy, since
-//! the level's surfaces draw the level's own fog ([`clear_lookup`]).
+//! The map's atmosphere volume, recolored to the level's own light and scaled to its sky's
+//! brightness. A map keeps its donor's atmosphere component (`80807086`), whose volume texture at
+//! `+0x90` is the sky's radiance. Destiny's sky reflection generator (material `80B35F99`, pixel
+//! program `80B35F97`) samples it as a 3D texture through `Atmosphere+0x20`, at the direction's
+//! azimuth plus `cb0[22]`, `0.5 - 0.5 * z` and the time of day slice `cb0[26]`, blends a second
+//! volume by global channel 43, multiplies the color by `cb0[23]` (`Atmosphere+0x148`) and adds a
+//! sun halo scaled by the texel's alpha. That reflection becomes the diffuse and reflected sky light
+//! every deferred surface takes, players and weapons included. Its layout is equal area, so an
+//! object's diffuse sky light, from its 2 by 2 mip, is about a slice's mean times `cb0[23]`.
+//!
+//! The copy's texels come from [`CLEAR_VOLUME`] when it has the donor's shape, else from the
+//! donor's. Each keeps its alpha and takes the hue of the scenario sky's analytical light, and
+//! every color is scaled so that the mean luminance is [`sky_luminance`] of the level's open
+//! probes. Kept at Distant Shore's daytime mean of about 1.5, a night level's players drew lit as
+//! if by daylight. Its distance lookup at `+0x98` takes a black copy, since the level's surfaces
+//! draw the level's own fog ([`clear_lookup`]).
+use super::occlusion;
 use crate::{presentation::Graph, tiger::reader::Reader};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -20,6 +30,9 @@ const DIMENSIONS: usize = 0x0E;
 const RGBA16_FLOAT: u32 = 10;
 const TEXEL_BYTES: usize = 8;
 const LUMINANCE: [f32; 3] = [0.2126, 0.7152, 0.0722];
+/// The sky reflection generator's intensity (`cb0[23]`, from `Atmosphere+0x148`), which the
+/// atmosphere component does not hold. Its runtime value was not measured, so one stands for it.
+const SKY_INTENSITY: f32 = 1.;
 /// The volume whose texels every copy takes: Distant Shore's (`pvp_greenhouse_2`, shared with The
 /// Grove and Echo), 128 by 128 by 16. Its 16 depth slices, one per time of day the component's
 /// 16 floats from `+0xA0` key, are equal, as a level whose light is baked needs. Along each slice's
@@ -94,14 +107,24 @@ impl Volume {
     }
 }
 
+/// The mean luminance a volume slice takes so that open ground lights an object as the level's open
+/// probes' light `open` does at `radiance`: the generated sky's diffuse light is the slice's mean
+/// times [`SKY_INTENSITY`], and an open probe's visibility of [`occlusion::OPEN_VISIBILITY`] passes
+/// its square of that.
+pub(super) fn sky_luminance(open: f32, radiance: f32) -> f32 {
+    open * radiance / (occlusion::OPEN_VISIBILITY * occlusion::OPEN_VISIBILITY * SKY_INTENSITY)
+}
+
 /// Adds a copy of the donor's atmosphere volume `volume` whose texels, [`CLEAR_VOLUME`]'s where it
-/// has the donor's shape, take `color`'s hue at their own luminance. Returns the copy's symbol and
-/// a report of the source's and the copy's mean colors and alphas.
+/// has the donor's shape, take `color`'s hue, at their own luminance scaled so that their mean
+/// luminance is `sky` when it is given. Returns the copy's symbol and a report of the source's and
+/// the copy's mean colors and alphas.
 pub(super) fn add(
     native: &mut Reader,
     graph: &mut Graph,
     volume: u32,
     color: [f32; 3],
+    sky: Option<f32>,
 ) -> Result<(String, Value)> {
     let donor = Volume::read(native, volume)?;
     let clear = Volume::read(native, CLEAR_VOLUME)
@@ -118,6 +141,28 @@ pub(super) fn add(
     );
     let hue = color.map(|c| c / peak);
     let hue_luminance = hue.iter().zip(LUMINANCE).map(|(c, w)| c * w).sum::<f32>();
+    let luminance_of = |texel: &[u8]| {
+        (0..3)
+            .map(|k| {
+                half::f16::from_le_bytes([texel[k * 2], texel[k * 2 + 1]]).to_f32() * LUMINANCE[k]
+            })
+            .sum::<f32>()
+    };
+    let source_luminance = data
+        .chunks_exact(TEXEL_BYTES)
+        .map(|texel| f64::from(luminance_of(texel)))
+        .sum::<f64>()
+        / (data.len() / TEXEL_BYTES).max(1) as f64;
+    let scale = match sky {
+        Some(sky) => {
+            ensure!(
+                sky.is_finite() && sky > 0. && source_luminance > 0.,
+                "The level's sky brightness is not a brightness"
+            );
+            sky / source_luminance as f32
+        }
+        None => 1.,
+    };
     let mut before = [0f64; 4];
     let mut after = [0f64; 4];
     for texel in data.chunks_exact_mut(TEXEL_BYTES) {
@@ -129,7 +174,7 @@ pub(super) fn add(
             .zip(LUMINANCE)
             .map(|(c, w)| c * w)
             .sum::<f32>();
-        let [r, g, b] = hue.map(|c| c * luminance / hue_luminance);
+        let [r, g, b] = hue.map(|c| c * luminance * scale / hue_luminance);
         for (k, value) in [r, g, b, rgba[3]].into_iter().enumerate() {
             texel[k * 2..k * 2 + 2].copy_from_slice(&half::f16::from_f32(value).to_le_bytes());
             before[k] += f64::from(rgba[k]);
@@ -154,9 +199,44 @@ pub(super) fn add(
             "texel_source": format!("{texel_source:08X}"),
             "texels": donor.texels,
             "color": hue,
+            "sky_luminance": sky,
+            "source_luminance": source_luminance,
+            "scale": scale,
             "source_mean": mean(before),
             "mean": mean(after),
         }),
+    ))
+}
+
+/// The atmosphere image's size: 64 by 64 RGBA8 texels.
+const IMAGE_BYTES: usize = 64 * 64 * 4;
+
+/// Adds an open copy of the donor atmosphere's image `image` (`+0x9C`, class `8080708B`), every
+/// texel white. The image holds one gray profile along its rows, nearly constant across its
+/// columns, that a sky lookup generator (material `80B3585E`) reads at the view's azimuth. The
+/// donors' profiles differ: Distant Shore's is black over its first fifth, Midtown's dim there and
+/// `mission_proton`'s bright, so the map takes its own rather than a donor's. What the profile
+/// controls was not traced. Returns the copy's symbol and a report.
+pub(super) fn open_image(
+    native: &mut Reader,
+    graph: &mut Graph,
+    image: u32,
+) -> Result<(String, Value)> {
+    let payload = native
+        .tag(image, None)
+        .with_context(|| format!("Atmosphere image {image:08X}"))?
+        .0
+        .clone();
+    ensure!(
+        payload.len() == IMAGE_BYTES,
+        "The atmosphere image {image:08X} holds {} bytes, not 64 by 64 texels",
+        payload.len()
+    );
+    let symbol = "atmosphere-image".to_owned();
+    graph.add(&symbol, image, &vec![0xFF; IMAGE_BYTES], None, Vec::new())?;
+    Ok((
+        symbol,
+        json!({"donor_image": format!("{image:08X}"), "bytes": IMAGE_BYTES}),
     ))
 }
 

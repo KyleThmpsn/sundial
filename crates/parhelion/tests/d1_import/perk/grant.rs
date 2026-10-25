@@ -1,6 +1,8 @@
 //! Original ability properties must survive in the emitted action and selected bank only.
 use super::*;
 use sundial::package_authoring::ability_bank::{SLOT_BANKS, property_rows};
+mod attack;
+mod effect;
 mod evade;
 mod group;
 mod scalar;
@@ -45,6 +47,14 @@ pub(super) fn check(
             checked.push(evade::check(stock, native, &original, row, grant)?);
             continue;
         }
+        if original.u32(modifier - 4)? == 0x80803198 {
+            checked.push(attack::check(source, stock, native, &original, row, grant)?);
+            continue;
+        }
+        if original.u32(modifier - 4)? == 0x80802AA8 {
+            checked.push(effect::check(stock, native, &original, row, grant)?);
+            continue;
+        }
         let emitted = native.tag(bank, Some(0x80809C36))?;
         let stored = emitted.array(emitted.pointer(24)? + 0x88, 56, Some(0x8080453B))?;
         let stored = stored
@@ -73,44 +83,119 @@ pub(super) fn check(
         assert_eq!(rows.len(), 1);
         match original.u32(modifier - 4)? {
             0x8080296E => group::check(&original, row, &before, &emitted, stored[0])?,
-            0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 => {
+            0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365
+            | 0x808028B8 | 0x80802B72 => {
                 let (class, size) = match original.u32(modifier - 4)? {
                     0x8080251A => (0x80804399, 32),
                     0x808028BA => (0x8080442E, 8),
                     0x808030A9 => (0x80804528, 4),
+                    0x8080209C => (0x808042A5, 4),
+                    0x80802365 => (0x8080411B, 4),
+                    0x808028B8 => (0x80804125, 12),
+                    0x80802B72 => (0x80804127, 4),
                     _ => (0x8080411F, 4),
                 };
+                let conditional = matches!(class, 0x808042A5 | 0x80804125);
+                let source_gate = if original.u64(row + 24)? == 0 {
+                    None
+                } else {
+                    let gate = original.pointer(row + 24)?;
+                    assert_eq!(original.u32(gate - 4)?, 0x80802981);
+                    Some(original.u32(gate)?)
+                };
+                let gate_key = |p: &Payload, r: usize| -> CheckResult<Option<u32>> {
+                    if p.u64(r + 40)? == 0 {
+                        return Ok(None);
+                    }
+                    let gate = p.pointer(r + 40)?;
+                    assert_eq!(p.u32(gate - 4)?, 0x8080454A);
+                    assert_eq!(p.u32(gate + 4)?, 0);
+                    Ok(Some(p.u32(gate)?))
+                };
+                assert_eq!(emitted.u32(stored[0] + 24)?, original.u32(row + 8)?);
+                assert_eq!(gate_key(&emitted, stored[0])?, source_gate);
+                if conditional {
+                    assert_eq!(emitted.u32(stored[0] + 20)?, original.u32(row + 4)?);
+                }
                 let m = emitted.pointer(stored[0] + 48)?;
                 assert_eq!(emitted.u32(m + 4)?, class);
+                if class == 0x80804127 {
+                    assert_eq!(original.u32(definition - 4)?, 0x808029B5);
+                    assert_eq!(emitted.u32(emitted.pointer(24)? - 4)?, 0x80804113);
+                    let twin = usize::try_from(emitted.u64(m + 8)?)?;
+                    assert_eq!(emitted.u32(m - 4)?, 0x80804128);
+                    assert_eq!(emitted.u32(twin + 4)?, 0x80804128);
+                    assert_eq!(emitted.u64(twin + 8)?, m as u64);
+                    assert_eq!(emitted.u32(twin)?, bank);
+                    assert_eq!(emitted.u32(m)?, bank);
+                }
                 assert_eq!(
                     &original.0[modifier..modifier + size],
                     &emitted.0[m + 16..m + 16 + size]
                 );
+                if class == 0x80804125 {
+                    assert_eq!(original.u32(modifier)?, 1);
+                    assert!(f32::from_bits(original.u32(modifier + 4)?) > 0.0);
+                    assert!(f32::from_bits(original.u32(modifier + 8)?) > 0.0);
+                    let instance = emitted.u64(m + 8)? as usize;
+                    let split = emitted.pointer(24)?;
+                    assert!(instance + 80 <= split && m >= split);
+                    assert_eq!(emitted.u32(m - 4)?, 0x80804126);
+                    assert_eq!(emitted.u32(instance + 4)?, 0x80804126);
+                    assert_eq!(emitted.u64(instance + 8)?, m as u64);
+                    assert_eq!(emitted.u32(m + 32)?, bank);
+                    assert_eq!(emitted.u32(m + 36)?, 0x80803BFA);
+                    assert_eq!(emitted.u64(m + 40)?, (instance + 32) as u64);
+                    assert_eq!(emitted.bytes::<16>(m + 48)?, [0; 16]);
+                    assert_eq!(emitted.u32(m + 64)?, 1);
+                    assert_eq!(emitted.u32(m + 68)?, 0);
+                    assert_eq!(emitted.u32(instance + 32)?, bank);
+                    assert_eq!(emitted.u32(instance + 36)?, 0x80803BFB);
+                    assert_eq!(emitted.u64(instance + 40)?, (m + 32) as u64);
+                    assert_eq!(emitted.pointer(instance + 48)?, instance);
+                    assert_eq!(emitted.bytes::<24>(instance + 56)?, [0; 24]);
+                }
                 let stock_rows = before.array(before.pointer(24)? + 0x88, 56, Some(0x8080453B))?;
                 let anchors = stock_rows
                     .into_iter()
                     .filter(|&r| {
-                        before.u32(r + 16).ok() == original.u32(row).ok()
-                            && before
+                        (if class == 0x80804127 {
+                            before
                                 .pointer(r + 48)
                                 .ok()
-                                .and_then(|m| before.u32(m + 4).ok())
-                                == Some(class)
+                                .and_then(|m| before.u32(m + 16).ok())
+                                == original.u32(modifier).ok()
+                        } else {
+                            before.u32(r + 16).ok() == original.u32(row).ok()
+                        }) && before
+                            .pointer(r + 48)
+                            .ok()
+                            .and_then(|m| before.u32(m + 4).ok())
+                            == Some(class)
+                            && (!conditional
+                                || (before.u32(r + 20).ok() == original.u32(row + 4).ok()
+                                    && before.u32(r + 24).ok() == original.u32(row + 8).ok()
+                                    && gate_key(&before, r).ok() == Some(source_gate)))
                     })
                     .collect::<Vec<_>>();
                 assert_eq!(anchors.len(), 1);
                 assert_eq!(emitted.u32(stored[0] + 28)?, before.u32(anchors[0] + 28)?);
+                let template_key = before.u32(anchors[0] + 16)?;
                 let sm = before.pointer(anchors[0] + 48)?;
                 let retained = emitted
                     .array(emitted.pointer(24)? + 0x88, 56, Some(0x8080453B))?
                     .into_iter()
                     .find(|&r| {
-                        emitted.u32(r + 16).ok() == original.u32(row).ok()
+                        emitted.u32(r + 16).ok() == Some(template_key)
                             && emitted
                                 .pointer(r + 48)
                                 .ok()
                                 .and_then(|m| emitted.u32(m + 4).ok())
                                 == Some(class)
+                            && (!conditional
+                                || (emitted.u32(r + 20).ok() == original.u32(row + 4).ok()
+                                    && emitted.u32(r + 24).ok() == original.u32(row + 8).ok()
+                                    && gate_key(&emitted, r).ok() == Some(source_gate)))
                     })
                     .ok_or("Stock property missing")?;
                 let rm = emitted.pointer(retained + 48)?;
@@ -266,7 +351,9 @@ pub(super) fn origins(
                         .collect::<std::result::Result<Vec<_>, _>>()?;
                     let modifier = payload.pointer(row + 32)?;
                     let parameters = match payload.u32(modifier - 4)? {
-                        0x80802254 | 0x808030C8 => vec![None],
+                        0x80802254 | 0x808030C8 | 0x8080296E | 0x8080251A | 0x808028BA
+                        | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365 | 0x808028B8
+                        | 0x80803198 | 0x80802AA8 => vec![None],
                         0x80802974 | 0x8080235E => {
                             let first = payload.u32(modifier + 16)?;
                             let count = payload.u32(modifier + 20)?;

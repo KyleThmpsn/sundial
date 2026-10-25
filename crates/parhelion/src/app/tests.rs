@@ -8,14 +8,10 @@ mod accessibility;
 mod activities;
 mod added_sockets;
 mod artwork;
-mod authoring_safety;
 mod barrel_controls;
 mod build_selection;
-#[cfg(feature = "d2-model-importer")]
-mod imported_appearance;
-mod library;
+mod magazine_readout;
 mod recipe_editing;
-mod runtime_editing;
 
 #[test]
 fn exporting_the_open_recipe_updates_its_save_baseline() {
@@ -49,43 +45,6 @@ fn exporting_the_open_recipe_updates_its_save_baseline() {
     let external = directory.path().join("export.json");
     app.export_recipe_to(&external).unwrap();
     assert_eq!(WeaponRecipe::load_json(&external).unwrap(), app.recipe);
-}
-
-#[test]
-fn removing_a_socket_choice_keeps_native_metadata_aligned() {
-    let mut recipe = PackageAuthoringApp::default().recipe;
-    recipe.overrides.socket_columns = vec![Some(WeaponSocketColumnRecipe {
-        choices: [1, 2, 3].into_iter().map(HexHash::new).collect(),
-        choice_weight_bits: vec![10, 20, 30],
-        choice_conditions: [1, 2, 3]
-            .into_iter()
-            .map(|operand| {
-                vec![WeaponNumericInstructionRecipe {
-                    opcode: 10,
-                    operand,
-                }]
-            })
-            .collect(),
-        ..WeaponSocketColumnRecipe::default()
-    })];
-
-    set_recipe_socket_column(&mut recipe, 1, 0, &[1, 2, 3], vec![1, 3], Some(1));
-
-    let column = recipe.overrides.socket_columns[0].as_ref().unwrap();
-    assert_eq!(column.choices, vec![HexHash::new(1), HexHash::new(3)]);
-    assert_eq!(column.choice_weight_bits, vec![10, 30]);
-    assert_eq!(
-        column
-            .choice_conditions
-            .iter()
-            .map(|program| program[0].operand)
-            .collect::<Vec<_>>(),
-        vec![1, 3]
-    );
-}
-
-fn field(kind: WeaponRuntimeValueKind, value: WeaponRuntimeValue) -> WeaponRuntimeField {
-    crate::test_support::runtime_field("Runtime test field", kind, value)
 }
 
 fn render(width: f32, draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput, f32) {

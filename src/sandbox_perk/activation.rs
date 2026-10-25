@@ -381,26 +381,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn every_activation_has_typed_arrays_and_matching_runtime_predicates() {
-        use crate::sandbox_perk::action::native::{Graph, labels};
-        let source = fixture();
-        for condition in PerkActivation::ALL {
-            let result = with_activation(OUTLAW_ACTION, &source, condition, &registry()).unwrap();
-            let expected =
-                super::super::program::compiler::compile_labels(&registry(), condition.labels())
-                    .unwrap();
-            for start in NODE_STARTS {
-                let graph = Graph::read(&result, start, NODE_CLASS).unwrap();
-                assert_eq!(labels::effective(&graph, 0, 0x128).unwrap()[0], expected);
-                assert_eq!(labels::effective(&graph, 0, 0x128).unwrap()[2], [0; 40]);
-                if !condition.labels().is_empty() {
-                    let target = graph.blocks[0].links[&0xD8];
-                    assert_eq!(graph.blocks[target].class, LABEL_CLASS);
-                    assert_eq!(graph.blocks[target].count, Some(condition.labels().len()));
-                }
-            }
-        }
-    }
 }

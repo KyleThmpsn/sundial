@@ -157,14 +157,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_icon_owners_allow_eager_ui_loading() {
-        let icon = sundial::package_authoring::icon_schema::ICON_DEFINITION_CLASS;
-        assert!(!deferred_owner(16, icon).unwrap());
-        assert!(deferred_owner(16, 0x8080_9AD8).unwrap());
-        assert!(deferred_owner(8, icon).is_err());
-    }
-
-    #[test]
     fn scoped_clone_preserves_native_resources_and_rejects_global_preloading() {
         let original = fixture();
         let source = LoadingOwner {

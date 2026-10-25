@@ -290,6 +290,22 @@ impl SundialApp {
         }
     }
 
+    /// Whether exiting may go ahead as far as Parhelion's work outside its recipe goes. Work
+    /// whose last save failed is written again first, and while some is still unsaved this asks
+    /// instead. A closed Parhelion keeps that work, so it is asked whether or not it is open.
+    pub(super) fn confirm_authoring_work_saved(&mut self) -> bool {
+        let Some(reason) = self
+            .package_authoring
+            .as_mut()
+            .and_then(|package_authoring| package_authoring.unsaved_work())
+        else {
+            return true;
+        };
+        self.unsaved_authoring_work = Some(reason);
+        self.confirmation = Some(ConfirmationDialog::UnsavedAuthoringWork);
+        false
+    }
+
     pub(super) fn request_save(&mut self, ctx: &egui::Context, action: SaveAction) {
         if self.json_editor.has_unapplied_changes() && !self.apply_raw_json() {
             return;
@@ -325,6 +341,9 @@ impl SundialApp {
         if action == SaveAction::SaveAndExit && !self.has_unsaved_changes() && safe_to_close {
             if let Some(message) = self.package_authoring_exit_blocker() {
                 self.set_status(message, true);
+                return;
+            }
+            if !self.confirm_authoring_work_saved() {
                 return;
             }
             self.exit_confirmed = true;

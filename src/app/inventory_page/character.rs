@@ -112,7 +112,7 @@ impl SundialApp {
         ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.character_inventory_query)
-                    .hint_text("Search inventory by name, type, hash, or instance…")
+                    .hint_text("Search Inventory by Name, Type, Hash, or Instance…")
                     .desired_width(360.0),
             );
             egui::ComboBox::from_id_salt("character-inventory-source-filter")

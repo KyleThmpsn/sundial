@@ -368,6 +368,7 @@ fn shader_texture_motion_reaches_the_software_page_preview() {
         Options {
             show_fps: true,
             play_animations: false,
+            ..Default::default()
         },
     );
     let output_frame = draw();

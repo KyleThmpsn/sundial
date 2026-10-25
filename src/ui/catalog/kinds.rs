@@ -366,7 +366,6 @@ impl Kinds {
     ) {
         if rows.is_empty() {
             ui.strong("No Matching Kinds");
-            ui.label("Clear the search or change a filter.");
             return;
         }
         for family in Family::ALL {
@@ -446,14 +445,6 @@ impl Kinds {
             });
         });
         ui.label(node.summary);
-        ui.label(format!("Compiler: {}", node.support.label()));
-        ui.label(format!("Semantics: {}", node.semantics()));
-        ui.weak(format!(
-            "Evidence: Client {} · {} Surveyed Occurrences",
-            crate::sandbox_perk::nodes::CLIENT_BUILD,
-            node.occurrences
-        ));
-        ui.weak("Gameplay: Unverified for the current perk and destination. Record results in the workbench.");
         egui::CollapsingHeader::new("Technical Details")
             .id_salt((family.label(), kind))
             .show(ui, |ui| {
@@ -468,6 +459,11 @@ impl Kinds {
                         node.class, node.struct_size
                     ));
                 }
+                ui.label(format!(
+                    "{} occurrences in the client {} survey",
+                    node.occurrences,
+                    crate::sandbox_perk::nodes::CLIENT_BUILD
+                ));
                 ui.label(node.support.detail());
                 ui.label(node.evidence);
             });
@@ -527,7 +523,7 @@ impl Kinds {
     ) -> Option<u16> {
         let mut open = None;
         ui.horizontal(|ui| {
-            let width = (ui.available_width() - 65.0).max(120.0);
+            let width = (ui.available_width() - super::CLEAR_WIDTH).max(120.0);
             super::search(ui, &mut self.use_query, false, width, "Search Stock Uses");
         });
         self.uses.refresh(source, &self.use_query, self.sort, rows);

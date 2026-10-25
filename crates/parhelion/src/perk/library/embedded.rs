@@ -9,6 +9,17 @@ pub struct ImportReport {
 }
 
 impl Library {
+    /// Stable identities assigned when saved item perks enter this library. An edited
+    /// imported entry retains its identity, while an authored duplicate gets a new one.
+    pub(crate) fn imported_ids(&self) -> Result<BTreeSet<String>, String> {
+        match fs::read(self.root.join("imported-weapon-perks.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("Could not read embedded perk import history: {error}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// Receives fully resolved perks, including inherited stock effects and stats.
     /// Content identities ignore document IDs and socket positions. A durable history
     /// keeps an imported perk from returning after the reader edits or deletes it.
@@ -18,12 +29,7 @@ impl Library {
     ) -> Result<ImportReport, String> {
         let _lock = self.lock()?;
         let history_path = self.root.join("imported-weapon-perks.json");
-        let mut history: BTreeSet<String> = match fs::read(&history_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|error| format!("Could not read embedded perk import history: {error}"))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
-            Err(error) => return Err(error.to_string()),
-        };
+        let mut history = self.imported_ids()?;
         let before = history.clone();
         let scan = self.scan()?;
         // Do not risk duplicating a library entry that could not be read.

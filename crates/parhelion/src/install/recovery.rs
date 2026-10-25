@@ -455,7 +455,8 @@ pub(super) fn recover_pending_transaction(
         match (&artifact.original, &artifact.backup_file_name) {
             (Some(original), Some(backup_file_name)) => {
                 let backup_path = transaction.backup_directory.join(backup_file_name);
-                restore_recovery_backup(&backup_path, &target_path, original)?;
+                let authored = (!artifact.remove_target).then_some(&artifact.authored);
+                restore_recovery_backup(&backup_path, &target_path, original, authored)?;
                 report.restored_files.push(target_path);
             }
             (None, None) => {
@@ -580,19 +581,35 @@ pub(super) fn verify_recovery_target_is_authored(
     Ok(())
 }
 
+/// Puts `backup_path` back at `target_path`. `authored` is what the target must still hold, or
+/// `None` where it must still have no file. The target is checked after the copy beside it is
+/// flushed, immediately before the rename, and a target that had no file is created without
+/// replacing one that appeared meanwhile, so an outside write during a long copy is kept and
+/// the recovery refused rather than overwriting it.
 pub(super) fn restore_recovery_backup(
     backup_path: &Path,
     target_path: &Path,
     expected: &TransactionDigest,
+    authored: Option<&TransactionDigest>,
 ) -> Result<(), InstallError> {
     reject_recovery_backup(backup_path, expected)?;
-    sundial::package_authoring::replace_file_from_path_atomically(backup_path, target_path)
-        .map_err(|error| {
-            InstallError::validation(format!(
-                "Could not restore interrupted package {}: {error}",
-                target_path.display()
-            ))
-        })?;
+    let published = match authored {
+        Some(authored) => sundial::package_authoring::replace_file_from_path_if_unchanged(
+            backup_path,
+            target_path,
+            || {
+                verify_recovery_target_is_authored(target_path, authored)
+                    .map_err(|error| error.to_string())
+            },
+        ),
+        None => sundial::package_authoring::create_file_from_path(backup_path, target_path),
+    };
+    published.map_err(|error| {
+        InstallError::validation(format!(
+            "Could not restore interrupted package {}: {error}",
+            target_path.display()
+        ))
+    })?;
     let restored = digest_file(target_path).map_err(|error| {
         InstallError::validation(format!(
             "Could not verify restored package {}: {error}",

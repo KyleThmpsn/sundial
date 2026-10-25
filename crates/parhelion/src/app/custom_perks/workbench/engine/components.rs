@@ -65,12 +65,9 @@ impl Browser {
         {
             self.query.clear();
         }
-        let width = (ui.available_width() - 120.0).max(160.0);
-        let changed = sundial::ui::catalog::search(
+        let (changed, count_slot) = sundial::ui::catalog::search_bar(
             ui,
             &mut self.query,
-            false,
-            width,
             "Search Component Types, Fields, or Resources",
         );
         let query = self.query.trim().to_ascii_lowercase();
@@ -88,15 +85,11 @@ impl Browser {
                 .collect();
             self.filtered_query = Some(query);
         }
-        ui.weak(format!(
-            "{} {}",
-            self.matches.len(),
-            if self.matches.len() == 1 {
-                "Component Type"
-            } else {
-                "Component Types"
-            }
-        ));
+        sundial::ui::catalog::toolbar_status(
+            ui,
+            count_slot,
+            sundial::ui::catalog::result_count(self.matches.len()),
+        );
         ui.separator();
         let keys = self
             .matches
@@ -117,7 +110,11 @@ impl Browser {
                 sundial::investment::draw_asset_choice_row_plain(
                     ui,
                     &row.name,
-                    &format!("{} Resources · 0x{:08X}", row.resources.len(), row.class),
+                    &format!(
+                        "{} · 0x{:08X}",
+                        resource_count(row.resources.len()),
+                        row.class
+                    ),
                     selected,
                 )
             },
@@ -153,9 +150,20 @@ fn draw_detail(
     if ui.button("Copy Component Type").clicked() {
         ui.ctx().copy_text(format!("0x{:08X}", row.class));
     }
-    if !row.fields.is_empty() {
+    // Contains lists the type's own members with their offsets. Known Fields adds the verified
+    // names it does not show, mostly those of the type's bases.
+    let fields = row
+        .fields
+        .iter()
+        .filter(|field| {
+            !row.members
+                .iter()
+                .any(|member| member.name.as_ref() == Some(*field))
+        })
+        .collect::<Vec<_>>();
+    if !fields.is_empty() {
         ui.strong("Known Fields");
-        for field in &row.fields {
+        for field in fields {
             ui.label(field);
         }
     }
@@ -168,17 +176,34 @@ fn draw_detail(
         .max_height(240.0)
         .show_rows(ui, height, row.resources.len(), |ui, range| {
             for resource in &row.resources[range] {
-                let label = if resource.name.starts_with("Resource 0x") {
-                    resource.name.clone()
+                // An unnamed resource's name is already its tag.
+                let detail = if resource.name.starts_with("Resource 0x") {
+                    resource.package.clone()
                 } else {
-                    format!("{} · 0x{:08X}", resource.name, resource.tag)
+                    format!("0x{:08X} · {}", resource.tag, resource.package)
                 };
-                if ui.button(label).on_hover_text(&resource.package).clicked() {
+                if sundial::investment::draw_asset_choice_row_plain(
+                    ui,
+                    &resource.name,
+                    &detail,
+                    false,
+                )
+                .on_hover_text("Open Resource")
+                .clicked()
+                {
                     choice = Some(Choice::Resource(resource.tag));
                 }
             }
         });
     choice
+}
+
+/// "1 Resource" or "N Resources".
+fn resource_count(count: usize) -> String {
+    format!(
+        "{count} {}",
+        if count == 1 { "Resource" } else { "Resources" }
+    )
 }
 
 /// What the class holds and what holds it, each linking to the component type it names.

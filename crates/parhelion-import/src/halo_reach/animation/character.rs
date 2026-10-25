@@ -149,7 +149,7 @@ pub(in crate::halo_reach) fn prepare(
     let descriptors = bank.array(0x68, 32, Some(0x80809002))?;
     let clips = bank.array(8, 4, Some(0x80808F48))?;
     ensure!(
-        bank.array(24, 2, Some(0x80800007))?.len() == clips.len()
+        bank.array(24, 4, Some(0x80800007))?.len() == clips.len()
             && layers.array(40, 2, Some(0x80800006))?.len() == descriptors.len()
             && directions.array(8, 2, Some(0x80800006))?.len() == descriptors.len()
             && directions.array(0x38, 2, Some(0x80800006))?.len() == descriptors.len(),

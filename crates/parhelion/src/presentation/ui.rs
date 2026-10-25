@@ -182,12 +182,12 @@ impl Editor {
             }
             ui.add(
                 egui::TextEdit::singleline(&mut badge.name)
-                    .hint_text("Badge name")
+                    .hint_text("Badge Name")
                     .desired_width(f32::INFINITY),
             );
             ui.add(
                 egui::TextEdit::multiline(&mut badge.description)
-                    .hint_text("Set description")
+                    .hint_text("Set Description")
                     .desired_rows(2)
                     .desired_width(f32::INFINITY),
             );

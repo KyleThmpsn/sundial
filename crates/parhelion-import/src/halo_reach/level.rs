@@ -1270,6 +1270,61 @@ pub fn export_shaders(maps: &Path, map: &str, material: &str, output: &Path) -> 
 /// buffer indices and the first six such buffers (each one's declaration and first bytes), and
 /// the compiled vertex shaders of the template of the material whose path ends with `material`
 /// as `vertex-<index>-<slot>.bin`, with that material's `g_sample_vmf_diffuse` table as an image.
+/// The scenario's cubemap rows (`+0x7B8`, `0x20` bytes: a name, a position, two indices and a
+/// block of points) and each structure BSP's cubemap bitmap with its image count and the cube
+/// indices its clusters name, written to `cubemaps.json` in `output`.
+pub fn export_cubemaps(maps: &Path, map: &str, output: &Path) -> Result<()> {
+    let cache = Cache::open(&maps.join(map))?;
+    let scenario = cache.only("scnr")?.address()?;
+    let cubemaps = cache
+        .block(scenario + 0x7B8, 0x20)?
+        .into_iter()
+        .map(|row| {
+            Ok(serde_json::json!({
+                "name": cache.u32(row)?,
+                "position": cache.floats::<3>(row + 4)?.map(|v| v * METRES_PER_UNIT),
+                "word_10": cache.i16(row + 0x10)?,
+                "word_12": cache.i16(row + 0x12)?,
+                "points": cache.block(row + 0x14, 0x10)?.len(),
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let bsps = cache
+        .block(scenario + 0x50, 0xAC)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let structure = cache.reference(row, Some("sbsp"))?;
+            let bitmap = cache.reference(row + 0x58, Some("bitm")).ok().flatten();
+            let images = match &bitmap {
+                Some(bitmap) => Some(cache.block(bitmap.address()? + 124, 56)?.len()),
+                None => None,
+            };
+            let mut named = std::collections::BTreeSet::new();
+            if let Some(structure) = &structure {
+                for cluster in cache.block(structure.address()? + 0x138, 0x8C)? {
+                    for entry in cache.block(cluster + 0x80, 0x10)? {
+                        named.insert(cache.i16(entry)?);
+                    }
+                }
+            }
+            Ok(serde_json::json!({
+                "index": index,
+                "structure": structure.map(|tag| tag.path),
+                "bitmap": bitmap.map(|tag| tag.path),
+                "images": images,
+                "named": named,
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    fs::create_dir_all(output)?;
+    fs::write(
+        output.join("cubemaps.json"),
+        serde_json::to_string_pretty(&serde_json::json!({"cubemaps": cubemaps, "bsps": bsps}))?,
+    )?;
+    Ok(())
+}
+
 pub fn export_lighting(maps: &Path, map: &str, material: &str, output: &Path) -> Result<()> {
     let cache = Cache::open(&maps.join(map))?;
     let mut pages = Pages::default();

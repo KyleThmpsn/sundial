@@ -18,6 +18,7 @@ pub mod tools;
 pub mod weapon_type;
 pub use graph::CONVERTER_REVISION;
 pub use graph::GraphReference;
+pub use graph::forget_opened;
 pub use graph::manifest_converter_revision;
 pub use graph::model_symbols;
 

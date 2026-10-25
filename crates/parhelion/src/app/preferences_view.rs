@@ -28,6 +28,7 @@ impl PackageAuthoringApp {
             sundial::ui::model_preview::Options {
                 show_fps: self.show_preview_fps,
                 play_animations: self.play_preview_animations,
+                autoload: self.load_preview_models,
             },
         );
     }
@@ -35,6 +36,13 @@ impl PackageAuthoringApp {
     pub(super) fn draw_preview_preferences(&mut self, ui: &mut egui::Ui) -> bool {
         preference_heading(ui, "Model Previews");
         let mut changed = ui
+            .checkbox(
+                &mut self.load_preview_models,
+                "Load Model Previews Automatically",
+            )
+            .on_hover_text("Off, each preview waits for Load Model.")
+            .changed();
+        changed |= ui
             .checkbox(&mut self.show_preview_fps, "Show Preview FPS")
             .on_hover_text("Show a small frame rate counter in model previews.")
             .changed();

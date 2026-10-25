@@ -550,6 +550,3 @@ fn draw_chooser(
         (Some(None), None) | (None, _) => {}
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -29,7 +29,6 @@ pub(crate) struct PageContext<'a> {
     pub account_settings: Result<&'a Map<String, Value>, &'a str>,
     pub bindings_editable: bool,
     pub json_account: bool,
-    pub extended_fov: bool,
     pub dawn: Option<&'a mut super::dawn::Runtime>,
     pub tab: &'a mut Tab,
     pub key_bindings: &'a mut KeyBindingUiState,
@@ -43,7 +42,6 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         account_settings,
         bindings_editable,
         json_account,
-        extended_fov,
         dawn,
         tab,
         key_bindings,
@@ -120,11 +118,13 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
             },
             Tab::Controls => draw_account_settings(ui, account_settings, draw_controls),
             Tab::Audio => draw_account_settings(ui, account_settings, draw_audio),
+            // Sunrise accepts a field of view up to 155 from settings v16. Dawn and older Sunrise
+            // stay at the menu's 105.
             Tab::Display => draw_account_settings(ui, account_settings, |ui, settings| {
                 draw_display(
                     ui,
                     settings,
-                    !dawn_available && extended_fov && (runtime_available || !json_account),
+                    runtime_available,
                     if dawn_available { 2 } else { 4 },
                 )
             }),

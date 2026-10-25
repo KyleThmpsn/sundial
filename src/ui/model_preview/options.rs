@@ -7,6 +7,9 @@ pub struct Options {
     pub show_fps: bool,
     /// Whether inline previews start playing. Full viewers retain their own transport.
     pub play_animations: bool,
+    /// Whether inline previews read their model as soon as they show. Off, each reads only after
+    /// Load Model.
+    pub autoload: bool,
 }
 
 impl Default for Options {
@@ -14,6 +17,7 @@ impl Default for Options {
         Self {
             show_fps: false,
             play_animations: true,
+            autoload: true,
         }
     }
 }

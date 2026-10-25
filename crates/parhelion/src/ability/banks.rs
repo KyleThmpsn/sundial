@@ -32,6 +32,7 @@ use sundial::package_authoring::{
 use tiger_pkg::TagHash;
 
 use crate::{AuthoringResult, ReplacementSpec, error::invalid};
+mod attack;
 
 /// A private perk as this stage sees it: its authored program, if it has one, and the stock
 /// action it clones otherwise.
@@ -86,6 +87,8 @@ pub(crate) fn plan<'a>(
     perks: impl IntoIterator<Item = Perk<'a>>,
     impacts: &[MeleeImpact],
     rows: &[(u32, u32, Modifier)],
+    allocator: crate::appended_tags::AppendedTagAllocator,
+    tags: &mut Vec<crate::NewTagSpec>,
 ) -> AuthoringResult<Plan> {
     let mut applied = BTreeSet::new();
     let mut tunings: BTreeMap<u32, AbilityTuning> = BTreeMap::new();
@@ -178,7 +181,8 @@ pub(crate) fn plan<'a>(
             .read_tag(TagHash(row.bank))
             .map_err(|e| invalid(e.to_string()))?;
         row.check_bank(&payload).map_err(invalid)?;
-        wanted.push((row.key, vec![row.bank], row.value()));
+        let modifier = attack::resolve(manager, row, &payload, allocator, tags)?;
+        wanted.push((row.key, vec![row.bank], modifier));
     }
     for input in inputs.values() {
         if !applied.contains(&(input.slot, input.key)) || tunings.contains_key(&input.key) {
@@ -358,7 +362,7 @@ fn with_row(
             }
             // A property row does not expose a fixed body's words, so an existing row under
             // the key cannot be shown to be the same body.
-            Modifier::Fixed(_) | Modifier::Group(_) => false,
+            Modifier::Fixed(_) | Modifier::Group(_) | Modifier::Attack(_) => false,
             Modifier::Melee { .. } | Modifier::Scalar { .. } => {
                 return Err(invalid(format!(
                     "Ability bank {tag} already defines private melee key {key:08X}"

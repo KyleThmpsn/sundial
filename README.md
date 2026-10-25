@@ -40,7 +40,7 @@ Close Destiny 2 before saving account changes, restoring backups, or installing 
 
 Parhelion is an experimental item workbench bundled with Sundial. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox. It can also author custom perks and mods, armor, vehicles, Emblems, Shaders, and Subclass abilities.
 
-Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. On Project Sunrise 0.6 or later, it installs them as a Sunrise mod. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in game.
+Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. On Project Sunrise 0.6 or later, it installs them as a Sunrise mod. Choose **Open Parhelion** in the sidebar to start. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in game.
 
 See the [Parhelion README](crates/parhelion/README.md) for more about the authoring workflow.
 

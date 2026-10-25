@@ -4,14 +4,19 @@
 //! level's cubes instead.
 //!
 //! A scenario's structure BSP row names that BSP's cubemap bitmap at `+0x58`, one cube per image.
-//! Each of the BSP's clusters (`0x8C` byte rows at `+0x138`) holds its bounds, three ranges in world
-//! units, and at `+0x80` the cubes that serve it: `0x10` byte rows of an image index and, at `+0x04`,
-//! the cube's capture points. A cube's volume spans every cluster it alone serves. A cluster served
-//! by several cubes, as a level's large outer cluster is, gives each of them the part of its bounds
-//! within half the distance to the cluster's nearest other cube. Volumes of clusters served by one
-//! cube form interior volumes. The level's whole bounds take the cube nearest the middle of its
-//! most shared cluster as an exterior fallback. Shadowkeep sorts the submitted volumes by their
-//! box volume. Its resource +0x40 scales radiance and does not encode these spatial categories.
+//! Each of the BSP's clusters (`0x8C` byte rows at `+0x138`) holds its bounds, three ranges in
+//! world units, and at `+0x80` the cubes that serve it: `0x10` byte rows of a scenario cubemap
+//! index (the scenario's `0x20` byte rows at `+0x7B8`) and, at `+0x04`, the cube's capture points.
+//! A BSP's bitmap holds an image for each scenario cubemap its clusters name, in increasing order
+//! of index. Each of `m30`'s eight cubemap bitmaps holds exactly as many images as distinct
+//! cubemaps its clusters name, 4 to 24, and its later BSPs name indices up to 89. The increasing
+//! order is inferred from those counts, not traced in Reach's code. A cube's volume spans every
+//! cluster it alone serves. A cluster served by several cubes, as a level's large outer cluster is,
+//! gives each of them the part of its bounds within half the distance to the cluster's nearest
+//! other cube. Volumes of clusters served by one cube form interior volumes. The level's whole
+//! bounds take the cube nearest the middle of its most shared cluster as an exterior fallback.
+//! Shadowkeep sorts the submitted volumes by their box volume. Its resource +0x40 scales radiance
+//! and does not encode these spatial categories.
 //!
 //! Reach decodes a dynamic cubemap as `64 * rgb^2 * a` (`calc_environment_map_dynamic_ps` in
 //! `templated\environment_mapping.fx`), normalized to an average of one, and scales it by the baked
@@ -29,7 +34,7 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The scenario's structure BSP rows and the cubemap bitmap each names.
 const SCENARIO_BSPS: (usize, usize) = (0x50, 0xAC);
@@ -42,6 +47,7 @@ const CUBE_POINTS: (usize, usize) = (0x04, 0x10);
 const LEAST_HALF: f32 = 2.;
 /// Reach's dynamic cubemap scale.
 const DYNAMIC_SCALE: f32 = 64.;
+const LUMINANCE: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 /// One cubemap volume in the map's coordinates: its texture's symbol, its box's middle and half
 /// sizes and where its cube was captured. Cube texels already contain their radiance scale.
@@ -85,6 +91,45 @@ struct Outer {
     served: Vec<(usize, [f32; 3])>,
 }
 
+/// A BSP's images, by the scenario cubemap each holds, from the cubemaps its clusters name.
+fn images(cache: &Cache, clusters: &[usize]) -> Result<BTreeMap<usize, usize>> {
+    let mut named = BTreeSet::new();
+    for &cluster in clusters {
+        for entry in cache.block(cluster + CLUSTER_CUBES.0, CLUSTER_CUBES.1)? {
+            if let Ok(index) = usize::try_from(cache.i16(entry)?) {
+                named.insert(index);
+            }
+        }
+    }
+    Ok(named
+        .into_iter()
+        .enumerate()
+        .map(|(image, index)| (index, image))
+        .collect())
+}
+
+/// The exterior cube spanning the level's `whole` bounds: the cube nearest the middle of the
+/// `outer` cluster.
+fn exterior(whole: Option<([f32; 3], [f32; 3])>, outer: Option<&Outer>) -> Option<Cube> {
+    let ((low, high), outer) = (whole?, outer?);
+    let &(image, capture) = outer.served.iter().min_by(|a, b| {
+        let d = |p: [f32; 3]| {
+            (0..3)
+                .map(|k| (p[k] - outer.middle[k]).powi(2))
+                .sum::<f32>()
+        };
+        d(a.1).total_cmp(&d(b.1))
+    })?;
+    Some(Cube {
+        bsp: outer.bsp,
+        image,
+        capture,
+        low,
+        high,
+        kind: Kind::Exterior,
+    })
+}
+
 /// The level's cubemap volumes, moved by `offset` meters, with their cube textures added to
 /// `graph`, and a report. Only the structure BSPs in `loaded`, a mask by scenario index, place
 /// volumes, as only they place the map's geometry.
@@ -124,7 +169,9 @@ pub(super) fn volumes(
             continue;
         };
         bitmaps.insert(bsp, bitmap);
-        for cluster in cache.block(structure.address()? + CLUSTERS.0, CLUSTERS.1)? {
+        let clusters = cache.block(structure.address()? + CLUSTERS.0, CLUSTERS.1)?;
+        let images = images(cache, &clusters)?;
+        for cluster in clusters {
             let bounds = cache.floats::<6>(cluster)?;
             let low = [bounds[0], bounds[2], bounds[4]].map(metres);
             let high = [bounds[1], bounds[3], bounds[5]].map(metres);
@@ -137,7 +184,10 @@ pub(super) fn volumes(
             });
             let mut served = Vec::new();
             for entry in cache.block(cluster + CLUSTER_CUBES.0, CLUSTER_CUBES.1)? {
-                let Ok(image) = usize::try_from(cache.i16(entry)?) else {
+                let Some(&image) = usize::try_from(cache.i16(entry)?)
+                    .ok()
+                    .and_then(|index| images.get(&index))
+                else {
                     continue;
                 };
                 let points = cache
@@ -194,26 +244,7 @@ pub(super) fn volumes(
     }
     let mut placed = cubes.into_values().collect::<Vec<_>>();
     // The whole level falls back to the outer cluster's middle cube.
-    if let (Some((low, high)), Some(outer)) = (whole, &outer) {
-        let nearest = outer.served.iter().min_by(|a, b| {
-            let d = |p: [f32; 3]| {
-                (0..3)
-                    .map(|k| (p[k] - outer.middle[k]).powi(2))
-                    .sum::<f32>()
-            };
-            d(a.1).total_cmp(&d(b.1))
-        });
-        if let Some(&(image, capture)) = nearest {
-            placed.push(Cube {
-                bsp: outer.bsp,
-                image,
-                capture,
-                low,
-                high,
-                kind: Kind::Exterior,
-            });
-        }
-    }
+    placed.extend(exterior(whole, outer.as_ref()));
     let lights = occlusion::lights(
         level,
         &placed.iter().map(|cube| cube.capture).collect::<Vec<_>>(),
@@ -221,11 +252,12 @@ pub(super) fn volumes(
     let mut volumes = Vec::new();
     let mut kinds = [0usize; 3];
     let mut skipped = Vec::new();
-    let mut textures = BTreeMap::<(usize, usize), (String, f32)>::new();
+    // Each texture's symbol, its capture point's light and its top level's mean luminance.
+    let mut textures = BTreeMap::<(usize, usize), (String, f32, f32)>::new();
     for (cube, light) in placed.iter().zip(lights) {
         let key = (cube.bsp, cube.image);
         let texture = match textures.get(&key) {
-            Some((symbol, _)) => symbol.clone(),
+            Some((symbol, ..)) => symbol.clone(),
             None => {
                 let bitmap = &bitmaps[&cube.bsp];
                 let source = match material::cube(cache, pages, bitmap, cube.image) {
@@ -264,9 +296,17 @@ pub(super) fn volumes(
                         })
                     })
                     .collect::<Vec<_>>();
+                let top = mips.first().map_or(&[][..], |faces| &faces[..]);
+                let texels = top.iter().map(Vec::len).sum::<usize>().max(1);
+                let luminance = top
+                    .iter()
+                    .flatten()
+                    .map(|t| (0..3).map(|k| t[k] * LUMINANCE[k]).sum::<f32>())
+                    .sum::<f32>()
+                    / texels as f32;
                 let symbol = format!("cubemap-{}-{}", cube.bsp, cube.image);
                 native::material::cube_mips(native, graph, &symbol, source.size, &mips)?;
-                textures.insert(key, (symbol.clone(), light));
+                textures.insert(key, (symbol.clone(), light, luminance));
                 symbol
             }
         };
@@ -285,7 +325,8 @@ pub(super) fn volumes(
         "interior": kinds[Kind::Interior as usize],
         "shared": kinds[Kind::Shared as usize],
         "exterior": kinds[Kind::Exterior as usize],
-        "lights": textures.values().map(|(_, light)| *light).collect::<Vec<_>>(),
+        "lights": textures.values().map(|(_, light, _)| *light).collect::<Vec<_>>(),
+        "mean_luminance": textures.values().map(|(.., mean)| *mean).collect::<Vec<_>>(),
         "skipped": skipped,
     });
     Ok((volumes, report))

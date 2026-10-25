@@ -173,7 +173,6 @@ fn draw_home(
 ) {
     navigation_input(ui, history, forward, action);
     search_shortcut(ui, search);
-    crate::ui::model_preview::inspected_unavailable(ui);
     toolbar(ui, |ui| {
         navigation_buttons(ui, catalog, history, forward, action);
     });
@@ -710,115 +709,5 @@ fn quick_kind(catalog: &Catalog, hash: u64) -> &'static str {
         "Unlock Value"
     } else {
         "Definition"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disabled_search_leaves_navigation_input_for_enabled_controls() {
-        let catalog = Catalog::for_test(vec![], Default::default());
-        let mut receipts = Vec::new();
-        for toolbar_mode in [false, true] {
-            let ctx = egui::Context::default();
-            let base = egui::Id::new(("disabled-definition-search", toolbar_mode));
-            let field = base.with(if toolbar_mode {
-                "toolbar_search"
-            } else {
-                "home_search"
-            });
-            let mut search = DefinitionSearch {
-                query: "0x00000042".into(),
-                ..Default::default()
-            };
-            let frame = |search: &mut DefinitionSearch, enabled, keys: bool| {
-                let mut chosen = None;
-                let mut retained = false;
-                let output = ctx.run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(900.0, 520.0),
-                        )),
-                        events: if keys {
-                            vec![egui::Key::ArrowDown, egui::Key::Enter]
-                                .into_iter()
-                                .map(|key| egui::Event::Key {
-                                    key,
-                                    physical_key: None,
-                                    pressed: true,
-                                    repeat: false,
-                                    modifiers: egui::Modifiers::NONE,
-                                })
-                                .collect()
-                        } else {
-                            Vec::new()
-                        },
-                        ..Default::default()
-                    },
-                    |ui| {
-                        egui::CentralPanel::default().show(ui, |ui| {
-                            ui.memory_mut(|memory| memory.request_focus(field));
-                            ui.add_enabled_ui(enabled, |ui| {
-                                if toolbar_mode {
-                                    let mut action = HashInspectorAction::default();
-                                    toolbar_search(ui, &catalog, base, search, &mut action);
-                                    chosen = action.open_hash.map(Target::Hash);
-                                } else {
-                                    let mut browse = Browse {
-                                        tab: BrowseTab::Recent,
-                                        ..Default::default()
-                                    };
-                                    chosen = home_contents(
-                                        ui,
-                                        &catalog,
-                                        base,
-                                        &[10, 20, 30],
-                                        search,
-                                        &mut browse,
-                                    );
-                                }
-                            });
-                            retained = ui.input(|input| {
-                                input.key_pressed(egui::Key::ArrowDown)
-                                    && input.key_pressed(egui::Key::Enter)
-                            });
-                        });
-                    },
-                );
-                crate::test_support::capture::record(&output);
-                (chosen, retained, output)
-            };
-            let _ = frame(&mut search, true, false);
-            let (chosen, retained, output) = frame(&mut search, false, true);
-            assert_eq!(chosen, None);
-            assert!(retained);
-            assert_eq!(search.results.highlighted, 0);
-            crate::test_support::capture::write(
-                &ctx,
-                &output,
-                if toolbar_mode {
-                    "disabled-toolbar-search"
-                } else {
-                    "disabled-home-search"
-                },
-            );
-            let (chosen, _, _) = frame(&mut search, true, true);
-            assert_eq!(
-                chosen,
-                Some(if toolbar_mode {
-                    Target::Hash(0x42)
-                } else {
-                    Target::History(1)
-                })
-            );
-            receipts.push(
-                serde_json::json!({"toolbar": toolbar_mode, "disabled_input_retained": retained,
-                "enabled_action": format!("{chosen:?}")}),
-            );
-        }
-        crate::test_support::artifact("definition-search-input.json", &serde_json::json!(receipts));
     }
 }

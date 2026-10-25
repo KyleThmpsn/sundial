@@ -736,11 +736,11 @@ fn draw_browser_search(ui: &mut egui::Ui, id: egui::Id, query: &mut String, widt
     let search = ui.add(
         egui::TextEdit::singleline(query)
             .id(id)
-            .hint_text("Search by name or hash")
+            .hint_text("Search by Name or Hash")
             .desired_width(width),
     );
     ui.ctx()
-        .accesskit_node_builder(search.id, |node| node.set_label("Search plugs"));
+        .accesskit_node_builder(search.id, |node| node.set_label("Search Plugs"));
 }
 
 /// How a browser draws a choice: one row height for every row, the plug names more than one

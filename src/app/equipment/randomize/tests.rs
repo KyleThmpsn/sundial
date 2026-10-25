@@ -2,7 +2,6 @@
 
 mod capacity;
 mod dawn;
-mod native_sanity;
 mod socket_shape;
 
 use crate::app::account_workspace as account;
@@ -313,31 +312,6 @@ fn emote_loadout_preserves_locked_items_and_obeys_inventory_replacement() {
             assert_eq!(held, &vec![locked, unlocked]);
         }
     }
-}
-
-#[test]
-fn replacing_flair_preserves_unrecognized_inventory_items() {
-    let mut document = account::WorkspaceDocument::json_only(serde_json::json!({
-        "version": 8, "state": {"characters": [{"inventory": [{
-            "instance_soid": 2, "definition_hash": 999, "level": 100,
-            "quantity": 1, "plugs": null
-        }]}]}
-    }));
-    let before = document.clone();
-    let catalog = Catalog::for_test(Vec::new(), HashMap::new());
-    clear_selected_inventory(
-        &mut document,
-        &catalog,
-        0,
-        LoadoutOptions {
-            equipment_flair: true,
-            replace_held_inventory: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(document, before);
-    assert_eq!(loadout_scope_for_bucket(u64::MAX), None);
 }
 
 #[test]

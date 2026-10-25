@@ -114,11 +114,18 @@ pub(crate) fn read(
         .map_err(|error| invalid(error.to_string()))?;
     let resource = usize::try_from(binding.resource_offset)
         .map_err(|_| invalid("Stat translator offset overflow"))?;
-    Ok(column(&owner, group)?.map(|(column, cells)| Burst {
+    Ok(column(&owner, group)?.map(|(column, cells, _)| Burst {
         column,
         cells,
         resource,
     }))
+}
+
+/// The translation output every Barrel bullet input copies in translator `owner`'s table for
+/// `group`, which a Bullets per Shot edit holds at every tier. None where this setting is not
+/// offered.
+pub(crate) fn output(owner: &[u8], group: u32) -> AuthoringResult<Option<u32>> {
+    Ok(column(owner, group)?.map(|(_, _, output)| output))
 }
 
 /// Patches that make the translator give the Barrel `bullets` bullets per shot, in the private
@@ -155,9 +162,10 @@ pub(crate) fn patches(
         .collect()
 }
 
-/// The bullets and the cells of the column every Barrel bullet input copies, in the table for
-/// `group`, or the first table when the translator has none for it, as the client falls back.
-fn column(owner: &[u8], group: u32) -> AuthoringResult<Option<(Column, Vec<usize>)>> {
+/// The bullets, the cells and the output number of the column every Barrel bullet input copies,
+/// in the table for `group`, or the first table when the translator has none for it, as the
+/// client falls back.
+fn column(owner: &[u8], group: u32) -> AuthoringResult<Option<(Column, Vec<usize>, u32)>> {
     let keys = translator_array(owner, TRANSLATOR_KEY_CLASS)?;
     let tables = translator_array(owner, TRANSLATOR_TABLE_CLASS)?;
     if keys.0 != tables.0 {
@@ -202,7 +210,10 @@ fn column(owner: &[u8], group: u32) -> AuthoringResult<Option<(Column, Vec<usize
         }
         source = Some(own);
     }
-    let Some(output) = source.and_then(|source| source.checked_sub(OUTPUTS)) else {
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let Some(output) = source.checked_sub(OUTPUTS) else {
         return Ok(None);
     };
     let translation = (output / OUTPUTS_PER_TRANSLATION) as usize;
@@ -251,5 +262,5 @@ fn column(owner: &[u8], group: u32) -> AuthoringResult<Option<(Column, Vec<usize
         }
         column.stat = Some(ROUNDS_PER_MINUTE_HASH);
     }
-    Ok(Some((column, cells)))
+    Ok(Some((column, cells, source)))
 }

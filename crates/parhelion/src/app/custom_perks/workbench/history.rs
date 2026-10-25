@@ -1,8 +1,9 @@
-//! Session-only document history. Pending parameter editors keep their own transaction.
+//! Session-only document history, shared by perk documents and the open item recipe. Pending
+//! parameter editors keep their own transaction.
 use super::*;
 
 #[derive(Clone)]
-pub(in crate::app::custom_perks) struct History<T = PerkRecipe> {
+pub(in crate::app) struct History<T = PerkRecipe> {
     past: Vec<T>,
     future: Vec<T>,
     gesture: Option<(egui::Id, f64)>,
@@ -28,7 +29,7 @@ impl<T> History<T> {
         self.gesture = None;
     }
 
-    pub(in crate::app::custom_perks) fn record(&mut self, before: T, ctx: &egui::Context) {
+    pub(in crate::app) fn record(&mut self, before: T, ctx: &egui::Context) {
         let now = ctx.input(|input| input.time);
         let gesture = ctx.dragged_id().or_else(|| {
             ctx.egui_wants_keyboard_input()
@@ -49,7 +50,7 @@ impl<T> History<T> {
         self.gesture = gesture.map(|id| (id, now));
     }
 
-    pub(in crate::app::custom_perks) fn available(&self, redo: bool) -> bool {
+    pub(in crate::app) fn available(&self, redo: bool) -> bool {
         if redo {
             !self.future.is_empty()
         } else {
@@ -57,7 +58,7 @@ impl<T> History<T> {
         }
     }
 
-    pub(in crate::app::custom_perks) fn restore(&mut self, recipe: &mut T, redo: bool) -> bool {
+    pub(in crate::app) fn restore(&mut self, recipe: &mut T, redo: bool) -> bool {
         let (from, to) = if redo {
             (&mut self.future, &mut self.past)
         } else {

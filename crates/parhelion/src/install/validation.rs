@@ -145,6 +145,7 @@ pub(super) fn validate_request_with_progress(
         mods: manifest.mods,
         obsolete_artifacts,
         selected_recipe_files: manifest.selected_recipe_files,
+        selected_map_files: manifest.selected_map_files,
         staged_inputs: manifest.inputs,
         packages: manifest.packages,
         authored_unlocks: manifest.authored_unlocks,
@@ -267,6 +268,7 @@ pub(super) fn validate_manifest_and_staged_files(
     let artifacts = validate_artifact_records(manifest.artifacts)?;
     check_layout(target_packages_directory, &artifacts)?;
     let selected_recipe_files = manifest.selected_recipe_files;
+    let selected_map_files = manifest.selected_map_files;
     if !manifest.mods.is_empty() && !uses_mod_loader(target_packages_directory) {
         return Err(InstallError::validation(
             "An importer mod family requires Sunrise 0.6 or later",
@@ -303,6 +305,7 @@ pub(super) fn validate_manifest_and_staged_files(
         mission_scripts,
         mods: manifest.mods,
         selected_recipe_files,
+        selected_map_files,
         authored_unlocks,
         authored_grants,
         plug_variants: recipes.variants,

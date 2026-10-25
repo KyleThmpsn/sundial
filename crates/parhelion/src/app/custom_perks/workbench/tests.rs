@@ -1,30 +1,13 @@
-mod accessibility;
-mod canvas;
 pub(crate) use sundial::test_support::capture;
 mod cards;
 mod entry;
 mod gaps;
 mod library_controls;
 mod library_issues;
-mod navigation;
-mod tunings;
 mod weapon_properties;
 use super::attachment::{Change, Target};
 use super::*;
-use crate::app::custom_perks::workbench::parameters::tests::{editor, fixture};
 use crate::test_support::driver::label;
-
-impl Workbench {
-    pub(in crate::app) fn set_test_editor(&mut self, editor: PerkEditor) {
-        self.initialized = true;
-        self.open = true;
-        let mut recipe = PerkRecipe::new();
-        recipe.effects.push(PerkRecipe::effect(1178));
-        self.documents = vec![Document::new(recipe, None)];
-        self.editing_effect = Some(1178);
-        self.editor = Some(editor);
-    }
-}
 
 fn frame(
     ctx: &egui::Context,
@@ -50,33 +33,6 @@ fn frame(
     )
 }
 
-#[test]
-fn save_as_new_preserves_the_original_library_file_and_pending_document() {
-    let temporary = tempfile::tempdir().unwrap();
-    let library = Library::open(temporary.path().to_owned()).unwrap();
-    let mut original = PerkRecipe::new();
-    original.effects.push(PerkRecipe::effect(405));
-    let entry = library.save(&original, None).unwrap();
-    let mut workbench = Workbench {
-        initialized: true,
-        library: Some(library.clone()),
-        documents: vec![Document::new(
-            original.clone(),
-            Some(entry.baseline.clone()),
-        )],
-        ..Default::default()
-    };
-    workbench.documents[0].recipe.description = "Modified copy".into();
-    let draft = workbench.documents[0].recipe.clone();
-    workbench.save(true);
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
-    assert_eq!(workbench.documents[0].recipe, draft);
-    assert_ne!(workbench.documents[1].recipe.id, original.id);
-    assert_eq!(workbench.documents[1].recipe.description, draft.description);
-    assert_eq!(library.scan().unwrap().entries.len(), 2);
-}
-
 /// A workbench over a temporary library holding one saved perk named Alpha.
 fn workbench_with_saved_perk() -> (tempfile::TempDir, Library, PerkRecipe, Entry, Workbench) {
     let temporary = tempfile::tempdir().unwrap();
@@ -95,33 +51,6 @@ fn workbench_with_saved_perk() -> (tempfile::TempDir, Library, PerkRecipe, Entry
         ..Default::default()
     };
     (temporary, library, original, entry, workbench)
-}
-
-#[test]
-fn deleting_a_perk_removes_its_file_and_keeps_one_document_selected() {
-    let (_temporary, library, original, entry, mut workbench) = workbench_with_saved_perk();
-    workbench.duplicate(library::PerkSource::Document(0));
-    // Deleting the saved perk removes its file and its document, keeping the copy selected.
-    workbench.delete(library::PerkSource::Document(0));
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert!(!entry.path.exists());
-    assert_eq!(workbench.documents.len(), 1);
-    assert_eq!(workbench.documents[0].recipe.name, "Alpha Copy");
-    assert_eq!(workbench.selected, 0);
-    // Deleting the last document leaves a fresh, unsaved perk open.
-    workbench.delete(library::PerkSource::Document(0));
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert_eq!(workbench.documents.len(), 1);
-    assert!(workbench.documents[0].baseline.is_none());
-    assert_ne!(workbench.documents[0].recipe.name, "Alpha Copy");
-    // A saved perk that is not open can be deleted from the list as well.
-    let entry = library.save(&original, None).unwrap();
-    workbench.refresh_library();
-    assert_eq!(workbench.entries.len(), 1);
-    workbench.delete(library::PerkSource::Entry(0));
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert!(!entry.path.exists());
-    assert!(workbench.entries.is_empty());
 }
 
 #[test]

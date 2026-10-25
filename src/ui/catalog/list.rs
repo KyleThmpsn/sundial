@@ -1,4 +1,5 @@
 //! Virtualized native choices with stable identity and independent inspection.
+use super::result_count;
 use eframe::egui;
 pub struct BrowserList<'a> {
     /// Stable native identity prevents a filter change from selecting a different row.
@@ -285,11 +286,3 @@ impl BrowserList<'_> {
         picked
     }
 }
-
-/// "1 Result" or "N Results".
-fn result_count(count: usize) -> String {
-    format!("{count} {}", if count == 1 { "Result" } else { "Results" })
-}
-
-#[cfg(test)]
-mod tests;

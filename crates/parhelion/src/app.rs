@@ -100,6 +100,10 @@ struct PackageAuthoringApp {
     /// takes back exactly those and never a perk the author placed by hand.
     behavior_pins: socket_editor::BehaviorPins,
     observed_recipe: WeaponRecipe,
+    /// Undo and redo for the open recipe, one step per edit.
+    recipe_history: custom_perks::workbench::history::History<WeaponRecipe>,
+    /// The recipe as `recipe_history` last saw it.
+    recorded_recipe: WeaponRecipe,
     /// Advances whenever the recipe or its baseline is replaced or edited.
     recipe_revision: u64,
     recipe_baseline: WeaponRecipe,
@@ -152,6 +156,8 @@ struct PackageAuthoringApp {
     backup_recipe_snapshots: bool,
     show_preview_fps: bool,
     play_preview_animations: bool,
+    load_preview_models: bool,
+    ability_notice_dismissed: bool,
     preferences_open: bool,
     preferences_error: Option<String>,
     perk_workbench: custom_perks::workbench::Workbench,
@@ -303,8 +309,10 @@ impl Default for PackageAuthoringApp {
         let observed_recipe = recipe.clone();
         Self {
             recipe_baseline: recipe.clone(),
+            recorded_recipe: recipe.clone(),
             recipe,
             observed_recipe,
+            recipe_history: Default::default(),
             recipe_revision: 0,
             recipe_path,
             recipe_dirty: false,
@@ -348,6 +356,8 @@ impl Default for PackageAuthoringApp {
             backup_recipe_snapshots: backup_preferences.backup_recipe_snapshots,
             show_preview_fps: backup_preferences.show_preview_fps,
             play_preview_animations: backup_preferences.play_preview_animations,
+            load_preview_models: backup_preferences.load_preview_models,
+            ability_notice_dismissed: backup_preferences.ability_notice_dismissed,
             preferences_open: false,
             preferences_error: None,
             perk_workbench: custom_perks::workbench::Workbench::default(),
@@ -526,10 +536,7 @@ impl PackageAuthoringApp {
         egui::CentralPanel::default().show(ui, |ui| {
             workbench_style(ui);
             ui.set_max_width(safe_content_width(ui.available_width()));
-            let running = self.build_receiver.is_some()
-                || self.library_state.busy()
-                || self.install_receiver.is_some()
-                || self.perk_workbench.editing();
+            let running = self.recipe_editing_locked();
             let mut recipe_replaced = false;
             ui.add_enabled_ui(!running, |ui| {
                 recipe_replaced |= self.draw_recipe_library(ui);
@@ -578,6 +585,8 @@ impl PackageAuthoringApp {
         self.draw_activity_editor(ctx);
         self.synchronize_recipe_dirty();
         self.follow_appearance_preview(ctx);
+        self.recipe_history_shortcuts(ctx);
+        self.record_recipe_history(ctx);
         if self.has_background_work() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -723,6 +732,7 @@ impl PackageAuthoringApp {
         self.runtime_donors.invalidate();
         self.invalid_weapon_name = None;
         self.clear_presentation_picker_queries();
+        self.subclass_page.cancel_loads();
         self.perk_request = None;
         self.runtime_bindings_open = false;
         self.workbench_page = WorkbenchPage::Weapon;
@@ -779,6 +789,8 @@ impl PackageAuthoringApp {
             backup_recipe_snapshots: self.backup_recipe_snapshots,
             show_preview_fps: self.show_preview_fps,
             play_preview_animations: self.play_preview_animations,
+            load_preview_models: self.load_preview_models,
+            ability_notice_dismissed: self.ability_notice_dismissed,
             ..ParhelionPreferences::default()
         };
         match preferences.save_default() {

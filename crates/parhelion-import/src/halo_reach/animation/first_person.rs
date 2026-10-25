@@ -186,9 +186,10 @@ pub(in crate::halo_reach) fn prepare(
         ..
     } = carrier;
     let mut clip_rows = rows(&bank, 8, 4, 0x80808F48)?;
-    let mut auxiliary = rows(&bank, 24, 2, 0x80800007)?;
+    // One signed 32-bit word per clip, class 0x80800007. A clip without one holds -1.
+    let mut auxiliary = rows(&bank, 24, 4, 0x80800007)?;
     ensure!(
-        clip_rows.len() / 4 == auxiliary.len() / 2,
+        clip_rows.len() / 4 == auxiliary.len() / 4,
         "Native clip auxiliary map differs"
     );
     let mut descriptor_rows = rows(&bank, 0x68, 32, 0x80809002)?;
@@ -347,7 +348,7 @@ pub(in crate::halo_reach) fn prepare(
             extras.push(json!({"source":marker,"template":template,"file":file}));
             let index = u16::try_from(clip_rows.len() / 4)?;
             clip_rows.extend(marker.to_le_bytes());
-            auxiliary.extend(u16::MAX.to_le_bytes());
+            auxiliary.extend(u32::MAX.to_le_bytes());
             let mut row = bank.bytes::<32>(at)?;
             row[24..26].copy_from_slice(&index.to_le_bytes());
             mapped.insert(descriptor, descriptor_rows.len() / 32);
@@ -400,7 +401,7 @@ pub(in crate::halo_reach) fn prepare(
             extras.push(json!({"source":strike.marker,"template":strike.template,"file":file}));
             let index = u16::try_from(clip_rows.len() / 4)?;
             clip_rows.extend(strike.marker.to_le_bytes());
-            auxiliary.extend(u16::MAX.to_le_bytes());
+            auxiliary.extend(u32::MAX.to_le_bytes());
             let mut row = bank.bytes::<32>(descriptors[strike.descriptor])?;
             row[16..20].copy_from_slice(&strike.marker.to_le_bytes());
             // Descriptor duration is a native single-precision value.
@@ -424,7 +425,7 @@ pub(in crate::halo_reach) fn prepare(
     let clips = offset::clips(native, &bank, &rig, grip, held_offset, &mut files)?;
     let mut converted_bank = (*bank).clone();
     append(&mut converted_bank.0, 8, 0x80808F48, &clip_rows, 4)?;
-    append(&mut converted_bank.0, 24, 0x80800007, &auxiliary, 2)?;
+    append(&mut converted_bank.0, 24, 0x80800007, &auxiliary, 4)?;
     append(
         &mut converted_bank.0,
         0x68,

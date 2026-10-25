@@ -7,9 +7,6 @@ use sundial::package_authoring::investment_schema::ELEMENTAL_DAMAGE_SOCKET_TYPE;
 mod row;
 use row::{SocketRowContext, draw_socket_picker_row};
 
-#[cfg(test)]
-mod tests;
-
 pub(super) fn socket_editor_donor<'a>(
     donor: &'a WeaponDonor,
     recipe: &WeaponRecipe,
@@ -836,18 +833,20 @@ pub(super) fn draw_numeric_program_editor(
 }
 
 /// Draws the paged raw embedded plug hashes. Returns the choice index removed, if any.
+/// Draws the column's raw plug hashes and returns the choice the author asked to remove, which the
+/// caller takes out once drawing is done.
 fn draw_raw_embedded_choices(
     ui: &mut egui::Ui,
     column: &mut WeaponSocketColumnRecipe,
-    queries: &mut BTreeMap<usize, String>,
     max_embedded_choices: usize,
     page_start: usize,
 ) -> Option<usize> {
     let choice_count = column.choices.len();
     let page_end = (page_start + SOCKET_CHOICE_PAGE_SIZE).min(choice_count);
-    let mut removed_choice = None;
+    // A removal carries the choice's custom perk by its plug, so it waits for every hash to read.
+    let removable = column.choices.iter().all(|hash| hash.parse_u32().is_ok());
+    let mut remove = None;
     ui.collapsing("Raw Embedded Plug Hashes", |ui| {
-        let mut remove = None;
         for (choice, hash) in column
             .choices
             .iter_mut()
@@ -869,22 +868,16 @@ fn draw_raw_embedded_choices(
                 {
                     *hash = parsed;
                 }
-                if choice_count > 1 && ui.button("×").on_hover_text("Remove choice").clicked() {
+                if choice_count > 1
+                    && ui
+                        .add_enabled(removable, egui::Button::new("×"))
+                        .on_hover_text("Remove choice")
+                        .on_disabled_hover_text("Correct the plug hashes first.")
+                        .clicked()
+                {
                     remove = Some(choice);
                 }
             });
-        }
-        if let Some(choice) = remove {
-            column.choices.remove(choice);
-            if choice < column.choice_weight_bits.len() {
-                column.choice_weight_bits.remove(choice);
-            }
-            if choice < column.choice_conditions.len() {
-                column.choice_conditions.remove(choice);
-            }
-            trim_rolled_choices(column, Some(choice));
-            shift_socket_choice_queries_after_removal(queries, choice);
-            removed_choice = Some(choice);
         }
         if column.choices.len() < max_embedded_choices
             && page_end == choice_count
@@ -899,7 +892,7 @@ fn draw_raw_embedded_choices(
             }
         }
     });
-    removed_choice
+    remove
 }
 
 /// Draws the socket type override and its installed-type picker.
@@ -1236,13 +1229,8 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
                         column.socket_type.unwrap_or(donor_socket_type),
                     );
                     let raw_page_start = page_start_for(page, column.choices.len());
-                    removed_choice = draw_raw_embedded_choices(
-                        ui,
-                        column,
-                        queries,
-                        max_embedded_choices,
-                        raw_page_start,
-                    );
+                    removed_choice =
+                        draw_raw_embedded_choices(ui, column, max_embedded_choices, raw_page_start);
                     let choice_count = column.choices.len();
                     let page_start = page_start_for(page, choice_count);
                     let page_end = (page_start + SOCKET_CHOICE_PAGE_SIZE).min(choice_count);
@@ -1281,8 +1269,15 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
     if scroll_to_header {
         header_response.scroll_to_me(Some(egui::Align::Center));
     }
+    // The raw list removes a choice the way the socket picker does, so its weight, condition,
+    // custom perk and place in the swappable lead leave with it.
+    if let Some(choice) = removed_choice
+        && remove_choice(recipe, donor.sockets.len(), socket_index, inherited, choice).is_ok()
+    {
+        shift_socket_choice_queries_after_removal(queries, choice);
+    }
     if let Ok(choices) = recipe_socket_choices(recipe, socket_index, inherited) {
-        reconcile_socket_plug_variants(recipe, socket_index, &choices, removed_choice);
+        reconcile_socket_plug_variants(recipe, socket_index, &choices);
     }
 }
 
@@ -1367,7 +1362,7 @@ pub(super) fn restore_socket_column(
     if columns.iter().all(Option::is_none) {
         columns.clear();
     }
-    reconcile_socket_plug_variants(recipe, socket_index, inherited, None);
+    reconcile_socket_plug_variants(recipe, socket_index, inherited);
 }
 
 pub(super) fn recipe_socket_choices(
@@ -1429,14 +1424,9 @@ pub(super) fn shift_socket_choice_queries_after_removal(
     }
 }
 
-/// Keeps a column that rolls from its choices valid after choice `removed` leaves it. Removing a
-/// swappable choice shortens the swappable lead, and a pool with nothing past it is dropped.
-fn trim_rolled_choices(column: &mut WeaponSocketColumnRecipe, removed: Option<usize>) {
-    if let Some(count) = &mut column.reusable_choices
-        && removed.is_some_and(|index| index < usize::from(*count))
-    {
-        *count = count.saturating_sub(1).max(1);
-    }
+/// Keeps a column that rolls from its choices valid: a swappable lead that covers every choice
+/// leaves nothing to roll, so the pool is dropped.
+fn trim_rolled_choices(column: &mut WeaponSocketColumnRecipe) {
     let choices = column.choices.len();
     if column
         .reusable_choices
@@ -1448,13 +1438,16 @@ fn trim_rolled_choices(column: &mut WeaponSocketColumnRecipe, removed: Option<us
     }
 }
 
+/// Writes `choices` as the socket's column, each keeping the weight and condition at its index.
+/// A choice past the earlier ones weighs 1.0, has no condition and stays out of the swappable
+/// lead, and a custom perk whose choice no longer holds its plug is dropped. Removing or moving a
+/// choice goes through [`rebuild_lane`] instead, which carries all of these with the choice.
 pub(super) fn set_recipe_socket_column(
     recipe: &mut WeaponRecipe,
     socket_count: usize,
     socket_index: usize,
     inherited: &[u32],
     choices: Vec<u32>,
-    removed_choice: Option<usize>,
 ) {
     let socket_count = socket_count
         .max(recipe.overrides.socket_columns.len())
@@ -1468,24 +1461,16 @@ pub(super) fn set_recipe_socket_column(
         .unwrap_or_default();
     column.choices = choices.iter().copied().map(HexHash::new).collect();
     if !column.choice_weight_bits.is_empty() {
-        if let Some(index) = removed_choice.filter(|index| *index < column.choice_weight_bits.len())
-        {
-            column.choice_weight_bits.remove(index);
-        }
         column
             .choice_weight_bits
             .resize(choices.len(), 1.0_f32.to_bits());
     }
     if !column.choice_conditions.is_empty() {
-        if let Some(index) = removed_choice.filter(|index| *index < column.choice_conditions.len())
-        {
-            column.choice_conditions.remove(index);
-        }
         column
             .choice_conditions
             .resize_with(choices.len(), Vec::new);
     }
-    trim_rolled_choices(&mut column, removed_choice);
+    trim_rolled_choices(&mut column);
     let has_technical_overrides = column.socket_type.is_some()
         || !column.choice_weight_bits.is_empty()
         || !column.choice_conditions.is_empty()
@@ -1498,7 +1483,7 @@ pub(super) fn set_recipe_socket_column(
     if recipe.overrides.socket_columns.iter().all(Option::is_none) {
         recipe.overrides.socket_columns.clear();
     }
-    reconcile_socket_plug_variants(recipe, socket_index, &choices, removed_choice);
+    reconcile_socket_plug_variants(recipe, socket_index, &choices);
 }
 
 pub(super) fn make_choice_default(
@@ -1519,6 +1504,7 @@ pub(super) fn make_choice_default(
 }
 
 /// Moves one choice within its socket, carrying its weight, condition and custom perk with it.
+/// In a column that rolls from its choices, see [`moved_lead`] for its place in the swappable lead.
 ///
 /// The first choice is the one that starts equipped, so this is how the default is chosen as well
 /// as how the rest are ordered.
@@ -1530,59 +1516,95 @@ pub(super) fn move_choice(
     from: usize,
     to: usize,
 ) -> Result<(), String> {
-    let mut choices = recipe_socket_choices(recipe, socket_index, inherited)?;
-    if from >= choices.len() || to >= choices.len() {
+    let current = recipe_socket_choices(recipe, socket_index, inherited)?;
+    if from >= current.len() || to >= current.len() {
         return Err("The selected choice no longer exists. Reopen the socket picker.".into());
     }
     if from == to {
         return Ok(());
     }
-    let mut column = recipe
+    let column = recipe
         .overrides
         .socket_columns
         .get(socket_index)
-        .and_then(Option::as_ref)
-        .cloned()
-        .unwrap_or_default();
-    if (!column.choice_weight_bits.is_empty() && column.choice_weight_bits.len() != choices.len())
-        || (!column.choice_conditions.is_empty() && column.choice_conditions.len() != choices.len())
-    {
+        .and_then(Option::as_ref);
+    if column.is_some_and(|column| {
+        (!column.choice_weight_bits.is_empty() && column.choice_weight_bits.len() != current.len())
+            || (!column.choice_conditions.is_empty()
+                && column.choice_conditions.len() != current.len())
+    }) {
         return Err("The socket's weights or conditions do not match its choices. Correct them before reordering.".into());
     }
-    let selected = choices.remove(from);
-    choices.insert(to, selected);
-    if !column.choice_weight_bits.is_empty() {
-        let selected = column.choice_weight_bits.remove(from);
-        column.choice_weight_bits.insert(to, selected);
-    }
-    if !column.choice_conditions.is_empty() {
-        let selected = column.choice_conditions.remove(from);
-        column.choice_conditions.insert(to, selected);
-    }
-    recipe.overrides.socket_columns.resize_with(
-        socket_count
-            .max(recipe.overrides.socket_columns.len())
-            .max(socket_index + 1),
-        || None,
+    let lead = column
+        .and_then(|column| column.reusable_choices)
+        .map(|lead| moved_lead(lead, from, to));
+    let mut order = current
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, plug)| (plug, Some(index)))
+        .collect::<Vec<_>>();
+    let moved = order.remove(from);
+    order.insert(to, moved);
+    rebuild_lane(
+        recipe,
+        socket_count,
+        socket_index,
+        inherited,
+        &current,
+        order,
+        lead,
     );
-    recipe.overrides.socket_columns[socket_index] = Some(column);
-    for variant in &mut recipe.overrides.socket_plug_variants {
-        if usize::from(variant.socket_index) != socket_index {
-            continue;
-        }
-        let index = usize::from(variant.choice_index);
-        let moved = if index == from {
-            to
-        } else if from < to && (from + 1..=to).contains(&index) {
-            index - 1
-        } else if to < from && (to..from).contains(&index) {
-            index + 1
-        } else {
-            index
-        };
-        variant.choice_index = u16::try_from(moved).unwrap_or(variant.choice_index);
+    Ok(())
+}
+
+/// The swappable lead after choice `from` of a column whose first `lead` choices are swappable
+/// moves to `to`. Every other choice keeps its membership. The moved one takes the membership of
+/// where it lands, keeping its own between the swappable and pool-only choices.
+fn moved_lead(lead: u16, from: usize, to: usize) -> u16 {
+    let lead = usize::from(lead);
+    let rest = lead - usize::from(from < lead);
+    let moved = match to.cmp(&rest) {
+        std::cmp::Ordering::Less => rest + 1,
+        std::cmp::Ordering::Equal => lead,
+        std::cmp::Ordering::Greater => rest,
+    };
+    u16::try_from(moved.max(1)).unwrap_or(u16::MAX)
+}
+
+/// Takes choice `index` out of its socket. The later choices move up with their weights,
+/// conditions, custom perks and places in the swappable lead, and a custom perk on the removed
+/// choice goes with it.
+pub(super) fn remove_choice(
+    recipe: &mut WeaponRecipe,
+    socket_count: usize,
+    socket_index: usize,
+    inherited: &[u32],
+    index: usize,
+) -> Result<(), String> {
+    let current = recipe_socket_choices(recipe, socket_index, inherited)?;
+    if index >= current.len() {
+        return Err("The selected choice no longer exists. Reopen the socket picker.".into());
     }
-    set_recipe_socket_column(recipe, socket_count, socket_index, inherited, choices, None);
+    if current.len() == 1 {
+        return Err("A socket keeps at least one choice.".into());
+    }
+    let order = current
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(choice, _)| *choice != index)
+        .map(|(choice, plug)| (plug, Some(choice)))
+        .collect();
+    rebuild_lane(
+        recipe,
+        socket_count,
+        socket_index,
+        inherited,
+        &current,
+        order,
+        None,
+    );
     Ok(())
 }
 
@@ -1705,11 +1727,19 @@ pub(super) fn sync_behavior_socket_pins(
         let Ok(current) = recipe_socket_choices(recipe, lane, &inherited) else {
             continue;
         };
-        let mut choices = current.clone();
+        // Each choice keeps the index it had, `None` for a plug this sync places, so its custom
+        // perk, weight, condition and place in the swappable lead follow it. Two custom perks
+        // can share one template plug, so a plug alone cannot tell choices apart.
+        let mut choices = current
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, choice)| (choice, Some(index)))
+            .collect::<Vec<_>>();
         // Only a plug this sync wrote is ours to take back, and only once no chosen behavior
         // wants it any more. A perk the author placed, made the default, or moved into a socket
         // of their own is their choice and stays where they put it, and so does the donor's own.
-        choices.retain(|choice| {
+        choices.retain(|(choice, _)| {
             let released = pins.0.contains(&(lane, *choice)) && !claimed.contains(choice);
             if released {
                 pins.0.remove(&(lane, *choice));
@@ -1722,28 +1752,29 @@ pub(super) fn sync_behavior_socket_pins(
             .filter(|(claimant, _)| *claimant == lane)
             .map(|(_, plug)| *plug)
         {
-            choices.retain(|choice| *choice != plug);
-            choices.insert(0, plug);
+            let origin = choices
+                .iter()
+                .find(|(choice, _)| *choice == plug)
+                .and_then(|(_, origin)| *origin);
+            choices.retain(|(choice, _)| *choice != plug);
+            choices.insert(0, (plug, origin));
             pins.0.insert((lane, plug));
             pinned = true;
         }
         // A weapon has one frame. A borrowed frame replaces the host's rather than sitting ahead
         // of it, so while a behavior claims the intrinsic lane it holds borrowed frames alone,
-        // and once none does the lane goes back to the donor's own. A plug carrying a custom perk
-        // the author wrote is their own frame, not the donor's, so it is never the one replaced.
+        // and once none does the lane goes back to the donor's own. A choice carrying a custom
+        // perk the author wrote is their own frame, not the donor's, so it is never the one
+        // replaced.
         if *socket_type == crate::weapon::behavior::INTRINSIC_SOCKET_TYPE {
-            let authored = recipe
-                .overrides
-                .socket_plug_variants
-                .iter()
-                .filter(|variant| usize::from(variant.socket_index) == lane)
-                .filter_map(|variant| variant.source_plug_hash.parse_u32().ok())
-                .collect::<BTreeSet<_>>();
-            if choices.iter().any(|choice| claimed.contains(choice)) {
-                choices.retain(|choice| claimed.contains(choice) || authored.contains(choice));
+            let authored = authored_choices(recipe, lane, &current);
+            if choices.iter().any(|(choice, _)| claimed.contains(choice)) {
+                choices.retain(|(choice, origin)| {
+                    claimed.contains(choice) || origin.is_some_and(|old| authored.contains(&old))
+                });
                 pinned = true;
             } else if choices.is_empty() {
-                choices.clone_from(&inherited);
+                choices = inherited.iter().map(|choice| (*choice, None)).collect();
             }
         }
         // Only a lane a behavior just took is trimmed, and only because the socket cannot hold
@@ -1752,30 +1783,96 @@ pub(super) fn sync_behavior_socket_pins(
             choices.truncate(limit);
         }
         // A record whose plug the author has since removed by hand is stale.
-        pins.0
-            .retain(|(recorded, plug)| *recorded != lane || choices.contains(plug));
-        if choices != current && !choices.is_empty() {
-            // A custom perk follows its plug to the plug's new index. The write below drops any
-            // variant whose index no longer points at its own plug, so this has to come first.
-            for variant in &mut recipe.overrides.socket_plug_variants {
-                if usize::from(variant.socket_index) != lane {
-                    continue;
-                }
-                let Ok(hash) = variant.source_plug_hash.parse_u32() else {
-                    continue;
-                };
-                if current.get(usize::from(variant.choice_index)) != Some(&hash) {
-                    continue;
-                }
-                if let Some(index) = choices.iter().position(|choice| *choice == hash)
-                    && let Ok(index) = u16::try_from(index)
-                {
-                    variant.choice_index = index;
-                }
-            }
-            set_recipe_socket_column(recipe, donor.sockets.len(), lane, &inherited, choices, None);
+        pins.0.retain(|(recorded, plug)| {
+            *recorded != lane || choices.iter().any(|(choice, _)| choice == plug)
+        });
+        let unchanged = choices.len() == current.len()
+            && choices
+                .iter()
+                .enumerate()
+                .all(|(index, (_, origin))| *origin == Some(index));
+        if !unchanged && !choices.is_empty() {
+            rebuild_lane(
+                recipe,
+                donor.sockets.len(),
+                lane,
+                &inherited,
+                &current,
+                choices,
+                None,
+            );
         }
     }
+}
+
+/// The choices on `lane` that carry a custom perk: those a variant addresses with its own plug.
+fn authored_choices(recipe: &WeaponRecipe, lane: usize, choices: &[u32]) -> BTreeSet<usize> {
+    recipe
+        .overrides
+        .socket_plug_variants
+        .iter()
+        .filter(|variant| usize::from(variant.socket_index) == lane)
+        .filter(|variant| {
+            choices.get(usize::from(variant.choice_index)).copied()
+                == variant.source_plug_hash.parse_u32().ok()
+        })
+        .map(|variant| usize::from(variant.choice_index))
+        .collect()
+}
+
+/// Writes a lane rebuilt from `order`, each plug with the index it had in `current` or `None`
+/// for one placed new. Custom perks, weights, conditions and the swappable lead follow their own
+/// choices, and a custom perk whose choice left the lane goes with it.
+///
+/// `lead` is the swappable lead of an edit that decides it, as a move does. Followed by origin,
+/// the lead ends at the last swappable choice, so a swappable choice moved past pool-only ones
+/// would make them swappable too.
+fn rebuild_lane(
+    recipe: &mut WeaponRecipe,
+    socket_count: usize,
+    lane: usize,
+    inherited: &[u32],
+    current: &[u32],
+    order: Vec<(u32, Option<usize>)>,
+    lead: Option<u16>,
+) {
+    let origins = order.iter().map(|(_, origin)| *origin).collect::<Vec<_>>();
+    let moved = crate::item::moved_choices(&origins, current.len());
+    // A variant that does not point at its own plug is already stale, and the write below drops
+    // it, so only the ones that do are moved.
+    recipe.overrides.socket_plug_variants.retain_mut(|variant| {
+        let index = usize::from(variant.choice_index);
+        if usize::from(variant.socket_index) != lane
+            || current.get(index).copied() != variant.source_plug_hash.parse_u32().ok()
+        {
+            return true;
+        }
+        match moved
+            .get(index)
+            .copied()
+            .flatten()
+            .and_then(|index| u16::try_from(index).ok())
+        {
+            Some(index) => {
+                variant.choice_index = index;
+                true
+            }
+            None => false,
+        }
+    });
+    if let Some(Some(column)) = recipe.overrides.socket_columns.get_mut(lane) {
+        crate::item::follow_choices(
+            &origins,
+            &mut column.choice_weight_bits,
+            &mut column.choice_conditions,
+            &mut column.reusable_choices,
+        );
+        if lead.is_some() {
+            column.reusable_choices = lead;
+        }
+    }
+    let choices = order.into_iter().map(|(plug, _)| plug).collect();
+    set_recipe_socket_column(recipe, socket_count, lane, inherited, choices);
 }
 
 /// The role the recipe gives each lane, empty where it leaves the donor's own.

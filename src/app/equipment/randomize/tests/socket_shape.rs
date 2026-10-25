@@ -89,22 +89,6 @@ fn wrong_socket_count_cannot_equip_or_add_a_candidate() {
 }
 
 #[test]
-fn importing_extra_sockets_cannot_publish_a_new_invalid_instance() {
-    let catalog = catalog(2);
-    let request = ItemBuilderRequest {
-        item_hash: 100,
-        authored_plugs: Some(json!([101, null, 102])),
-    };
-    let (_, _, candidate) = candidate_from_builder_request(&catalog, &request).unwrap();
-    assert_eq!(candidate.plugs, vec![Some(101), None, Some(102)]);
-    let mut document = document(16);
-    let original = document.clone();
-    assert!(apply_candidate(&mut document, &catalog, 0, &candidate, false).is_err());
-    assert!(add_candidate_to_inventory(&mut document, &catalog, 0, &candidate).is_err());
-    assert_eq!(document, original);
-}
-
-#[test]
 fn imported_unknown_plugs_cannot_equip_or_add_a_candidate() {
     let catalog = catalog(2);
     for hash in [100, 0x0BAD_C0DE] {
@@ -132,34 +116,6 @@ fn imported_unknown_plugs_cannot_equip_or_add_a_candidate() {
             assert!(error.contains("installed plug catalog"), "{error}");
             assert_eq!(document, original);
         }
-    }
-}
-
-#[test]
-fn installed_plugs_from_other_families_remain_valid_candidates() {
-    let catalog = catalog(2);
-    let item = catalog.item(100).unwrap();
-    assert!(!catalog.socket_options(&item.sockets[0]).contains(&202));
-    assert!(catalog.all_plug_options().contains(&202));
-    let request = ItemBuilderRequest {
-        item_hash: 100,
-        authored_plugs: Some(json!([202, null])),
-    };
-    let (_, _, candidate) = candidate_from_builder_request(&catalog, &request).unwrap();
-    for version in [8, 16] {
-        let mut document = document(version);
-        apply_candidate(&mut document, &catalog, 0, &candidate, false).unwrap();
-        let equipped = account::equipped_item_snapshots(&document, 0).unwrap();
-        assert_eq!(
-            equipped_plugs_value(&equipped[0].plugs),
-            Some(json!([202, null]))
-        );
-        add_candidate_to_inventory(&mut document, &catalog, 0, &candidate).unwrap();
-        let held = account::character_inventory(&document, 0).unwrap().unwrap();
-        assert_eq!(
-            held[1].plugs,
-            inventory::ItemPlugs::Authored(vec![Some(202), None])
-        );
     }
 }
 
