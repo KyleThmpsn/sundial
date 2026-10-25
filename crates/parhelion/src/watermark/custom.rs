@@ -17,10 +17,22 @@ pub(crate) fn build_presented_watermark_plan(
     request_context: &dyn Fn(usize) -> String,
 ) -> AuthoringResult<WatermarkPlan> {
     let Presentation { artwork, branding } = presentation;
-    if requests.len() != artwork.len() || requests.is_empty() {
+    if requests.len() != artwork.len() {
         return Err(invalid(
             "Release watermark artwork must match the weapon icon requests",
         ));
+    }
+    // A build without items still authors the shared watermark layer.
+    if requests.is_empty() {
+        return build_watermark_plan_with_context(
+            manager,
+            destination_package_id,
+            current_entry_count,
+            appended_ordinal_base,
+            &[],
+            branding,
+            request_context,
+        );
     }
     let mut groups: Vec<(Option<Artwork>, Vec<usize>)> = vec![];
     for (index, image) in artwork.iter().enumerate() {
@@ -193,70 +205,4 @@ pub(crate) fn render(artwork: &Artwork, index: usize) -> AuthoringResult<Vec<u8>
         i64::from(bounds.1 * scale),
     );
     Ok(plate.into_raw())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cropped_and_positioned_watermarks_change_every_native_lane() {
-        let source = image::RgbaImage::from_fn(80, 40, |x, y| {
-            image::Rgba([200, 40, 90, if x > 20 && y < 30 { 255 } else { 0 }])
-        });
-        let original = Artwork::from_source(source).unwrap();
-        let edited = original
-            .with_composition(crate::presentation::composition::Composition {
-                crop: [2000, 0, 8000, 8000],
-                scale: 70,
-                offset: [15, -10],
-                ..Default::default()
-            })
-            .unwrap();
-        for index in 0..TEXTURE_DIMENSIONS.len() {
-            assert_ne!(
-                render(&original, index).unwrap(),
-                render(&edited, index).unwrap()
-            );
-        }
-        assert_eq!(
-            preview(&edited).unwrap().into_raw(),
-            render(&edited, 0).unwrap()
-        );
-    }
-
-    #[test]
-    fn custom_corner_silhouettes_preserve_the_native_palette_and_plate_edges() {
-        let mut png = std::io::Cursor::new(vec![]);
-        image::RgbaImage::from_pixel(96, 96, image::Rgba([30, 190, 40, 255]))
-            .write_to(&mut png, ImageFormat::Png)
-            .unwrap();
-        let artwork = Artwork::from_png(&png.into_inner()).unwrap();
-        for (index, png) in AUTHORED_TEXTURE_PNGS.iter().enumerate() {
-            let source = image::load_from_memory(png).unwrap().into_rgba8();
-            let rendered = render(&artwork, index).unwrap();
-            assert_eq!(
-                rendered.len(),
-                (source.width() * source.height() * OUTPUT_TEXTURE_SCALE * OUTPUT_TEXTURE_SCALE * 4)
-                    as usize
-            );
-            if matches!(index, 2 | 3) {
-                let color = &source.get_pixel(0, 0).0[..3];
-                assert!(
-                    rendered
-                        .chunks_exact(4)
-                        .filter(|pixel| pixel[3] != 0)
-                        .all(|pixel| &pixel[..3] == color)
-                );
-            } else {
-                let plate =
-                    upscale_texture(source.width(), source.height(), source.into_raw()).unwrap();
-                for (before, after) in plate.pixels().zip(rendered.chunks_exact(4)) {
-                    if before[3] == 0 {
-                        assert_eq!(after[3], 0, "Custom glyph escapes corner plate {index}");
-                    }
-                }
-            }
-        }
-    }
 }

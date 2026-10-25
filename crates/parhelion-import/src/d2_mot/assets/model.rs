@@ -30,7 +30,17 @@ pub fn export(r: &mut Reader, entities: &[u32], direct: Option<u32>) -> Result<V
             ensure!(at >= 4, "invalid component pointer");
             let class = p.u32(at - 4)?;
             components.push(json!({"entity":format!("{entity:08X}"),"owner":format!("{tag:08X}"),"class":format!("{class:08X}")}));
-            if class == 0x80806D8F {
+            if matches!(class, 0x80806D8F | 0x80806D6C) {
+                if class == 0x80806D6C {
+                    let instance = p.pointer(16)?;
+                    ensure!(
+                        instance >= 4 && p.u32(instance - 4)? == 0x80806D5B,
+                        "cloth component types differ"
+                    );
+                    components.last_mut().unwrap()["cloth_simulation"] =
+                        json!({"definition":format!("{:08X}",p.u32(at+0x4B0)?),"converted":false});
+                    blockers.push(json!({"owner":format!("{tag:08X}"),"reason":"Cloth geometry is exported with source skinning. Cloth simulation is not converted."}));
+                }
                 let model = p.u32(at + 0x264)?;
                 if ![0, u32::MAX, 0x811C9DC5].contains(&model) {
                     models.insert(model);

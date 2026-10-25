@@ -1,7 +1,7 @@
 use crate::package_runtime::reader::PackageManager;
 use crate::{
     catalog::scan_item_icon_containers,
-    investment_schema::*,
+    investment::schema::*,
     package_payload::{array_at, u16_at, u32_at},
 };
 use std::collections::BTreeMap;

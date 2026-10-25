@@ -113,7 +113,7 @@ pub(in crate::app) fn draw_window(
                         state.source_key = None;
                         state.input = None;
                         state.preview = None;
-                        state.preview_task = None;
+                        state.retire_preview_task();
                         state.preview_due_at =
                             Some(context.input(|input| input.time) + PREVIEW_DEBOUNCE_SECONDS);
                     }
@@ -131,13 +131,13 @@ pub(in crate::app) fn draw_window(
     if clear_requested {
         state.targets = [0; 6];
         state.preview = None;
-        state.preview_task = None;
+        state.retire_preview_task();
         state.preview_due_at = None;
         state.feedback = None;
         state.preserve_feedback_once = false;
     } else if targets_changed {
         state.preview = None;
-        state.preview_task = None;
+        state.retire_preview_task();
         state.preview_due_at = Some(context.input(|input| input.time) + PREVIEW_DEBOUNCE_SECONDS);
         context.request_repaint_after(Duration::from_secs_f64(PREVIEW_DEBOUNCE_SECONDS));
         state.feedback = None;
@@ -155,7 +155,7 @@ pub(in crate::app) fn draw_window(
             state.source_key = None;
             state.input = None;
             state.preview = None;
-            state.preview_task = None;
+            state.retire_preview_task();
             state.preview_due_at =
                 Some(context.input(|input| input.time) + PREVIEW_DEBOUNCE_SECONDS);
             context.request_repaint_after(Duration::from_secs_f64(PREVIEW_DEBOUNCE_SECONDS));
@@ -181,8 +181,11 @@ fn draw_header(ui: &mut egui::Ui, state: &State) {
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
                     if let Some((text, detail, color)) = status_text(ui, state) {
-                        ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate())
-                            .on_hover_text(detail);
+                        ui.add(crate::ui::cut_label(
+                            ui,
+                            egui::RichText::new(text).color(color),
+                        ))
+                        .on_hover_text(detail);
                     }
                 },
             );
@@ -197,15 +200,17 @@ fn draw_header(ui: &mut egui::Ui, state: &State) {
         ui.add_sized(
             [intro_width, ui.spacing().interact_size.y],
             egui::Label::new(egui::RichText::new(INTRO).weak()).truncate(),
-        )
-        .on_hover_text(INTRO);
+        );
         ui.allocate_ui_with_layout(
             egui::vec2(status_width, ui.spacing().interact_size.y),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 if let Some((text, detail, color)) = status_text(ui, state) {
-                    ui.add(egui::Label::new(egui::RichText::new(text).color(color)).truncate())
-                        .on_hover_text(detail);
+                    ui.add(crate::ui::cut_label(
+                        ui,
+                        egui::RichText::new(text).color(color),
+                    ))
+                    .on_hover_text(detail);
                 }
             },
         );
@@ -395,6 +400,7 @@ fn draw_controls(
                     PlugSelectionMode::SocketAndGearType,
                     PlugSelectionMode::MatchingSocketType,
                     PlugSelectionMode::GearType,
+                    PlugSelectionMode::GearKind,
                     PlugSelectionMode::AnyPlug,
                 ] {
                     ui.selectable_value(requested_mode, mode, mode.label());
@@ -535,19 +541,16 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                         }
                         ui.vertical(|ui| {
                             if swapped {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&selected_piece.name).strong(),
-                                    )
-                                    .truncate(),
-                                )
+                                ui.add(crate::ui::cut_label(
+                                    ui,
+                                    egui::RichText::new(&selected_piece.name).strong(),
+                                ))
                                 .on_hover_text(format!(
                                     "Equip {} from inventory instead of {}",
                                     selected_piece.name, piece.name
                                 ));
                             } else {
-                                ui.add(egui::Label::new(&selected_piece.name).truncate())
-                                    .on_hover_text(&selected_piece.name);
+                                ui.add(egui::Label::new(&selected_piece.name).truncate());
                             }
                             let state_text = if swapped && masterwork_planned {
                                 "From inventory · Masterwork".to_owned()
@@ -567,8 +570,7 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                             ui.add(
                                 egui::Label::new(egui::RichText::new(&state_text).small().weak())
                                     .truncate(),
-                            )
-                            .on_hover_text(state_text);
+                            );
                         });
                     });
                 });
@@ -588,8 +590,7 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                         } else {
                             egui::RichText::new(text)
                         };
-                        ui.add(egui::Label::new(text).truncate())
-                            .on_hover_text(detail);
+                        ui.add(crate::ui::cut_label(ui, text)).on_hover_text(detail);
                         drew_line = true;
                     }
                     let mut grouped_changes = Vec::<(String, Vec<String>)>::new();
@@ -634,7 +635,7 @@ fn draw_preview(ui: &mut egui::Ui, catalog: &Catalog, state: &State) {
                         } else {
                             change
                         };
-                        ui.add(egui::Label::new(&visible).truncate())
+                        ui.add(crate::ui::cut_label(ui, &visible))
                             .on_hover_text(details.join("\n"));
                         drew_line = true;
                     }

@@ -16,9 +16,6 @@ pub struct Record {
     pub fields: Vec<(usize, u32)>,
 }
 
-#[cfg(test)]
-mod decompile_coverage;
-
 type Encoded = (
     u32,
     usize,
@@ -112,13 +109,13 @@ pub fn inline(class: u32) -> Result<Vec<(usize, u32, Vec<u32>)>, String> {
 
 type Template = (bool, u8, u32, usize, String);
 static TEMPLATES: OnceLock<Vec<Template>> = OnceLock::new();
-pub(super) fn template(condition: bool, kind: u8) -> Option<Vec<u8>> {
+pub(super) fn template(kind: super::NodeKind) -> Option<Vec<u8>> {
     let rows = TEMPLATES.get_or_init(|| {
         serde_json::from_str(include_str!("templates.json")).expect("validated native templates")
     });
     let text = &rows
         .iter()
-        .find(|row| row.0 == condition && row.1 == kind)?
+        .find(|row| row.0 == kind.is_condition() && row.1 == kind.byte())?
         .4;
     (0..text.len())
         .step_by(2)
@@ -157,7 +154,7 @@ pub fn choices(class: u32, field: usize) -> Vec<(u32, bool)> {
             choices.extend(
                 entries
                     .iter()
-                    .filter(|entry| entry.observed())
+                    .filter(|entry| entry.has_layout())
                     .map(|entry| (entry.class, false)),
             );
         }

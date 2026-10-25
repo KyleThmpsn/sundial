@@ -230,39 +230,3 @@ pub(super) fn display_lines<'tree, 'data>(
     }
     output
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn collections_preserve_every_package_parent_path() {
-        let paths = collection_paths(&[
-            vec!["Titan".into(), "Season of the Worthy".into()],
-            vec![
-                "Season 10".into(),
-                "Ships".into(),
-                "Equipment".into(),
-                "Items".into(),
-            ],
-            vec!["Season 10".into(), "Ships".into(), "Vehicles".into()],
-        ]);
-        assert_eq!(
-            paths,
-            [
-                vec![String::from("Season of the Worthy"), String::from("Titan")],
-                vec![
-                    String::from("Items"),
-                    String::from("Equipment"),
-                    String::from("Ships"),
-                    String::from("Season 10"),
-                ],
-                vec![
-                    String::from("Vehicles"),
-                    String::from("Ships"),
-                    String::from("Season 10"),
-                ],
-            ]
-        );
-    }
-}

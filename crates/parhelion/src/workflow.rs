@@ -5,15 +5,16 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use sundial::package_authoring::{path_is_within, resolve_path_for_comparison};
 
 use crate::artifact::{ArtifactMetadata, digest_file, has_pkg_extension};
+use crate::item::{compile_with_progress, validate_catalog_with_progress};
 use crate::manifest::{
-    MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject,
-    recipe_selection_fingerprint,
+    MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject, SelectionFingerprint,
+    canonical_map, canonical_recipe, selection_fingerprint,
 };
 #[cfg(test)]
 use crate::package_profile::{
@@ -21,10 +22,10 @@ use crate::package_profile::{
 };
 use crate::package_profile::{
     CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE, PackageHeaderPrefix, SHADOWKEEP_HEADER_VERSION,
-    authored_package, authored_packages_for_file_names, canonical_package,
+    authored_package, authored_package_for_file_name, authored_packages_for_file_names,
+    canonical_package,
 };
 use crate::recipe::WeaponRecipe;
-use crate::weapon::{compile_with_progress, validate_catalog_with_progress};
 use crate::{NewWeaponProjectBundle, SUNDIAL_BUILD_SIGNATURE, WeaponProjectSpec};
 
 mod package_views;
@@ -32,25 +33,29 @@ pub(crate) mod staging_retention;
 
 /// A batch selected from Parhelion's recipe library.
 ///
-/// The complete, explicitly enabled recipe set compiled into one package generation.
+/// The complete recipe set compiled into one package generation, including required shaders.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchBuildRequest {
     pub package_directory: PathBuf,
     pub staging_root: PathBuf,
     pub ignore_installed_authored_overlays: bool,
     pub recipes: Vec<WeaponRecipe>,
+    /// Crucible maps the build adds as new activities.
+    pub maps: Vec<crate::map::MapRecipe>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchBuildSnapshot {
     pub request: BatchBuildRequest,
-    pub fingerprint: String,
 }
 
 impl BatchBuildSnapshot {
+    /// The selection in build order, each recipe checked. Its fingerprint is taken when the build
+    /// stages the recipes, from the encodings it writes, since encoding an imported recipe packs
+    /// its whole model.
     pub fn new(mut request: BatchBuildRequest) -> Result<Self, String> {
-        if request.recipes.is_empty() {
-            return Err("No recipes are included in the package set".to_owned());
+        if request.recipes.is_empty() && request.maps.is_empty() {
+            return Err("No recipes or maps are included in the package set".to_owned());
         }
         request.recipes.sort_by_cached_key(|recipe| {
             (
@@ -58,22 +63,81 @@ impl BatchBuildSnapshot {
                 recipe.identity.item_hash.as_str().to_owned(),
             )
         });
-        let fingerprint = recipe_selection_fingerprint(&request.recipes)?;
-        Ok(Self {
-            request,
-            fingerprint,
-        })
+        request
+            .maps
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        for recipe in &request.recipes {
+            recipe.validate().map_err(|error| {
+                format!(
+                    "Recipe: {:?} ({})\nItem: {}\nCould not validate recipe: {error}",
+                    recipe.name,
+                    recipe.namespace,
+                    recipe.identity.item_hash.as_str()
+                )
+            })?;
+        }
+        Ok(Self { request })
+    }
+
+    /// The fingerprint a build of this selection records, which encodes every recipe.
+    pub fn fingerprint(&self) -> Result<String, String> {
+        selection_fingerprint(&self.request.recipes, &self.request.maps)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct BuildReport {
+    pub mods: Vec<crate::ModReport>,
+    pub import_conversions: BTreeMap<String, usize>,
     pub weapons: Vec<WeaponBuildReport>,
     pub run_directory: PathBuf,
     pub manifest_path: PathBuf,
     pub artifacts: Vec<ArtifactMetadata>,
     pub selection_fingerprint: String,
     pub staged_recipe_paths: Vec<PathBuf>,
+}
+
+impl BuildReport {
+    /// The report of a run kept from an earlier install, read from its manifest for the
+    /// installation review. It names the run's items and files, without the compile details only
+    /// a build in this session has.
+    pub fn kept(run_directory: &Path) -> Result<Self, String> {
+        let manifest_path = run_directory.join(MANIFEST_FILE_NAME);
+        let file = File::open(&manifest_path)
+            .map_err(|error| format!("Could not open {}: {error}", manifest_path.display()))?;
+        let manifest: ManifestDocument =
+            sundial::package_authoring::read_json(file).map_err(|error| error.to_string())?;
+        manifest.validate()?;
+        Ok(Self {
+            mods: Vec::new(),
+            import_conversions: BTreeMap::new(),
+            weapons: manifest
+                .project
+                .weapons
+                .iter()
+                .map(|weapon| WeaponBuildReport {
+                    name: weapon.name.clone(),
+                    kind: weapon.kind,
+                    namespace: weapon.namespace.clone(),
+                    item_hash: weapon.item.hash.get(),
+                    item_definition_hash: weapon.item.definition_tag.get(),
+                    item_string_hash: weapon.item.string_tag.get(),
+                    icon_definition_hash: 0,
+                    item_index: weapon.item.index,
+                    collection: None,
+                    custom_plugs: Vec::new(),
+                    details: None,
+                    subclass: None,
+                    recipe_fingerprint: String::new(),
+                })
+                .collect(),
+            run_directory: run_directory.to_owned(),
+            manifest_path,
+            artifacts: manifest.artifacts,
+            selection_fingerprint: manifest.selection_fingerprint,
+            staged_recipe_paths: Vec::new(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,21 +160,39 @@ pub enum BuildPhase {
 impl BuildPhase {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::InspectingSource => "Inspecting source packages",
-            Self::LoadingCatalog => "Loading donor catalog",
-            Self::CheckingRecipes => "Checking recipe compatibility",
-            Self::PreparingSource => "Preparing source packages",
-            Self::HashingSource => "Recording source checksums",
-            Self::CompilingProject => "Compiling items",
-            Self::BuildingPayloads => "Building package payloads",
-            Self::RecheckingSource => "Rechecking source packages",
-            Self::WritingPackages => "Writing package set",
-            Self::ValidatingPackages => "Validating package artifacts",
-            Self::StagingRecipes => "Staging recipe snapshots",
-            Self::WritingManifest => "Writing build manifest",
-            Self::Complete => "Build validated",
+            Self::InspectingSource => "Checking Build Inputs",
+            Self::LoadingCatalog => "Loading Item Catalog",
+            Self::CheckingRecipes => "Checking Donor Compatibility",
+            Self::PreparingSource => "Preparing Source Packages",
+            Self::HashingSource => "Recording Source Checksums",
+            Self::CompilingProject => "Compiling Items",
+            Self::BuildingPayloads => "Building Packages",
+            Self::RecheckingSource => "Rechecking Source Packages",
+            Self::WritingPackages => "Writing Package Files",
+            Self::ValidatingPackages => "Validating Packages",
+            Self::StagingRecipes => "Saving Recipe Snapshots",
+            Self::WritingManifest => "Writing Build Manifest",
+            Self::Complete => "Build Validated",
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuildActivity {
+    Package {
+        id: u16,
+        step: u32,
+        status: OperationStatus,
+        duration: Duration,
+    },
+    Diagnostic(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationStatus {
+    Started,
+    Finished,
+    Failed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -119,6 +201,9 @@ pub struct BuildProgress {
     pub current_artifact: Option<String>,
     pub completed: usize,
     pub total: usize,
+    /// Captured where the operation happens, before coordinator and UI queues.
+    pub timestamp: Instant,
+    pub activity: Option<BuildActivity>,
 }
 
 impl BuildProgress {
@@ -128,10 +213,12 @@ impl BuildProgress {
             current_artifact: None,
             completed,
             total,
+            timestamp: Instant::now(),
+            activity: None,
         }
     }
 
-    fn artifact(
+    pub(crate) fn artifact(
         phase: BuildPhase,
         current_artifact: impl Into<String>,
         completed: usize,
@@ -142,6 +229,8 @@ impl BuildProgress {
             current_artifact: Some(current_artifact.into()),
             completed,
             total,
+            timestamp: Instant::now(),
+            activity: None,
         }
     }
 }
@@ -159,6 +248,10 @@ pub struct WeaponBuildReport {
     /// A subclass has no collectible or unlock.
     pub collection: Option<crate::NewCollectionPlan>,
     pub custom_plugs: Vec<CustomPlugBuildReport>,
+    pub(crate) details: Option<crate::item::WeaponBuildDetails>,
+    /// What the build wrote for a subclass.
+    pub(crate) subclass: Option<crate::item::SubclassBuildDetails>,
+    pub(crate) recipe_fingerprint: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -173,6 +266,8 @@ pub struct CustomPlugBuildReport {
     pub icon_definition_hash: Option<u32>,
     pub name_hash: Option<u32>,
     pub description_hash: Option<u32>,
+    /// The stock shared plug sets the plug joined when offered everywhere.
+    pub offered_sets: Vec<u16>,
     pub perks: Vec<PrivatePerkBuildReport>,
 }
 
@@ -252,6 +347,10 @@ struct PlannedSnapshot {
     bundle: NewWeaponProjectBundle,
     /// The class of each subclass base, which the manifest records for the install.
     subclass_classes: BTreeMap<u32, u8>,
+    /// The build's turn with the package layout, held until its packages are staged.
+    profile: crate::package_profile::Profile,
+    /// A mod-folder build's merge data, written beside its packages.
+    merge_data: Option<crate::merge_data::MergeData>,
 }
 
 fn plan_snapshot(
@@ -269,6 +368,52 @@ fn plan_snapshot_naming(
     progress: &mut impl FnMut(BuildProgress),
     failed: &mut Option<String>,
 ) -> Result<PlannedSnapshot, String> {
+    // Every authored id the build places reads this window and host, so they are chosen before
+    // planning. Sunrise's mod loader refuses a patch that adds entries, so there the build's
+    // investment records take the window's first id and the asset packages follow it.
+    let directory = &snapshot.request.package_directory;
+    let window = crate::install::package_window(directory).map_err(|error| error.to_string())?;
+    let (window, host) = if crate::install::uses_mod_loader(directory) {
+        let Some(rest) = window.rest() else {
+            return Err(
+                "The free package ids leave no room for the build's investment records".into(),
+            );
+        };
+        (
+            rest,
+            crate::package_profile::Host::standalone(if window.descending {
+                window.top
+            } else {
+                window.base
+            }),
+        )
+    } else {
+        (window, crate::package_profile::Host::APPENDED)
+    };
+    let waiting = Instant::now();
+    let profile = crate::package_profile::hold(window, host);
+    if host.is_standalone() {
+        let mut event = BuildProgress::phase(BuildPhase::InspectingSource, 0, 0);
+        event.activity = Some(BuildActivity::Diagnostic(format!(
+            "Build wait: {:.6}s",
+            waiting.elapsed().as_secs_f64()
+        )));
+        progress(event);
+    }
+    // Automatic Collections placement follows whether another mod changes the presentation nodes.
+    crate::package_profile::set_presentation_nodes_shared(
+        crate::install::other_mods_change(
+            directory,
+            sundial::package_authoring::mod_content::merge::recipes::PRESENTATION_NODES,
+        )
+        .map_err(|error| error.to_string())?,
+    );
+    if host.is_standalone() {
+        crate::package_profile::name_standalone_package(
+            host.id,
+            crate::package_profile::RECORDS_FAMILY,
+        )?;
+    }
     progress(BuildProgress::artifact(
         BuildPhase::InspectingSource,
         "Checking Recipes",
@@ -305,6 +450,12 @@ fn plan_snapshot_naming(
         install_directory,
         project.weapons.iter(),
         &mut |loading, label, completed, total| {
+            // Catalog labels describe generated operations. Recipe names take the other path.
+            let label = if loading {
+                label.trim_end_matches('…')
+            } else {
+                label
+            };
             progress(BuildProgress::artifact(
                 if loading {
                     BuildPhase::LoadingCatalog
@@ -334,20 +485,30 @@ fn plan_snapshot_naming(
                     total,
                 ));
             })?;
+        crate::mod_family::build::begin(
+            directory,
+            source.path(),
+            &project.weapons,
+            &snapshot.request.maps,
+            &source_artifacts,
+        )?;
         let compilation = compile_with_progress(
             source.path(),
             &project,
+            &snapshot.request.maps,
             crate::branding::Branding::detect(install_directory),
-            &mut |phase, label, completed, total| {
-                progress(BuildProgress::artifact(
-                    match phase {
-                        crate::weapon::CompilePhase::Authoring => BuildPhase::CompilingProject,
-                        crate::weapon::CompilePhase::Payloads => BuildPhase::BuildingPayloads,
+            &mut |event| {
+                progress(BuildProgress {
+                    phase: match event.phase {
+                        crate::item::CompilePhase::Authoring => BuildPhase::CompilingProject,
+                        crate::item::CompilePhase::Payloads => BuildPhase::BuildingPayloads,
                     },
-                    label,
-                    completed,
-                    total,
-                ));
+                    current_artifact: Some(event.label.to_owned()),
+                    completed: event.completed,
+                    total: event.total,
+                    timestamp: event.timestamp,
+                    activity: event.activity,
+                });
             },
         )
         .map_err(|error| record("Project compilation failed.", error));
@@ -370,12 +531,25 @@ fn plan_snapshot_naming(
                 }
             })?;
         validate_source_artifacts_unchanged(&source_artifacts, &source_artifacts_after)?;
+        crate::mod_family::build::verify_inputs()?;
         let bundle = compilation?;
+        crate::mod_family::build::finish_sources(source.path())?;
+        // Sunrise merges table rows only for mods in its mod folder.
+        let merge_data = host.is_standalone().then(|| {
+            let files = bundle
+                .artifacts
+                .iter()
+                .map(|artifact| (artifact.plan.output_file_name.as_str(), artifact.bytes()))
+                .collect::<Vec<_>>();
+            crate::merge_data::describe(source.path(), &files)
+        });
         Ok(PlannedSnapshot {
             source_inspection,
             source_artifacts,
             bundle,
             subclass_classes,
+            profile,
+            merge_data,
         })
     })();
     // Compilation has released its managers and returned owned package bytes. A view that
@@ -396,15 +570,22 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
         &snapshot.request.package_directory,
         &snapshot.request.staging_root,
     )?;
+    inspect_source(
+        &snapshot.request.package_directory,
+        snapshot.request.ignore_installed_authored_overlays,
+    )
+}
+
+fn inspect_source(
+    package_directory: &Path,
+    ignore_installed_authored_overlays: bool,
+) -> Result<SourceInspection, String> {
     let mut stock_patches = BTreeMap::<u16, u16>::new();
     let mut authored = Vec::new();
 
-    for entry in fs::read_dir(&snapshot.request.package_directory).map_err(|error| {
-        format!(
-            "Could not list {}: {error}",
-            snapshot.request.package_directory.display()
-        )
-    })? {
+    for entry in fs::read_dir(package_directory)
+        .map_err(|error| format!("Could not list {}: {error}", package_directory.display()))?
+    {
         let entry = entry.map_err(|error| format!("Could not read a package entry: {error}"))?;
         let path = entry.path();
         if !entry
@@ -419,14 +600,19 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
             continue;
         };
         if header.build_signature == SUNDIAL_BUILD_SIGNATURE {
-            let profile = authored_package(header.package_id).ok_or_else(|| {
-                format!(
-                    "Authored package {} uses unrecognized package id {:04X}",
-                    path.display(),
-                    header.package_id
-                )
-            })?;
             let name = file_name(&path)?;
+            // A standalone package may carry a map's name instead of Parhelion's asset name, so
+            // its own name identifies it when that name holds the header's package id.
+            let profile = authored_package_for_file_name(&name)
+                .filter(|profile| profile.package_id == header.package_id)
+                .or_else(|| authored_package(header.package_id))
+                .ok_or_else(|| {
+                    format!(
+                        "Authored package {} uses unrecognized package id {:04X}",
+                        path.display(),
+                        header.package_id
+                    )
+                })?;
             if header.patch_id != profile.patch_id || name != profile.file_name {
                 return Err(format!(
                     "Authored package {} has identity {:04X}/{}; expected {} at patch {}",
@@ -454,18 +640,10 @@ fn inspect_snapshot(snapshot: &BatchBuildSnapshot) -> Result<SourceInspection, S
 
     validate_stock_patches(&stock_patches)?;
     authored.sort();
-    validate_authored_set(
-        snapshot.request.ignore_installed_authored_overlays,
-        &authored,
-    )?;
+    validate_authored_set(ignore_installed_authored_overlays, &authored)?;
     Ok(SourceInspection {
         ignored_authored_files: authored,
     })
-}
-
-#[cfg(test)]
-fn build_and_stage_snapshot(snapshot: &BatchBuildSnapshot) -> Result<BuildReport, String> {
-    build_and_stage_snapshot_with_progress(snapshot, |_| {})
 }
 
 pub fn build_and_stage_snapshot_with_progress(
@@ -481,10 +659,12 @@ pub fn build_and_stage_snapshot_reporting(
     mut progress: impl FnMut(BuildProgress),
 ) -> Result<BuildReport, BuildFailure> {
     let planned = plan_snapshot(snapshot, &mut progress)?;
+    let _profile = planned.profile;
     let source_inspection = planned.source_inspection;
     let source_artifacts = planned.source_artifacts;
     let bundle = planned.bundle;
     let subclass_classes = planned.subclass_classes;
+    let merge_data = planned.merge_data;
     fs::create_dir_all(&snapshot.request.staging_root).map_err(|error| {
         format!(
             "Could not create staging root {}: {error}",
@@ -511,10 +691,19 @@ pub fn build_and_stage_snapshot_reporting(
             .map_err(|error| format!("Could not write staged packages: {error}"))?;
         let artifacts = artifact_reports_with_progress(&paths, &mut progress)?;
         validate_outputs(&artifacts)?;
-        let staged_recipe_paths =
-            stage_recipe_snapshot_with_progress(&run_directory, snapshot, &mut progress)?;
+        let merge_paths = match &merge_data {
+            Some(data) => crate::merge_data::stage(&run_directory, data)?,
+            None => Vec::new(),
+        };
+        let merge_artifacts = artifact_reports_with_progress(&merge_paths, &mut progress)?;
+        let StagedRecipes {
+            paths: staged_recipe_paths,
+            selection_fingerprint,
+            recipe_fingerprints,
+        } = stage_recipe_snapshot_with_progress(&run_directory, snapshot, &mut progress)?;
         let staged_recipe_files = staged_recipe_paths
             .iter()
+            .take(snapshot.request.recipes.len())
             .map(|path| {
                 path.strip_prefix(&run_directory)
                     .unwrap_or(path)
@@ -537,13 +726,24 @@ pub fn build_and_stage_snapshot_reporting(
             0,
             1,
         ));
-        let manifest = ManifestDocument {
+        let mut manifest = ManifestDocument {
+            mods: Vec::new(),
             schema: MANIFEST_SCHEMA,
             source_package_directory: source_package_directory.display().to_string(),
             source_artifacts: source_artifacts.clone(),
             ignored_authored_files: source_inspection.ignored_authored_files.clone(),
-            selection_fingerprint: snapshot.fingerprint.clone(),
+            selection_fingerprint: selection_fingerprint.clone(),
             selected_recipe_files: staged_recipe_files,
+            selected_map_files: staged_recipe_paths
+                .iter()
+                .skip(snapshot.request.recipes.len())
+                .map(|path| {
+                    path.strip_prefix(&run_directory)
+                        .unwrap_or(path)
+                        .display()
+                        .to_string()
+                })
+                .collect(),
             project: ManifestProject::from_build(
                 &snapshot.request.recipes,
                 &bundle.plan.weapons,
@@ -551,7 +751,19 @@ pub fn build_and_stage_snapshot_reporting(
                 &subclass_classes,
             )?,
             artifacts: artifacts.clone(),
+            merge_data: merge_artifacts,
+            map_diagnostics: crate::map::diagnostics::stage(
+                &run_directory,
+                &snapshot.request.maps,
+            )?,
+            mission_scripts: crate::map::mission::stage(&run_directory, &snapshot.request.maps)?,
         };
+        manifest.mods = crate::mod_family::build::members(
+            &manifest.artifacts,
+            &manifest.merge_data,
+            manifest.map_diagnostics.as_ref(),
+            &manifest.mission_scripts,
+        )?;
         write_manifest(&manifest_path, &manifest)?;
         progress(BuildProgress::artifact(
             BuildPhase::WritingManifest,
@@ -561,52 +773,71 @@ pub fn build_and_stage_snapshot_reporting(
         ));
 
         let report = BuildReport {
+            mods: if crate::package_profile::host().is_standalone() {
+                crate::mod_family::reports(
+                    &manifest.mods,
+                    source_package_directory
+                        .parent()
+                        .ok_or("Missing game root")?,
+                    &manifest.artifacts,
+                )?
+            } else {
+                Vec::new()
+            },
+            import_conversions: crate::mod_family::build::conversions(),
             weapons: snapshot
                 .request
                 .recipes
                 .iter()
                 .zip(&bundle.plan.weapons)
-                .map(|(recipe, plan)| WeaponBuildReport {
-                    name: recipe.name.clone(),
-                    kind: plan.kind,
-                    namespace: recipe.namespace.clone(),
-                    item_hash: plan.item_hash,
-                    item_definition_hash: u32::from(plan.definition_tag),
-                    item_string_hash: u32::from(plan.string_tag),
-                    icon_definition_hash: u32::from(plan.icon_definition_tag),
-                    item_index: plan.item_index,
-                    collection: plan.collection,
-                    custom_plugs: plan
-                        .custom_plugs
-                        .iter()
-                        .map(|plug| CustomPlugBuildReport {
-                            socket_index: plug.socket_index,
-                            choice_index: plug.choice_index,
-                            name: plug.name.clone(),
-                            item_hash: plug.item_hash,
-                            item_index: plug.item_index,
-                            definition_hash: u32::from(plug.definition_tag),
-                            string_hash: u32::from(plug.string_tag),
-                            icon_definition_hash: plug.icon_definition_tag.map(u32::from),
-                            name_hash: plug.name_hash,
-                            description_hash: plug.description_hash,
-                            perks: plug
-                                .perks
-                                .iter()
-                                .map(|perk| PrivatePerkBuildReport {
-                                    source_perk_index: perk.source_perk_index,
-                                    perk_hash: perk.perk_hash,
-                                    runtime_key: perk.runtime_key,
-                                })
-                                .collect(),
-                        })
-                        .collect(),
+                .zip(recipe_fingerprints)
+                .map(|((recipe, plan), recipe_fingerprint)| {
+                    Ok(WeaponBuildReport {
+                        name: recipe.name.clone(),
+                        kind: plan.kind,
+                        namespace: recipe.namespace.clone(),
+                        item_hash: plan.item_hash,
+                        item_definition_hash: u32::from(plan.definition_tag),
+                        item_string_hash: u32::from(plan.string_tag),
+                        icon_definition_hash: u32::from(plan.icon_definition_tag),
+                        item_index: plan.item_index,
+                        collection: plan.collection,
+                        details: plan.details.clone(),
+                        subclass: plan.subclass.clone(),
+                        recipe_fingerprint,
+                        custom_plugs: plan
+                            .custom_plugs
+                            .iter()
+                            .map(|plug| CustomPlugBuildReport {
+                                socket_index: plug.socket_index,
+                                choice_index: plug.choice_index,
+                                name: plug.name.clone(),
+                                item_hash: plug.item_hash,
+                                item_index: plug.item_index,
+                                definition_hash: u32::from(plug.definition_tag),
+                                string_hash: u32::from(plug.string_tag),
+                                icon_definition_hash: plug.icon_definition_tag.map(u32::from),
+                                name_hash: plug.name_hash,
+                                description_hash: plug.description_hash,
+                                offered_sets: plug.offered_sets.clone(),
+                                perks: plug
+                                    .perks
+                                    .iter()
+                                    .map(|perk| PrivatePerkBuildReport {
+                                        source_perk_index: perk.source_perk_index,
+                                        perk_hash: perk.perk_hash,
+                                        runtime_key: perk.runtime_key,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, String>>()?,
             run_directory,
             manifest_path,
             artifacts,
-            selection_fingerprint: snapshot.fingerprint.clone(),
+            selection_fingerprint,
             staged_recipe_paths,
         };
         Ok(report)
@@ -636,11 +867,21 @@ fn project_spec(snapshot: &BatchBuildSnapshot) -> Result<WeaponProjectSpec, Buil
         .map(|weapons| WeaponProjectSpec { weapons })
 }
 
+/// The staged recipe snapshots and the fingerprints taken from the encodings they hold.
+struct StagedRecipes {
+    paths: Vec<PathBuf>,
+    selection_fingerprint: String,
+    /// Each recipe's own fingerprint, in selection order.
+    recipe_fingerprints: Vec<String>,
+}
+
+/// Writes each recipe's canonical encoding as its snapshot and fingerprints the selection from
+/// the same bytes, so each recipe is encoded once.
 fn stage_recipe_snapshot_with_progress(
     run_directory: &Path,
     snapshot: &BatchBuildSnapshot,
     progress: &mut impl FnMut(BuildProgress),
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<StagedRecipes, String> {
     let recipe_directory = run_directory.join("recipes");
     fs::create_dir(&recipe_directory).map_err(|error| {
         format!(
@@ -648,15 +889,11 @@ fn stage_recipe_snapshot_with_progress(
             recipe_directory.display()
         )
     })?;
-    let mut paths = Vec::with_capacity(snapshot.request.recipes.len());
-    let total = snapshot.request.recipes.len();
-    for (index, recipe) in snapshot.request.recipes.iter().enumerate() {
-        progress(BuildProgress::artifact(
-            BuildPhase::StagingRecipes,
-            recipe.name.clone(),
-            index,
-            total,
-        ));
+    let recipes = &snapshot.request.recipes;
+    let total = recipes.len();
+    // Names are chosen first, in order, so recipes sharing a slug get the same suffixes.
+    let mut paths = Vec::<PathBuf>::with_capacity(total);
+    for recipe in recipes {
         let slug = recipe.slug();
         let mut suffix = 0u16;
         let path = loop {
@@ -666,33 +903,98 @@ fn stage_recipe_snapshot_with_progress(
                 format!("{slug}-{suffix}.parhelion.json")
             };
             let candidate = recipe_directory.join(file_name);
-            if !candidate.exists() {
+            if !candidate.exists() && !paths.contains(&candidate) {
                 break candidate;
             }
             suffix = suffix.checked_add(1).ok_or_else(|| {
                 format!("Could not allocate staged filename for {:?}", recipe.name)
             })?;
         };
-        write_staged_recipe(recipe, &path).map_err(|error| {
-            format!(
-                "Could not stage normalized recipe {}: {error}",
-                path.display()
-            )
-        })?;
+        paths.push(path);
+    }
+    // A few recipes are encoded, written and hashed at once, and the selection folds them in order.
+    let batch = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .clamp(1, 4);
+    let mut selection = SelectionFingerprint::default();
+    let mut recipe_fingerprints = Vec::with_capacity(total);
+    for (start, chunk) in (0..total)
+        .step_by(batch)
+        .map(|start| (start, start..(start + batch).min(total)))
+    {
+        for index in chunk.clone() {
+            progress(BuildProgress::artifact(
+                BuildPhase::StagingRecipes,
+                recipes[index].name.clone(),
+                start,
+                total,
+            ));
+        }
+        let staged = std::thread::scope(|scope| {
+            chunk
+                .clone()
+                .map(|index| {
+                    let (recipe, path) = (&recipes[index], &paths[index]);
+                    scope.spawn(move || {
+                        let encoded = canonical_recipe(recipe)?;
+                        write_staged_recipe(&encoded, path).map_err(|error| {
+                            format!(
+                                "Could not stage normalized recipe {}: {error}",
+                                path.display()
+                            )
+                        })?;
+                        let own = SelectionFingerprint::of(&encoded);
+                        Ok::<_, String>((encoded, own))
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|writer| {
+                    writer
+                        .join()
+                        .unwrap_or_else(|_| Err("A recipe snapshot writer panicked".to_owned()))
+                })
+                .collect::<Vec<_>>()
+        });
+        for (index, result) in chunk.zip(staged) {
+            let (encoded, own) = result?;
+            selection.add(&encoded);
+            recipe_fingerprints.push(own);
+            progress(BuildProgress::artifact(
+                BuildPhase::StagingRecipes,
+                recipes[index].name.clone(),
+                index + 1,
+                total,
+            ));
+        }
+    }
+    for (index, map) in snapshot.request.maps.iter().enumerate() {
+        let encoded = canonical_map(map)?;
+        let mut name = format!("map-{index}.parhelion.json");
+        while paths.contains(&recipe_directory.join(&name)) {
+            name.insert_str(0, "map-");
+        }
+        let path = recipe_directory.join(name);
+        write_staged_recipe(&encoded, &path)?;
+        selection.add(&encoded);
         paths.push(path);
         progress(BuildProgress::artifact(
             BuildPhase::StagingRecipes,
-            recipe.name.clone(),
-            index + 1,
-            total,
+            map.title.clone(),
+            total + index + 1,
+            total + snapshot.request.maps.len(),
         ));
     }
-    Ok(paths)
+    Ok(StagedRecipes {
+        paths,
+        selection_fingerprint: selection.finish(),
+        recipe_fingerprints,
+    })
 }
 
-fn write_staged_recipe(recipe: &WeaponRecipe, path: &Path) -> Result<(), String> {
-    let mut encoded = recipe.to_json_pretty().map_err(|error| error.to_string())?;
-    encoded.push('\n');
+/// Writes `encoded`, a recipe's canonical encoding, as a staged snapshot ending in a newline.
+/// Installation fingerprints the file without that newline.
+fn write_staged_recipe(encoded: &str, path: &Path) -> Result<(), String> {
     // A staging run is new and exclusively leased until its completion marker is written.
     // Writing the final owned filename avoids abandoned replacement-temp files after a crash.
     let mut file = OpenOptions::new()
@@ -701,6 +1003,7 @@ fn write_staged_recipe(recipe: &WeaponRecipe, path: &Path) -> Result<(), String>
         .open(path)
         .map_err(|error| error.to_string())?;
     file.write_all(encoded.as_bytes())
+        .and_then(|()| file.write_all(b"\n"))
         .and_then(|()| file.sync_all())
         .map_err(|error| error.to_string())
 }
@@ -762,7 +1065,7 @@ fn validate_authored_set(
     }
 
     // `inspect_snapshot` has already authenticated every entry in this list by build
-    // signature, package id, patch id, and canonical file name. A prior generation can
+    // signature, package id, patch id, and recognized file name. A prior generation can
     // legitimately be partial (for example, after adding a new output profile), and each
     // recognized overlay can be independently omitted from the filtered stock view. Do
     // not require an obsolete all-or-nothing artifact count here.
@@ -809,30 +1112,49 @@ fn create_unique_run_directory(root: &Path, slug: &str) -> Result<PathBuf, Strin
         .map_err(|error| format!("Could not allocate a unique staging run directory: {error}"))
 }
 
-enum PackageSource {
+pub(crate) enum PackageSource {
     Direct(PathBuf),
     Filtered(FilteredPackageView),
 }
 
 impl PackageSource {
+    /// Import preparation and compilation must resolve native tags to the same stock bytes.
+    /// Keep the authenticated view alive across the complete conversion batch.
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn stock(package_directory: &Path) -> Result<Self, String> {
+        let inspection = inspect_source(package_directory, true)?;
+        Self::prepare(package_directory, &inspection.ignored_authored_files)
+    }
+
     fn prepare(
         package_directory: &Path,
         ignored_authored_files: &[String],
     ) -> Result<Self, String> {
-        if ignored_authored_files.is_empty() {
+        // Readers of the install project every loaded mod over stock, Parhelion's own and other
+        // tools' alike. Builds read stock alone, so any mod content needs the isolated view.
+        let modded = package_directory
+            .parent()
+            .map(sundial::package_authoring::mod_content::content_files)
+            .transpose()?
+            .is_some_and(|files| !files.is_empty());
+        if ignored_authored_files.is_empty() && !modded {
             return Ok(Self::Direct(package_directory.to_path_buf()));
         }
         FilteredPackageView::create(package_directory, ignored_authored_files).map(Self::Filtered)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         match self {
             Self::Direct(path) => path,
             Self::Filtered(view) => &view.package_directory,
         }
     }
 
-    fn finish<T>(self, result: Result<T, String>, warn: impl FnOnce(String)) -> Result<T, String> {
+    pub(crate) fn finish<T>(
+        self,
+        result: Result<T, String>,
+        warn: impl FnOnce(String),
+    ) -> Result<T, String> {
         let cleanup = match self {
             Self::Direct(_) => Ok(()),
             Self::Filtered(view) => view.close(),
@@ -1224,7 +1546,7 @@ fn validate_source_artifacts_unchanged(
 ) -> Result<(), String> {
     if before != after {
         return Err(
-            "Stock source packages changed while the weapon project was being compiled; discard this staging run and build again"
+            "Stock source packages changed while the weapon project was being compiled. Discard this staging run and build again"
                 .to_owned(),
         );
     }

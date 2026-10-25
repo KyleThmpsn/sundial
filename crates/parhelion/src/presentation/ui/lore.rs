@@ -17,18 +17,15 @@ struct Job {
     receiver: Receiver<Result<Option<LoreEntry>, String>>,
     worker: JoinHandle<()>,
 }
+/// The lore of the shown item, read on a worker. Switching items never waits for an earlier
+/// read: it finishes on its own, and an install waits for it through its [`PackageRead`].
+///
+/// [`PackageRead`]: sundial::ui::model_preview::PackageRead
 #[derive(Default)]
 pub(super) struct Preview {
     source: Option<Source>,
     result: Option<Result<Option<LoreEntry>, String>>,
     job: Option<Job>,
-}
-impl Drop for Preview {
-    fn drop(&mut self) {
-        if let Some(job) = self.job.take() {
-            let _ = job.worker.join();
-        }
-    }
 }
 impl Preview {
     pub(super) fn update(&mut self, ctx: &egui::Context, packages: &Path, item_hash: Option<u32>) {
@@ -57,25 +54,28 @@ impl Preview {
                 );
             }
         }
-        if self.job.is_none() && self.result.is_none() {
-            if let Some(source) = self.source.clone() {
-                let (sender, receiver) = mpsc::channel();
-                let worker_source = source.clone();
-                let ctx = ctx.clone();
-                let worker = thread::spawn(move || {
-                    let result = sundial::investment::load_item_lore(
-                        &worker_source.packages,
-                        worker_source.item_hash,
-                    );
-                    let _ = sender.send(result);
-                    ctx.request_repaint();
-                });
-                self.job = Some(Job {
-                    source,
-                    receiver,
-                    worker,
-                });
-            }
+        if self.job.is_none()
+            && self.result.is_none()
+            && let Some(source) = self.source.clone()
+        {
+            let (sender, receiver) = mpsc::channel();
+            let worker_source = source.clone();
+            let ctx = ctx.clone();
+            let read = sundial::ui::model_preview::PackageRead::start();
+            let worker = thread::spawn(move || {
+                let _read = read;
+                let result = sundial::investment::load_item_lore(
+                    &worker_source.packages,
+                    worker_source.item_hash,
+                );
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            });
+            self.job = Some(Job {
+                source,
+                receiver,
+                worker,
+            });
         }
         if self.job.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));

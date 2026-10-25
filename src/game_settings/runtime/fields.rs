@@ -191,4 +191,25 @@ pub(super) const FIELDS: &[Field] = &[
         kind: Kind::Bool(true),
         help: "Keeps the replicated account record pinned.",
     },
+    Field {
+        path: "/client/cheats",
+        label: "Unlock Cheat Tools",
+        group: "Advanced Runtime",
+        kind: Kind::Bool(false),
+        help: "Unlocks the movement tools and infinite ammo in Sunrise's in-game menu. Progress made while this is on is not saved.",
+    },
+    Field {
+        path: "/core/studio_attach",
+        label: "Allow Studio Attach",
+        group: "Advanced Runtime",
+        kind: Kind::Bool(false),
+        help: "Lets Sunrise Studio attach to the running game. Only programs in your Windows session can connect.",
+    },
+    Field {
+        path: "/client/dump_package_keys",
+        label: "Export Package Keys",
+        group: "Advanced Runtime",
+        kind: Kind::Bool(false),
+        help: "Writes the installed package keys to Sunrise\\exports\\package_keys.bin at startup for Sunrise Studio.",
+    },
 ];

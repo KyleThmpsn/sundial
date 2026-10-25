@@ -6,7 +6,7 @@ fn frame(
     app: &mut PackageAuthoringApp,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -15,8 +15,8 @@ fn frame(
             events,
             ..Default::default()
         },
-        |ctx| {
-            app.draw_perk_workbench(ctx);
+        |ui| {
+            app.draw_perk_workbench(ui);
         },
     )
 }
@@ -53,20 +53,8 @@ fn effect_menu(output: &egui::FullOutput) -> egui::Pos2 {
 }
 
 fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, position: egui::Pos2) {
-    for pressed in [true, false] {
-        frame(
-            ctx,
-            app,
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
+    for events in crate::test_support::driver::tap(position) {
+        frame(ctx, app, events);
     }
 }
 
@@ -76,48 +64,13 @@ fn settle(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::FullOutpu
 }
 
 #[test]
-fn perk_window_waits_for_package_operations_without_consuming_its_draft_or_request() {
-    for installing in [false, true] {
-        let mut app = PackageAuthoringApp::default();
-        app.perk_workbench.initialized = true;
-        app.perk_workbench.open = true;
-        app.perk_workbench
-            .documents
-            .push(Document::new(PerkRecipe::new(), None));
-        app.perk_request = Some(Request::EditChoice {
-            socket: 0,
-            choice: 0,
-        });
-        if installing {
-            app.install_receiver = Some(mpsc::channel().1);
-        } else {
-            app.build_receiver = Some(mpsc::channel().1);
-        }
-        let recipe = app.recipe.clone();
-        let perk = app.perk_workbench.documents[0].recipe.clone();
-        let output = settle(&egui::Context::default(), &mut app);
-        assert!(output.shapes.is_empty());
-        assert_eq!(
-            app.perk_request,
-            Some(Request::EditChoice {
-                socket: 0,
-                choice: 0
-            })
-        );
-        assert_eq!(app.recipe, recipe);
-        assert_eq!(app.perk_workbench.documents[0].recipe, perk);
-        assert!(app.perk_workbench.open);
-    }
-}
-
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for native editor entry and private speed apply"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES for native editor entry and private speed apply"]
 fn native_micro_missile_entry_applies_speed_without_experimental_mode() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let install = std::env::var_os("PARHELION_PROJECTILE_CATALOG_INSTALL")
+    let packages = crate::test_support::stock_packages();
+    let install = std::env::var_os("SUNDIAL_INSTALL")
         .map(PathBuf::from)
         .unwrap_or_else(|| packages.parent().unwrap().to_path_buf());
-    let catalog = InvestmentCatalog::load(&install, false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(&install).unwrap();
     let donor = catalog.weapon_donor(0x23DB_942F).unwrap();
     let mut recipe = WeaponRecipe::new_named_weapon_for_donor(
         "Speed Editor Entry",

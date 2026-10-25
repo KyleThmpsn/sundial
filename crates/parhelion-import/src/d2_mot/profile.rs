@@ -4,19 +4,10 @@ use crate::d2_mot::{
     reader::{Reader, outside, write_json},
     shadowkeep,
 };
+pub use crate::graph::hash;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
-pub fn hash(p: &Value, key: &str) -> Result<u32> {
-    let v = &p[key];
-    let n = if let Some(s) = v.as_str() {
-        u32::from_str_radix(s.trim_start_matches("0x"), 16)?
-    } else {
-        u32::try_from(v.as_u64().with_context(|| format!("missing {key}"))?)?
-    };
-    ensure!(![0, u32::MAX, 0x811C9DC5].contains(&n), "invalid {key}");
-    Ok(n)
-}
 pub fn prepare(profile: &Path, modern: &Path, native: &Path, out: &Path) -> Result<Value> {
     prepare_reusing(profile, modern, native, out, None, &mut |_| {})
 }
@@ -209,7 +200,7 @@ pub(crate) fn prepare_reusing(
             (native, &nd, &native_report, false),
         ] {
             let mut r = Reader::new(packages, output, modern)?;
-            let report = crate::d2_mot::dyes::inspect(&mut r, hash(report, "item_tag")?, modern)?;
+            let report = crate::tiger::dye::inspect(&mut r, hash(report, "item_tag")?, modern)?;
             write_json(&output.join("dyes.json"), &report)?;
             r.finish()?;
         }

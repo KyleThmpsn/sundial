@@ -14,14 +14,20 @@ install -Dm644 "$bundle_dir/$app_id.png" "$icons_dir/$app_id.png"
 # Exec quoting is decoded after Desktop Entry string escaping. Percent signs are field codes.
 escaped_executable=$(printf '%s' "$bin_dir/sundial" | sed 's/\\/\\\\\\\\/g; s/["$`]/\\\\&/g; s/%/%%/g')
 mkdir -p "$applications_dir"
+# The launcher is written beside its destination and renamed over it. A link already at the
+# destination is replaced rather than followed, and an interrupted install keeps the old launcher.
+staged=$(mktemp "$applications_dir/.$app_id.XXXXXX")
+trap 'rm -f -- "$staged"' EXIT
+trap 'rm -f -- "$staged"; exit 1' HUP INT TERM
 while IFS= read -r line || [ -n "$line" ]; do
     case $line in
         # A stable executable avoids launcher existence checks on an unexpanded %% path.
         Exec=*) printf 'Exec=/usr/bin/env -- "%s"\n' "$escaped_executable" ;;
         *) printf '%s\n' "$line" ;;
     esac
-done < "$bundle_dir/$app_id.desktop" > "$applications_dir/$app_id.desktop"
-chmod 644 "$applications_dir/$app_id.desktop"
+done < "$bundle_dir/$app_id.desktop" > "$staged"
+chmod 644 "$staged"
+mv -fT -- "$staged" "$applications_dir/$app_id.desktop"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$applications_dir" >/dev/null 2>&1 || true

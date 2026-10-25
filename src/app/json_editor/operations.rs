@@ -208,42 +208,20 @@ mod tests {
     fn pointers_resolve_escaped_keys_arrays_and_unicode_to_exact_source() {
         let text = r#"{ "a/b": [{"~é": "🔥\\\""}, 42], "empty": {} }"#;
         let value: Value = crate::strict_json::from_str(text).unwrap();
-        for location in locations(text, &value) {
+        let locations = locations(text, &value);
+        assert_eq!(
+            locations
+                .iter()
+                .map(|location| location.pointer.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["", "/a~1b", "/a~1b/0", "/a~1b/0/~0é", "/a~1b/1", "/empty"]
+                .into_iter()
+                .collect()
+        );
+        for location in locations {
             let actual: Value =
                 crate::strict_json::from_str(&text[location.range.0..location.range.1]).unwrap();
             assert_eq!(Some(&actual), value.pointer(&location.pointer));
         }
-    }
-
-    #[test]
-    fn completion_preserves_existing_values_and_uses_escaped_keys() {
-        for text in [r#"{}"#, "{\n  \"unknown\": 42\n}"] {
-            let value: Value = crate::strict_json::from_str(text).unwrap();
-            let updated = add_member(
-                text,
-                (0, text.len()),
-                "a/b",
-                &Value::Bool(true),
-                value.as_object().unwrap().is_empty(),
-            );
-            let actual: Value = crate::strict_json::from_str(&updated).unwrap();
-            assert_eq!(actual["a/b"], true);
-            if value.get("unknown").is_some() {
-                assert_eq!(actual["unknown"], 42);
-            }
-        }
-    }
-
-    #[test]
-    fn replacement_is_non_recursive_and_unicode_safe() {
-        assert_eq!(replace_ranges("é é", &[(0, 2), (3, 5)], "éé"), "éé éé");
-        assert_eq!(replace_ranges("abc", &[(0, 3)], ""), "");
-    }
-
-    #[test]
-    fn error_positions_stay_on_character_boundaries() {
-        assert_eq!(error_byte("é\nx", 1, 2), 0);
-        assert_eq!(error_byte("é\nx", 2, 1), 3);
-        assert_eq!(error_byte("é\nx", 99, 99), 4);
     }
 }

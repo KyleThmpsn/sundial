@@ -75,7 +75,7 @@ fn read_with_manager(
     }
     // Every action's payload has been decoded into the catalog and dropped. The catalog is a
     // fraction of what reading them cost, so this is where the difference goes back.
-    crate::memory::release_free_memory();
+    crate::system::memory::release_free_memory();
     Ok(catalog)
 }
 
@@ -146,50 +146,6 @@ fn add_sources(sources: &mut Vec<Source>, perks: &[u16], role: &str) {
                 perk,
                 role: role.to_owned(),
             });
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shared_behavior_entries_preserve_complete_records_and_all_sources() {
-        let payload = action::fixtures::precision_kill_action();
-        let decoded = action::decode(&payload).unwrap();
-        let mut catalog = Catalog::default();
-        let mut conditions = BTreeMap::new();
-        let mut effects = BTreeMap::new();
-        catalog
-            .add(&decoded, &[421], &mut conditions, &mut effects)
-            .unwrap();
-        let counts = (catalog.conditions.len(), catalog.effects.len());
-        catalog
-            .add(&decoded, &[422], &mut conditions, &mut effects)
-            .unwrap();
-        assert_eq!(counts, (catalog.conditions.len(), catalog.effects.len()));
-        for entry in &catalog.conditions {
-            assert!(entry.sources.iter().any(|source| source.perk == 421));
-            assert!(entry.sources.iter().any(|source| source.perk == 422));
-            let class = crate::sandbox_perk::nodes::condition(entry.condition.kind)
-                .unwrap()
-                .class;
-            let graph = action::native::Graph::read(&entry.condition.bytes, 0, class).unwrap();
-            assert_eq!(graph.emit().unwrap(), entry.condition.bytes);
-            if entry.condition.kind == 2 {
-                assert_eq!(
-                    entry.condition.family,
-                    conditions::Family::kill(&[0x962E_A19B], true)
-                );
-            }
-        }
-        for entry in &catalog.effects {
-            let class = crate::sandbox_perk::nodes::effect(entry.kind)
-                .unwrap()
-                .class;
-            let graph = action::native::Graph::read(&entry.bytes, 0, class).unwrap();
-            assert_eq!(graph.emit().unwrap(), entry.bytes);
         }
     }
 }

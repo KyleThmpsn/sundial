@@ -16,7 +16,8 @@ pub(super) struct SocketRowContext<'a> {
     pub recipe: &'a mut WeaponRecipe,
     pub queries: &'a mut BTreeMap<usize, String>,
     pub page: &'a mut usize,
-    pub plug_selection_mode: PlugSelectionMode,
+    /// The plugs every picker offers, which each picker's Plugs Offered dropdown changes.
+    pub plug_selection_mode: &'a mut PlugSelectionMode,
     pub donor: &'a WeaponDonor,
     pub socket_index: usize,
     pub is_added: bool,
@@ -125,20 +126,6 @@ pub(super) fn draw_socket_picker_row(ui: &mut egui::Ui, mut context: SocketRowCo
     } else {
         controls::draw_active(ui, &mut context, &choices)
     };
-    // Once another socket is edited the build keeps each random socket's default, so one that
-    // names none needs a plug before the item builds.
-    if choices.current_len == 0
-        && !choices.is_overridden
-        && context.donor.sockets[context.socket_index]
-            .randomized_plug_set_index
-            .is_some()
-        && !context.recipe.overrides.socket_columns.is_empty()
-    {
-        ui.colored_label(
-            ui.visuals().warn_fg_color,
-            "Rolls at random with no default. Set a plug to build.",
-        );
-    }
     let RowContinuation::TechnicalFields { scroll_to_header } =
         commands::apply(&mut context, &choices, command)
     else {

@@ -154,7 +154,7 @@ fn plan_character(
     }
     for (slot, hash, native) in candidates {
         let count = &mut counts[usize::from(native)];
-        let fits = inventory_count < crate::account_contract::CHARACTER_INVENTORY_CAPACITY
+        let fits = inventory_count < crate::account::contract::CHARACTER_INVENTORY_CAPACITY
             && *count < replacement.weapon_capacities[usize::from(native)];
         let outcome = if fits {
             inventory_count += 1;

@@ -66,22 +66,6 @@ fn forget_applied_version(library: &Library, id: &str) {
 }
 
 #[test]
-fn materializing_keeps_edits_while_the_bundled_perk_is_unchanged() {
-    let temporary = tempfile::tempdir().unwrap();
-    let library = Library::open(temporary.path().join("perks")).unwrap();
-    assert!(library.materialize_bundled().unwrap().is_none());
-    let bundled = bundled_recipes().unwrap();
-    let mut edited = bundled[0].1.clone();
-    edited.description = "Edited locally".into();
-    let edited = library
-        .save(&edited, Some(bundled[0].0.as_bytes()))
-        .unwrap();
-
-    assert!(library.materialize_bundled().unwrap().is_none());
-    assert_eq!(fs::read(&edited.path).unwrap(), edited.baseline);
-}
-
-#[test]
 fn a_changed_bundled_perk_replaces_the_stale_copy_and_keeps_edits_as_a_duplicate() {
     let temporary = tempfile::tempdir().unwrap();
     let library = Library::open(temporary.path().join("perks")).unwrap();

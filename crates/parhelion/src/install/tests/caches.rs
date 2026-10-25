@@ -39,7 +39,7 @@ fn invalidates_existing_sunrise_build_cache_after_verified_install_and_reports_b
     );
     assert_eq!(
         invalidated.sha256,
-        digest_file(&invalidated.backup_path).unwrap().sha256
+        "5B543F814E66959D3AE2E0872C35BA032AEAFA5CF4ACFD9F81B473B1259750CA"
     );
     assert!(
         fs::read_dir(cache_path.parent().unwrap())

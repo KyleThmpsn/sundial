@@ -45,6 +45,7 @@ struct ProfilePersistence {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CharacterPersistence {
     next_inventory_serial: u32,
+    appearance_identity: Option<(u8, u8)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +56,7 @@ struct ItemPersistence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SqliteAccountDocument {
+    schema: super::Schema,
     inventory_state: super::inventory_state::InventoryState,
     progression: super::progression::Progression,
     entitlements: serde_json::Value,
@@ -83,6 +85,18 @@ pub(crate) enum SqliteAccountDocumentLoad {
 }
 
 impl SqliteAccountDocument {
+    pub(crate) fn schema(&self) -> super::Schema {
+        self.schema
+    }
+
+    pub(crate) fn appearance_editable(&self, index: usize) -> bool {
+        self.characters
+            .characters()
+            .get(index)
+            .and_then(|character| self.character_persistence.get(&character.id))
+            .is_some_and(|persistence| persistence.appearance_identity.is_none())
+    }
+
     pub(super) fn preserved_rows(&self, table: &str) -> &[super::writer::NativeRow] {
         self.preserved_rows.get(table).map_or(&[], Vec::as_slice)
     }
@@ -105,6 +119,19 @@ impl SqliteAccountDocument {
     }
 
     pub(super) fn validate_native_edits(&self, db: &Connection) -> Result<(), SqliteAccountError> {
+        for character in self.characters.characters() {
+            if let Some(identity) = self
+                .character_persistence
+                .get(&character.id)
+                .and_then(|p| p.appearance_identity)
+                && character.metadata.map(|m| (m.race, m.gender)) != Some(identity)
+            {
+                return Err(SqliteAccountError::invalid_data(
+                    "characters.appearance_header",
+                    "Race and gender cannot be changed while a saved native appearance is present",
+                ));
+            }
+        }
         super::runtime::validate(&self.runtime)?;
         let mut view = serde_json::json!({"state": self.runtime});
         if self.entitlements != super::entitlements::load(db)? {
@@ -538,6 +565,7 @@ fn load_in_transaction(
     let item_persistence = metadata::items(connection, &snapshot)?;
     Ok(SqliteAccountDocumentLoad::Loaded(Box::new(
         SqliteAccountDocument {
+            schema: snapshot.schema,
             inventory_state: super::inventory_state::InventoryState::load(connection)?,
             progression: super::progression::Progression::load(connection)?,
             entitlements: super::entitlements::load(connection)?,
@@ -672,6 +700,9 @@ fn load_preserved_rows(
 
 impl crate::persistence::native_account::NativeAccountDocument for SqliteAccountDocument {
     const LABEL: &'static str = "investment.sqlite3";
+    fn appearance_editable(&self, index: usize) -> bool {
+        Self::appearance_editable(self, index)
+    }
     fn profile(&self) -> &ProfileState {
         Self::profile(self)
     }

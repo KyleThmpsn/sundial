@@ -1,10 +1,52 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod scope;
+pub(super) use scope::Lens;
 
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub attributes: Vec<[f32; 10]>,
+    pub colors: Vec<[u8; 4]>,
     pub groups: Vec<(u32, Vec<[u16; 3]>)>,
+    pub surfaces: BTreeMap<u32, Surface>,
+    pub omitted: Vec<Value>,
+    pub weights: Vec<[u8; 8]>,
+    pub bones: u32,
+    pub motion: String,
+}
+
+pub struct Surface {
+    pub material: u32,
+    pub model: u32,
+    pub entity: u32,
+    pub stage: u8,
+    pub transform: [f32; 16],
+    pub scale: [f32; 3],
+    pub offset: [f32; 3],
+    pub has_colors: bool,
+    pub lens: Option<Lens>,
+    pub cutout: Option<Lens>,
+}
+
+impl Surface {
+    pub fn native_stage(&self) -> u8 {
+        match self.stage {
+            0 => 0,
+            2 => 1,
+            4 => 3,
+            8 => 7,
+            13 => 12,
+            15 => {
+                if self.lens.as_ref().is_some_and(|lens| lens.artwork) {
+                    14
+                } else {
+                    7
+                }
+            }
+            17 => 16,
+            _ => unreachable!(),
+        }
+    }
 }
 fn transform(v: [f32; 3], m: &[f32; 16], point: bool) -> [f32; 3] {
     std::array::from_fn(|i| {
@@ -14,11 +56,17 @@ fn transform(v: [f32; 3], m: &[f32; 16], point: bool) -> [f32; 3] {
             + if point { m[i * 4 + 3] } else { 0. }
     })
 }
-pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
+pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mesh> {
     let mut out = Mesh {
         positions: vec![],
         attributes: vec![],
+        colors: vec![],
         groups: vec![],
+        surfaces: BTreeMap::new(),
+        omitted: vec![],
+        weights: vec![],
+        bones: rig.bones,
+        motion: rig.program.clone(),
     };
     for entry in entries {
         let tag = hash(entry, "model")?;
@@ -40,8 +88,28 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                 "Marathon vertex stride differs"
             );
             let p = r.tag(r.reference(pt)?, None)?;
+            let weights = rig.vertices(r, &b, m, hash(entry, "entity")?, &p, &ph)?;
             let uv = r.tag(r.reference(ut)?, None)?;
             let ib = r.tag(r.reference(it)?, None)?;
+            let color_tag = b.u32(m + 20)?;
+            let colors = if [0, u32::MAX, 0x811c9dc5].contains(&color_tag) {
+                None
+            } else {
+                let h = r.tag(color_tag, None)?;
+                ensure!(
+                    h.u16(4)? == 4 && h.u16(6)? == 5,
+                    "Unsupported Marathon vertex-color format"
+                );
+                let data = r.tag(r.reference(color_tag)?, None)?;
+                ensure!(
+                    !data.0.is_empty()
+                        && data.0.len().is_multiple_of(4)
+                        && data.0.len() == h.u32(0)? as usize
+                        && data.0.len() / 4 <= p.0.len() / 24,
+                    "Invalid Marathon vertex-color buffer"
+                );
+                Some(data)
+            };
             ensure!(
                 p.0.len() == ph.u32(0)? as usize
                     && uv.0.len() == uh.u32(0)? as usize
@@ -64,301 +132,247 @@ pub fn read(r: &mut Reader, entries: &[Value]) -> Result<Mesh> {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let parts = b.array(m + 32, 40, Some(0x808087D1))?;
+            let aperture = scope::read(r, entry, &b, m, &parts, (&p, &indices, width))?;
             let mut selected = vec![];
             let mut seen = BTreeSet::new();
-            // Opaque base and inventory decals. Lighting and compute records repeat their ranges.
-            for stage in [0, 2] {
+            for stage in 0..25 {
+                let start = b.u16(m + 0x30 + stage * 2)? as usize;
+                let end = b.u16(m + 0x32 + stage * 2)? as usize;
+                let records = parts.get(start..end).context("part stage range")?;
+                if records.is_empty() {
+                    continue;
+                }
+                let optical = aperture
+                    .as_ref()
+                    .is_some_and(|lens| stage == 15 || (stage == 17 && lens.artwork));
+                if ![0, 2, 4, 8, 13].contains(&stage) && !optical {
+                    let active = records
+                        .iter()
+                        .filter(|part| b.u8(**part + 33).is_ok_and(|lod| lod <= 3))
+                        .count();
+                    if active > 0 {
+                        out.omitted.push(json!({"model":format!("{tag:08X}"),"stage":stage,"draws":active,"reason":if stage == 24 { "Source skinning is evaluated by the native vertex program" } else { "Source renderer pass has no native adapter" }}));
+                    }
+                    continue;
+                }
                 ensure!(
                     b.u8(m + 0x64 + stage)? == 7,
                     "unhandled Marathon input layout"
                 );
-                let start = b.u16(m + 0x30 + stage * 2)? as usize;
-                let end = b.u16(m + 0x32 + stage * 2)? as usize;
                 for &part in parts.get(start..end).context("part stage range")? {
                     if b.u8(part + 33)? > 3 {
                         continue;
                     }
                     let start = b.u32(part + 8)? as usize;
                     let count = b.u32(part + 12)? as usize;
-                    if !seen.insert((start, count)) {
+                    let material = b.u32(part)?;
+                    // Equal index ranges can carry different decal, shadow or
+                    // transparent work. Only an identical draw is redundant.
+                    if !seen.insert((stage, material, start, count)) {
                         continue;
                     }
-                    let values = indices
-                        .get(start..start + count)
-                        .context("draw outside buffer")?;
-                    let faces = match b.u16(part + 6)? {
-                        5 => crate::d2_mot::geometry::triangles(
-                            values,
-                            p.0.len() / 24,
-                            if width == 2 { 65535 } else { u32::MAX },
-                        )?,
-                        3 => {
-                            ensure!(
-                                count % 3 == 0
-                                    && values.iter().all(|i| (*i as usize) < p.0.len() / 24),
-                                "invalid triangle list"
-                            );
-                            values.chunks_exact(3).map(|f| [f[0], f[1], f[2]]).collect()
-                        }
-                        n => anyhow::bail!("unhandled Marathon primitive {n} in {tag:08X}"),
-                    };
-                    selected.push((b.u32(part)?, faces));
+                    let faces = faces(&b, part, &indices, width, p.0.len() / 24)
+                        .with_context(|| format!("Marathon model {tag:08X}, stage {stage}"))?;
+                    if faces.is_empty() {
+                        continue;
+                    }
+                    let key =
+                        u32::try_from(out.surfaces.len()).context("Marathon material count")?;
+                    let scale = [b.f32(0xa0)?, b.f32(0xa4)?, b.f32(0xa8)?];
+                    let offset = [b.f32(0xb0)?, b.f32(0xb4)?, b.f32(0xb8)?];
+                    ensure!(
+                        scale.iter().all(|v| v.is_finite() && *v > 0.)
+                            && offset.iter().all(|v| v.is_finite()),
+                        "Invalid source model decode transform"
+                    );
+                    out.surfaces.insert(
+                        key,
+                        Surface {
+                            material,
+                            model: tag,
+                            entity: hash(entry, "entity")?,
+                            stage: stage as u8,
+                            transform: mat,
+                            scale,
+                            offset,
+                            has_colors: colors.is_some(),
+                            lens: aperture
+                                .as_ref()
+                                .filter(|lens| {
+                                    stage == 15
+                                        || (stage == 8 && scope::covers(lens, &b, &p, &faces))
+                                })
+                                .map(|lens| lens.placed(&mat, stage == 15)),
+                            cutout: aperture
+                                .as_ref()
+                                .filter(|lens| {
+                                    !lens.outline.is_empty() && matches!(stage, 0 | 4 | 13)
+                                })
+                                .map(|lens| lens.placed(&mat, false)),
+                        },
+                    );
+                    selected.push((key, faces));
                 }
             }
-            let used = selected
-                .iter()
-                .flat_map(|(_, f)| f.iter().flatten().copied())
-                .collect::<BTreeSet<_>>();
-            let base = out.positions.len();
-            ensure!(
-                base + used.len() < 65535,
-                "assembled model exceeds 16-bit vertex capacity"
-            );
-            let map = used
-                .iter()
-                .enumerate()
-                .map(|(i, v)| (*v, (base + i) as u16))
-                .collect::<BTreeMap<_, _>>();
-            for v in used {
-                let o = v as usize * 24;
-                // This adapter bakes bind-pose positions to native root zero. W is a
-                // skinning selector and does not change the stored XYZ coordinates.
-                let mut xyz = [0.; 3];
-                let mut normal = [0.; 3];
-                let mut tangent = [0.; 3];
-                let mut tex = [0.; 2];
-                for a in 0..3 {
-                    xyz[a] = (p.i16(o + a * 2)? as f32 / 32767.).max(-1.) * b.f32(0xa0 + a * 4)?
-                        + b.f32(0xb0 + a * 4)?;
-                    normal[a] = (p.i16(o + 8 + a * 2)? as f32 / 32767.).max(-1.);
-                    tangent[a] = (p.i16(o + 16 + a * 2)? as f32 / 32767.).max(-1.);
-                }
-                for (a, value) in tex.iter_mut().enumerate() {
-                    *value = (uv.i16(v as usize * 4 + a * 2)? as f32 / 32767.).max(-1.)
-                        * b.f32(0xc0 + a * 4)?
-                        + b.f32(0xc8 + a * 4)?;
-                }
-                xyz = transform(xyz, &mat, true);
-                normal = transform(normal, &mat, false);
-                tangent = transform(tangent, &mat, false);
-                ensure!(
-                    xyz.iter()
-                        .chain(normal.iter())
-                        .chain(tangent.iter())
-                        .chain(tex.iter())
-                        .all(|v| v.is_finite()),
-                    "nonfinite decoded vertex"
-                );
-                out.positions.push(xyz);
-                out.attributes.push([
-                    tex[0],
-                    tex[1],
-                    normal[0],
-                    normal[1],
-                    normal[2],
-                    p.i16(o + 14)? as f32 / 32767.,
-                    tangent[0],
-                    tangent[1],
-                    tangent[2],
-                    p.i16(o + 22)? as f32 / 32767.,
-                ]);
-            }
-            for (mat, faces) in selected {
-                if !faces.is_empty() {
-                    out.groups
-                        .push((mat, faces.iter().map(|f| f.map(|i| map[&i])).collect()));
-                }
-            }
+            append(
+                &mut out,
+                &b,
+                &mat,
+                &p,
+                &uv,
+                colors.as_deref(),
+                &weights,
+                selected,
+            )?;
         }
     }
     ensure!(!out.groups.is_empty(), "no render geometry");
     Ok(out)
 }
-pub struct Encoded {
-    pub header: Vec<u8>,
-    pub streams: [Vec<u8>; 3],
-    pub patches: Vec<Value>,
+type Draw = (u32, Vec<[u32; 3]>);
+
+fn faces(
+    model: &Payload,
+    part: usize,
+    indices: &[u32],
+    width: usize,
+    vertices: usize,
+) -> Result<Vec<[u32; 3]>> {
+    let start = model.u32(part + 8)? as usize;
+    let count = model.u32(part + 12)? as usize;
+    let values = indices
+        .get(start..start + count)
+        .context("draw outside buffer")?;
+    match model.u16(part + 6)? {
+        5 => crate::tiger::geometry::triangles(
+            values,
+            vertices,
+            if width == 2 { 65535 } else { u32::MAX },
+        ),
+        3 => {
+            ensure!(
+                count.is_multiple_of(3) && values.iter().all(|i| (*i as usize) < vertices),
+                "invalid triangle list"
+            );
+            Ok(values.chunks_exact(3).map(|f| [f[0], f[1], f[2]]).collect())
+        }
+        n => anyhow::bail!("unhandled Marathon primitive {n}"),
+    }
 }
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
-pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encoded> {
-    let lo = std::array::from_fn::<_, 3, _>(|a| {
-        mesh.positions
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::INFINITY, f32::min)
-    });
-    let hi = std::array::from_fn::<_, 3, _>(|a| {
-        mesh.positions
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::NEG_INFINITY, f32::max)
-    });
-    let center = std::array::from_fn::<_, 3, _>(|a| (lo[a] + hi[a]) / 2.);
-    let scale = (0..3)
-        .map(|a| (hi[a] - lo[a]) / 2.)
-        .fold(0.000001, f32::max);
-    let ulo = std::array::from_fn::<_, 2, _>(|a| {
-        mesh.attributes
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::INFINITY, f32::min)
-    });
-    let uhi = std::array::from_fn::<_, 2, _>(|a| {
-        mesh.attributes
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::NEG_INFINITY, f32::max)
-    });
-    let us = std::array::from_fn::<_, 2, _>(|a| ((uhi[a] - ulo[a]) / 2.).max(0.000001));
-    let uc = std::array::from_fn::<_, 2, _>(|a| (uhi[a] + ulo[a]) / 2.);
-    let quant = |v: f32| ((v * 32767.).round().clamp(-32767., 32767.) as i16).to_le_bytes();
-    let mut positions = vec![];
-    let mut attributes = vec![];
-    let mut indices = vec![];
-    for (v, a) in mesh.positions.iter().zip(&mesh.attributes) {
-        for i in 0..3 {
-            positions.extend(quant((v[i] - center[i]) / scale));
-        }
-        positions.extend(0u16.to_le_bytes());
-        for i in 0..2 {
-            attributes.extend(quant((a[i] - uc[i]) / us[i]));
-        }
-        for v in &a[2..] {
-            attributes.extend(quant(*v));
-        }
-        attributes.extend([0; 4]);
-    }
-    let mut records = vec![];
-    let mut patches = vec![
-        json!({"offset":0xb0,"symbol":"positions-header"}),
-        json!({"offset":0xb4,"symbol":"attributes-header"}),
-        json!({"offset":0xc0,"symbol":"indices-header"}),
-    ];
-    let mut ranges = vec![0u16];
-    for stage in 0..23 {
-        if stage == 0 || stage == 3 {
-            for (mat, faces) in &mesh.groups {
-                let mut rec = vec![0u8; 32];
-                put(&mut rec, 0, &u32::MAX.to_le_bytes())?;
-                put(&mut rec, 4, &u16::MAX.to_le_bytes())?;
-                put(&mut rec, 6, &5u16.to_le_bytes())?;
-                put(&mut rec, 8, &(indices.len() as u32 / 2).to_le_bytes())?;
-                put(&mut rec, 12, &(faces.len() as u32 * 4).to_le_bytes())?;
-                put(&mut rec, 16, &(faces.len() as u32).to_le_bytes())?;
-                // These static assemblies use the donors' base variant and
-                // native opaque weapon flags, rather than an absent variant.
-                put(&mut rec, 20, &0u16.to_le_bytes())?;
-                put(&mut rec, 22, &(records.len() as u16).to_le_bytes())?;
-                put(&mut rec, 24, &5u16.to_le_bytes())?;
-                rec[26] = 0;
-                rec[27] = 0;
-                rec[28] = 0x7f;
-                // The native draw iterator advances by this group length.
-                // Zero leaves it on the first record indefinitely.
-                rec[29] = 1;
-                let symbol = if stage == 0 {
-                    format!("material-{mat:08X}")
-                } else {
-                    "material-shadow".into()
-                };
-                patches.push(json!({"offset":0x150+records.len()*32,"symbol":symbol}));
-                records.push(rec);
-                for face in faces {
-                    for i in face {
-                        indices.extend(i.to_le_bytes());
-                    }
-                    indices.extend(u16::MAX.to_le_bytes());
-                }
-            }
-        }
-        ranges.push(u16::try_from(records.len())?);
-    }
-    let mut h = vec![0; 0x150 + records.len() * 32];
-    put(&mut h, 0, &native.bytes::<160>(0)?)?;
-    let len = h.len() as u64;
-    put(&mut h, 0, &len.to_le_bytes())?;
-    put(&mut h, 16, &1u64.to_le_bytes())?;
-    put(&mut h, 24, &(0xa0i64 - 24).to_le_bytes())?;
-    put(&mut h, 0x40, &1u32.to_le_bytes())?;
-    for (a, value) in center.iter().enumerate() {
-        put(&mut h, 0x50 + a * 4, &scale.to_le_bytes())?;
-        put(&mut h, 0x60 + a * 4, &value.to_le_bytes())?;
-    }
-    put(&mut h, 0x6c, &scale.to_le_bytes())?;
-    let radius = mesh
-        .positions
+
+#[allow(clippy::too_many_arguments)]
+fn append(
+    out: &mut Mesh,
+    b: &Payload,
+    mat: &[f32; 16],
+    p: &Payload,
+    uv: &Payload,
+    colors: Option<&Payload>,
+    weights: &[[u8; 8]],
+    selected: Vec<Draw>,
+) -> Result<()> {
+    let used = selected
         .iter()
-        .map(|p| {
-            (0..3)
-                .map(|a| (p[a] - center[a]).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        })
-        .fold(0f32, f32::max)
-        + scale / 32767.;
-    for offset in [0x20, 0x24, 0x8c] {
-        put(&mut h, offset, &radius.to_le_bytes())?;
+        .flat_map(|(_, f)| f.iter().flatten().copied())
+        .collect::<BTreeSet<_>>();
+    let base = out.positions.len();
+    ensure!(
+        base + used.len() < 65535,
+        "assembled model exceeds 16-bit vertex capacity"
+    );
+    let map = used
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (*v, (base + i) as u16))
+        .collect::<BTreeMap<_, _>>();
+    for v in used {
+        let o = v as usize * 24;
+        // XYZ remains in source bind space. The palette retains every influence,
+        // including an unskinned attachment's named parent mechanism.
+        let mut xyz = [0.; 3];
+        let mut normal = [0.; 3];
+        let mut tangent = [0.; 3];
+        let mut tex = [0.; 2];
+        for a in 0..3 {
+            xyz[a] = (p.i16(o + a * 2)? as f32 / 32767.).max(-1.) * b.f32(0xa0 + a * 4)?
+                + b.f32(0xb0 + a * 4)?;
+            normal[a] = (p.i16(o + 8 + a * 2)? as f32 / 32767.).max(-1.);
+            tangent[a] = (p.i16(o + 16 + a * 2)? as f32 / 32767.).max(-1.);
+        }
+        for (a, value) in tex.iter_mut().enumerate() {
+            *value = (uv.i16(v as usize * 4 + a * 2)? as f32 / 32767.).max(-1.)
+                * b.f32(0xc0 + a * 4)?
+                + b.f32(0xc8 + a * 4)?;
+        }
+        xyz = transform(xyz, mat, true);
+        normal = transform(normal, mat, false);
+        tangent = transform(tangent, mat, false);
+        ensure!(
+            xyz.iter()
+                .chain(normal.iter())
+                .chain(tangent.iter())
+                .chain(tex.iter())
+                .all(|v| v.is_finite()),
+            "nonfinite decoded vertex"
+        );
+        out.positions.push(xyz);
+        out.weights.push(weights[v as usize]);
+        // The source vertex program clamps SV_VertexID to the last
+        // color row. Reordering the geometry must reorder that lookup.
+        out.colors.push(if let Some(colors) = colors {
+            colors.bytes::<4>((v as usize).min(colors.0.len() / 4 - 1) * 4)?
+        } else {
+            [0; 4]
+        });
+        out.attributes.push([
+            tex[0],
+            tex[1],
+            normal[0],
+            normal[1],
+            normal[2],
+            p.i16(o + 14)? as f32 / 32767.,
+            tangent[0],
+            tangent[1],
+            tangent[2],
+            p.i16(o + 22)? as f32 / 32767.,
+        ]);
     }
-    for (a, value) in center.iter().enumerate() {
-        put(&mut h, 0x80 + a * 4, &value.to_le_bytes())?;
+    for (mat, faces) in selected {
+        if !faces.is_empty() {
+            out.groups
+                .push((mat, faces.iter().map(|f| f.map(|i| map[&i])).collect()));
+        }
     }
-    for a in 0..2 {
-        put(&mut h, 0x70 + a * 4, &us[a].to_le_bytes())?;
-        put(&mut h, 0x78 + a * 4, &uc[a].to_le_bytes())?;
-    }
-    put(&mut h, 0x9c, &0x80809fbdu32.to_le_bytes())?;
-    put(&mut h, 0xa0, &1u64.to_le_bytes())?;
-    put(&mut h, 0xa8, &0x80807378u64.to_le_bytes())?;
-    put(&mut h, 0xb0, &native.bytes::<136>(native_mesh)?)?;
-    for o in [0xb0, 0xb4, 0xb8, 0xc0] {
-        put(&mut h, o, &u32::MAX.to_le_bytes())?;
-    }
-    put(&mut h, 0xc8, &(records.len() as u64).to_le_bytes())?;
-    put(&mut h, 0xd0, &(0x140i64 - 0xd0).to_le_bytes())?;
-    for (i, n) in ranges.iter().enumerate() {
-        put(&mut h, 0xd8 + i * 2, &n.to_le_bytes())?;
-    }
-    for i in 0..23 {
-        put(
-            &mut h,
-            0x108 + i * 2,
-            &(if [0, 3].contains(&i) {
-                139u16
-            } else {
-                u16::MAX
-            })
-            .to_le_bytes(),
-        )?;
-    }
-    put(&mut h, 0x13c, &0x80809fbdu32.to_le_bytes())?;
-    put(&mut h, 0x140, &(records.len() as u64).to_le_bytes())?;
-    put(&mut h, 0x148, &0x8080737eu64.to_le_bytes())?;
-    for (i, r) in records.iter().enumerate() {
-        put(&mut h, 0x150 + i * 32, r)?;
-    }
-    Ok(Encoded {
-        header: h,
-        streams: [positions, attributes, indices],
-        patches,
-    })
+    Ok(())
+}
+
+pub use crate::presentation::geometry::Encoded;
+pub fn encode(mesh: &Mesh, native: &Payload, native_mesh: usize) -> Result<Encoded> {
+    crate::presentation::geometry::encode_source_passes(
+        &crate::presentation::geometry::Mesh {
+            positions: mesh.positions.clone(),
+            attributes: mesh.attributes.clone(),
+            groups: mesh
+                .groups
+                .iter()
+                .map(|(m, f)| (*m, f.iter().map(|f| f.map(u32::from)).collect()))
+                .collect(),
+            weights: mesh.weights.clone(),
+            bones: mesh.bones,
+        },
+        native,
+        native_mesh,
+        &mesh
+            .surfaces
+            .iter()
+            .map(|(key, surface)| (*key, surface.native_stage()))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn attachment_translation_does_not_move_normals() {
-        let mut m = [0.; 16];
-        m[0] = 1.;
-        m[5] = 1.;
-        m[10] = 1.;
-        m[3] = 9.;
-        assert_eq!(transform([1., 2., 3.], &m, true), [10., 2., 3.]);
-        assert_eq!(transform([1., 2., 3.], &m, false), [1., 2., 3.]);
-    }
     #[test]
     #[expect(
         clippy::cognitive_complexity,
@@ -372,13 +386,51 @@ mod tests {
                 [1., 2., 0., 0., 1., 1., 1., 0., 0., 1.],
                 [-1., 1., 0., 0., 1., 1., 1., 0., 0., 1.],
             ],
-            groups: vec![(123, vec![[0, 1, 2]])],
+            colors: vec![[0; 4]; 3],
+            groups: vec![(123, vec![[0, 1, 2]]), (124, vec![[0, 1, 2]])],
+            surfaces: [(123, 0), (124, 4)]
+                .into_iter()
+                .map(|(key, stage)| {
+                    (
+                        key,
+                        Surface {
+                            material: key,
+                            model: 1,
+                            entity: 2,
+                            stage,
+                            transform: [0.; 16],
+                            scale: [1.; 3],
+                            offset: [0.; 3],
+                            has_colors: false,
+                            lens: None,
+                            cutout: None,
+                        },
+                    )
+                })
+                .collect(),
+            omitted: vec![],
+            weights: vec![],
+            bones: 1,
+            motion: String::new(),
         };
+        // A native carrier has an opaque body record, including its activation group.
+        let mut carrier = vec![0; 0x170];
+        carrier[0xc8..0xd0].copy_from_slice(&1u64.to_le_bytes());
+        carrier[0xd0..0xd8].copy_from_slice(&0x70u64.to_le_bytes());
+        carrier[0x140..0x148].copy_from_slice(&1u64.to_le_bytes());
+        carrier[0x148..0x14c].copy_from_slice(&0x8080737eu32.to_le_bytes());
+        for stage in 1..24 {
+            carrier[0xb0 + 40 + stage * 2..0xb0 + 42 + stage * 2]
+                .copy_from_slice(&1u16.to_le_bytes());
+        }
+        carrier[0x15c..0x160].copy_from_slice(&3u32.to_le_bytes());
+        carrier[0x160..0x164].copy_from_slice(&1u32.to_le_bytes());
+        carrier[0x16d] = 1;
         let Encoded {
             header: bytes,
             streams,
             patches,
-        } = encode(&mesh, &Payload(vec![0; 0x150]), 0xb0).unwrap();
+        } = encode(&mesh, &Payload(carrier), 0xb0).unwrap();
         let h = Payload(bytes);
         let p = Payload(streams[0].clone());
         let a = Payload(streams[1].clone());

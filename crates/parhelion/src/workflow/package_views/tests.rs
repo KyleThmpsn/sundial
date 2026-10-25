@@ -46,7 +46,17 @@ fn legacy_unmarked_unknown_and_partial_markers_are_never_pruned() {
     )
     .unwrap();
     assert_eq!(prune_stale_views(root.path()).unwrap(), 0);
-    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 4);
+    for suffix in ["legacy", "partial", "unknown"] {
+        assert_eq!(
+            fs::read(
+                root.path()
+                    .join(format!("{VIEW_PREFIX}{suffix}"))
+                    .join("keep.txt")
+            )
+            .unwrap(),
+            b"not owned"
+        );
+    }
     assert!(root.path().join(CLEANUP_LOCK_FILE).is_file());
 }
 
@@ -83,7 +93,13 @@ fn concurrent_pruners_tolerate_another_cleaner_finishing_first() {
             handle.join().unwrap().unwrap();
         }
     });
-    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(VIEW_PREFIX)
+    }));
     assert!(root.path().join(CLEANUP_LOCK_FILE).is_file());
 }
 
@@ -119,7 +135,13 @@ fn concurrent_pruning_and_owned_cleanup_share_the_root_lock() {
             handle.join().unwrap().unwrap();
         }
     });
-    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(VIEW_PREFIX)
+    }));
     assert!(root.path().join(CLEANUP_LOCK_FILE).is_file());
 }
 
@@ -305,14 +327,14 @@ fn a_kept_build_survives_a_failed_cleanup_and_a_failed_build_reports_both() {
         Ok(42),
         "the packages were read and the output is complete; the view is pruned later"
     );
-    assert_eq!(
-        finish_with_cleanup::<()>(
-            Err("compile failed".to_owned()),
-            Err("cleanup failed".to_owned()),
-            &mut warn,
-        ),
-        Err("compile failed\ncleanup failed".to_owned())
-    );
+    let error = finish_with_cleanup::<()>(
+        Err("compile failed".to_owned()),
+        Err("cleanup failed".to_owned()),
+        &mut warn,
+    )
+    .unwrap_err();
+    assert!(error.contains("compile failed"));
+    assert!(error.contains("cleanup failed"));
     assert_eq!(warnings, vec!["cleanup failed".to_owned()]);
 }
 

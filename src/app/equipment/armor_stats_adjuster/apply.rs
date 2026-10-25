@@ -130,7 +130,7 @@ pub(super) fn apply_preview(app: &mut SundialApp, state: &mut State, character_i
             state.source_key = None;
             state.input = None;
             state.preview = None;
-            state.preview_task = None;
+            state.retire_preview_task();
             state.preview_due_at = None;
             state.preserve_feedback_once = true;
         }
@@ -173,9 +173,8 @@ pub(super) fn format_shortfalls(shortfalls: [u16; 6]) -> String {
     armor_stat_allocation::STAT_NAMES
         .into_iter()
         .zip(shortfalls)
-        .filter_map(|(name, shortfall)| {
-            (shortfall > 0).then(|| format!("{name} {shortfall} short"))
-        })
+        .filter(|&(_name, shortfall)| shortfall > 0)
+        .map(|(name, shortfall)| format!("{name} {shortfall} short"))
         .collect::<Vec<_>>()
         .join(" · ")
 }

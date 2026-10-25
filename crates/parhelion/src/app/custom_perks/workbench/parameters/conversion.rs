@@ -59,7 +59,9 @@ impl PerkEditor {
             .filter(|(prepared, _)| *prepared == input)
         {
             match result {
-                // Converting is always the reader's choice, even when the program is exact.
+                // The effect's card already edits an exact program in place, and its first edit
+                // converts it, so only a conversion that leaves settings behind is offered here.
+                Ok(preview) if preview.fidelity.as_ref().is_ok_and(Vec::is_empty) => {}
                 Ok(preview) => {
                     if let decompile::Recovery::NativeForm(reason) = &preview.recovery {
                         ui.small("Native Form").on_hover_text(reason);
@@ -100,7 +102,7 @@ impl PerkEditor {
             self.worker = Some(thread::spawn(move || {
                 let result = open_shadowkeep_package_manager(&packages)
                     .and_then(|manager| prepare(&manager, &loaded, &input));
-                let _ = sender.send(PrivatePerkGraphEvent::Preview(input, result));
+                let _ = sender.send(PrivatePerkGraphEvent::Preview(Box::new((input, result))));
                 repaint.request_repaint();
             }));
         }
@@ -128,7 +130,7 @@ fn prepare(
     };
     let mut payload =
         effective_action(loaded.action_tag, &loaded.action_payload, input, &registry)?;
-    let graphs = projectile::resolve(manager, &stock, &input.projectiles)?;
+    let graphs = entity::resolve(manager, &stock, &input.projectiles)?;
     for (source, effective) in stock.graphs.iter().zip(&graphs) {
         for &offset in &effective.action_offsets {
             let field = payload
@@ -366,7 +368,7 @@ fn transfer_values(
         let mut copied = false;
         for asset in program.assets_mut().filter(|asset| asset.graph == *tag) {
             let mut value = value.clone();
-            value.locator.graph_tag = Some(*tag);
+            value.locator.graph_tag = Some((*tag).into());
             asset.values.push(value);
             copied = true;
         }

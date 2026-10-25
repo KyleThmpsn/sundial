@@ -20,11 +20,15 @@ const LEVEL: flate2::Compression = flate2::Compression::fast();
 /// The two bytes every deflate stream in gzip framing starts with.
 const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
 
-/// Writes `value` as deflated JSON. The writer is wrapped so the encoder's output reaches the
-/// file in whole blocks instead of one write per token.
+/// Writes `value` as deflated JSON. Both sides of the encoder are buffered: the JSON writer makes
+/// one call per token, which the encoder is slow to take one at a time, and the file should get
+/// whole blocks. Unbuffered, the catalog took ten seconds longer to write.
 pub(crate) fn write<W: Write, T: Serialize>(writer: W, value: &T) -> Result<(), String> {
     let mut encoder = flate2::write::GzEncoder::new(std::io::BufWriter::new(writer), LEVEL);
-    serde_json::to_writer(&mut encoder, value).map_err(|error| error.to_string())?;
+    let mut tokens = std::io::BufWriter::with_capacity(1 << 16, &mut encoder);
+    serde_json::to_writer(&mut tokens, value).map_err(|error| error.to_string())?;
+    tokens.flush().map_err(|error| error.to_string())?;
+    drop(tokens);
     encoder
         .finish()
         .map_err(|error| error.to_string())?

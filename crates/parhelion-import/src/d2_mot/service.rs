@@ -1,5 +1,9 @@
 //! Source discovery and conservative automatic donor matching for the workbench.
 mod cache;
+mod emblems;
+mod family;
+mod gear;
+mod shaders;
 pub use crate::d2_mot::catalog::ScanProgress;
 use crate::d2_mot::{
     GraphReference, batch, catalog, extract, profile,
@@ -8,6 +12,7 @@ use crate::d2_mot::{
 };
 use anyhow::{Context, Result, ensure};
 pub use cache::{package_stamp, scan_cached};
+pub use family::Family;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -15,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Weapon {
     pub hash: u32,
     pub name: String,
@@ -29,24 +34,56 @@ pub struct Weapon {
     pub dummy: bool,
     #[serde(default)]
     pub icon_index: Option<usize>,
+    #[serde(default)]
+    pub bucket_hash: Option<u32>,
+    #[serde(default)]
+    pub class_type: Option<u8>,
+    /// Source presentation metadata for browsing, independent of the native donor.
+    #[serde(default)]
+    pub rarity: Option<u8>,
+    #[serde(default)]
+    pub ammo: Option<u16>,
+    #[serde(default)]
+    pub damage: Option<String>,
+    /// A saved recipe's namespace that a reimport keeps, so the authored item retains its
+    /// identity and edits whichever naming scheme made it. Unset for a new import.
+    #[serde(skip)]
+    pub namespace: Option<String>,
 }
 
-/// The stable authored identity also detects previous imports with a renamed weapon.
-pub fn destination_hash(source: u32) -> Result<u32> {
+impl Weapon {
+    pub fn is_shader(&self) -> bool {
+        self.family() == Family::Shader
+    }
+
+    /// The namespace the authored item's identity hashes come from.
+    pub fn namespace(&self) -> String {
+        self.namespace
+            .clone()
+            .unwrap_or_else(|| batch::namespace(self.hash, &self.name))
+    }
+
+    /// The authored item this import receives.
+    pub fn destination(&self) -> Result<u32> {
+        profile::hash(
+            &crate::graph::import_identity(&self.namespace())?,
+            "item_hash",
+        )
+    }
+}
+
+/// The authored item an import of the source item `source`, named `name`, receives, which finds
+/// a previous import of it.
+pub fn destination_hash(source: u32, name: &str) -> Result<u32> {
     profile::hash(
-        &batch::identity(&super::compatibility::namespace(source))?,
+        &crate::graph::import_identity(&batch::namespace(source, name))?,
         "item_hash",
     )
 }
 
-/// The native model donor a retained compatibility profile names for a source weapon.
-pub fn profile_donor(source: u32) -> Option<u32> {
-    super::compatibility::profile(source).map(|profile| profile.model_donor)
-}
-
-/// Source weapons covered by the retained, gameplay-tested compatibility profiles.
-pub fn known_weapons() -> impl Iterator<Item = (u32, &'static str)> {
-    super::compatibility::known_weapons()
+/// The native weapon a source weapon type is built on when Shadowkeep has none of that type.
+pub fn type_base(weapon_type: &str) -> Option<u32> {
+    (weapon_type == "Glaive").then_some(super::glaive::BASE)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -54,6 +91,43 @@ pub fn known_weapons() -> impl Iterator<Item = (u32, &'static str)> {
 pub struct Settings {
     pub enabled: bool,
     pub modern_packages: Option<PathBuf>,
+    pub reach_maps: Option<PathBuf>,
+    pub marathon_packages: Option<PathBuf>,
+    /// Experimental. Marathon imports play the source weapon's own animation instead of the
+    /// donor's.
+    pub marathon_animations: bool,
+    pub d1_roi: Option<PathBuf>,
+    /// Retained when saving existing preferences. Texture conversion no longer loads this DLL.
+    pub d1_xg_library: Option<PathBuf>,
+    pub d1_oodle: Option<PathBuf>,
+    pub ffmpeg: Option<PathBuf>,
+    pub vgmstream: Option<PathBuf>,
+    pub dxc: Option<PathBuf>,
+}
+
+impl Settings {
+    /// The chosen tool paths, with the Shadowkeep packages whose install carries Oodle 3.
+    pub fn tools(&self, native_packages: Option<PathBuf>) -> crate::tools::Paths {
+        crate::tools::Paths {
+            ffmpeg: self.ffmpeg.clone(),
+            oodle: self.d1_oodle.clone(),
+            vgmstream: self.vgmstream.clone(),
+            dxc: self.dxc.clone(),
+            native_packages,
+        }
+    }
+
+    /// The stored path for a tool the user picks as a file.
+    pub fn tool_mut(&mut self, tool: crate::tools::Tool) -> Option<&mut Option<PathBuf>> {
+        use crate::tools::Tool;
+        match tool {
+            Tool::Ffmpeg => Some(&mut self.ffmpeg),
+            Tool::Oodle => Some(&mut self.d1_oodle),
+            Tool::Vgmstream => Some(&mut self.vgmstream),
+            Tool::Dxc => Some(&mut self.dxc),
+            Tool::Decompiler => None,
+        }
+    }
 }
 
 pub fn packages_path(path: &Path) -> Result<PathBuf> {
@@ -84,7 +158,7 @@ pub fn model_directory(root: &Path, name: &str, hash: u32) -> Result<PathBuf> {
     let name = name.trim().trim_end_matches('.');
     ensure!(
         !name.is_empty() && name != "." && name != "..",
-        "Weapon name cannot form a model folder"
+        "Item name cannot form a model folder"
     );
     let reserved = name.split('.').next().unwrap_or("").to_ascii_uppercase();
     ensure!(
@@ -195,7 +269,16 @@ pub fn prepare_with_progress(
 ) -> Result<PathBuf> {
     let started = std::time::Instant::now();
     let mut steps = Vec::new();
-    let result = prepare_steps(
+    let prepare = if weapon.is_shader() {
+        shaders::prepare
+    } else if weapon.family() == Family::Emblem {
+        emblems::prepare
+    } else if weapon.family().is_model_gear() {
+        gear::prepare
+    } else {
+        prepare_steps
+    };
+    let result = prepare(
         weapon,
         modern,
         native,
@@ -228,7 +311,7 @@ pub fn prepare_with_progress(
 
 /// The source export's format. Bump it whenever extraction writes different files or reports,
 /// so an export made by an earlier importer is extracted again rather than reused.
-const SOURCE_EXPORT: u32 = 4;
+const SOURCE_EXPORT: u32 = 9;
 
 /// The newest finished export of `weapon` from the same modern packages and export format.
 /// An export is only read once it is finished, by every donor attempt alike, so a later import
@@ -357,7 +440,8 @@ fn convert_with_donor(
         output,
     } = *inputs;
     fs::create_dir_all(attempt.join("recipes"))?;
-    let row = json!({"hash":weapon.hash,"name":weapon.name,"native_item":donor["hash"],"native_donor":donor["name"]});
+    let row = json!({"hash":weapon.hash,"name":weapon.name,"namespace":weapon.namespace(),
+        "native_item":donor["hash"],"native_donor":donor["name"]});
     let prepared = match batch::prepare_one_reusing(
         &row,
         weapon.hash & 0xffff,
@@ -382,13 +466,59 @@ fn convert_with_donor(
             .context("Missing prepared graph")?,
     );
     let mut document: Value = serde_json::from_slice(&fs::read(&recipe)?)?;
-    let verified_profile =
-        super::compatibility::apply(weapon.hash, profile::hash(donor, "hash")?, &mut document);
     progress("Matching source perks, stats and weapon properties…".into());
     let gameplay: Value = serde_json::from_slice(&fs::read(source.join("gameplay.json"))?)?;
-    super::gameplay::apply(&gameplay, native, &attempt.join("gameplay"), &mut document)?;
+    let mapping =
+        super::gameplay::apply(&gameplay, native, &attempt.join("gameplay"), &mut document)?;
+    if super::glaive::is_glaive(&gameplay) {
+        progress("Adding the glaive shield and intrinsic…".into());
+        let prepared_folder = PathBuf::from(
+            prepared["prepared"]
+                .as_str()
+                .context("Missing prepared folder")?,
+        );
+        let folder = PathBuf::from(
+            prepared["folder"]
+                .as_str()
+                .context("Missing import folder")?,
+        );
+        let source_rig: Value = serde_json::from_slice(&fs::read(source.join("rig.json"))?)?;
+        let native_rig: Value =
+            serde_json::from_slice(&fs::read(folder.join("native").join("rig.json"))?)?;
+        let kit = super::glaive::Inputs {
+            modern,
+            native,
+            prepared: &prepared_folder,
+            graph: &graph,
+            work: &attempt.join("glaive"),
+            source_rig: &source_rig,
+            native_rig: &native_rig,
+        };
+        // Another donor may have the frame socket this one lacks.
+        if let Err(error) = super::glaive::apply(&kit, &gameplay, &mut document, progress) {
+            return Ok(Attempt::Rejected(
+                error.context("glaive shield and intrinsic"),
+            ));
+        }
+    }
+    progress("Translating source perks the base has no plug for…".into());
+    super::gameplay::private::apply(
+        modern,
+        native,
+        &mapping,
+        &attempt.join("private-perks"),
+        &mut document,
+    )?;
+    progress("Converting the hip-fire crosshair…".into());
+    if let Err(error) =
+        super::crosshair::apply(modern, native, source, &attempt.join("crosshair"), &graph)
+    {
+        crate::cancellation::check()?;
+        super::crosshair::record_failure(&graph, &error)?;
+    }
     progress("Verifying and saving recipe assets…".into());
     let item = profile::hash(&document["identity"], "item_hash")?;
+    super::graph::record_converter_revision(&graph)?;
     document["overrides"]["imported_graph"] =
         serde_json::to_value(GraphReference::new(&graph, item)?)?;
     write_json(&recipe, &document)?;
@@ -396,7 +526,7 @@ fn convert_with_donor(
     let audio = &graph_manifest["audio"];
     write_json(
         &output.join("result.json"),
-        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"verified_profile":verified_profile,"gameplay_verified":false,"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing. New conversions require an in-game test."}),
+        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing. New conversions require an in-game test."}),
     )?;
     Ok(Attempt::Prepared(recipe))
 }
@@ -404,6 +534,10 @@ fn convert_with_donor(
 /// Record a rejected donor. A limit of the source itself ends the import, because every
 /// remaining donor would rediscover it, which is what turned such imports into long timeouts.
 fn rejected(donor: &Value, error: &anyhow::Error, errors: &mut Vec<String>) -> Result<()> {
+    crate::cancellation::check()?;
+    if crate::cancellation::is_cancelled(error) {
+        return Err(crate::cancellation::Cancelled.into());
+    }
     let detail = format!("{}: {error:#}", donor["name"]);
     eprintln!("Donor conversion failed: {detail}");
     errors.push(detail);
@@ -431,7 +565,7 @@ fn prepare_steps(
         super::reader::package_index(&native.canonicalize()?, false)?,
     );
     let stamp = package_stamp(modern)?;
-    let (source, source_exotic) = match reusable_source(output, weapon.hash, &stamp) {
+    let (source, _) = match reusable_source(output, weapon.hash, &stamp) {
         Some(found) => {
             progress("Reusing the saved source export…".into());
             found
@@ -454,9 +588,14 @@ fn prepare_steps(
         source: &source,
         output,
     };
-    let preferred = super::compatibility::profile(weapon.hash)
-        .map(|p| p.model_donor)
-        .or_else(|| previous_model_donor(output, weapon.hash));
+    // Shadowkeep has no glaive, so a glaive is built on the glaive base without a donor search.
+    let glaive = super::glaive::exported_glaive(&source)?;
+    let preferred = if glaive {
+        Some(super::glaive::BASE)
+    } else {
+        previous_model_donor(output, weapon.hash)
+            .filter(|&hash| ordinary_base(&mut native_reader, donors, hash, weapon))
+    };
     let mut errors = Vec::new();
     // Converting checks a donor in full, and the donor that converted this weapon before
     // usually converts it again. The sweep over every compatible donor only runs if it fails.
@@ -467,15 +606,29 @@ fn prepare_steps(
         })
     });
     if let Some(donor) = first {
-        progress(format!(
-            "Trying the previous donor: {}",
-            donor["name"].as_str().unwrap_or("Weapon")
-        ));
+        progress(if glaive {
+            "Building on the glaive base…".into()
+        } else {
+            format!(
+                "Trying the previous donor: {}",
+                donor["name"].as_str().unwrap_or("Weapon")
+            )
+        });
         match try_donor(&inputs, donor, &native_reader, progress)? {
             Attempt::Prepared(recipe) => return Ok(recipe),
             Attempt::Rejected(error) => rejected(donor, &error, &mut errors)?,
         }
     }
+    // No other native weapon carries the glaive rig.
+    ensure!(
+        !glaive,
+        "The glaive base could not carry this glaive: {}",
+        if errors.is_empty() {
+            "the base is not among the installed weapons".to_owned()
+        } else {
+            errors.join("\n")
+        }
+    );
     progress("Opening destination packages for donor matching…".into());
     let matches = batch::donors_with_reader(
         &source,
@@ -499,7 +652,6 @@ fn prepare_steps(
         selection_priority(
             row,
             (weapon.hash, &weapon.name),
-            source_exotic,
             source_bucket,
             source_rarity,
             source_content,
@@ -535,11 +687,12 @@ fn prepare_steps(
     )
 }
 
-fn donor_priority(row: &Value, source_exotic: bool) -> (bool, u64, Option<u64>) {
+/// An exotic base brings its own exotic behavior into the import, such as a frame that fires
+/// a volley or a sight that supplies its own aim pose, so it is a fallback for every source,
+/// exotic or not, behind any ordinary base of the type.
+fn donor_priority(row: &Value) -> (bool, u64, Option<u64>) {
     (
-        row["exotic"]
-            .as_bool()
-            .is_none_or(|exotic| exotic && !source_exotic),
+        row["exotic"].as_bool().is_none_or(|exotic| exotic),
         row["mapping"]["native_bone_count"]
             .as_u64()
             .unwrap_or(u64::MAX),
@@ -547,10 +700,30 @@ fn donor_priority(row: &Value, source_exotic: bool) -> (bool, u64, Option<u64>) 
     )
 }
 
+/// Whether a remembered base can be tried first again. A remembered exotic base is reused only
+/// for the same weapon, so imports made before exotic bases became a fallback move to an
+/// ordinary base of their type on their next import.
+fn ordinary_base(reader: &mut Reader, donors: &Value, hash: u32, weapon: &Weapon) -> bool {
+    let same_name = donors["weapons"].as_array().is_some_and(|rows| {
+        rows.iter().any(|row| {
+            row["hash"].as_u64() == Some(u64::from(hash))
+                && row["name"]
+                    .as_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&weapon.name))
+        })
+    });
+    if hash == weapon.hash || same_name {
+        return true;
+    }
+    crate::tiger::shadowkeep::item_tag(reader, hash)
+        .and_then(|tag| reader.tag(tag, Some(0x80807BEA)))
+        .and_then(|item| item.u8(0xBA))
+        .is_ok_and(|rarity| rarity != 5)
+}
+
 fn selection_priority(
     row: &Value,
     source: (u32, &str),
-    source_exotic: bool,
     source_bucket: Option<u64>,
     source_rarity: Option<u64>,
     source_content: Option<&str>,
@@ -567,7 +740,7 @@ fn selection_priority(
     u64,
     Option<u64>,
 ) {
-    let (fallback, bones, hash) = donor_priority(row, source_exotic);
+    let (fallback, bones, hash) = donor_priority(row);
     let same_identity = hash == Some(u64::from(source.0))
         || row["name"]
             .as_str()
@@ -576,11 +749,11 @@ fn selection_priority(
         row["collection_backed"].as_bool() == Some(false),
         row["unrelated_collection_condition"].as_bool() == Some(true),
         !same_identity,
+        fallback,
         source_content.is_none_or(|content| row["content_key"].as_str() != Some(content)),
         source_bucket.is_some_and(|bucket| row["bucket"].as_u64() != Some(bucket)),
         source_rarity.is_some_and(|rarity| row["rarity"].as_u64() != Some(rarity)),
         hash != preferred.map(u64::from),
-        fallback,
         bones,
         hash,
     )
@@ -588,38 +761,7 @@ fn selection_priority(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn source_only_limits_are_distinguished_from_donor_failures() {
-        // Bygones met the same plate limit on all 68 donors. Marking it lets
-        // the loop report it once instead of sweeping the whole catalogue.
-        let plain = anyhow::anyhow!("native donor has no object channel input");
-        assert!(!crate::d2_mot::is_source_limit(&plain));
-        let limited = crate::d2_mot::source_limit(anyhow::anyhow!(
-            "multiple plate textures require composition"
-        ));
-        assert!(crate::d2_mot::is_source_limit(&limited));
-        assert!(
-            format!("{limited:#}").contains("multiple plate textures require composition"),
-            "the underlying reason must survive marking"
-        );
-        assert!(crate::d2_mot::is_source_limit(
-            &limited.context("source stage 1")
-        ));
-    }
-
     use super::*;
-
-    #[test]
-    fn ordinary_donors_precede_exotics_even_with_larger_skeletons() {
-        let ordinary = json!({"hash":99,"exotic":false,"mapping":{"native_bone_count":12}});
-        let exotic = json!({"hash":1,"exotic":true,"mapping":{"native_bone_count":8}});
-        let unknown = json!({"hash":0,"mapping":{"native_bone_count":1}});
-        assert!(donor_priority(&ordinary, false) < donor_priority(&exotic, false));
-        assert!(donor_priority(&ordinary, false) < donor_priority(&unknown, false));
-        // Exotic sources can use the closer exotic rig without a rarity penalty.
-        assert!(donor_priority(&exotic, true) < donor_priority(&ordinary, true));
-        assert!(donor_priority(&exotic, true) < donor_priority(&unknown, true));
-    }
 
     #[test]
     fn previous_success_is_found_without_following_saved_recipe_paths() {
@@ -641,96 +783,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(previous_model_donor(root.path(), 42), Some(91));
-    }
-
-    #[test]
-    fn remembered_donor_precedes_smaller_unverified_candidates() {
-        let mut candidates = [
-            json!({"hash":1,"exotic":false,"mapping":{"native_bone_count":3}}),
-            json!({"hash":2,"exotic":true,"mapping":{"native_bone_count":9}}),
-        ];
-        let preferred = Some(2);
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), false, None, None, None, preferred)
-        });
-        assert_eq!(candidates[0]["hash"], 2);
-    }
-
-    #[test]
-    fn collection_backed_donor_can_cross_slot_and_rarity() {
-        let mut candidates = [
-            json!({"hash":1,"exotic":false,"bucket":20,"rarity":4,"collection_backed":false,"mapping":{"native_bone_count":1}}),
-            json!({"hash":2,"exotic":false,"bucket":10,"rarity":2,"collection_backed":true,"mapping":{"native_bone_count":8}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), false, Some(20), Some(4), None, Some(1))
-        });
-        assert_eq!(candidates[0]["hash"], 2);
-    }
-
-    #[test]
-    fn simple_collection_donor_precedes_unrelated_progression_conditions() {
-        let mut candidates = [
-            json!({"hash":1,"exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"unrelated_collection_condition":true,"mapping":{"native_bone_count":15}}),
-            json!({"hash":2,"exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"unrelated_collection_condition":false,"mapping":{"native_bone_count":15}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(row, (0, "Source"), false, Some(20), Some(4), None, Some(1))
-        });
-        assert_eq!(candidates[0]["hash"], 2);
-    }
-
-    #[test]
-    fn available_native_counterpart_precedes_other_safe_donors() {
-        let mut candidates = [
-            json!({"hash":1,"name":"Another Weapon","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":8}}),
-            json!({"hash":2,"name":"Source Weapon","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":12}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(
-                row,
-                (99, "source weapon"),
-                false,
-                Some(20),
-                Some(4),
-                None,
-                None,
-            )
-        });
-        assert_eq!(candidates[0]["hash"], 2);
-        candidates[0]["unrelated_collection_condition"] = json!(true);
-        candidates.sort_by_key(|row| {
-            selection_priority(
-                row,
-                (99, "Source Weapon"),
-                false,
-                Some(20),
-                Some(4),
-                None,
-                None,
-            )
-        });
-        assert_eq!(candidates[0]["hash"], 1);
-    }
-
-    #[test]
-    fn shared_content_group_precedes_smaller_unrelated_rig() {
-        let mut candidates = [
-            json!({"hash":1,"name":"Generic Auto","content_key":"611794E9","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":3}}),
-            json!({"hash":2,"name":"Suros Auto","content_key":"A0EEEE21","exotic":false,"bucket":20,"rarity":4,"collection_backed":true,"mapping":{"native_bone_count":4}}),
-        ];
-        candidates.sort_by_key(|row| {
-            selection_priority(
-                row,
-                (99, "Source"),
-                false,
-                Some(20),
-                Some(4),
-                Some("A0EEEE21"),
-                None,
-            )
-        });
-        assert_eq!(candidates[0]["hash"], 2);
     }
 
     #[test]

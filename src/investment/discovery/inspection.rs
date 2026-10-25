@@ -4,15 +4,15 @@ use std::path::Path;
 
 use crate::package_runtime::reader::PackageManager;
 use crate::{
-    investment_schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
+    investment::schema::{GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag},
     package_runtime::{open_shadowkeep_packages, resolve_live_named_tag},
+    runtime::{
+        WeaponRuntimeGraph, load_weapon_runtime_entity_at_pattern_index_with_manager,
+        load_weapon_runtime_graph_for_entity,
+    },
     sandbox_perk::{
         FinishedSandboxPerk, finished_sandbox_perk_at, load_sandbox_perk_runtime_action,
         validate_finished_sandbox_perk_catalog,
-    },
-    weapon_runtime::{
-        WeaponRuntimeGraph, load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_graph_for_entity,
     },
 };
 use tiger_pkg::TagHash;
@@ -27,8 +27,8 @@ pub enum RuntimeTarget {
 #[derive(Debug)]
 pub enum LoadedDetails {
     Weapon(WeaponRuntimeGraph),
-    Perk(PerkDetails),
-    Dye(crate::weapon_dyes::WeaponDyeColors),
+    Perk(Box<PerkDetails>),
+    Dye(crate::dyes::WeaponDyeColors),
 }
 
 #[derive(Debug)]
@@ -40,6 +40,8 @@ pub struct PerkDetails {
 #[derive(Debug)]
 pub struct PerkAction {
     pub tag: u32,
+    /// The action read in plain words, when it decodes.
+    pub behavior: Option<crate::sandbox_perk::dependencies::Behavior>,
     pub graphs: Vec<PerkGraph>,
 }
 
@@ -52,7 +54,7 @@ pub struct PerkGraph {
 
 pub fn load(install: &Path, target: RuntimeTarget) -> Result<LoadedDetails, String> {
     if let RuntimeTarget::Dye(index) = target {
-        return crate::weapon_dyes::load_weapon_dye_colors(&install.join("packages"), &[index])?
+        return crate::dyes::load_weapon_dye_colors(&install.join("packages"), &[index])?
             .remove(&index)
             .ok_or_else(|| "The dye reader returned no result".to_owned())?
             .map(LoadedDetails::Dye);
@@ -72,7 +74,9 @@ pub fn load(install: &Path, target: RuntimeTarget) -> Result<LoadedDetails, Stri
             )
             .map(LoadedDetails::Weapon)
         }
-        RuntimeTarget::Perk(index) => load_perk(&manager, index).map(LoadedDetails::Perk),
+        RuntimeTarget::Perk(index) => load_perk(&manager, index)
+            .map(Box::new)
+            .map(LoadedDetails::Perk),
         RuntimeTarget::Dye(_) => {
             unreachable!("dye reads are handled before opening runtime packages")
         }
@@ -113,6 +117,7 @@ fn load_perk(manager: &PackageManager, index: u16) -> Result<PerkDetails, String
                 .collect();
             PerkAction {
                 tag: action.action_tag.0,
+                behavior: crate::sandbox_perk::dependencies::Behavior::read(&action.action_payload),
                 graphs,
             }
         });

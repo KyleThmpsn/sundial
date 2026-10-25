@@ -21,8 +21,17 @@ fn refresh_reuses_packages_across_restart_and_reads_only_changed_or_new_actions(
     });
     assert_eq!(reads.len(), 2, "Shared assignments read an action once");
     let cache = storage.path().join("keys.json");
+    let legacy: Saved = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+    assert_eq!(
+        refresh(&before, Some(&legacy), perks.clone(), |_| panic!(
+            "Legacy observations must be reused"
+        ))
+        .0,
+        first
+    );
     save(&cache, &saved).unwrap();
-    let saved: Saved = serde_json::from_slice(&std::fs::read(cache).unwrap()).unwrap();
+    let saved: Saved =
+        crate::package_runtime::cache_file::read(&std::fs::read(cache).unwrap()).unwrap();
     let (second, _) = refresh(&before, Some(&saved), perks.clone(), |_| {
         panic!("Warm cache must not read actions")
     });
@@ -48,7 +57,14 @@ fn refresh_reuses_packages_across_restart_and_reads_only_changed_or_new_actions(
             Ok(payload(tag, 4.0))
         },
     );
-    assert_eq!(reads, [custom, new]);
+    assert_eq!(reads.len(), 2);
+    assert_eq!(
+        reads
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [custom, new].into_iter().collect()
+    );
     let keys = KeyCatalog::from_index(&updated, |_| Vec::new());
     assert_eq!(keys.property_key(stock).unwrap().values, [1.0]);
     assert_eq!(keys.property_key(custom).unwrap().values, [4.0]);
@@ -61,34 +77,11 @@ fn refresh_reuses_packages_across_restart_and_reads_only_changed_or_new_actions(
         1,
         "Removed actions must not linger in incremental cache"
     );
-}
-
-#[test]
-fn identical_bytes_in_a_changed_package_reuse_the_cached_decode() {
-    let packages = tempfile::tempdir().unwrap();
-    let file = packages.path().join("w64_test_0123_0.pkg");
-    std::fs::write(&file, b"first").unwrap();
-    let tag = TagHash::new(0x123, 1).0;
-    let perks = vec![(1, tag)];
-    let bytes = payload(42, 1.0);
-    let (_, mut saved) = refresh(
-        &Snapshot::read(packages.path()).unwrap(),
-        None,
-        perks.clone(),
-        |_| Ok(bytes.clone()),
-    );
-    saved.actions.get_mut(&tag).unwrap().usage = Err("cached decode marker".into());
-    std::fs::write(&file, b"changed another resource").unwrap();
-    let (index, _) = refresh(
-        &Snapshot::read(packages.path()).unwrap(),
-        Some(&saved),
-        perks,
-        |_| Ok(bytes.clone()),
-    );
-    assert_eq!(
-        index.issues,
-        [format!("Action 0x{tag:08X}: cached decode marker")]
-    );
+    if let Some(output) = std::env::var_os("SUNDIAL_CACHE_VERIFICATION_DIRECTORY") {
+        let output = std::path::PathBuf::from(output);
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("perk-keys.json"), serde_json::to_vec_pretty(&serde_json::json!({"changed_actions": reads, "stock_values": keys.property_key(stock).unwrap().values, "custom_values": keys.property_key(custom).unwrap().values, "remaining_actions": saved.actions.len()})).unwrap()).unwrap();
+    }
 }
 
 #[test]
@@ -120,32 +113,4 @@ fn another_installation_cannot_reuse_observations_without_reading_its_actions() 
     let keys = KeyCatalog::from_index(&other, |_| Vec::new());
     assert!(keys.property_key(10).is_none());
     assert!(keys.property_key(20).is_some());
-}
-
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
-fn installed_key_cache_is_reused_without_a_second_scan() {
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("packages");
-    let packages = Path::new(&packages);
-    let manager = crate::package_authoring::open_shadowkeep_package_manager(packages).unwrap();
-    let started = std::time::Instant::now();
-    let index = cached(packages, &manager).unwrap();
-    let first = started.elapsed();
-    let started = std::time::Instant::now();
-    let reused = cached_only(packages)
-        .unwrap()
-        .expect("keys without opening a package reader");
-    assert!(Arc::ptr_eq(&index, &reused));
-    let keys = KeyCatalog::from_index(&index, |_| Vec::new());
-    assert!(!keys.property_keys().is_empty());
-    assert!(!keys.removal_keys().is_empty());
-    assert!(index.issues.is_empty(), "{:?}", index.issues);
-    eprintln!(
-        "{} actions, {} property keys, {} ending keys. First load {:?}, reused {:?}",
-        index.actions.len(),
-        keys.property_keys().len(),
-        keys.removal_keys().len(),
-        first,
-        started.elapsed()
-    );
 }

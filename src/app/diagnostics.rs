@@ -8,13 +8,13 @@ use std::{
 use crate::{
     package_authoring::{parhelion_data_directory, parhelion_recipe_library_directory},
     package_runtime::sunrise_module_path,
-    paths,
+    system::paths,
 };
 
 use super::{
     SettingsLayout,
     account_workspace::{AccountSourceInfo, AccountSourceKind},
-    persistence_compatibility::{PersistenceCompatibility, WARNING_MESSAGE},
+    runtime_state::{RuntimeState, WARNING_MESSAGE},
     settings::settings_path_for_install,
 };
 
@@ -181,7 +181,7 @@ fn append_build_information(report: &mut String) {
     writeln!(report, "process_id = {}", std::process::id())
         .expect("writing to a String cannot fail");
     // The figure a reader is looking at in their task manager when they open an issue.
-    if let Some(bytes) = crate::memory::resident_bytes() {
+    if let Some(bytes) = crate::system::memory::resident_bytes() {
         writeln!(report, "resident_memory_mb = {}", bytes / (1024 * 1024))
             .expect("writing to a String cannot fail");
     }
@@ -368,7 +368,7 @@ fn append_workspace_section(report: &mut String, context: &ReportContext<'_>) {
 }
 
 fn append_persistence_compatibility(report: &mut String, install: &Path) {
-    let inspection = PersistenceCompatibility::inspect(install);
+    let inspection = RuntimeState::inspect(install);
     if !inspection.detected() {
         return;
     }
@@ -475,7 +475,14 @@ fn append_package_summary(report: &mut String, install: &Path) {
             relevant.push(path);
         }
     }
+    // Include every mod provider, even when several patches have the same filename.
+    let managed = crate::package_runtime::mods::directory(install);
+    match crate::package_runtime::mods::content_files(install) {
+        Ok(files) => relevant.extend(files.into_iter().filter(|path| extension_eq(path, "pkg"))),
+        Err(error) => read_errors.push(error),
+    }
     relevant.sort_by_key(|path| path_sort_key(path));
+    append_path(report, "parhelion_mod_directory", &managed);
     writeln!(report, "pkg_file_count = {package_count}").expect("writing to a String cannot fail");
     writeln!(report, "pkg_total_bytes = {package_bytes}").expect("writing to a String cannot fail");
     writeln!(
@@ -486,6 +493,18 @@ fn append_package_summary(report: &mut String, install: &Path) {
     .expect("writing to a String cannot fail");
     for path in relevant {
         append_path(report, "investment_or_parhelion_pkg", &path);
+    }
+    match crate::package_runtime::mods::notices(install) {
+        Ok(Some(notices)) => {
+            for notice in notices {
+                writeln!(report, "mod_notice = {}", single_line(&notice))
+                    .expect("writing to a String cannot fail");
+            }
+        }
+        Ok(None) => {
+            writeln!(report, "mod_notice = not read yet").expect("writing to a String cannot fail")
+        }
+        Err(error) => read_errors.push(error),
     }
     for error in read_errors {
         writeln!(report, "package_scan_error = {}", single_line(&error))

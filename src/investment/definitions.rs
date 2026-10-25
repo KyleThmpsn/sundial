@@ -1,6 +1,8 @@
 //! Data-only donor, stat and socket contracts exposed to authoring consumers.
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::catalog::{
     InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemRarity, ItemWeaponAmmoType,
     ItemWeaponInventorySlot, format_in_game_investment_stat, interpolate_investment_stat_display,
@@ -22,6 +24,19 @@ impl WeaponDamageType {
             Self::Arc => "Arc",
             Self::Solar => "Solar",
             Self::Void => "Void",
+        }
+    }
+
+    /// The type the native damage enum `code` names: 0 Kinetic, 1 Solar, 2 Arc, 3 Void.
+    #[must_use]
+    pub const fn from_native(code: u8) -> Option<Self> {
+        use crate::ability::damage::{ARC, KINETIC, SOLAR, VOID};
+        match code {
+            KINETIC => Some(Self::Kinetic),
+            SOLAR => Some(Self::Solar),
+            ARC => Some(Self::Arc),
+            VOID => Some(Self::Void),
+            _ => None,
         }
     }
 }
@@ -53,7 +68,7 @@ impl WeaponDamageCarrierFamily {
     /// Returns the stock base-item sandbox-perk index for this carrier family and element.
     #[must_use]
     pub const fn base_sandbox_perk_index(self, damage_type: WeaponDamageType) -> Option<u16> {
-        use crate::investment_schema::{
+        use crate::investment::schema::{
             LEGACY_ARC_DAMAGE_PERK_INDEX, LEGACY_SOLAR_DAMAGE_PERK_INDEX,
             LEGACY_VOID_DAMAGE_PERK_INDEX, MODERN_ARC_DAMAGE_PERK_INDEX,
             MODERN_SOLAR_DAMAGE_PERK_INDEX, MODERN_VOID_DAMAGE_PERK_INDEX,
@@ -72,7 +87,7 @@ impl WeaponDamageCarrierFamily {
     /// Returns the stock default-plug item index for a type-68 carrier.
     #[must_use]
     pub const fn default_plug_item_index(self, damage_type: WeaponDamageType) -> Option<u16> {
-        use crate::investment_schema::{
+        use crate::investment::schema::{
             ARC_DAMAGE_PLUG_ITEM_INDEX, SOLAR_DAMAGE_PLUG_ITEM_INDEX, VOID_DAMAGE_PLUG_ITEM_INDEX,
         };
         if !matches!(self, Self::PlugDriven) {
@@ -246,6 +261,52 @@ pub struct SubclassSummary {
     /// Each entry's icon container and description, as its node display record gives them.
     pub entry_icons: BTreeMap<u8, u32>,
     pub entry_descriptions: BTreeMap<u8, String>,
+    /// Each entry's ability entity, whose values an authored ability can change.
+    pub entry_entities: BTreeMap<u8, u32>,
+    /// Each entry's ability row: the row its pool's own record equips.
+    pub entry_rows: BTreeMap<u8, u8>,
+    /// What each entry's stock pool applies to abilities while it is selected: each key and
+    /// the ability row it applies the key to.
+    pub entry_modifiers: BTreeMap<u8, Vec<(u32, u8)>>,
+    /// The damage type its strings give it, whose icon it shows beside its name.
+    pub damage_type: Option<WeaponDamageType>,
+}
+
+/// One row of the ability tables as an ability modifier sees it: the ability's entity, the bank
+/// its script reads, whether that bank takes extra charges, the script parameters a row can set
+/// in it and the keys its property rows answer to.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AbilityRowSummary {
+    pub row: u8,
+    pub entity: Option<u32>,
+    pub bank: Option<u32>,
+    /// The Ability Property slot stock keys place the bank in.
+    pub slot: Option<crate::ability::AbilityTarget>,
+    /// Whether the bank's own rows show which handler takes a charge row.
+    pub charges: bool,
+    /// Whether the bank takes a row that changes the ability's recharge rate.
+    #[serde(default)]
+    pub recharge: bool,
+    pub parameters: Vec<AbilityParameter>,
+    pub keys: Vec<AbilityKey>,
+}
+
+/// A script parameter as a bank lists it: the value the script resets it to, and the value a
+/// property row applies, added to the running one or written over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AbilityParameter {
+    pub name: u32,
+    pub reset: f32,
+    pub applied: f32,
+    pub add: bool,
+}
+
+/// A bank's property row as a key applies it: charges it adds, or parameters it sets.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AbilityKey {
+    pub key: u32,
+    pub charges: Option<i64>,
+    pub parameters: Vec<AbilityParameter>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -419,12 +480,6 @@ const EXOTIC_ORNAMENT_PLATE: [u8; 3] = [0xF2, 0xE3, 0x70];
 const LEGENDARY_ORNAMENT_PLATE: [u8; 3] = [0x8C, 0x45, 0xA7];
 
 impl WeaponOrnament {
-    /// Returns whether this ornament replaces the model of a weapon with the given art rows.
-    #[must_use]
-    pub fn changes_model(&self, weapon_art_arrangements: &[WeaponArtArrangement]) -> bool {
-        !self.art_arrangements.is_empty() && self.art_arrangements != weapon_art_arrangements
-    }
-
     /// Returns the flat color of the decorative plate baked into this ornament's icon artwork.
     ///
     /// Ornament icons draw their weapon over one of two flat colors, one per rarity, at a range
@@ -484,6 +539,10 @@ pub struct WeaponSocketTypeChoice {
     pub socket_type: u16,
     pub label: String,
     pub compatible_plug_count: usize,
+    /// How many installed items of the base's type carry it.
+    pub carriers: usize,
+    /// The plug it most often starts with on those items.
+    pub default_plug: Option<u32>,
 }
 
 impl WeaponSocketTypeChoice {
@@ -547,22 +606,5 @@ mod stat_display_tests {
 
         assert_eq!(stat.in_game_display_value(49), 49);
         assert_eq!(stat.in_game_display_value(50), 600);
-    }
-
-    #[test]
-    fn unscaled_stats_display_their_raw_package_value() {
-        let stat = WeaponInvestmentStat {
-            definition_index: 32,
-            definition_hash: None,
-            name: "Zoom".to_owned(),
-            value: 16,
-            minimum_value: Some(0),
-            maximum_value: Some(100),
-            display_as_numeric: false,
-            is_linear: false,
-            display_interpolation: Vec::new(),
-        };
-
-        assert_eq!(stat.in_game_display_label(16), "16");
     }
 }

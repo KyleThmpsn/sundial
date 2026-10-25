@@ -50,6 +50,11 @@ pub(super) fn prepare(release: &Release, progress: &Progress) -> Result<Prepared
                 .ok_or("The executable has no parent folder.")?,
         )
         .map_err(|error| format!("Cannot stage the update beside Sundial: {error}"))?;
+    fs::write(
+        directory.path().join(files::OWNER),
+        target.to_string_lossy().as_bytes(),
+    )
+    .map_err(|error| format!("Cannot stage the update beside Sundial: {error}"))?;
     let old_digest = files::digest(&target)?;
     let payload = directory.path().join(PAYLOAD);
     let archive = directory.path().join("download");
@@ -133,7 +138,7 @@ fn transfer(
         hash.update(&buffer[..count]);
         progress.received.store(received, Ordering::Relaxed);
     }
-    if received != asset.size || format!("{:x}", hash.finalize()) != asset.digest {
+    if received != asset.size || hex::encode(hash.finalize()) != asset.digest {
         return Err("The update failed size or checksum verification. The installed executable was not changed.".into());
     }
     Ok(())
@@ -150,7 +155,7 @@ mod tests {
             size: expected.len() as u64,
             kind: super::super::release::ArchiveKind::Zip,
             member: String::new(),
-            digest: format!("{:x}", Sha256::digest(expected)),
+            digest: hex::encode(Sha256::digest(expected)),
         };
         for (bytes, cancel, valid) in [
             (expected.as_slice(), false, true),

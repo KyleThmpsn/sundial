@@ -4,14 +4,22 @@ use super::*;
 pub fn recover_interrupted_install(
     request: &RecoveryRequest,
 ) -> Result<RecoveryOutcome, InstallError> {
-    let _lock = lock_installation(&request.target_packages_directory)?;
-    recover_interrupted_install_locked(request)
+    let lock = lock_installation(&request.target_packages_directory)?;
+    let outcome = recover_interrupted_install_locked(request)?;
+    lock.finish(request.game_running_check, request.runtime_snapshot_check)?;
+    Ok(outcome)
 }
 
 /// Caller holds the installation lock through recovery and any following mutation.
 pub(super) fn recover_interrupted_install_locked(
     request: &RecoveryRequest,
 ) -> Result<RecoveryOutcome, InstallError> {
+    if let Some(outcome) = loader::recover(request)? {
+        return Ok(outcome);
+    }
+    if let Some(outcome) = loader::recover_legacy_with_observer(request, &mut |_| {})? {
+        return Ok(outcome);
+    }
     let target_packages_directory =
         canonical_packages_directory(&request.target_packages_directory)?;
     let journal_path = target_packages_directory.join(INSTALL_TRANSACTION_FILE_NAME);
@@ -225,16 +233,10 @@ pub(super) fn validate_install_transaction(
         ));
     }
     if let Some(runtime) = &transaction.runtime {
-        let game_root = target_packages_directory.parent().ok_or_else(|| {
-            InstallError::validation("Package-install recovery target has no game root")
-        })?;
-        if !path_is_within(runtime.module_path(), game_root)
-            || runtime.dll_sha256().len() != 64
-            || !runtime
-                .dll_sha256()
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
+        // The game selects the DLL through its local lookup path, but a link may resolve to
+        // an external build. This records a read-only identity, never a recovery destination.
+        // Do not require the archived module to still exist after a runtime change.
+        if !runtime.module_path().is_absolute() || !is_sha256(runtime.dll_sha256()) {
             return Err(InstallError::validation(
                 "Package-install recovery record has invalid runtime identity metadata",
             ));
@@ -396,7 +398,7 @@ pub(super) fn check_game_before_recovery(
     })?;
     if game_is_running {
         return Err(InstallError::validation(
-            "The game is running; close it before recovering an interrupted package installation",
+            "The game is running. Close it before recovering an interrupted package installation",
         ));
     }
     Ok(())
@@ -444,7 +446,7 @@ pub(super) fn recover_pending_transaction(
             if !matches!(fs::symlink_metadata(&target_path), Err(error) if error.kind() == io::ErrorKind::NotFound)
             {
                 return Err(InstallError::validation(
-                    "A removed package reappeared during uninstall recovery; no overwrite was attempted",
+                    "A removed package reappeared during uninstall recovery. No overwrite was attempted",
                 ));
             }
         } else {
@@ -453,7 +455,8 @@ pub(super) fn recover_pending_transaction(
         match (&artifact.original, &artifact.backup_file_name) {
             (Some(original), Some(backup_file_name)) => {
                 let backup_path = transaction.backup_directory.join(backup_file_name);
-                restore_recovery_backup(&backup_path, &target_path, original)?;
+                let authored = (!artifact.remove_target).then_some(&artifact.authored);
+                restore_recovery_backup(&backup_path, &target_path, original, authored)?;
                 report.restored_files.push(target_path);
             }
             (None, None) => {
@@ -578,19 +581,35 @@ pub(super) fn verify_recovery_target_is_authored(
     Ok(())
 }
 
+/// Puts `backup_path` back at `target_path`. `authored` is what the target must still hold, or
+/// `None` where it must still have no file. The target is checked after the copy beside it is
+/// flushed, immediately before the rename, and a target that had no file is created without
+/// replacing one that appeared meanwhile, so an outside write during a long copy is kept and
+/// the recovery refused rather than overwriting it.
 pub(super) fn restore_recovery_backup(
     backup_path: &Path,
     target_path: &Path,
     expected: &TransactionDigest,
+    authored: Option<&TransactionDigest>,
 ) -> Result<(), InstallError> {
     reject_recovery_backup(backup_path, expected)?;
-    sundial::package_authoring::replace_file_from_path_atomically(backup_path, target_path)
-        .map_err(|error| {
-            InstallError::validation(format!(
-                "Could not restore interrupted package {}: {error}",
-                target_path.display()
-            ))
-        })?;
+    let published = match authored {
+        Some(authored) => sundial::package_authoring::replace_file_from_path_if_unchanged(
+            backup_path,
+            target_path,
+            || {
+                verify_recovery_target_is_authored(target_path, authored)
+                    .map_err(|error| error.to_string())
+            },
+        ),
+        None => sundial::package_authoring::create_file_from_path(backup_path, target_path),
+    };
+    published.map_err(|error| {
+        InstallError::validation(format!(
+            "Could not restore interrupted package {}: {error}",
+            target_path.display()
+        ))
+    })?;
     let restored = digest_file(target_path).map_err(|error| {
         InstallError::validation(format!(
             "Could not verify restored package {}: {error}",

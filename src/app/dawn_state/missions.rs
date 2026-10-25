@@ -15,21 +15,49 @@ pub(super) fn draw(
     {
         count += 1;
         let name = mission_name(mission.hash);
-        egui::CollapsingHeader::new(name).id_salt((&mission.owner,mission.hash)).show(ui,|ui| {
-            crate::app::inspector::draw_catalog_hash_link(ui,catalog,u64::from(mission.hash),"Inspect Mission");
-            ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut mission.completed,"Completed").on_hover_text("Changes the saved record only. No rewards are delivered.");
-                if ui.button("Clear Checkpoint").on_hover_text("Clears saved checkpoint and progress. Completion and rewards are unchanged.").clicked() {
-                    mission.checkpoint=0;mission.slice=0;mission.progress=0;
-                }
+        egui::CollapsingHeader::new(name)
+            .id_salt((&mission.owner, mission.hash))
+            .show(ui, |ui| {
+                crate::app::inspector::draw_catalog_hash_link(
+                    ui,
+                    catalog,
+                    u64::from(mission.hash),
+                    "Inspect Mission",
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut mission.completed, "Completed")
+                        .on_hover_text("Changes the saved record only. No rewards are delivered.");
+                    if ui
+                        .button("Clear Checkpoint")
+                        .on_hover_text("Clears checkpoint and progress. Completion is unchanged.")
+                        .clicked()
+                    {
+                        mission.checkpoint = 0;
+                        mission.slice = 0;
+                        mission.progress = 0;
+                    }
+                });
+                egui::Grid::new(("mission-fields", mission.hash))
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Progress");
+                        ui.add(
+                            egui::DragValue::new(&mut mission.progress)
+                                .range(0..=i32::MAX)
+                                .clamp_existing_to_range(false),
+                        );
+                        ui.end_row();
+                        ui.label("Activity Index");
+                        ui.label(mission.activity.to_string());
+                        ui.end_row();
+                        ui.label("Checkpoint");
+                        ui.label(format!("0x{:08X}", mission.checkpoint));
+                        ui.end_row();
+                        ui.label("Slice Set");
+                        ui.label(mission.slice.to_string());
+                        ui.end_row();
+                    });
             });
-            egui::Grid::new(("mission-fields",mission.hash)).spacing([16.0,6.0]).show(ui,|ui| {
-                ui.label("Progress");ui.add(egui::DragValue::new(&mut mission.progress).range(0..=i32::MAX));ui.end_row();
-                ui.label("Activity Index");ui.label(mission.activity.to_string());ui.end_row();
-                ui.label("Checkpoint");ui.label(format!("{:08X}",mission.checkpoint));ui.end_row();
-                ui.label("Slice Set");ui.label(mission.slice.to_string());ui.end_row();
-            });
-        });
     }
     if count == 0 {
         ui.weak("No saved missions for this character.");
@@ -41,7 +69,7 @@ pub(super) fn draw(
 fn mission_name(hash: u32) -> String {
     mission_scenario(hash)
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("Mission {hash:08X}"))
+        .unwrap_or_else(|| format!("Mission 0x{hash:08X}"))
 }
 
 /// The scenario package whose FNV-1a name hash Dawn stores for a mission, when it is one this

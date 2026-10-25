@@ -178,13 +178,60 @@ fn lower(
         let layer = native.layers[role.0]
             .iter()
             .position(|&(name, _)| name == role.1);
-        if let (Some(&choice), Some(layer)) = (mapped, layer) {
+        if let (Some(&choice), Some(layer)) = (mapped, layer)
+            && usize::from(choice) < native.layers[role.0][layer].1
+        {
             lowered[role.0].push((choice, u16::try_from(layer)?));
         } else {
             missing.push(json!({"family":role.0,"layer":role.1,"choice":role.2}));
         }
     }
     Ok((lowered, missing))
+}
+
+/// A prepared route can contain a source holding layer absent from the carrier.
+/// Retain it while adding independently calibrated operations. Dispatch is a
+/// list of layer contributions, so an unsupported contribution must not erase
+/// the supported contributions in the same action.
+fn merge(
+    source: &Table,
+    prepared: &Table,
+    source_route: &Route,
+    mut lowered: Route,
+    retained: Option<Route>,
+) -> Result<Route> {
+    if let Some(retained) = retained {
+        for family in 0..2 {
+            for (choice, layer) in retained[family].iter().copied() {
+                if let Some(edge) = lowered[family].iter().find(|edge| edge.1 == layer) {
+                    ensure!(
+                        edge.0 == choice,
+                        "prepared pose choice conflicts with calibrated dispatch"
+                    );
+                } else {
+                    lowered[family].push((choice, layer));
+                }
+            }
+        }
+    }
+    let roles = source.roles(source_route);
+    for (family, edges) in lowered.iter_mut().enumerate() {
+        let mut seen = BTreeSet::new();
+        ensure!(
+            edges.iter().all(|edge| seen.insert(edge.1)),
+            "pose dispatch repeats a layer contribution"
+        );
+        // The prepared table preserves carrier layer ordinals and can add a
+        // private profile layer. Order both by the source's named operations.
+        edges.sort_by_key(|edge| {
+            let name = prepared.layers[family][usize::from(edge.1)].0;
+            roles
+                .iter()
+                .position(|role| role.0 == family && role.1 == name)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    Ok(lowered)
 }
 
 /// Refresh companion dispatch for an already converted graph without re-encoding clips.
@@ -271,6 +318,32 @@ pub fn refresh(
     Ok(true)
 }
 
+fn previous_descriptors(section: &Value) -> Result<BTreeMap<u32, u32>> {
+    let mut previous = BTreeMap::new();
+    for label in [
+        "source_absent",
+        "translated",
+        "unsupported_supplemental_routes",
+    ] {
+        for row in section["dispatch"][label].as_array().into_iter().flatten() {
+            let from = u32::try_from(
+                row["source"]
+                    .as_u64()
+                    .context("previous source descriptor")?,
+            )?;
+            let to = u32::try_from(
+                row["native"]
+                    .as_u64()
+                    .context("previous native descriptor")?,
+            )?;
+            if let Some(old) = previous.insert(from, to) {
+                ensure!(old == to, "previous pose descriptor mapping is ambiguous");
+            }
+        }
+    }
+    Ok(previous)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     sr: &mut Reader,
@@ -289,6 +362,22 @@ pub(super) fn prepare(
     let st = Table::read(&source, true)?;
     let nt = Table::read(&native, false)?;
     validate(&native, native_bank)?;
+    // A prepared table may contain source holding layers in appended storage.
+    // Both their allocations and their established dispatch must survive a bank
+    // refresh. A native-prefix copy silently drops this data.
+    let mut output = if section.is_null() {
+        native.clone()
+    } else {
+        ensure!(
+            section["owner"] == owner && section["tag"] == tag,
+            "pose owner changed during preparation"
+        );
+        Payload(fs::read(
+            graph.join(section["file"].as_str().context("pose file")?),
+        )?)
+    };
+    let prepared = Table::read(&output, false)?;
+    let previous = previous_descriptors(&section)?;
     ensure!(
         st.indices.len() == source_bank.array(0x58, 48, Some(0x80808BDE))?.len(),
         "source pose dispatch and bank disagree"
@@ -299,9 +388,13 @@ pub(super) fn prepare(
         count >= nt.indices.len(),
         "imported bank removed native descriptors"
     );
-    let mut indices = nt.indices.clone();
+    ensure!(
+        prepared.indices.len() <= count,
+        "imported bank removed prepared pose descriptors"
+    );
+    let mut indices = prepared.indices.clone();
     indices.resize(count, u16::MAX);
-    let mut routes = nt.routes.clone();
+    let mut routes = prepared.routes.clone();
     let mut assigned = BTreeMap::<usize, Option<Route>>::new();
     let mut absent = Vec::new();
     let mut translated = Vec::new();
@@ -312,7 +405,19 @@ pub(super) fn prepare(
         if to < nt.indices.len() {
             continue;
         }
+        // Source descriptor identity must still address the same native slot.
+        // Do not preserve a previous route merely because its ordinal fits.
+        let retained = if previous.get(&from).copied() == Some(to as u32) {
+            prepared.route(to)?.cloned()
+        } else {
+            None
+        };
+        indices[to] = u16::MAX;
         let Some(route) = st.route(usize::try_from(from)?)? else {
+            ensure!(
+                retained.is_none(),
+                "prepared pose route has no source route"
+            );
             absent.push(json!({"source":from,"native":to}));
             if let Some(previous) = assigned.insert(to, None) {
                 ensure!(
@@ -322,18 +427,22 @@ pub(super) fn prepare(
             }
             continue;
         };
-        let (lowered, missing) = lower(&st, &nt, route, &evidence)?;
+        let (lowered, missing) = lower(&st, &prepared, route, &evidence)?;
+        let preserving = retained.is_some();
+        let lowered = merge(&st, &prepared, route, lowered, retained)?;
         if !missing.is_empty() {
-            // No unchecked native index is emitted. The primary source clip is
-            // still available, but unsupported supplemental operations are not.
+            // Record omissions without discarding the independently calibrated
+            // operations or the source holding layer in this same action.
             unsupported.push(json!({"source":from,"native":to,"operations":missing}));
-            if let Some(previous) = assigned.insert(to, None) {
-                ensure!(
-                    previous.is_none(),
-                    "source descriptor aliases disagree on pose dispatch"
-                );
+            if lowered.iter().all(Vec::is_empty) {
+                if let Some(previous) = assigned.insert(to, None) {
+                    ensure!(
+                        previous.is_none(),
+                        "source descriptor aliases disagree on pose dispatch"
+                    );
+                }
+                continue;
             }
-            continue;
         }
         if let Some(previous) = assigned.insert(to, Some(lowered.clone())) {
             ensure!(
@@ -352,30 +461,12 @@ pub(super) fn prepare(
             "pose dispatch exceeds native signed indexes"
         );
         indices[to] = index as u16;
-        translated.push(json!({"source":from,"native":to,"route":index}));
+        translated.push(json!({"source":from,"native":to,"route":index,"preserved":preserving}));
     }
     ensure!(
         (nt.indices.len()..count).all(|i| assigned.contains_key(&i)),
         "new descriptor lacks source pose provenance"
     );
-    let mut output = if section.is_null() {
-        native.clone()
-    } else {
-        ensure!(
-            section["owner"] == owner && section["tag"] == tag,
-            "pose owner changed during preparation"
-        );
-        let bytes = fs::read(graph.join(section["file"].as_str().context("pose file")?))?;
-        ensure!(
-            bytes.len() >= native.0.len(),
-            "prepared pose table lost its native prefix"
-        );
-        let mut original = bytes[..native.0.len()].to_vec();
-        // Previous refreshes appended dispatch arrays. Restore their native
-        // descriptors before rebuilding, preserving the prepared pose drivers.
-        original[40..72].copy_from_slice(&native.0[40..72]);
-        Payload(original)
-    };
     write_array(
         &mut output.0,
         56,

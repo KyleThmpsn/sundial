@@ -1,7 +1,10 @@
 //! Preserve named, live object inputs when a source model needs additional controls.
 use super::*;
 use std::collections::BTreeSet;
+mod defaults;
+mod dependency;
 mod scoped;
+pub(super) use defaults::{material_program, validate_material_fallbacks};
 
 #[derive(Clone, PartialEq, Eq)]
 struct Channel {
@@ -11,6 +14,8 @@ struct Channel {
     declaration: Vec<u8>,
     dependencies: Vec<String>,
     procedure: Option<procedural::Declaration>,
+    /// A source declaration that nothing writes, kept at its initial vector.
+    constant: bool,
     modern: bool,
     preserved_pointers: Vec<(usize, usize)>,
     resting_procedure: Option<String>,
@@ -64,10 +69,6 @@ fn dependency_closure(
     Ok(channels)
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "Preserve the audited converter while integrating the legacy rendering pipeline."
-)]
 fn declarations(
     p: &Payload,
     modern: bool,
@@ -166,16 +167,14 @@ fn declarations(
             p.0[initial..initial + 16].iter().all(|v| *v == 0),
             "channel initial vector is not zero"
         );
-        let deps = p.array(row + 80, 8, Some(0x8080000B))?;
-        if !(!modern || only.is_none() || (deps.len() == 1 && p.u64(deps[0])? == 1u64 << i)) {
+        let deps = dependency::read(p, row + 80, rows.len())?;
+        let constant = modern && procedural::constant(p, row, &rows)?;
+        if !(!modern || only.is_none() || deps == [i] || constant) {
             // This arm only inspects the source bank, so the verdict is the
             // same whichever native donor the conversion is using.
             return Err(crate::d2_mot::source_limit(anyhow::anyhow!(
-                "channel {:08X} at index {i} has procedural dependencies {:?}",
+                "channel {:08X} at index {i} depends on declaration indices {deps:?}, expected only itself",
                 p.u32(row)?,
-                deps.iter()
-                    .map(|at| p.u64(*at))
-                    .collect::<Result<Vec<_>>>()?
             )));
         }
         // Storage allocation and dependency pointers belong to the native bank.
@@ -184,20 +183,10 @@ fn declarations(
         // legitimately encode 0x0001_FFFF here (no input, procedure flag 1).
         declaration[72..74].fill(0);
         declaration[80..96].fill(0);
-        let mut dependencies = vec![];
-        ensure!(deps.len() <= 1, "channel dependency mask is too wide");
-        if let Some(at) = deps.first() {
-            let bits = p.u64(*at)?;
-            ensure!(
-                rows.len() <= 64 && (rows.len() == 64 || bits >> rows.len() == 0),
-                "channel dependency outside declaration table"
-            );
-            for (index, at) in rows.iter().enumerate() {
-                if bits & (1 << index) != 0 {
-                    dependencies.push(format!("{:08X}", p.u32(*at)?));
-                }
-            }
-        }
+        let dependencies = deps
+            .into_iter()
+            .map(|index| Ok(format!("{:08X}", p.u32(rows[index])?)))
+            .collect::<Result<Vec<_>>>()?;
         result.insert(
             format!("{:08X}", p.u32(row)?),
             Channel {
@@ -207,6 +196,7 @@ fn declarations(
                 declaration,
                 dependencies,
                 procedure,
+                constant,
                 modern,
                 preserved_pointers,
                 resting_procedure: None,
@@ -219,7 +209,7 @@ fn declarations(
 fn source_input(owner: &Payload, hash: &str) -> Result<Option<usize>> {
     let instance = owner.pointer(16)?;
     ensure!(
-        instance >= 4 && owner.u32(instance - 4)? == 0x80806D8A,
+        instance >= 4 && matches!(owner.u32(instance - 4)?, 0x80806D8A | 0x80806D5B),
         "source object owner differs"
     );
     let inputs = owner.array(instance + 0x180, 48, Some(0x80809590))?;
@@ -242,7 +232,12 @@ fn source_input(owner: &Payload, hash: &str) -> Result<Option<usize>> {
     Ok(None)
 }
 
-fn required_source_channels(source: &Source, model: &Value) -> Result<BTreeSet<String>> {
+fn required_source_channels(
+    source: &Source,
+    model: &Value,
+    owner: &Payload,
+    objects: &BTreeMap<String, u8>,
+) -> Result<BTreeSet<String>> {
     let mut needed = BTreeSet::new();
     for material in model["materials"]
         .as_array()
@@ -254,7 +249,7 @@ fn required_source_channels(source: &Source, model: &Value) -> Result<BTreeSet<S
         }
         let material = source.raw(tag)?;
         for base in [0x70, 0x2B0] {
-            let code = array_bytes(&material, base + 0x20, 1)?;
+            let (code, _) = material_program(&material, base, owner, objects)?;
             for op in program::parse(&code)? {
                 if op.op == 0x5C {
                     needed.insert(hex::encode_upper(op.args));
@@ -280,12 +275,17 @@ fn source_channels(
         let owner = source.raw(model["owner"].as_str().unwrap())?;
         let entity = source.raw(model["entity"].as_str().context("source entity")?)?;
         let connections = entity.array(0x18, 56, Some(0x80809A8F))?;
-        for hash in required_source_channels(source, model)? {
+        for hash in required_source_channels(source, model, &owner, objects)? {
             if objects.contains_key(&hash) {
                 continue;
             }
-            let link = source_input(&owner, &hash)?
-                .with_context(|| format!("source owner has no input {hash}"))?;
+            let link = source_input(&owner, &hash)?.ok_or_else(|| {
+                crate::d2_mot::source_limit(anyhow::anyhow!(
+                    "Source model {} requires material input {hash}, but its source owner {} provides no binding",
+                    model["model"].as_str().unwrap_or("unknown"),
+                    model["owner"].as_str().unwrap_or("unknown")
+                ))
+            })?;
             let links = connections
                 .iter()
                 .copied()
@@ -347,13 +347,7 @@ fn source_channels(
                 put(&mut resting.0, row + 8, &0u32.to_le_bytes())?;
                 resting.0[row + 16..row + 72].fill(0);
                 resting.0[row + 96..row + 104].fill(0);
-                append_array(
-                    &mut resting.0,
-                    row + 80,
-                    0x8080000B,
-                    &(1u64 << index).to_le_bytes(),
-                    8,
-                )?;
+                dependency::write(&mut resting, row + 80, rows.len(), &[index])?;
                 let mut channel = declarations(&resting, true, Some(&hash))?
                     .remove(&hash)
                     .context("resting procedure declaration")?;
@@ -361,7 +355,9 @@ fn source_channels(
                 merge_source_channel(&mut result, hash.clone(), channel)?;
                 continue;
             }
-            if bank.u16(row + 72)? == u16::MAX {
+            // A constant declaration has no storage either, but no variable
+            // component feeds it. It keeps its initial vector as declared.
+            if bank.u16(row + 72)? == u16::MAX && !procedural::constant(&bank, row, &rows)? {
                 let provider = procedural::validate_source(source, &bank, &entity)
                     .with_context(|| format!("source channel {hash}"))?;
                 ensure!(
@@ -380,7 +376,7 @@ fn source_channels(
             let mut bank = bank;
             let mut resting_procedure = None;
             if hash == "59E4FF8D" {
-                let deps = bank.array(row + 80, 8, Some(0x8080000B))?;
+                let deps = dependency::read(&bank, row + 80, rows.len())?;
                 let index = rows
                     .iter()
                     .position(|at| *at == row)
@@ -391,12 +387,12 @@ fn source_channels(
                     .filter(|(_, at)| bank.u32(**at).ok() == Some(0x774501CA))
                     .collect::<Vec<_>>();
                 ensure!(
-                    producers.len() == 1 && deps.len() == 1,
+                    producers.len() == 1 && deps.len() == 2,
                     "resting output producer differs"
                 );
                 let (producer_index, producer) = producers[0];
                 ensure!(
-                    bank.u64(deps[0])? == (1u64 << index) | (1u64 << producer_index),
+                    deps.contains(&index) && deps.contains(&producer_index),
                     "resting output dependencies differ"
                 );
                 let procedure = procedural::Declaration::read(&bank, *producer, &rows)?;
@@ -404,7 +400,7 @@ fn source_channels(
                     procedure.outputs == [hash.clone()],
                     "resting output declaration differs"
                 );
-                put(&mut bank.0, deps[0], &(1u64 << index).to_le_bytes())?;
+                dependency::write(&mut bank, row + 80, rows.len(), &[index])?;
                 resting_procedure = Some("774501CA".to_owned());
             }
             let mut channel = declarations(&bank, true, Some(&hash))?
@@ -526,32 +522,12 @@ fn static_channel(hash: &str, channel: &mut Channel) -> Result<()> {
     channel.declaration[106..108].copy_from_slice(&u16::MAX.to_le_bytes());
     channel.dependencies = vec![hash.to_owned()];
     channel.procedure = None;
+    channel.constant = false;
     channel.preserved_pointers.clear();
     Ok(())
 }
 
-fn input_allocation(
-    p: &mut Payload,
-    descriptor: usize,
-    before: usize,
-    after: usize,
-) -> Result<usize> {
-    let mut changed = 0;
-    for row in p.array(descriptor, 40, Some(0x80808852))? {
-        if p.u32(row + 16)? == 0x80809788 {
-            ensure!(
-                p.u32(row)? == 0xFC3956AD && p.u32(row + 20)? as usize == before,
-                "native owner input allocation differs"
-            );
-            put(&mut p.0, row + 20, &u32::try_from(after)?.to_le_bytes())?;
-            changed += 1;
-        }
-        if p.u64(row + 24)? != 0 {
-            changed += input_allocation(p, row + 24, before, after)?;
-        }
-    }
-    Ok(changed)
-}
+pub(super) use crate::presentation::channel::input_allocation;
 
 /// Existing owner input and link records give the record layout for channels a
 /// native donor does not already expose. A donor without object channel inputs
@@ -681,6 +657,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
         if !channels.contains_key(&hash) {
             ensure!(
                 channel.name.is_some()
+                    || channel.constant
                     || computed_outputs.contains(&hash)
                     || (has_procedure
                         && (channel.resource_name.is_some() || channel.alias.is_some())),
@@ -747,7 +724,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     );
     ensure!(
         bank_count <= 64,
-        "native channel dependency mask exceeds one word"
+        "native channel bank exceeds the supported 64 declarations"
     );
     let bank_tag = old_tag;
     let instance = old_bank.pointer(16)?;
@@ -816,24 +793,23 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
             )?;
         }
         row_data.extend(row);
-        let mut mask = 0u64;
-        for dependency in &channel.dependencies {
-            mask |= 1u64
-                << bank_order
-                    .iter()
-                    .position(|h| h == dependency)
-                    .context("missing channel dependency")?;
-        }
-        dependency_data.push(if channel.dependencies.is_empty() {
-            vec![]
-        } else {
-            mask.to_le_bytes().to_vec()
-        });
+        dependency_data.push(
+            channel
+                .dependencies
+                .iter()
+                .map(|dependency| {
+                    bank_order
+                        .iter()
+                        .position(|h| h == dependency)
+                        .context("missing channel dependency")
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
     }
     append_array(&mut bank.0, schema + 0xD8, 0x808097A1, &row_data, 112)?;
     let rows = bank.array(schema + 0xD8, 112, Some(0x808097A1))?;
     for (row, dependencies) in rows.iter().zip(dependency_data) {
-        append_array(&mut bank.0, row + 80, 0x8080000B, &dependencies, 8)?;
+        dependency::write(&mut bank, row + 80, bank_count, &dependencies)?;
     }
     for (i, row) in rows.iter().enumerate() {
         for &(field, target) in &channels[&bank_order[i]].preserved_pointers {
@@ -859,6 +835,12 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     );
     cached.resize(bank_count * 16, 0);
     append_array(&mut bank.0, instance + 0x50, 0x80800090, &cached, 16)?;
+    let pending_words =
+        dependency::extend_pending(&mut bank, instance + 0x40, old_rows.len(), bank_count)?;
+    ensure!(
+        old_bank.u32(schema + 0x130)? as usize == old_rows.len().div_ceil(32),
+        "native channel dependency word count differs"
+    );
     let mut states = array_bytes(&old_bank, instance + 0x90, 16)?;
     ensure!(
         !states.is_empty() && states.iter().all(|v| *v == 0xFF),
@@ -867,6 +849,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     states.resize(numeric_count * 16, 0xFF);
     append_array(&mut bank.0, instance + 0x90, 0x8080979C, &states, 16)?;
     for (at, value) in [
+        (schema + 0x130, bank_count.div_ceil(32)),
         (schema + 0x134, bank_count),
         (schema + 0x140, numeric_count),
     ] {
@@ -935,6 +918,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     let allocation = metadata.array(0x20, 40, Some(0x80808852))?;
     for (name, class, before, after) in [
         (0xFC2F3D6F, 0x80800090, old_rows.len(), bank_count),
+        (0x4A423762, 0x8080000B, pending_words.0, pending_words.1),
         (
             0x3A55A801,
             0x8080979C,
@@ -1222,6 +1206,7 @@ mod tests {
             declaration,
             dependencies: vec!["64590948".to_owned()],
             procedure: None,
+            constant: false,
             modern: true,
             preserved_pointers: vec![(16, 128)],
             resting_procedure: None,
@@ -1251,6 +1236,7 @@ mod tests {
             declaration: vec![0; 112],
             dependencies: dependencies.iter().map(|s| (*s).to_owned()).collect(),
             procedure: None,
+            constant: false,
             modern: true,
             preserved_pointers: vec![],
             resting_procedure: None,

@@ -6,7 +6,7 @@ use std::{fmt, io::Cursor, sync::Arc};
 
 pub(crate) const WIDTH: u32 = 512;
 pub(crate) const HEIGHT: u32 = 512;
-const SOURCE_EDGE: u32 = 1024;
+const SOURCE_EDGE: u32 = crate::image_import::MAX_EMBEDDED_EDGE;
 #[derive(Clone, Eq, PartialEq)]
 pub struct Artwork {
     source: Arc<Data>,
@@ -72,6 +72,15 @@ impl Artwork {
     pub(crate) fn composition(&self) -> Option<&Composition> {
         self.composition.as_ref()
     }
+    /// Names this artwork by what it saves as, so a list can tell artwork apart without holding
+    /// its pixels.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.source.encoded.hash(&mut hasher);
+        self.composition.hash(&mut hasher);
+        hasher.finish()
+    }
     pub(crate) fn with_composition(&self, composition: Composition) -> Result<Self, String> {
         composition.validate()?;
         Ok(Self {
@@ -108,13 +117,13 @@ impl<'de> Deserialize<'de> for Artwork {
         let edited = embedded.composition.is_some();
         if embedded.png_base64.len()
             > if edited {
-                6 * 1024 * 1024
+                32 * 1024 * 1024
             } else {
                 2 * 1024 * 1024
             }
         {
             return Err(serde::de::Error::custom(
-                "Embedded badge and corner PNG exceeds size limit",
+                "Embedded artwork exceeds the size limit",
             ));
         }
         let bytes = STANDARD
@@ -192,19 +201,5 @@ mod tests {
         assert!(!saved.contains("composition"));
         assert_eq!(serde_json::from_str::<Artwork>(&saved).unwrap(), artwork);
         assert_eq!(artwork.pixels().dimensions(), (512, 512));
-    }
-
-    #[test]
-    fn embedded_artwork_reports_the_required_normalized_dimensions() {
-        let mut png = Cursor::new(Vec::new());
-        RgbaImage::new(96, 96)
-            .write_to(&mut png, ImageFormat::Png)
-            .unwrap();
-        let embedded = serde_json::json!({ "png_base64": STANDARD.encode(png.into_inner()) });
-        let error = serde_json::from_value::<Artwork>(embedded)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("512\u{00d7}512"), "{error}");
-        assert!(!error.contains("96\u{00d7}96"), "{error}");
     }
 }

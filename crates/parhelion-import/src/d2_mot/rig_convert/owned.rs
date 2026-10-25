@@ -1,6 +1,25 @@
 //! Explicit source-owned skeletons, independently validated against a native format carrier.
 use super::*;
 
+/// The modern counterpart of the selected native carrier supplies independent format evidence.
+pub(crate) fn calibration(packages: &Path, item_hash: u32, out: &Path) -> Result<Value> {
+    let mut reader = crate::d2_mot::reader::Reader::new(packages, out, true)?;
+    let mut items = Vec::new();
+    for tag in reader.classes(0x80807997) {
+        let table = reader.tag(tag, None)?;
+        for row in table.array(8, 32, None)? {
+            if table.u32(row)? == item_hash {
+                items.push(reader.ref64(&table, row + 16)?);
+            }
+        }
+    }
+    ensure!(
+        items.len() == 1,
+        "native carrier has no unique modern calibration item"
+    );
+    crate::d2_mot::rig::inspect(&mut reader, items[0], true)
+}
+
 /// Geometry keeps its own bone indices only when both FK payloads convert successfully.
 pub(super) fn mapping(config: &Value, source_item: &Value, native_item: &Value) -> Result<Value> {
     let source_path = Path::new(config["source"].as_str().context("source rig path")?);
@@ -49,8 +68,8 @@ fn selected<'a>(rig: &'a Value, owner: &Value) -> Result<&'a Value> {
     Ok(matches[0])
 }
 
-/// Require the shared arm prefix and weapon attachment boundary to agree. Weapon bones
-/// beyond that boundary deliberately keep their source names and parent relationships.
+/// Require the shared arm prefix and weapon boundary to agree. The private weapon section
+/// keeps its source attachment parent, which can select the other hand in that shared rig.
 pub(crate) fn validate(source: &Value, native: &Value) -> Result<Vec<(u32, u32, bool)>> {
     fn pair(rig: &Value, fp: bool) -> Result<(&Value, u32)> {
         let rows = rig["components"]
@@ -94,11 +113,14 @@ pub(crate) fn validate(source: &Value, native: &Value) -> Result<Vec<(u32, u32, 
             "shared arm hierarchy differs"
         );
     }
-    ensure!(
-        sf[source_start]["parent"] == nf[native_start]["parent"],
-        "weapon attachment parent differs"
-    );
     for (weapon, full, start) in [(&sw, &sf, source_start), (&nw, &nf, native_start)] {
+        let parent = full[start]["parent"]
+            .as_i64()
+            .context("weapon attachment parent")?;
+        ensure!(
+            parent >= 0 && usize::try_from(parent)? < start,
+            "weapon attachment is outside the shared arm rig"
+        );
         for (i, bone) in weapon.iter().enumerate() {
             ensure!(
                 bone["name_hash"] == full[start + i]["name_hash"],
@@ -130,6 +152,16 @@ pub(crate) fn prepare(
         let original = nr.tag(to, Some(0x80809C36))?;
         let (mut converted, report) = skeleton(&modern.0, &original.0, to)?;
         validate_native_instance(&converted.0)?;
+        let relocation = report["relocation"]
+            .as_object()
+            .map(|row| -> Result<(usize, usize)> {
+                Ok((
+                    usize::try_from(row["cut"].as_u64().context("FK relocation cut")?)?,
+                    usize::try_from(row["delta"].as_u64().context("FK relocation delta")?)?,
+                ))
+            })
+            .transpose()?;
+        validate_source_relocation(&original.0, &converted.0, relocation)?;
         for offset in report["owner_patches"]
             .as_array()
             .context("FK self patches")?
@@ -143,7 +175,7 @@ pub(crate) fn prepare(
         fs::write(graph.join(&template_file), &original.0)?;
         result.push(
             json!({"source":from,"native":to,"first_person":first_person,
-            "file":file,"template_file":template_file,"conversion":report}),
+            "file":file,"template_file":template_file,"relocation":report["relocation"],"conversion":report}),
         );
     }
     Ok(json!(result))

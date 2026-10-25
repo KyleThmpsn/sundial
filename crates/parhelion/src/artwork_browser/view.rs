@@ -1,9 +1,57 @@
 use super::*;
+use sundial::investment::SubclassSummary;
 
 pub(crate) struct Browser<'a> {
     pub packages: Option<&'a Path>,
     pub catalog: Option<&'a InvestmentCatalog>,
     pub current: Option<&'a Icon>,
+}
+
+/// Optional native node choices retain their identity separately from image artwork.
+pub(crate) struct Abilities<'a> {
+    pub choices: &'a [SubclassSummary],
+    pub current: Option<(u32, u8)>,
+}
+
+pub(crate) enum Picked {
+    Artwork(Selection),
+    Ability { subclass: u32, entry: u8 },
+}
+
+enum Choice<'a> {
+    Artwork(usize),
+    Ability(&'a SubclassSummary, u8),
+}
+
+fn ability_label(subclass: &SubclassSummary, entry: u8) -> String {
+    let name = subclass
+        .entry_names
+        .get(&entry)
+        .map_or("Unknown Ability", String::as_str);
+    format!("{name}\n{}", subclass.name)
+}
+
+fn ability_tile(
+    ui: &mut egui::Ui,
+    catalog: Option<&InvestmentCatalog>,
+    subclass: &SubclassSummary,
+    entry: u8,
+    selected: bool,
+) -> bool {
+    let texture =
+        catalog.and_then(|catalog| catalog.subclass_icon(ui.ctx(), subclass.entry_icons[&entry]));
+    let button = match &texture {
+        Some(texture) => egui::Button::image(
+            egui::Image::new(texture).fit_to_exact_size(egui::Vec2::splat(64.0)),
+        ),
+        None => egui::Button::new(""),
+    };
+    let label = ability_label(subclass, entry);
+    let response = ui
+        .add(button.min_size(egui::vec2(78.0, 78.0)).selected(selected))
+        .on_hover_text(&label);
+    pickers::name_response(ui, &response, &label);
+    response.clicked()
 }
 
 impl Picker {
@@ -15,6 +63,31 @@ impl Picker {
         height: f32,
         browser: Browser<'_>,
     ) -> Option<Selection> {
+        match self.draw_inner(ui, query, opened, height, (browser, None))? {
+            Picked::Artwork(selection) => Some(selection),
+            Picked::Ability { .. } => unreachable!("No ability choices were supplied"),
+        }
+    }
+
+    pub fn draw_abilities(
+        &mut self,
+        ui: &mut egui::Ui,
+        query: &mut String,
+        opened: bool,
+        height: f32,
+        (browser, abilities): (Browser<'_>, Abilities<'_>),
+    ) -> Option<Picked> {
+        self.draw_inner(ui, query, opened, height, (browser, Some(abilities)))
+    }
+
+    fn draw_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        query: &mut String,
+        opened: bool,
+        height: f32,
+        (browser, abilities): (Browser<'_>, Option<Abilities<'_>>),
+    ) -> Option<Picked> {
         let Browser {
             packages,
             catalog,
@@ -41,10 +114,20 @@ impl Picker {
             reset |= response.changed();
             egui::ComboBox::from_id_salt("icon-source")
                 .selected_text(
-                    ["All Icons", "Packages", "My Icons", "destiny-icons"]
-                        [usize::from(self.source)],
+                    [
+                        "All Icons",
+                        "Packages",
+                        "My Icons",
+                        "destiny-icons",
+                        "Ability Icons",
+                    ][usize::from(self.source)],
                 )
                 .show_ui(ui, |ui| {
+                    if abilities.is_some() {
+                        reset |= ui
+                            .selectable_value(&mut self.source, 4, "Ability Icons")
+                            .changed();
+                    }
                     for (value, label) in [
                         (0, "All Icons"),
                         (1, "Packages"),
@@ -58,25 +141,44 @@ impl Picker {
                 });
             pickers::name_combo(ui, "icon-source", "Icon Source");
         });
-        if self.purpose == Purpose::Perk {
+        if self.purpose == Purpose::Perk && self.source != 4 {
             reset |= ui.checkbox(&mut self.all_colors, "Show All Colors")
                 .on_hover_text("Include colored artwork that meets the same size and transparency requirements.")
                 .changed();
         }
         let query = query.trim().to_lowercase();
-        let choices: Vec<_> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| {
-                (self.purpose != Purpose::Perk || self.all_colors || row.white)
-                    && (self.source == 0 || row.source == self.source)
-                    && query
-                        .split_whitespace()
-                        .all(|word| row.search.contains(word.strip_prefix("0x").unwrap_or(word)))
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let mut choices = Vec::new();
+        if let Some(abilities) = &abilities
+            && matches!(self.source, 0 | 4)
+        {
+            for subclass in abilities.choices {
+                let class = match subclass.class_type {
+                    0 => "Titan",
+                    1 => "Hunter",
+                    2 => "Warlock",
+                    _ => "Other",
+                };
+                for &entry in subclass.entry_icons.keys() {
+                    let search = format!("{} {class}", ability_label(subclass, entry));
+                    if pickers::matches(&query, &search) {
+                        choices.push(Choice::Ability(subclass, entry));
+                    }
+                }
+            }
+        }
+        choices.extend(
+            self.rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    (self.purpose != Purpose::Perk || self.all_colors || row.white)
+                        && (self.source == 0 || row.source == self.source)
+                        && query.split_whitespace().all(|word| {
+                            row.search.contains(word.strip_prefix("0x").unwrap_or(word))
+                        })
+                })
+                .map(|(i, _)| Choice::Artwork(i)),
+        );
         ui.horizontal(|ui| {
             ui.label(format!("{} Icons", choices.len()));
             if self.busy() {
@@ -89,7 +191,11 @@ impl Picker {
                 ui.weak(format!("{done} / {total} textures"));
             }
         });
-        if self.purpose == Purpose::Perk {
+        if self.source == 4 {
+            ui.weak(
+                "Ability and attunement icons from every class. Choose All Icons for more artwork.",
+            );
+        } else if self.purpose == Purpose::Perk {
             ui.weak("White perk glyphs with transparency. Native textures must be 96 × 96.");
         }
         if let Some(error) = &self.error {
@@ -107,13 +213,25 @@ impl Picker {
             egui::vec2(ui.available_width(), remaining),
             egui::Layout::bottom_up(egui::Align::LEFT),
             |ui| {
-                let footer = self.footer(ui, catalog);
+                let footer = self.footer(ui, catalog).map(Picked::Artwork);
                 ui.separator();
                 let grid = ui
                     .allocate_ui_with_layout(
                         ui.available_size(),
                         egui::Layout::top_down(egui::Align::LEFT),
-                        |ui| self.grid(ui, &choices, reset, current),
+                        |ui| {
+                            self.grid(
+                                ui,
+                                &choices,
+                                reset,
+                                &Browser {
+                                    packages,
+                                    catalog,
+                                    current,
+                                },
+                                abilities.as_ref(),
+                            )
+                        },
                     )
                     .inner;
                 footer.or(grid)
@@ -125,17 +243,19 @@ impl Picker {
     fn grid(
         &mut self,
         ui: &mut egui::Ui,
-        choices: &[usize],
+        choices: &[Choice<'_>],
         reset: bool,
-        current: Option<&Icon>,
-    ) -> Option<Selection> {
-        let mut picked = None;
+        browser: &Browser<'_>,
+        abilities: Option<&Abilities<'_>>,
+    ) -> Option<Picked> {
         let columns = ((ui.available_width() + ui.spacing().item_spacing.x)
             / (78.0 + ui.spacing().item_spacing.x))
             .floor()
             .max(1.0) as usize;
         let grid_height = ui.available_height().max(40.0);
-        let mut visible = BTreeSet::new();
+        let mut on_screen = HashSet::new();
+        let mut requested = Vec::new();
+        let mut clicked = None;
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("icon-grid")
             .auto_shrink([false, false])
@@ -153,50 +273,84 @@ impl Picker {
                     ui.weak(if self.busy() {
                         "Looking for transparent icons…"
                     } else {
-                        "No matching icons. Clear the search or add artwork below."
+                        "No Matching Results"
                     });
                 }
                 for row_index in range {
                     ui.horizontal(|ui| {
-                        for &index in choices.iter().skip(row_index * columns).take(columns) {
-                            visible.insert(index);
+                        for choice in choices.iter().skip(row_index * columns).take(columns) {
+                            let index = match *choice {
+                                Choice::Artwork(index) => index,
+                                Choice::Ability(subclass, entry) => {
+                                    if ability_tile(
+                                        ui,
+                                        browser.catalog,
+                                        subclass,
+                                        entry,
+                                        abilities.and_then(|choices| choices.current)
+                                            == Some((subclass.hash, entry)),
+                                    ) {
+                                        clicked = Some(Picked::Ability {
+                                            subclass: subclass.hash,
+                                            entry,
+                                        });
+                                    }
+                                    continue;
+                                }
+                            };
                             let row = &self.rows[index];
-                            let texture = self.textures.entry(index).or_insert_with(|| {
-                                ui.ctx().load_texture(
-                                    format!("perk-icon-{index}"),
-                                    row.image.clone(),
-                                    egui::TextureOptions::LINEAR,
-                                )
-                            });
-                            let size =
-                                egui::vec2(row.image.size[0] as f32, row.image.size[1] as f32);
+                            on_screen.insert(row.origin.clone());
+                            let thumbnail = self
+                                .thumbnails
+                                .entry(row.origin.clone())
+                                .or_insert_with(|| {
+                                    requested.push(row.origin.clone());
+                                    Thumbnail::Pending
+                                });
+                            // A tile keeps its size while its thumbnail loads.
+                            let tile = match thumbnail.texture(ui.ctx(), index) {
+                                Some(texture) => egui::Button::image(
+                                    egui::Image::new(texture).fit_to_exact_size(row.extent),
+                                ),
+                                None => egui::Button::new(""),
+                            };
                             let response = ui
                                 .add(
-                                    egui::Button::image(
-                                        egui::Image::new(&*texture).fit_to_exact_size(size),
-                                    )
-                                    .min_size(egui::vec2(78.0, 78.0))
-                                    .selected(current == Some(&row.icon)),
+                                    tile.min_size(egui::vec2(78.0, 78.0))
+                                        .selected(row.origin.is(browser.current)),
                                 )
                                 .on_hover_text(&row.label);
                             pickers::name_response(ui, &response, &row.label);
                             if response.clicked() {
-                                picked = Some(if self.purpose != Purpose::Perk {
-                                    row.local
-                                        .as_ref()
-                                        .map(|path| Selection::Local(path.clone()))
-                                        .unwrap_or_else(|| Selection::Icon(row.icon.clone()))
-                                } else {
-                                    Selection::Icon(row.icon.clone())
-                                });
+                                clicked = self.pick(index).map(Picked::Artwork);
                             }
                         }
                     });
                 }
             },
         );
-        self.textures.retain(|index, _| visible.contains(index));
-        picked
+        self.thumbnails
+            .retain(|origin, _| on_screen.contains(origin));
+        self.request_thumbnails(ui.ctx(), on_screen, requested);
+        clicked
+    }
+
+    /// What picking row `index` selects. A local file becomes a perk's icon only when it is
+    /// picked, so the library holds no icon per file.
+    fn pick(&mut self, index: usize) -> Option<Selection> {
+        match &self.rows[index].origin {
+            Origin::Texture(tag) => Some(Selection::Icon(Icon::Texture { tag: (*tag).into() })),
+            Origin::File { path, .. } if self.purpose != Purpose::Perk => {
+                Some(Selection::Local(path.clone()))
+            }
+            Origin::File { path, name } => match library::icon(path, name) {
+                Ok(icon) => Some(Selection::Icon(icon)),
+                Err(error) => {
+                    self.error = Some(error);
+                    None
+                }
+            },
+        }
     }
 
     fn footer(
@@ -208,39 +362,67 @@ impl Picker {
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(catalog.is_some(), |ui| {
                 let mut perk_query = String::new();
-                if let Some(hash) = pickers::popup(
+                if let Some(hash) = pickers::browser_with_toolbar(
                     ui,
                     "existing-perk-icon",
                     "Select Existing Perk",
+                    "Select Existing Perk",
                     &mut perk_query,
-                    |ui, query, reset, height| {
+                    |ui, query, opened, _| {
                         let catalog = catalog?;
+                        let searched = ui
+                            .horizontal(|ui| {
+                                let width =
+                                    (ui.available_width() - pickers::CLEAR_WIDTH).max(160.0);
+                                sundial::ui::catalog::search(
+                                    ui,
+                                    query,
+                                    opened,
+                                    width,
+                                    "Search Perks",
+                                )
+                            })
+                            .inner;
+                        let words = query.trim().to_lowercase();
                         let choices: Vec<_> = catalog
                             .perk_template_choices_from(
                                 crate::package_profile::is_stock_item_definition,
                             )
                             .into_iter()
-                            .filter(|choice| pickers::matches(query, &choice.representative_name))
+                            .filter(|choice| pickers::matches(&words, &choice.representative_name))
                             .collect();
-                        pickers::results(
+                        let keys = choices
+                            .iter()
+                            .map(|choice| u64::from(choice.representative_hash))
+                            .collect::<Vec<_>>();
+                        pickers::BrowserList {
+                            keys: &keys,
+                            // The result count takes a line above the list.
+                            height: (ui.available_height() - 24.0).max(160.0),
+                            reset: opened || searched,
+                            row_height: sundial::investment::authoring_choice_row_height(ui),
+                            select: None,
+                        }
+                        .draw_activating(
                             ui,
-                            "existing-icons",
-                            choices.len(),
-                            height,
-                            reset,
-                            sundial::investment::authoring_choice_row_height(ui),
-                            |ui, index| {
+                            |ui, index, selected| {
                                 let choice = &choices[index];
-                                catalog
-                                    .draw_authoring_choice_row(
-                                        ui,
-                                        Some(choice.representative_hash),
-                                        &choice.representative_name,
-                                        Some(&choice.representative_type_name),
-                                        false,
-                                    )
-                                    .clicked()
-                                    .then_some(choice.representative_hash)
+                                catalog.draw_authoring_choice_row(
+                                    ui,
+                                    Some(choice.representative_hash),
+                                    &choice.representative_name,
+                                    Some(&choice.representative_type_name),
+                                    selected,
+                                )
+                            },
+                            |ui, index, activated| {
+                                let choice = &choices[index];
+                                ui.heading(&choice.representative_name);
+                                // A double-click takes the icon, as Use Icon does.
+                                let use_icon = ui.button("Use Icon").clicked() || activated;
+                                ui.label(&choice.representative_type_name);
+                                catalog.draw_perk_icon(ui, choice.representative_hash, 96.0);
+                                use_icon.then_some(choice.representative_hash)
                             },
                         )
                     },

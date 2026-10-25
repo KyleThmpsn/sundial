@@ -192,7 +192,7 @@ pub(in crate::app::custom_perks::workbench) fn keyboard_toggle(
     selected: bool,
     open: bool,
 ) -> bool {
-    if !selected || ui.memory(egui::Memory::any_popup_open) {
+    if !selected || egui::Popup::is_any_open(ui) {
         return false;
     }
     let top = ui.ctx().memory(|memory| {

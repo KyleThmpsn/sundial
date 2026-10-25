@@ -5,27 +5,45 @@ use crate::collection::{
 };
 use std::collections::BTreeSet;
 
+#[derive(Clone, Copy)]
+struct GearEntry<'a> {
+    kind: crate::ItemKind,
+    donor: u32,
+    rarity: Option<crate::RecipeRarity>,
+    class: Option<crate::ArmorClass>,
+    origin: Option<&'a crate::collection::armor::Origin>,
+}
+
 impl PackageAuthoringApp {
     pub(super) fn draw_collection_capacity(&self, ui: &mut egui::Ui) {
         let entries = self.recipe_entries.iter().filter(|entry| {
             self.enabled_recipe_paths.contains(&entry.path)
                 && self.recipe_path.as_ref() != Some(&entry.path)
         });
-        let mut gear_pages = entries
+        let mut gear_entries = entries
             .clone()
-            .filter_map(|entry| GearPage::for_kind(entry.kind))
-            .collect::<BTreeSet<_>>();
+            .map(|entry| GearEntry {
+                kind: entry.kind,
+                donor: entry.donor_hash,
+                rarity: entry.rarity,
+                class: entry.armor_class,
+                origin: entry.armor_origin.as_ref(),
+            })
+            .collect::<Vec<_>>();
         let mut members = entries
             .map(|entry| {
-                let donor = self
-                    .donor_summaries
-                    .iter()
-                    .find(|donor| donor.hash == entry.donor_hash);
+                let summary = |hash: u32| self.donor_summaries.iter().find(|d| d.hash == hash);
                 (
                     entry.badge.as_ref().map(|badge| badge.name.as_str()),
                     entry
                         .collection_destination
-                        .or_else(|| automatic_destination(donor, entry.ammo_type))
+                        .or_else(|| {
+                            automatic_destination(
+                                summary(entry.donor_hash),
+                                summary(entry.type_donor_hash),
+                                entry.ammo_type,
+                            )
+                        })
                         .filter(|_| !self.collection_is_exotic(entry.rarity, entry.donor_hash)),
                 )
             })
@@ -43,26 +61,26 @@ impl PackageAuthoringApp {
             self.recipe
                 .overrides
                 .collection_destination
-                .or_else(|| {
-                    automatic_destination(
-                        self.donor_summaries.iter().find(|donor| {
-                            donor.hash
-                                == self.recipe.donor.item_hash.parse_u32().unwrap_or_default()
-                        }),
-                        self.recipe.overrides.ammo_type,
-                    )
-                })
+                .or_else(|| self.current_automatic_destination())
                 .filter(|_| !exotic),
         );
         let included = self
             .recipe_path
             .as_ref()
             .is_some_and(|path| self.enabled_recipe_paths.contains(path));
-        let current_gear_page = GearPage::for_kind(self.recipe.kind);
+        let current_origin = crate::collection::armor::Origin::recipe(&self.recipe);
+        let current_gear = GearEntry {
+            kind: self.recipe.kind,
+            donor: self.recipe.donor.item_hash.parse_u32().unwrap_or_default(),
+            rarity: self.recipe.overrides.rarity,
+            class: self.recipe.overrides.armor_class,
+            origin: current_origin.as_ref(),
+        };
         if included {
             members.push(current);
-            gear_pages.extend(current_gear_page);
+            gear_entries.push(current_gear);
         }
+        let gear_pages = self.gear_collection_pages(&gear_entries);
         let budget = NodeBudget::new(members.iter().copied()).with_gear_pages(gear_pages.len());
         let mut selected_nodes = custom_node_hashes(members.iter().copied());
         selected_nodes.extend(gear_page_node_hashes(gear_pages.iter().copied()));
@@ -75,35 +93,9 @@ impl PackageAuthoringApp {
         let custom_capacity = NODE_CAPACITY - BASE_NODE_COUNT;
         let selected_used = budget.used();
         let installed_used = BASE_NODE_COUNT + installed_nodes.len();
-        ui.add(
-            sundial::investment::progress_bar(custom_used as f32 / custom_capacity as f32)
-                .desired_width(220.0)
-                .text(format!(
-                    "{custom_used} / {custom_capacity} Custom Nodes Used"
-                )),
-        );
-        let label = if selected_used > NODE_CAPACITY {
-            egui::RichText::new(format!(
-                "{} Selected Build Nodes Over Limit",
-                selected_used - NODE_CAPACITY
-            ))
-            .color(ui.visuals().error_fg_color)
-        } else if installed_used > NODE_CAPACITY {
-            egui::RichText::new(format!(
-                "{} Installed Nodes Over Limit",
-                installed_used - NODE_CAPACITY
-            ))
-            .color(ui.visuals().error_fg_color)
-        } else if used > NODE_CAPACITY {
-            egui::RichText::new("Selected Build Fits After Replacement")
-                .color(ui.visuals().weak_text_color())
-        } else {
-            egui::RichText::new(format!("{} Nodes Available", NODE_CAPACITY - used))
-                .color(ui.visuals().weak_text_color())
-        };
         let selected_new = selected_nodes.difference(&installed_nodes).count();
         let stock = crate::progression::STOCK_PRESENTATION_NODE_COUNT;
-        ui.label(label).on_hover_text(format!(
+        let detail = format!(
             "{used} / {NODE_CAPACITY} nodes\nStock: {stock}\n{}: {}\nInstalled custom: {}\nNew in selected build: {selected_new}\nSelected build custom: {} ({} badge, {} page)",
             self.presentation_editor.branding().name(),
             BASE_NODE_COUNT - stock,
@@ -111,11 +103,49 @@ impl PackageAuthoringApp {
             selected_nodes.len(),
             budget.badges * 4,
             budget.pages + budget.gear_pages
-        ));
+        );
+        ui.add(
+            sundial::investment::progress_bar(custom_used as f32 / custom_capacity as f32)
+                .desired_width(220.0)
+                .text(format!(
+                    "{custom_used} / {custom_capacity} Custom Nodes Used"
+                )),
+        )
+        .on_hover_text(&detail);
+        // The bar says how many are left, so a line beside it appears only when the build does not
+        // simply fit.
+        let status = if selected_used > NODE_CAPACITY {
+            Some(
+                egui::RichText::new(format!(
+                    "{} Selected Build Nodes Over Limit",
+                    selected_used - NODE_CAPACITY
+                ))
+                .color(ui.visuals().error_fg_color),
+            )
+        } else if installed_used > NODE_CAPACITY {
+            Some(
+                egui::RichText::new(format!(
+                    "{} Installed Nodes Over Limit",
+                    installed_used - NODE_CAPACITY
+                ))
+                .color(ui.visuals().error_fg_color),
+            )
+        } else if used > NODE_CAPACITY {
+            Some(
+                egui::RichText::new("Selected Build Fits After Replacement")
+                    .color(ui.visuals().weak_text_color()),
+            )
+        } else {
+            None
+        };
+        if let Some(status) = status {
+            ui.label(status).on_hover_text(&detail);
+        }
         if !included {
             let mut with_draft = custom_node_hashes(members.into_iter().chain([current]));
+            gear_entries.push(current_gear);
             with_draft.extend(gear_page_node_hashes(
-                gear_pages.iter().copied().chain(current_gear_page),
+                self.gear_collection_pages(&gear_entries),
             ));
             let with_draft = combined_custom_nodes(&installed_nodes, &with_draft).len();
             if with_draft > custom_used {
@@ -138,10 +168,118 @@ impl PackageAuthoringApp {
         }
     }
 
+    fn gear_collection_pages(&self, entries: &[GearEntry<'_>]) -> BTreeSet<GearPage> {
+        let mut pages = BTreeSet::new();
+        let mut armor = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if entry.kind == crate::ItemKind::Armor {
+                if self.collection_is_exotic(entry.rarity, entry.donor) {
+                    continue;
+                }
+                let inherited = self
+                    .catalog
+                    .as_ref()
+                    .and_then(|catalog| catalog.item_class_type(entry.donor))
+                    .filter(|class| *class < 3);
+                let class = entry
+                    .class
+                    .map_or(inherited, crate::ArmorClass::native_class);
+                let classes = class.map_or(
+                    crate::collection::Classes::ALL,
+                    crate::collection::Classes::one,
+                );
+                let slot = self
+                    .gear_donors_for(crate::ItemKind::Armor)
+                    .iter()
+                    .find(|donor| donor.hash == entry.donor)
+                    .and_then(|donor| {
+                        crate::collection::armor::Slot::from_bucket_hash(donor.bucket_hash)
+                    });
+                armor.push(crate::collection::armor::Piece {
+                    index,
+                    slot,
+                    classes,
+                    group: entry
+                        .origin
+                        .and_then(|origin| origin.group(self.catalog.as_ref())),
+                });
+            } else {
+                pages.extend(GearPage::for_kind(entry.kind));
+            }
+        }
+        for set in crate::collection::armor::sets(&armor) {
+            if let Some(class) = set.page.class() {
+                pages.insert(GearPage::armor(class));
+            }
+            pages.insert(set.page);
+        }
+        pages
+    }
+
     pub(super) fn draw_collection_destination(&mut self, ui: &mut egui::Ui) {
+        self.draw_destination(ui);
+        let donor = self.recipe.donor.item_hash.parse_u32().unwrap_or_default();
+        if self.joins_stock_page(self.recipe.kind, self.recipe.overrides.rarity, donor) {
+            self.draw_collection_position(ui);
+        }
+    }
+
+    /// Whether an item joins a stock Collections page: weapons, exotic armor and items beside
+    /// their base. Armor categories and gear pages are Parhelion's own.
+    pub(super) fn joins_stock_page(
+        &self,
+        kind: crate::ItemKind,
+        rarity: Option<crate::RecipeRarity>,
+        donor_hash: u32,
+    ) -> bool {
+        if kind.is_weapon() {
+            true
+        } else if kind == crate::ItemKind::Armor {
+            self.collection_is_exotic(rarity, donor_hash)
+        } else {
+            GearPage::for_kind(kind).is_none()
+        }
+    }
+
+    /// Where the item sits among the stock entries of the page it joins.
+    fn draw_collection_position(&mut self, ui: &mut egui::Ui) {
+        use crate::collection::Position;
+        ui.strong("Position");
+        let position = &mut self.recipe.overrides.collection_position;
+        ui.horizontal_wrapped(|ui| {
+            let automatic = ui
+                .add(egui::Button::new("Automatic").selected(position.is_none()))
+                .on_hover_text("First, or Last when another Sunrise mod changes Collections");
+            if automatic.clicked() {
+                *position = None;
+            }
+            for choice in Position::ALL {
+                if ui
+                    .add(egui::Button::new(choice.label()).selected(*position == Some(choice)))
+                    .clicked()
+                {
+                    *position = Some(choice);
+                }
+            }
+        });
+        if self.mod_loader && *position == Some(Position::First) {
+            style::warning(
+                ui,
+                "Not compatible with Sunrise Studio mods that change Collections.",
+            );
+        }
+    }
+
+    fn draw_destination(&mut self, ui: &mut egui::Ui) {
         if !self.recipe.kind.is_weapon() {
             ui.strong("Destination");
-            ui.label(if GearPage::for_kind(self.recipe.kind).is_some() {
+            ui.label(if self.recipe.kind == crate::ItemKind::Armor {
+                if self.collection_is_exotic(self.recipe.overrides.rarity, self.recipe.donor.item_hash.parse_u32().unwrap_or_default()) {
+                    "Exotic / Armor / Class.".to_owned()
+                } else {
+                    format!("{} category under Armor for each supported class. Known sets stay together in helmet, arms, chest, legs and class-item order. Unmatched pieces share rows of up to five.", self.presentation_editor.branding().name())
+                }
+            } else if GearPage::for_kind(self.recipe.kind).is_some() {
                 format!(
                     "{} page under {}.",
                     self.presentation_editor.branding().name(),
@@ -162,12 +300,7 @@ impl PackageAuthoringApp {
             return;
         }
         let mut custom = self.recipe.overrides.collection_destination.is_some();
-        let automatic = automatic_destination(
-            self.donor_summaries.iter().find(|donor| {
-                donor.hash == self.recipe.donor.item_hash.parse_u32().unwrap_or_default()
-            }),
-            self.recipe.overrides.ammo_type,
-        );
+        let automatic = self.current_automatic_destination();
         egui::ComboBox::from_id_salt("collection_destination_mode")
             .selected_text(if custom { "Choose Page" } else { "Automatic" })
             .show_ui(ui, |ui| {
@@ -227,6 +360,7 @@ impl PackageAuthoringApp {
             || {
                 self.donor_summaries
                     .iter()
+                    .chain(self.gear_donors.values().flatten())
                     .find(|donor| donor.hash == donor_hash)
                     .is_some_and(|donor| donor.rarity == WeaponRarity::Exotic)
             },
@@ -247,8 +381,23 @@ fn installed_custom_nodes(presentation_node_hashes: &[u64]) -> BTreeSet<u64> {
         .collect()
 }
 
+impl PackageAuthoringApp {
+    /// Where the open recipe files when no page is chosen.
+    fn current_automatic_destination(&self) -> Option<Destination> {
+        let summary = |hash: u32| self.donor_summaries.iter().find(|d| d.hash == hash);
+        automatic_destination(
+            summary(self.recipe.donor.item_hash.parse_u32().unwrap_or_default()),
+            summary(self.recipe.type_donor_hash()),
+            self.recipe.overrides.ammo_type,
+        )
+    }
+}
+
+/// The page a weapon files under: the family of the type it shows (`shown`, falling back to the
+/// base's when that type has no page) and the base weapon's ammo, unless the recipe sets one.
 fn automatic_destination(
     donor: Option<&WeaponDonorSummary>,
+    shown: Option<&WeaponDonorSummary>,
     authored_ammo: Option<crate::RecipeAmmoType>,
 ) -> Option<Destination> {
     let donor = donor?;
@@ -270,41 +419,8 @@ fn automatic_destination(
     )?;
     Some(Destination {
         ammo,
-        family: Family::from_type_name(&donor.type_name)?,
+        family: shown
+            .and_then(|shown| Family::from_type_name(&shown.type_name))
+            .or_else(|| Family::from_type_name(&donor.type_name))?,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        Ammo, Destination, Family, WeaponAmmoType, WeaponDamageProfile, WeaponDonorSummary,
-        WeaponRarity, automatic_destination,
-    };
-
-    #[test]
-    fn automatic_destination_combines_authored_ammo_with_donor_weapon_type() {
-        let donor = WeaponDonorSummary {
-            hash: 1,
-            name: "Sword donor".into(),
-            type_name: "Sword".into(),
-            bucket_hash: 0,
-            collection_backed: true,
-            power_cap: None,
-            damage_type: None,
-            inventory_slot: None,
-            ammo_type: Some(WeaponAmmoType::Heavy),
-            weapon_pattern_index: None,
-            weapon_translation_group: None,
-            stat_group_index: None,
-            damage_profile: WeaponDamageProfile::Unknown,
-            rarity: WeaponRarity::Legendary,
-        };
-        assert_eq!(
-            automatic_destination(Some(&donor), Some(crate::RecipeAmmoType::Special)),
-            Some(Destination {
-                ammo: Ammo::Special,
-                family: Family::Swords,
-            })
-        );
-    }
 }

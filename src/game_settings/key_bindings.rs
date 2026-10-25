@@ -153,7 +153,7 @@ pub(super) fn draw_key_bindings(
     let mut changed = CommandBatch::default();
     ui.horizontal(|ui| {
         ui.heading("Key Bindings");
-        crate::ui_help::info(
+        crate::ui::help::info(
             ui,
             if numeric || editable {
                 binding_help(show_presence_gated_preference(
@@ -198,7 +198,7 @@ pub(super) fn draw_key_bindings(
     ui.add_space(6.0);
     ui.add(
         egui::TextEdit::singleline(&mut state.action_search)
-            .hint_text("Search actions…")
+            .hint_text("Search Actions…")
             .desired_width(320.0),
     );
     ui.add_space(8.0);
@@ -296,17 +296,14 @@ pub(super) fn binding_picker(
                     binding_modifier(modifier)
                 }),
         };
-        ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+        egui::Popup::toggle_id(ui, popup_id);
     }
 
     let picker = &mut state.picker;
     let mut selection = None::<Option<String>>;
-    egui::popup::popup_below_widget(
-        ui,
-        popup_id,
-        &button,
-        egui::PopupCloseBehavior::CloseOnClickOutside,
-        |ui| {
+    crate::ui::dropdown(&button, popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(400.0);
             ui.strong("Modifier");
             ui.horizontal_wrapped(|ui| {
@@ -317,7 +314,7 @@ pub(super) fn binding_picker(
             ui.add_space(4.0);
             ui.add(
                 egui::TextEdit::singleline(&mut picker.query)
-                    .hint_text("Search key names…")
+                    .hint_text("Search Key Names…")
                     .desired_width(380.0),
             );
             ui.separator();
@@ -366,8 +363,7 @@ pub(super) fn binding_picker(
                         ui.weak("No matching keys found");
                     }
                 });
-        },
-    );
+        });
 
     let selection = selection?;
     let replacement = match selection.as_deref() {
@@ -381,7 +377,7 @@ pub(super) fn binding_picker(
         AccountSettingValue::InputCode(code) => original.as_u64() == Some(u64::from(*code)),
         _ => false,
     };
-    ui.memory_mut(egui::Memory::close_popup);
+    egui::Popup::close_all(ui);
     (!unchanged).then(|| AccountSettingsCommand::Set {
         key: AccountSettingKey::key_binding(
             action,
@@ -501,24 +497,6 @@ pub(super) fn binding_value_label(value: &Value) -> (String, bool) {
     } else {
         ("Invalid value".into(), false)
     }
-}
-
-#[cfg(test)]
-pub(super) fn set_named_binding_value(
-    value: &mut Value,
-    input: Option<&str>,
-) -> Result<bool, String> {
-    if let Some(input) = input
-        && !valid_named_input(input)
-    {
-        return Err(format!("Unsupported Sunrise key name: {input}"));
-    }
-    let replacement = input.map_or(Value::Null, |input| Value::String(input.into()));
-    if *value == replacement {
-        return Ok(false);
-    }
-    *value = replacement;
-    Ok(true)
 }
 
 pub(super) fn input_code(

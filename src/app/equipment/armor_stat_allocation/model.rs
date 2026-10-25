@@ -123,6 +123,6 @@ pub(super) const fn group_index(group: AllocationGroup) -> usize {
 pub(super) const fn mode_allows_cross_group_allocations(mode: PlugSelectionMode) -> bool {
     matches!(
         mode,
-        PlugSelectionMode::GearType | PlugSelectionMode::AnyPlug
+        PlugSelectionMode::GearType | PlugSelectionMode::GearKind | PlugSelectionMode::AnyPlug
     )
 }

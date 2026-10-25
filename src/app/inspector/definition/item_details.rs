@@ -146,7 +146,7 @@ pub(super) fn filter_field(ui: &mut egui::Ui, id: egui::Id, hint: &str) -> Strin
 pub(super) fn draw_table(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     headings: &[&str],
     rows: &[Vec<Cell>],
 ) {
@@ -625,7 +625,7 @@ fn art_class_text(class: i8) -> String {
         0 => "Titan",
         1 => "Hunter",
         2 => "Warlock",
-        _ => "Unknown class",
+        _ => "Unknown Class",
     };
     format!("{label} ({class})")
 }
@@ -654,7 +654,7 @@ fn dye_rows(metadata: &ItemPackageMetadata) -> Vec<Vec<String>> {
 fn dye_row(stage: usize, index: usize, key: i8, value: u16) -> Vec<String> {
     vec![
         ["Custom", "Default", "Locked"].get(stage).map_or_else(
-            || format!("Unknown lane {stage}"),
+            || format!("Unknown Lane {stage}"),
             |label| (*label).to_owned(),
         ),
         (index + 1).to_string(),
@@ -672,7 +672,7 @@ fn dye_row(stage: usize, index: usize, key: i8, value: u16) -> Vec<String> {
 pub(super) fn draw_item_hash_list(
     ui: &mut egui::Ui,
     catalog: &Catalog,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     title: &str,
     hashes: &[u64],
 ) {
@@ -711,7 +711,7 @@ pub(super) fn draw_hash_item_rows(
         filter_field(
             ui,
             egui::Id::new(("item_rows_filter", id)),
-            "Filter by Name, Type or Hash",
+            "Filter by Name, Type, or Hash",
         )
     } else {
         String::new()

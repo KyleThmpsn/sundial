@@ -5,6 +5,7 @@
 //! pose instead of merely appending an unreachable source clip to the bank.
 use super::*;
 use crate::d2_mot::payload::Payload;
+mod weight;
 
 struct Choice {
     tag: u32,
@@ -21,7 +22,7 @@ fn static_pose(p: &Payload, frames: usize) -> Result<bool> {
             .all(|at| p.u64(at).ok() == Some(0)))
 }
 
-pub(super) fn controller(
+pub(crate) fn controller(
     reader: &mut Reader,
     rig: &Value,
     modern: bool,
@@ -152,6 +153,7 @@ pub(super) fn bindings(
 ) -> Result<Bindings> {
     let (_, _, source) = controller(sr, source_rig, true)?;
     let (owner, tag, native) = controller(nr, native_rig, false)?;
+    let inputs = weight::Inputs::read(sr, nr, source_rig, native_rig)?;
     let mut output = native.clone();
     let mut controls = Vec::new();
     let mut groups = BTreeMap::new();
@@ -220,27 +222,24 @@ pub(super) fn bindings(
             if !static_pose(&source_clip, 0x140)? || !static_pose(&native_clip, 0x13C)? {
                 continue;
             }
-            // The profile's static base pose has a constant playback driver.
-            // Retaining the carrier's variable driver changes the pose even
-            // when its bank slot points at the correct source clip.
+            // Static poses can still have a live blend weight. Preserve that
+            // source weight through named native inputs, independently of the
+            // clip's constant transforms and retained native playback envelope.
             ensure!(
-                source.u32(from.entry + 32)? == 1
-                    && source.f32(from.entry + 36)? == 1.0
-                    && source.u32(from.entry + 40)? == 0xFFFF
-                    && source.u32(from.entry + 44)? == 0
-                    && source.f32(from.entry + 48)? == 1.0
+                source.f32(from.entry + 48)? == 1.0
                     && source.u16(from.entry + 52)? == 0
                     && source.u32(from.entry + 54)? == 0xFFFF
                     && source.u16(from.entry + 58)? == 0
                     && source.u32(from.entry + 60)? == 1
                     && native.u32(to.entry + 56)? == 0xFFFF
-                    && native.u32(to.entry + 60)? == 0x01000000,
+                    && matches!(native.u32(to.entry + 60)?, 0x01000000 | 0x01000001),
                 "profile pose needs unsupported playback controls"
             );
-            output.0[to.entry + 32..to.entry + 52]
-                .copy_from_slice(&source.0[from.entry + 32..from.entry + 52]);
-            controls
-                .push(json!({"entry":to.entry,"source_entry":from.entry,"constant_driver":1.0}));
+            let (driver, evidence) = inputs.translate(&source, from.entry + 32)?;
+            output.0[to.entry + 32..to.entry + 48].copy_from_slice(&driver);
+            output.0[to.entry + 48..to.entry + 52]
+                .copy_from_slice(&source.0[from.entry + 48..from.entry + 52]);
+            controls.push(json!({"entry":to.entry,"source_entry":from.entry,"weight":evidence}));
             if let Some((previous, _)) = result.insert(to.tag, (from.tag, name)) {
                 ensure!(
                     previous == from.tag,

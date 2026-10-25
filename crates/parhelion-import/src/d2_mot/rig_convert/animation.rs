@@ -1,14 +1,28 @@
 //! Read animation-to-skeleton connections into a version-independent form.
 //! Clip payloads and controller programs still need their own format conversion.
 use super::*;
+pub use crate::tiger::animation::clip::lowering as clips;
 use serde::Serialize;
 use std::collections::BTreeMap;
-pub mod clips;
+pub mod equipment;
 pub mod first_person;
 
 /// Export clip dependencies through validated lookup-component and bank fields.
 /// This deliberately avoids scanning arbitrary integers for apparent tag hashes.
 pub fn export_clips(
+    r: &mut crate::d2_mot::reader::Reader,
+    rig: &Value,
+    modern: bool,
+) -> Result<Value> {
+    let report = inspect_clips(r, rig, modern)?;
+    write_json(&r.output.join("animation-clips.json"), &report)?;
+    r.finish()?;
+    Ok(report)
+}
+
+/// Inspect checked lookup and clip-bank dependencies without publishing a fixed-name report.
+/// Ability research uses this for each attached entity in one source capture.
+pub(crate) fn inspect_clips(
     r: &mut crate::d2_mot::reader::Reader,
     rig: &Value,
     modern: bool,
@@ -63,8 +77,6 @@ pub fn export_clips(
         );
     }
     let report = json!({"banks":banks,"clips":exported,"runtime_ready":false});
-    write_json(&r.output.join("animation-clips.json"), &report)?;
-    r.finish()?;
     Ok(report)
 }
 

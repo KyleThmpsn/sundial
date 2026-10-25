@@ -1,5 +1,6 @@
 //! Inventory icon artwork; the ammunition HUD silhouette is a separate mapping.
 use crate::d2_mot::reader::Reader;
+pub use crate::tiger::icon::{Layer, decode};
 use anyhow::{Context, Result, ensure};
 use std::fs;
 
@@ -40,15 +41,45 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
-/// One undecoded texture: `format` is the DXGI format number from the header.
-pub struct Layer {
-    /// Container slot offset the layer came from.
-    pub slot: usize,
-    pub texture: u32,
-    pub format: u32,
-    pub width: u16,
-    pub height: u16,
-    pub data: Vec<u8>,
+/// Composite browser layers at their native size, anchored top-left. Recipe export uses
+/// the primary artwork API instead, since native rarity and foreground are separate layers.
+pub fn composite(layers: &[Layer]) -> Result<Image> {
+    let width = layers.iter().map(|layer| layer.width).max().unwrap_or(0);
+    let height = layers.iter().map(|layer| layer.height).max().unwrap_or(0);
+    ensure!(
+        width > 0 && height > 0 && width <= 4096 && height <= 4096,
+        "Icon dimensions exceed the supported limit"
+    );
+    let primary = layers
+        .iter()
+        .find(|layer| layer.slot == PRIMARY)
+        .context("The icon has no primary artwork")?;
+    let mut rgba = vec![0u8; usize::from(width) * usize::from(height) * 4];
+    for layer in layers {
+        let pixels = match decode(layer) {
+            Ok(pixels) => pixels,
+            Err(error) if layer.slot == PRIMARY => {
+                return Err(error.context("Could not decode primary icon artwork"));
+            }
+            Err(_) => continue,
+        };
+        for y in 0..usize::from(layer.height) {
+            for x in 0..usize::from(layer.width) {
+                let from = (y * usize::from(layer.width) + x) * 4;
+                let to = (y * usize::from(width) + x) * 4;
+                sundial::image_processing::blend_rgba_pixel(
+                    &mut rgba[to..to + 4],
+                    pixels[from..from + 4].try_into()?,
+                );
+            }
+        }
+    }
+    Ok(Image {
+        texture: primary.texture,
+        width,
+        height,
+        rgba,
+    })
 }
 
 /// Primary artwork as RGBA8, for export.
@@ -56,12 +87,11 @@ pub fn read_index(r: &mut Reader, icon_index: usize) -> Result<Image> {
     let container = container(r, icon_index)?;
     let texture = layer_texture(r, container.u32(PRIMARY)?)?.context("no icon layers")?;
     let layer = read_texture(r, texture)?;
-    ensure!(matches!(layer.format, 28 | 29), "icon must be RGBA8");
     Ok(Image {
         texture: layer.texture,
         width: layer.width,
         height: layer.height,
-        rgba: layer.data,
+        rgba: decode(&layer)?,
     })
 }
 
@@ -95,7 +125,7 @@ pub fn read_layers(r: &mut Reader, icon_index: usize) -> Result<Vec<Layer>> {
     Ok(layers)
 }
 
-fn container(
+pub(crate) fn container(
     r: &mut Reader,
     icon_index: usize,
 ) -> Result<std::sync::Arc<crate::d2_mot::payload::Payload>> {

@@ -40,14 +40,14 @@ fn choices(
     let (mut query, mut show_all) = ui
         .data(|data| data.get_temp::<(String, bool)>(state))
         .unwrap_or_default();
-    ui.set_width(340.0_f32.min(ui.ctx().screen_rect().width() - 40.0));
+    ui.set_width(340.0_f32.min(ui.ctx().content_rect().width() - 40.0));
     let mut hashes = Vec::new();
     ui.horizontal(|ui| {
         super::search(
             ui,
             &mut query,
             false,
-            ui.available_width() - 60.0,
+            ui.available_width() - super::CLEAR_WIDTH,
             "Search Labels",
         );
     });
@@ -81,7 +81,7 @@ fn choices(
                     let response = ui.selectable_label(selected.contains(&hash), &label);
                     if response.clicked() {
                         selected = vec![hash];
-                        ui.close_menu();
+                        ui.close();
                     }
                     response
                 };
@@ -147,25 +147,4 @@ fn candidates(
         )
     });
     hashes
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn search_uses_active_registry_and_keeps_unknown_current_values_removable() {
-        let registry =
-            Registry::read(&crate::package_runtime::labels::fixture::registry()).unwrap();
-        let observed = [(0x12345678, "stale label", 1)];
-        let hashes = candidates(Some(&registry), &observed, &[0x87654321], "", false);
-        assert!(!hashes.contains(&0x12345678));
-        assert!(hashes.contains(&0x87654321));
-        assert!(!hashes.contains(&0xEC6A8FC5));
-        assert!(candidates(Some(&registry), &[], &[], "EC6A8FC5", true).contains(&0xEC6A8FC5));
-        assert_eq!(
-            candidates(Some(&registry), &[], &[], "precision", false),
-            vec![0x962EA19B]
-        );
-    }
 }

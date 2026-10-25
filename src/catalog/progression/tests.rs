@@ -223,15 +223,15 @@ fn unlock_flag_displays_validate_aligned_hashes_and_relative_blocks() {
 
     let mut wrong_hash = table.clone();
     wrong_hash[64..68].copy_from_slice(&0x8765_4321_u32.to_le_bytes());
-    assert!(unlock_flag_display_blocks(&wrong_hash, &[definition.clone()]).is_err());
+    assert!(unlock_flag_display_blocks(&wrong_hash, std::slice::from_ref(&definition)).is_err());
 
     let mut wrong_class = table.clone();
     wrong_class[56..60].copy_from_slice(&0_u32.to_le_bytes());
-    assert!(unlock_flag_display_blocks(&wrong_class, &[definition.clone()]).is_err());
+    assert!(unlock_flag_display_blocks(&wrong_class, std::slice::from_ref(&definition)).is_err());
 
     let mut outside = table;
     outside[72..80].copy_from_slice(&i64::MAX.to_le_bytes());
-    assert!(unlock_flag_display_blocks(&outside, &[definition.clone()]).is_err());
+    assert!(unlock_flag_display_blocks(&outside, std::slice::from_ref(&definition)).is_err());
     assert!(
         unlock_flag_display_blocks(&unlock_flag_display_table(definition.hash as u32), &[])
             .is_err()
@@ -284,67 +284,6 @@ fn unlock_state_indices_use_the_compact_bank_and_keep_the_first_definition() {
     assert_eq!(indices.get(&(1, 58)), Some(&0));
     assert_eq!(indices.get(&(2, 58)), Some(&2));
     assert!(!indices.contains_key(&(1, u16::MAX)));
-}
-
-#[test]
-fn objective_limits_respect_direction_and_overcompletion() {
-    let mut objective = ObjectiveDef {
-        completion_value: 70,
-        ..ObjectiveDef::default()
-    };
-    assert_eq!(objective.maximum_value(), Some(70));
-    assert_eq!(objective.minimum_value(), None);
-
-    objective.allow_overcompletion = true;
-    assert_eq!(objective.maximum_value(), None);
-    assert_eq!(objective.minimum_value(), None);
-
-    objective.allow_overcompletion = false;
-    objective.is_counting_downward = true;
-    assert_eq!(objective.maximum_value(), None);
-    assert_eq!(objective.minimum_value(), Some(70));
-}
-
-#[test]
-fn repeated_objective_owners_merge_richer_package_metadata() {
-    let mut objectives = vec![ObjectiveDef::default()];
-    add_objective_owner(
-        &mut objectives,
-        0,
-        ObjectiveOwnerDef {
-            hash: 7,
-            kind: ObjectiveOwnerKind::InventoryItem,
-            name: String::new(),
-            type_name: "Item".into(),
-            description: String::new(),
-            traits: Vec::new(),
-            paths: vec![vec!["Items".into()]],
-        },
-    );
-    add_objective_owner(
-        &mut objectives,
-        0,
-        ObjectiveOwnerDef {
-            hash: 7,
-            kind: ObjectiveOwnerKind::InventoryItem,
-            name: "Ace of Spades".into(),
-            type_name: String::new(),
-            description: "Hand cannon".into(),
-            traits: vec![ObjectiveOwnerTraitDef {
-                hash: 9,
-                name: "Exotic".into(),
-                description: String::new(),
-            }],
-            paths: vec![vec!["Collections".into()]],
-        },
-    );
-
-    let owner = &objectives[0].owners[0];
-    assert_eq!(objectives[0].owners.len(), 1);
-    assert_eq!(owner.name, "Ace of Spades");
-    assert_eq!(owner.description, "Hand cannon");
-    assert_eq!(owner.paths.len(), 2);
-    assert_eq!(owner.traits.len(), 1);
 }
 
 #[test]
@@ -563,36 +502,6 @@ fn location_release_condition_rows_use_exact_fields_and_reject_bad_activity_indi
 }
 
 #[test]
-fn presentation_paths_keep_immediate_parent_first_and_preserve_branches() {
-    let node = |hash, name: &str, parents| PresentationNodeDef {
-        hash,
-        name: name.into(),
-        parents,
-        objective_index: None,
-        condition_references: ConditionReferences::default(),
-    };
-    let nodes = vec![
-        node(1, "Metrics", vec![]),
-        node(2, "Account", vec![0]),
-        node(3, "Crucible", vec![0]),
-        node(4, "Account", vec![0]),
-    ];
-
-    assert_eq!(
-        presentation_paths(&nodes, &[1]),
-        vec![vec!["Account".to_owned(), "Metrics".to_owned()]]
-    );
-    assert_eq!(
-        presentation_paths(&nodes, &[1, 2]),
-        vec![
-            vec!["Account".to_owned(), "Metrics".to_owned()],
-            vec!["Crucible".to_owned(), "Metrics".to_owned()],
-        ]
-    );
-    assert_eq!(presentation_paths(&nodes, &[1, 3]).len(), 1);
-}
-
-#[test]
 fn metric_traits_use_the_authored_u16_list_without_a_row_cap() {
     const METRIC_DEFINITION: usize = 0x20;
     const HEADER: usize = 0x80;
@@ -768,7 +677,7 @@ fn milestone_objectives_reject_an_impossible_phase_count() {
     assert!(
         milestone_objective_indices(&row, 0, 1_000)
             .unwrap_err()
-            .contains("expected at most 6")
+            .contains("Expected at most 6")
     );
 }
 

@@ -45,21 +45,3 @@ fn malformed_native_layouts_and_unresolved_defaults_block_migration() {
     write_u32(&mut bad_class, 0x120, 0).unwrap();
     assert!(decode_defaults(&bad_class, &[100]).is_err());
 }
-
-#[test]
-#[ignore = "read-only native metadata check, requires PARHELION_LIFECYCLE_SOURCE_PACKAGES"]
-fn installed_weapon_and_private_plug_socket_layouts_are_readable() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_LIFECYCLE_SOURCE_PACKAGES").unwrap());
-    let (hashes, _) = installed_identities(&packages).unwrap();
-    let defaults = generation_socket_defaults(&packages, &packages, &hashes).unwrap();
-    assert_eq!(defaults.len(), hashes.len());
-    let socket_items = defaults
-        .values()
-        .filter(|sockets| !sockets.is_empty())
-        .count();
-    assert!(socket_items > 0);
-    println!(
-        "Read native sockets for {} authored definitions, including {socket_items} with ordinary sockets",
-        defaults.len()
-    );
-}

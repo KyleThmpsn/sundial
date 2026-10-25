@@ -25,13 +25,22 @@ pub(super) struct Picker {
 pub(super) struct Prepared {
     baseline: WeaponRecipe,
     packages: PathBuf,
-    result: Result<(GraphReference, WeaponDonorReference), String>,
+    result: Result<PreparedModel, String>,
+}
+
+struct PreparedModel {
+    graph: GraphReference,
+    donor: WeaponDonorReference,
+    icon: Option<crate::icon_edit::ImportedIcon>,
 }
 
 fn source_hash(recipe: &WeaponRecipe) -> Option<u32> {
-    recipe
-        .namespace
-        .strip_prefix("parhelion.bulk.")
+    // A modern import's namespace ends with its source item's hash, in the earlier bulk
+    // scheme too.
+    ["parhelion.d2_mot.", "parhelion.bulk."]
+        .into_iter()
+        .find_map(|prefix| recipe.namespace.strip_prefix(prefix))
+        .and_then(|rest| rest.rsplit('-').next())
         .and_then(|hash| u32::from_str_radix(hash, 16).ok())
         .or_else(|| {
             let graph = recipe.overrides.imported_graph.as_ref()?;
@@ -64,6 +73,7 @@ impl PackageAuthoringApp {
                 let mut choices = Vec::new();
                 for path in paths {
                     if let Ok(recipe) = WeaponRecipe::load_json(&path)
+                        && recipe.kind.is_weapon()
                         && recipe.overrides.imported_graph.is_some()
                     {
                         choices.push(Model {
@@ -180,6 +190,7 @@ impl PackageAuthoringApp {
                                         tooltip: "No reconversion.",
                                         selected: current.is_none(),
                                     }),
+                                    selected_detail: None,
                                 },
                             );
                             match selection {
@@ -332,7 +343,7 @@ impl PackageAuthoringApp {
         self.importer.models.notice.clear();
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let result = (|| -> Result<(GraphReference, WeaponDonorReference), String> {
+            let result = (|| -> Result<PreparedModel, String> {
                 let root = data_root()?;
                 let mut recipe = model.recipe;
                 if let Some(donor) = donor {
@@ -355,7 +366,7 @@ impl PackageAuthoringApp {
                     .map_err(|error| format!("{error:#}"))?;
                     let weapon = weapons
                         .iter()
-                        .find(|weapon| weapon.hash == source)
+                        .find(|weapon| weapon.hash == source && !weapon.is_shader())
                         .ok_or("Source weapon missing from this build")?;
                     let folder =
                         service::model_directory(&root.join("models"), &weapon.name, source)
@@ -412,7 +423,15 @@ impl PackageAuthoringApp {
                     graph =
                         GraphReference::new(&folder, target).map_err(|error| error.to_string())?;
                 }
-                Ok((graph, recipe.presentation_donor.unwrap_or(recipe.donor)))
+                let _ = sender.send(Event::Progress(0, "Preparing inventory icon…".into()));
+                ctx.request_repaint();
+                let icon =
+                    crate::imported::artwork::for_model(&baseline, &recipe, &graph, &native)?;
+                Ok(PreparedModel {
+                    graph,
+                    donor: recipe.presentation_donor.unwrap_or(recipe.donor),
+                    icon,
+                })
             })();
             let _ = sender.send(Event::ModelPrepared(Box::new(Prepared {
                 baseline,
@@ -425,11 +444,14 @@ impl PackageAuthoringApp {
 
     pub(super) fn finish_imported_model(&mut self, prepared: Prepared) {
         let (notice, failed) = match prepared.result {
-            Ok((graph, donor))
+            Ok(PreparedModel { graph, donor, icon })
                 if self.recipe == prepared.baseline && self.packages == prepared.packages =>
             {
                 self.recipe.set_presentation_donor(Some(donor));
                 self.recipe.overrides.imported_graph = Some(graph);
+                self.recipe.overrides.icon_edit.imported_image = icon;
+                // An imported model keeps its own materials, which shader glow does not support.
+                self.recipe.overrides.shader_glow = false;
                 self.recipe_dirty = true;
                 self.invalidate_results();
                 ("Model applied.".to_owned(), false)

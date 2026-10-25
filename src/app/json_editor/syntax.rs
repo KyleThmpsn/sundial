@@ -35,7 +35,7 @@ impl JsonLayoutCache {
                 job: highlight_job(ui, text, matches, current),
             });
         }
-        ui.fonts(|fonts| fonts.layout_job(self.entry.as_ref().unwrap().job.clone()))
+        ui.fonts_mut(|fonts| fonts.layout_job(self.entry.as_ref().unwrap().job.clone()))
     }
 }
 

@@ -19,7 +19,7 @@ use crate::catalog::{
     CatalogProgress, CollectionConditionTokenDef, ObjectiveDef, ObjectiveOwnerTraitDef,
     PresentationNode, RecordDefinition, UnlockDefinition,
 };
-use crate::investment_localization::LocalizedStringCache;
+use crate::investment::localization::LocalizedStringCache;
 use std::collections::HashMap;
 
 pub(super) struct ProgressionScan {

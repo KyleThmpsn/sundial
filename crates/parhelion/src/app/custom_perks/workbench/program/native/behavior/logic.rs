@@ -6,7 +6,7 @@ pub(super) fn logic_width(ui: &egui::Ui, and: bool) -> f32 {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let spacing = ui.spacing();
     let command = |label: &str| {
-        ui.fonts(|fonts| {
+        ui.fonts_mut(|fonts| {
             fonts
                 .layout_no_wrap(label.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
                 .size()

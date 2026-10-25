@@ -6,11 +6,13 @@ use super::{
     Model,
     texture::{AddressMode, Sampler, Texture},
 };
+mod legacy;
 pub(super) mod normal;
-use crate::weapon_dyes::material::{Frame, Surface, apply_writes, properties};
+mod paint;
+use crate::dyes::material::{Frame, Surface, apply_writes, properties};
 
 #[derive(Clone, Copy)]
-pub(super) struct Dye {
+pub(crate) struct Dye {
     pub surface: Surface,
     pub detail: Option<usize>,
     pub transform: [f32; 4],
@@ -21,13 +23,21 @@ pub(super) struct Dye {
 }
 
 pub(super) fn dyes(model: &Model, seconds: f32) -> [Option<Dye>; 6] {
-    let mut dyes = model.dyes;
-    // An editor's unbuilt values go where a build writes them, into the dye's vectors before its
-    // program runs. A program that writes a value still wins, as it does in the game.
     let overrides = model
         .surface_overrides
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    dyes_with_overrides(model, seconds, &overrides)
+}
+
+pub(super) fn dyes_with_overrides(
+    model: &Model,
+    seconds: f32,
+    overrides: &[super::SurfaceOverride],
+) -> [Option<Dye>; 6] {
+    let mut dyes = model.dyes;
+    // Gather sparse edits for each channel. Its animation applies them in native emission order.
     // Both of a channel's surfaces share one dye, so its writes gather from both.
     let writes = |channel: usize| -> Vec<(usize, usize, f32)> {
         overrides
@@ -42,6 +52,7 @@ pub(super) fn dyes(model: &Model, seconds: f32) -> [Option<Dye>; 6] {
                 dye.surface = frame.surfaces[i];
                 dye.transform = frame.detail_transform;
                 dye.normal_transform = frame.normal_transform;
+                dye.vectors = frame.vectors;
             }
         }
     };
@@ -75,22 +86,195 @@ pub(super) fn dyes(model: &Model, seconds: f32) -> [Option<Dye>; 6] {
     dyes
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct Bindings<'a> {
+    pub(in crate::model_preview) color_override: Option<[f32; 3]>,
+    pub(in crate::model_preview) emission_override: Option<[f32; 3]>,
+    pub(in crate::model_preview) ambient_override: Option<f32>,
+    base_gain: Option<[f32; 3]>,
+    base_metal: Option<f32>,
+    paint: Option<[f32; 2]>,
+    native_rgb: bool,
+    normal_decode: Option<[[f32; 2]; 2]>,
+    grain: Option<f32>,
+    legacy_normal: Option<[f32; 3]>,
+    channel: usize,
+    native_detail: bool,
+    skip_normal: bool,
+    cutoff: Option<f32>,
     pub albedo: Option<&'a Texture>,
     /// Gearstack whose blue channel is coverage for an alpha-clipped part.
     pub clip: Option<&'a Texture>,
     /// Flat emissive colour that replaces every material term.
     pub constant: Option<[f32; 3]>,
-    gearstack: Option<&'a Texture>,
-    dye: Option<&'a Dye>,
-    detail: Option<&'a Texture>,
-    normal: Option<&'a Texture>,
-    detail_normal: Option<&'a Texture>,
+    pub(in crate::model_preview) gearstack: Option<&'a Texture>,
+    pub(in crate::model_preview) dye: Option<&'a Dye>,
+    pub(in crate::model_preview) detail: Option<&'a Texture>,
+    pub(in crate::model_preview) normal: Option<&'a Texture>,
+    pub(in crate::model_preview) detail_normal: Option<&'a Texture>,
     iridescence: Option<&'a Texture>,
+    dye_map: Option<(&'a Texture, super::texture::DyeMap, u8)>,
+    sampling: Option<([usize; 5], &'a [Sampler])>,
+    footprints: Option<[super::texture::Footprint; 2]>,
 }
 
 impl<'a> Bindings<'a> {
+    pub(in crate::model_preview) fn with_footprints(
+        mut self,
+        footprints: [super::texture::Footprint; 2],
+    ) -> Self {
+        self.footprints = Some(footprints);
+        self
+    }
+
+    fn sample(
+        &self,
+        texture: &Texture,
+        uv: [f32; 2],
+        unit: usize,
+        transform: Option<[f32; 4]>,
+    ) -> [f32; 4] {
+        let color = matches!(unit, 0 | 3);
+        if let (Some((units, samplers)), Some(footprints)) = (self.sampling, self.footprints) {
+            let footprint = match (unit >= 3, self.native_detail) {
+                (true, true) => footprints[1],
+                (true, false) => footprints[0].scaled([5.0; 2]),
+                (false, _) => footprints[0],
+            };
+            let footprint = transform.map_or(footprint, |t| footprint.scaled([t[0], t[1]]));
+            return texture.sample_implicit(uv, &samplers[units[unit]], footprint, color);
+        }
+        if color {
+            texture.sample_color(uv)
+        } else {
+            texture.sample_rgba(uv)
+        }
+    }
+    pub(in crate::model_preview) fn with_normal_mapping(mut self, enabled: bool) -> Self {
+        self.skip_normal = !enabled;
+        self
+    }
+    pub(in crate::model_preview) fn with_gain(mut self, gain: Option<[f32; 3]>) -> Self {
+        self.base_gain = gain;
+        self
+    }
+    pub(in crate::model_preview) fn with_paint(mut self, paint: Option<[f32; 2]>) -> Self {
+        self.paint = paint;
+        self
+    }
+    pub(in crate::model_preview) fn with_metal(mut self, metal: Option<f32>) -> Self {
+        self.base_metal = metal;
+        self
+    }
+    pub(in crate::model_preview) fn with_normal_decode(
+        mut self,
+        decode: Option<[[f32; 2]; 4]>,
+    ) -> Self {
+        self.normal_decode = decode.map(|v| {
+            [
+                v[0],
+                v.get(self.channel + 1).copied().unwrap_or([2.0, -1.0]),
+            ]
+        });
+        self
+    }
+    pub(in crate::model_preview) fn with_grain(mut self, offsets: Option<[f32; 3]>) -> Self {
+        self.grain = offsets.and_then(|v| v.get(self.channel).copied());
+        self
+    }
+    pub(in crate::model_preview) fn with_legacy_normal(mut self, decode: Option<[f32; 3]>) -> Self {
+        self.legacy_normal = decode;
+        self
+    }
+    pub(in crate::model_preview) fn with_material(
+        self,
+        material: &'a super::effects::Material,
+        frame: &super::effects::Frame,
+    ) -> Self {
+        let result = if let Some(native) = &material.native {
+            self.with_native(native, frame)
+        } else {
+            self
+        };
+        let mut result =
+            result.with_legacy_normal(material.normal.as_ref().and_then(|n| n.frame(frame)));
+        result.sampling = material
+            .sampling()
+            .map(|units| (units, material.samplers.as_slice()));
+        result
+    }
+    pub(in crate::model_preview) fn with_native(
+        mut self,
+        native: &super::effects::native::Native,
+        frame: &super::effects::Frame,
+    ) -> Self {
+        self.native_rgb = native.opaque_uv.is_some();
+        self.with_gain(native.base_gain(frame))
+            .with_paint(native.paint(frame))
+            .with_metal(native.base_metal(frame))
+            .with_normal_decode(native.normal(frame))
+            .with_grain(native.grain(frame))
+    }
+    fn intact(&self, alpha: f32, dye: &Surface) -> f32 {
+        if self.paint.is_some() {
+            paint::intact(alpha, dye)
+        } else {
+            saturate(remap(saturate((alpha - 48.0) / 207.0), dye.wear))
+        }
+    }
+    pub(in crate::model_preview) fn base_color(&self, uv: [f32; 2], detail: [f32; 2]) -> [f32; 3] {
+        self.texel_at(uv, self.native_detail.then_some(detail))
+            .map_or_else(
+                || self.effect_plate(uv)[..3].try_into().unwrap(),
+                |texel| texel.surface.albedo,
+            )
+    }
+    /// The transparent gear programs output color and authored smoothness together.
+    pub(super) fn effect_base(&self, uv: [f32; 2], detail_uv: [f32; 2]) -> [f32; 4] {
+        let base = self
+            .albedo
+            .map_or([0.0; 4], |t| self.sample(t, uv, 0, None));
+        let mask = self
+            .gearstack
+            .map_or([0.0; 4], |t| self.sample(t, uv, 1, None));
+        let raw = mask[1] / 255.0;
+        let Some(dye) = self.dye.filter(|_| mask[3] >= 40.0) else {
+            return [base[0], base[1], base[2], raw];
+        };
+        let detail_uv =
+            std::array::from_fn(|i| detail_uv[i] * dye.transform[i] + dye.transform[i + 2]);
+        let detail = self.detail.map_or([0.25, 0.25, 0.25, 0.25], |t| {
+            self.sample(t, detail_uv, 3, Some(dye.transform))
+        });
+        let map = |value: f32, m: [f32; 4]| saturate(m[2] + m[3] * saturate(m[0] + m[1] * value));
+        let surface = |color: [f32; 3], params: [f32; 4], rough: [f32; 4]| {
+            let mapped = map(raw, rough);
+            let color: [f32; 3] = std::array::from_fn(|i| {
+                mix(color[i], saturate(overlay(detail[i], color[i])), params[0])
+            });
+            [
+                overlay(base[0], color[0]),
+                overlay(base[1], color[1]),
+                overlay(base[2], color[2]),
+                mix(mapped, map(overlay(mapped, detail[3]), rough), params[2]),
+            ]
+        };
+        let s = &dye.surface;
+        let intact = map(saturate((mask[3] - 48.0) / 207.0), s.wear);
+        let a = surface(s.worn_albedo, s.worn_params.map(saturate), s.worn_roughness);
+        let b = surface(s.albedo, s.params, s.roughness);
+        std::array::from_fn(|i| mix(a[i], b[i], intact))
+    }
+
+    pub(super) fn effect_plate(&self, uv: [f32; 2]) -> [f32; 4] {
+        self.albedo
+            .map_or([0.0; 4], |t| self.sample(t, uv, 0, None))
+    }
+
+    pub(super) fn effect_mask(&self, uv: [f32; 2]) -> [f32; 4] {
+        self.gearstack
+            .map_or([0.0; 4], |t| self.sample(t, uv, 1, None).map(|v| v / 255.0))
+    }
     pub fn new(model: &'a Model, triangle: usize, dyes: &'a [Option<Dye>; 6]) -> Self {
         let dye = model
             .triangle_dyes
@@ -106,8 +290,31 @@ impl<'a> Bindings<'a> {
         };
         let gearstack = texture(&model.triangle_gearstacks);
         Self {
+            sampling: None,
+            footprints: None,
+            color_override: None,
+            emission_override: None,
+            ambient_override: None,
+            skip_normal: false,
+            base_gain: None,
+            base_metal: None,
+            paint: None,
+            native_rgb: false,
+            normal_decode: None,
+            grain: None,
+            legacy_normal: None,
+            channel: model
+                .triangle_dyes
+                .get(triangle)
+                .map_or(0, |slot| usize::from(*slot) / 2),
             albedo: texture(&model.triangle_textures),
+            native_detail: model
+                .triangle_detail_uv
+                .get(triangle)
+                .copied()
+                .unwrap_or(false),
             clip: gearstack.filter(|_| model.triangle_clip.get(triangle).copied().unwrap_or(false)),
+            cutoff: model.triangle_cutoff.get(triangle).copied().flatten(),
             constant: model.triangle_constant.get(triangle).copied().flatten(),
             gearstack,
             normal: texture(&model.triangle_normals),
@@ -119,6 +326,18 @@ impl<'a> Bindings<'a> {
                 .and_then(|i| model.textures.get(i)),
             dye,
             iridescence: model.iridescence.as_ref(),
+            dye_map: model
+                .triangle_dye_maps
+                .get(triangle)
+                .copied()
+                .flatten()
+                .and_then(|map| {
+                    Some((
+                        model.textures.get(map.texture)?,
+                        map,
+                        *model.triangle_dyes.get(triangle)?,
+                    ))
+                }),
         }
     }
 
@@ -126,6 +345,7 @@ impl<'a> Bindings<'a> {
     pub fn clip_only(&self) -> Self {
         Self {
             clip: self.clip,
+            cutoff: self.cutoff,
             ..Default::default()
         }
     }
@@ -133,8 +353,11 @@ impl<'a> Bindings<'a> {
     /// Whether an alpha-clipped part covers this texel. The template shader's rule:
     /// `saturate(gstack.b * 7.96875)` is the coverage, clipped at one half.
     pub fn covers(&self, uv: [f32; 2]) -> bool {
-        self.clip
-            .is_none_or(|texture| texture.sample_rgba(uv)[2] * 7.96875 / 255.0 >= 0.5)
+        self.dye_map.is_none_or(|(texture, map, slot)| {
+            super::texture::DyeMap::slot(texture.sample_rgba(map.uv(uv))) == slot
+        }) && self.clip.is_none_or(|texture| {
+            self.sample(texture, uv, 1, None)[2] * 7.96875 / 255.0 >= self.cutoff.unwrap_or(0.5)
+        })
     }
 
     pub fn tint(&self) -> Option<[f32; 3]> {
@@ -143,27 +366,41 @@ impl<'a> Bindings<'a> {
 
     /// Continuous coverage for an alpha-clipped part, before the one-half clip `covers` applies.
     pub fn coverage(&self, uv: [f32; 2]) -> Option<f32> {
+        if self.dye_map.is_some() && !self.covers(uv) {
+            return Some(0.0);
+        }
         self.clip
-            .map(|texture| saturate(texture.sample_rgba(uv)[2] * 7.96875 / 255.0))
+            // glTF uses a fixed one-half cutoff. Normalize native coverage around it.
+            .map(|texture| {
+                saturate(
+                    saturate(self.sample(texture, uv, 1, None)[2] * 7.96875 / 255.0) * 0.5
+                        / self.cutoff.unwrap_or(0.5),
+                )
+            })
+            .or_else(|| self.dye_map.map(|_| 1.0))
     }
 
-    /// The unlit material at one point of the plate. The preview lights this, and an export
-    /// bakes it, so the two share one evaluation and cannot drift apart.
-    pub fn texel(&self, uv: [f32; 2]) -> Option<Texel> {
-        let base = self.albedo?.sample(uv).map(|v| linear(v / 255.0));
-        let mask = self.gearstack.map(|t| t.sample_rgba(uv));
-        let surface = match (self.dye, mask) {
+    /// The unlit material at one point of the plate, shared by preview and export.
+    pub(super) fn texel_at(&self, uv: [f32; 2], detail: Option<[f32; 2]>) -> Option<Texel> {
+        let detail_coordinates = detail.unwrap_or_else(|| uv.map(|v| v * 5.0));
+        let color = self.sample(self.albedo?, uv, 0, None);
+        let base = [color[0], color[1], color[2]];
+        let mask = self.gearstack.map(|t| self.sample(t, uv, 1, None));
+        let mut surface = match (self.dye, mask) {
             (Some(dye), Some(mask)) => {
-                let detail_uv =
-                    std::array::from_fn(|i| uv[i] * 5.0 * dye.transform[i] + dye.transform[i + 2]);
-                evaluate(
-                    base,
-                    mask,
-                    self.detail.map(|t| t.sample_rgba(detail_uv)),
-                    &dye.surface,
-                )
+                let detail_uv = std::array::from_fn(|i| {
+                    detail_coordinates[i] * dye.transform[i] + dye.transform[i + 2]
+                });
+                let detail = self
+                    .detail
+                    .map(|t| self.sample(t, detail_uv, 3, Some(dye.transform)));
+                let mut surface = evaluate(base, mask, detail, &dye.surface);
+                if let Some(smooth) = self.paint {
+                    paint::apply(&mut surface, base, mask, detail, &dye.surface, smooth);
+                }
+                surface
             }
-            _ if self.normal.is_some() => Sample {
+            _ if self.normal.is_some() || (self.paint.is_some() && mask.is_some()) => Sample {
                 albedo: base,
                 roughness: 0.6,
                 metal: 0.0,
@@ -172,21 +409,37 @@ impl<'a> Bindings<'a> {
             },
             _ => return None,
         };
-        let normal = self.normal.map(|texture| {
-            let sampled = texture.sample_rgba(uv).map(|v| v / 255.0);
+        // A retained native RGB program owns its bounded additive composition.
+        // Ordinary gear and static export still normalize the supported base material.
+        if !self.native_rgb && self.paint.is_none() && surface.emission == [0.0; 3] {
+            surface.albedo = bounded(surface.albedo);
+        }
+        self.unpainted(&mut surface, mask);
+        if let Some(decode) = self.legacy_normal {
+            self.legacy_grain(&mut surface, mask, uv, detail_coordinates, decode[2]);
+        } else {
+            self.normal_grain(&mut surface, mask, detail_coordinates);
+        }
+        let normal = self.normal.filter(|_| !self.skip_normal).map(|texture| {
+            let sampled = self.sample(texture, uv, 2, None).map(|v| v / 255.0);
+            if let Some(decode) = self.normal_decode.or_else(|| self.legacy_decode()) {
+                return self.decoded_normal(sampled, decode, mask, detail_coordinates);
+            }
             let mut packed = [sampled[0], sampled[1]];
             // The map's blue channel is occlusion, not the normal's third axis.
             let mut occlusion = [sampled[2], 1.0];
             if let (Some(dye), Some(detail), Some(mask)) = (self.dye, self.detail_normal, mask)
                 && mask[3] >= 40.0
             {
-                let intact = saturate(remap(saturate((mask[3] - 48.0) / 207.0), dye.surface.wear));
+                let intact = self.intact(mask[3], &dye.surface);
                 let strength =
                     mix(dye.surface.worn_params[1], dye.surface.params[1], intact).clamp(0.0, 4.0);
                 let uv = std::array::from_fn(|i| {
-                    uv[i] * 5.0 * dye.normal_transform[i] + dye.normal_transform[i + 2]
+                    detail_coordinates[i] * dye.normal_transform[i] + dye.normal_transform[i + 2]
                 });
-                let detail = detail.sample_rgba(uv).map(|v| v / 255.0);
+                let detail = self
+                    .sample(detail, uv, 4, Some(dye.normal_transform))
+                    .map(|v| v / 255.0);
                 packed = std::array::from_fn(|i| {
                     let blended = if packed[i] < 0.5 {
                         2.0 * packed[i] * detail[i]
@@ -202,17 +455,96 @@ impl<'a> Bindings<'a> {
         Some(Texel { surface, normal })
     }
 
-    pub fn shade(
+    fn decoded_normal(
+        &self,
+        sampled: [f32; 4],
+        decode: [[f32; 2]; 2],
+        mask: Option<[f32; 4]>,
+        coordinates: [f32; 2],
+    ) -> NormalTexel {
+        let mut xy = [sampled[0], sampled[1]].map(|v| v * decode[0][0] + decode[0][1]);
+        if let (Some(dye), Some(detail), Some(mask)) = (self.dye, self.detail_normal, mask)
+            && mask[3] >= 40.0
+        {
+            let strength = self.decoded_strength(mask[3], &dye.surface);
+            let uv = std::array::from_fn(|i| {
+                coordinates[i] * dye.normal_transform[i] + dye.normal_transform[i + 2]
+            });
+            let detail = self
+                .sample(detail, uv, 4, Some(dye.normal_transform))
+                .map(|v| v / 255.0);
+            if decode[1].iter().all(|v| v.is_finite()) {
+                xy = std::array::from_fn(|i| {
+                    xy[i] + strength * (detail[i] * decode[1][0] + decode[1][1])
+                });
+            }
+        }
+        let z = (1.0 - xy[0] * xy[0] - xy[1] * xy[1]).max(0.0).sqrt();
+        let unit = normal::normalize([xy[0], xy[1], z]).unwrap_or([0.0, 0.0, 1.0]);
+        NormalTexel {
+            packed: [unit[0] * 0.5 + 0.5, unit[1] * 0.5 + 0.5],
+            occlusion: [1.0; 2],
+        }
+    }
+
+    /// Grain is a material property even when no tangent basis can apply normal direction.
+    fn normal_grain(&self, surface: &mut Sample, mask: Option<[f32; 4]>, coordinates: [f32; 2]) {
+        let (Some(offset), Some(dye), Some(texture), Some(mask)) =
+            (self.grain, self.dye, self.detail_normal, mask)
+        else {
+            return;
+        };
+        if mask[3] < 40.0 {
+            return;
+        }
+        let strength = mix(
+            saturate(dye.surface.worn_params[1]),
+            saturate(dye.surface.params[1]),
+            paint::intact(mask[3], &dye.surface),
+        );
+        let uv = std::array::from_fn(|i| {
+            coordinates[i] * dye.normal_transform[i] + dye.normal_transform[i + 2]
+        });
+        let blue = texture.sample_rgba(uv)[2] / 255.0;
+        let limit = mix(1.0, saturate(blue + offset), strength);
+        surface.roughness = surface.roughness.max(1.0 - limit);
+    }
+
+    fn unpainted(&self, surface: &mut Sample, mask: Option<[f32; 4]>) {
+        if !mask.is_some_and(|mask| mask[3] < 40.0) {
+            return;
+        }
+        if let Some(gain) = self.base_gain {
+            for (color, gain) in surface.albedo.iter_mut().zip(gain) {
+                *color *= gain;
+            }
+        }
+        if let Some(metal) = self.base_metal {
+            surface.metal = metal;
+        }
+        if let Some(smooth) = self.paint {
+            surface.roughness = 1.0 - smooth[1];
+        }
+    }
+
+    pub fn shade_linear(
         &self,
         uv: [f32; 2],
+        detail_uv: [f32; 2],
         geometric: [f32; 3],
         basis: Option<normal::Basis>,
         scene: super::render::Scene,
-    ) -> Option<[u8; 3]> {
+    ) -> Option<([f32; 3], [f32; 3])> {
         let Texel {
             mut surface,
             normal: map,
-        } = self.texel(uv)?;
+        } = self.texel_at(uv, self.native_detail.then_some(detail_uv))?;
+        if let Some(color) = self.color_override {
+            surface.albedo = color;
+        }
+        if let Some(emission) = self.emission_override {
+            surface.emission = emission;
+        }
         let mut normal = geometric;
         if let (Some(map), Some(basis)) = (map, basis) {
             // Applied one after the other, as they always were, so the preview stays exact.
@@ -220,49 +552,57 @@ impl<'a> Bindings<'a> {
             surface.ao *= map.occlusion[1];
             normal = basis.apply(map.packed);
         }
-        let tint = self.apply_iridescence(uv, normal, &mut surface);
-        Some(light(surface, normal, scene, tint).map(encode))
+        let iridescence = self.iridescence_at(uv, normal);
+        let ambient = self.ambient_override.unwrap_or(surface.ao);
+        Some((light(surface, normal, scene, iridescence, ambient), normal))
     }
 
-    /// The GPU preview's iridescence: the lookup row the dye names, read along the row by view
-    /// angle and weighted by how dark the dye is. An even row tints the colour and makes it
-    /// metal. An odd row tints the highlight, which this returns.
-    fn apply_iridescence(&self, uv: [f32; 2], normal: [f32; 3], surface: &mut Sample) -> [f32; 3] {
+    /// The dye's iridescence as the native deferred pass applies it: the lookup row the dye
+    /// names, read at column `(n . v)^2`, squared. Its colour becomes the specular base and its
+    /// alpha scales the lit result. `None` where the dye names no row or the paint is worn through.
+    fn iridescence_at(&self, uv: [f32; 2], normal: [f32; 3]) -> Option<Iridescence> {
         let (Some(dye), Some(gearstack), Some(lookup)) =
             (self.dye, self.gearstack, self.iridescence)
         else {
-            return [1.0; 3];
+            return None;
         };
         let id = dye.surface.iridescence;
-        let alpha = gearstack.sample_rgba(uv)[3];
-        if id < 0.0 || alpha < 40.0 {
-            return [1.0; 3];
+        if id < 0.0 || gearstack.sample_rgba(uv)[3] < 40.0 {
+            return None;
         }
-        let intact = saturate(remap(saturate((alpha - 48.0) / 207.0), dye.surface.wear));
-        let color: [f32; 3] =
-            std::array::from_fn(|i| mix(dye.surface.worn_albedo[i], dye.surface.albedo[i], intact));
         let clamped = Sampler {
+            filter: None,
+            mip_bias: 0.0,
+            anisotropy: 1,
+            lod: [0.0, f32::MAX],
             u: AddressMode::Clamp,
             v: AddressMode::Clamp,
+            w: AddressMode::Clamp,
             border: [0.0; 4],
         };
         let rows = lookup.size[1].max(1) as f32;
         let sample = lookup
-            .sample_with_sampler([saturate(normal[2].abs()), (id + 0.5) / rows], &clamped)
+            .sample_with_sampler(
+                [saturate(normal[2] * normal[2]), (id + 0.5) / rows],
+                &clamped,
+            )
             .map(|value| value / 255.0);
         // Rows past the authored ones hold a magenta placeholder the game skips.
         if sample[0] > 0.98 && sample[1] < 0.02 && sample[2] > 0.98 {
-            return [1.0; 3];
+            return None;
         }
-        let strength = 1.0 - (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]);
-        if id.rem_euclid(2.0) < 0.5 {
-            surface.albedo = std::array::from_fn(|i| mix(surface.albedo[i], sample[i], strength));
-            surface.metal = mix(surface.metal, 1.0, strength);
-            [1.0; 3]
-        } else {
-            std::array::from_fn(|i| mix(1.0, sample[i], strength))
-        }
+        Some(Iridescence {
+            specular: std::array::from_fn(|i| sample[i] * sample[i]),
+            scale: sample[3] * sample[3],
+        })
     }
+}
+
+/// An iridescent texel's specular base and the factor on its lit colour, from the lookup row.
+#[derive(Clone, Copy)]
+struct Iridescence {
+    specular: [f32; 3],
+    scale: f32,
 }
 
 /// The unlit material at one texel, with the normal map's contribution kept apart because
@@ -288,6 +628,7 @@ pub(super) struct Sample {
     pub emission: [f32; 3],
 }
 
+/// Color inputs are filtered linear light, mask channels retain their native 0..255 packing.
 fn evaluate(base: [f32; 3], mask: [f32; 4], detail: Option<[f32; 4]>, dye: &Surface) -> Sample {
     let [ao, smoothness, emission, alpha] = mask;
     let mut sample = Sample {
@@ -304,20 +645,23 @@ fn evaluate(base: [f32; 3], mask: [f32; 4], detail: Option<[f32; 4]>, dye: &Surf
     // High alpha is intact paint. Low dyeable alpha exposes the worn material.
     let intact = saturate(remap(saturate((alpha - 48.0) / 207.0), dye.wear));
     let params: [f32; 4] = std::array::from_fn(|i| mix(dye.worn_params[i], dye.params[i], intact));
-    sample.albedo =
-        std::array::from_fn(|i| overlay(base[i], mix(dye.worn_albedo[i], dye.albedo[i], intact)));
+    let detail_color = detail.unwrap_or([0.25; 4]);
+    sample.albedo = std::array::from_fn(|i| {
+        let layer = |color: f32, strength: f32| {
+            let detailed = saturate(overlay(detail_color[i], color));
+            overlay(base[i], mix(color, detailed, strength))
+        };
+        mix(
+            layer(dye.worn_albedo[i], saturate(dye.worn_params[0])),
+            layer(dye.albedo[i], dye.params[0]),
+            intact,
+        )
+    });
     let mut smoothness = smoothness / 255.0;
     if let Some(detail) = detail {
-        sample.albedo = std::array::from_fn(|i| {
-            mix(
-                sample.albedo[i],
-                overlay(linear(detail[i] / 255.0), sample.albedo[i]),
-                saturate(params[0]),
-            )
-        });
         smoothness = mix(
             smoothness,
-            overlay(smoothness, detail[3] / 255.0),
+            overlay(smoothness, detail[3]),
             saturate(params[2]),
         );
     }
@@ -334,9 +678,16 @@ fn evaluate(base: [f32; 3], mask: [f32; 4], detail: Option<[f32; 4]>, dye: &Surf
     sample
 }
 
+fn bounded(color: [f32; 3]) -> [f32; 3] {
+    let peak = color.into_iter().fold(0.0f32, f32::max);
+    let weight = 1.0 - saturate(peak - 1.0);
+    let color = color.map(|v| v * weight);
+    let divisor = color.into_iter().fold(1.0f32, f32::max);
+    color.map(|v| v / divisor)
+}
+
 fn remap(value: f32, map: [f32; 4]) -> f32 {
-    let end = map[2] + map[3];
-    (value * map[1] + map[0]).clamp(map[2].min(end), map[2].max(end))
+    saturate(map[2] + map[3] * saturate(value * map[1] + map[0]))
 }
 
 fn overlay(base: f32, blend: f32) -> f32 {
@@ -350,8 +701,15 @@ fn saturate(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 
-/// `tint` colours the highlight, as an odd iridescence row does.
-fn light(sample: Sample, mut n: [f32; 3], scene: super::render::Scene, tint: [f32; 3]) -> [f32; 3] {
+/// An iridescent texel takes the lookup colour, plus albedo by metalness, as its specular base,
+/// and the lookup alpha scales its diffuse and reflected light, as the native deferred pass does.
+fn light(
+    sample: Sample,
+    mut n: [f32; 3],
+    scene: super::render::Scene,
+    iridescence: Option<Iridescence>,
+    ambient: f32,
+) -> [f32; 3] {
     // Two-sided studio lighting with a broad fill and a roughness-dependent highlight.
     // Kept independent of native game environments; the viewer's own exposure is applied last.
     if n[2] > 0.0 {
@@ -374,14 +732,35 @@ fn light(sample: Sample, mut n: [f32; 3], scene: super::render::Scene, tint: [f3
     let fresnel = (1.0 - n[2].abs()).powi(5);
     let surroundings = studio(n, key, roughness);
     // Occlusion darkens the fill and reflected environment, not the key light.
+    let scale = iridescence.map_or(1.0, |iridescence| iridescence.scale);
     std::array::from_fn(|i| {
         let base = sample.albedo[i];
-        let specular = mix(0.04, base, sample.metal);
-        let diffuse = base * (1.0 - sample.metal) * (scene.fill * sample.ao + scene.key * diffuse);
-        let reflection = tint[i] * specular * (surroundings * sample.ao + highlight * 2.0)
-            + fresnel * 0.18 * sample.ao;
-        (diffuse + reflection + sample.emission[i]) * scene.exposure
+        // The lookup colour plus albedo by metalness can pass 1, which would turn the diffuse
+        // share below negative and darken the texel.
+        let specular_base = iridescence.map_or(mix(0.04, base, sample.metal), |iridescence| {
+            saturate(iridescence.specular[i] + base * sample.metal)
+        });
+        // Grazing reflectance rises only as far as the surface is smooth, so rough paint and
+        // cloth stay dark at their edges rather than taking a pale sheen.
+        let grazing = (1.0 - roughness).max(specular_base);
+        let specular = specular_base + (grazing - specular_base) * fresnel;
+        let diffuse = base
+            * (1.0 - sample.metal)
+            * (1.0 - specular)
+            * (scene.fill * ambient + scene.key * diffuse);
+        let reflection = specular * (scene.fill * surroundings * sample.ao + scene.key * highlight);
+        ((diffuse + reflection) * scale + sample.emission[i]) * scene.exposure
     })
+}
+
+/// Light the decoded native surface using the preview's studio and exposure.
+pub(in crate::model_preview) fn shade_surface(
+    sample: Sample,
+    normal: [f32; 3],
+    scene: super::render::Scene,
+    ambient: f32,
+) -> [f32; 3] {
+    light(sample, normal, scene, None, ambient)
 }
 
 /// The least roughness the key light's highlight shows with, standing for the light's size.
@@ -467,9 +846,10 @@ pub(super) fn linear(value: f32) -> f32 {
     lookup(LINEAR.get_or_init(|| table(linear_exact)), value)
 }
 pub(super) fn encode(value: f32) -> u8 {
-    static SRGB: std::sync::OnceLock<[f32; TABLE + 1]> = std::sync::OnceLock::new();
-    (lookup(SRGB.get_or_init(|| table(encode_exact)), value) * 255.0).round() as u8
+    (encoded(value) * 255.0).round() as u8
 }
 
-#[cfg(test)]
-mod tests;
+pub(super) fn encoded(value: f32) -> f32 {
+    static SRGB: std::sync::OnceLock<[f32; TABLE + 1]> = std::sync::OnceLock::new();
+    lookup(SRGB.get_or_init(|| table(encode_exact)), value)
+}

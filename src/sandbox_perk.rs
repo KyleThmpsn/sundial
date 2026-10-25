@@ -4,26 +4,26 @@ use std::mem::size_of;
 
 use crate::package_runtime::reader::PackageManager;
 use crate::{
-    investment_schema::{
-        GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, NESTED_ARRAY_TRAILER,
-        investment_globals_table_tag,
-    },
-    package_payload::{i64_at, relative_offset, u32_at, u64_at},
-    weapon_entity::{
+    entity::{
         SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS,
         SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
         WEAPON_ENTITY_CLASS, validate_weapon_entity,
     },
+    investment::schema::{
+        GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, NESTED_ARRAY_TRAILER,
+        investment_globals_table_tag,
+    },
+    package_payload::{i64_at, relative_offset, u32_at, u64_at},
 };
 use tiger_pkg::TagHash;
 
 pub mod action;
 pub mod activation;
 pub mod dependencies;
+pub mod entity;
 pub mod ingredients;
 pub mod nodes;
 pub mod program;
-pub mod projectile;
 
 pub(crate) const CACHE_DIRECTORY: &str = "discovery";
 
@@ -68,6 +68,9 @@ const ARRAY_HEADER_SIZE: usize = 0x10;
 const ARRAY_TRAILER_SIZE: usize = NESTED_ARRAY_TRAILER.len();
 const SINGLE_ARRAY_HEADER: usize = 0x20;
 const ROOT_ARRAY_HEADER: usize = 0x30;
+/// The u32 every native array header sits behind, the last word of its trailer.
+const ARRAY_MARKER: u32 = 0x8080_9FBD;
+const INDEX_CATALOG: &str = "Sandbox-perk metadata catalog";
 
 // A direct action-graph reference is stored as a 64-bit tag lane.  The native action
 // member class occurs 0x14 bytes before the lane; this is the stock layout used by the
@@ -217,12 +220,52 @@ struct NativeArray {
     row_class: u32,
 }
 
+/// Two arrays where their descriptors put them. The game reads each array there, so a reader
+/// accepts any placement. Stock tables keep the secondary array right after the primary rows, while
+/// Sunrise's merge layout leaves every stock byte in place and copies each array a mod grew after
+/// the stock entry, as a mod-folder build installs these tables.
 #[derive(Clone, Copy, Debug)]
 struct TwoArrayLayout {
+    label: &'static str,
     primary: NativeArray,
     primary_end: usize,
     secondary: NativeArray,
     secondary_end: usize,
+}
+
+impl TwoArrayLayout {
+    /// The layout as stock tables keep it, which the writers here need. Inserting rows moves every
+    /// byte after them, and only this layout says what those bytes are.
+    fn contiguous(self, payload: &[u8]) -> Result<Self, String> {
+        let label = self.label;
+        if self.primary.header != ROOT_ARRAY_HEADER {
+            return Err(format!(
+                "{label} primary header is at 0x{:X}, expected 0x{ROOT_ARRAY_HEADER:X}",
+                self.primary.header
+            ));
+        }
+        let expected_secondary_header = self
+            .primary_end
+            .checked_add(ARRAY_TRAILER_SIZE)
+            .ok_or_else(|| format!("{label} inter-array offset overflowed"))?;
+        if self.secondary.header != expected_secondary_header {
+            return Err(format!(
+                "{label} arrays are not separated by exactly one native trailer"
+            ));
+        }
+        if payload.get(self.primary_end..self.secondary.header)
+            != Some(NESTED_ARRAY_TRAILER.as_slice())
+        {
+            return Err(format!("{label} has an unexpected inter-array trailer"));
+        }
+        if self.secondary_end != payload.len() {
+            return Err(format!(
+                "{label} has {} unexpected trailing bytes",
+                payload.len() - self.secondary_end
+            ));
+        }
+        Ok(self)
+    }
 }
 
 /// Validates a finished sandbox-perk catalog payload.
@@ -300,7 +343,7 @@ pub fn clone_and_append_presented_finished_sandbox_perk(
     new_runtime_key: u32,
     presentation: FinishedSandboxPerkPresentation,
 ) -> Result<(Vec<u8>, usize), String> {
-    let layout = finished_catalog_layout(payload)?;
+    let layout = finished_catalog_layout(payload)?.contiguous(payload)?;
     let donor = finished_sandbox_perk_with_layout(payload, layout, donor_index)?;
     let donor_detail = donor.detail.ok_or_else(|| {
         format!("Finished sandbox-perk row {donor_index} has no detail row to clone")
@@ -346,6 +389,13 @@ pub fn clone_and_append_presented_finished_sandbox_perk(
         ];
     }
 
+    // A declaration-only row has no action, and its runtime key is the no-hash sentinel that
+    // every such row shares. Its copy keeps the sentinel, so the copy has no action either.
+    let declaration_only = new_runtime_key == crate::hash::FNV1_EMPTY_HASH
+        && u32_at(
+            payload,
+            primary_row(layout, donor_index, FINISHED_SANDBOX_PERK_ROW_SIZE)? + 4,
+        )? == crate::hash::FNV1_EMPTY_HASH;
     for index in 0..layout.primary.count {
         let row = primary_row(layout, index, FINISHED_SANDBOX_PERK_ROW_SIZE)?;
         let perk_hash = u32_at(payload, row)?;
@@ -355,7 +405,7 @@ pub fn clone_and_append_presented_finished_sandbox_perk(
                 "Finished sandbox-perk hash 0x{new_perk_hash:08X} already exists at row {index}"
             ));
         }
-        if runtime_key == new_runtime_key {
+        if runtime_key == new_runtime_key && !declaration_only {
             return Err(format!(
                 "Sandbox-perk runtime key 0x{new_runtime_key:08X} already exists at row {index}"
             ));
@@ -496,7 +546,7 @@ pub fn clone_and_append_sandbox_perk_index(
     donor_index: usize,
     new_perk_hash: u32,
 ) -> Result<(Vec<u8>, usize), String> {
-    let layout = sandbox_perk_index_layout(payload)?;
+    let layout = contiguous_index_layout(payload)?;
     if donor_index >= layout.count {
         return Err(format!(
             "Sandbox-perk metadata donor index {donor_index} is outside the {}-row table",
@@ -816,7 +866,7 @@ pub fn insert_sandbox_perk_runtime_assignment(
     runtime_key: u32,
     runtime_tag: u32,
 ) -> Result<Vec<u8>, String> {
-    let layout = runtime_map_layout(payload)?;
+    let layout = runtime_map_layout(payload)?.contiguous(payload)?;
     let mut keys = Vec::with_capacity(layout.primary.count);
     for index in 0..layout.primary.count {
         keys.push(runtime_assignment_with_layout(payload, layout, index)?.runtime_key);
@@ -892,7 +942,7 @@ pub fn insert_sandbox_perk_runtime_assignment(
 /// Runtime loading marks one auxiliary bit per assignment. Inserting rows can
 /// cross a word boundary even when the original auxiliary bytes are preserved.
 pub(crate) fn ensure_runtime_map_capacity(payload: &mut Vec<u8>) -> Result<(), String> {
-    let layout = runtime_map_layout(payload)?;
+    let layout = runtime_map_layout(payload)?.contiguous(payload)?;
     let required = layout.primary.count.div_ceil(32);
     if required <= layout.secondary.count {
         return Ok(());
@@ -930,8 +980,10 @@ fn finished_catalog_layout(payload: &[u8]) -> Result<TwoArrayLayout, String> {
     )
 }
 
+/// The metadata rows where their descriptor puts them, as the game reads them. See
+/// [`TwoArrayLayout`] for the placements a reader meets.
 fn sandbox_perk_index_layout(payload: &[u8]) -> Result<NativeArray, String> {
-    let label = "Sandbox-perk metadata catalog";
+    let label = INDEX_CATALOG;
     let declared_size = usize::try_from(u64_at(payload, 0)?)
         .map_err(|_| format!("{label} size does not fit this platform"))?;
     if declared_size != payload.len() {
@@ -944,16 +996,26 @@ fn sandbox_perk_index_layout(payload: &[u8]) -> Result<NativeArray, String> {
         return Err(format!("{label} has an unexpected array trailer"));
     }
     let array = native_array(payload, PRIMARY_DESCRIPTOR, label)?;
-    if array.header != SINGLE_ARRAY_HEADER {
-        return Err(format!(
-            "{label} header is at 0x{:X}, expected 0x{SINGLE_ARRAY_HEADER:X}",
-            array.header
-        ));
-    }
+    placed_array(payload, array, SINGLE_ARRAY_HEADER, label, "rows")?;
     if array.row_class != SANDBOX_PERK_INDEX_ROW_CLASS {
         return Err(format!(
             "{label} row class is 0x{:08X}, expected 0x{SANDBOX_PERK_INDEX_ROW_CLASS:08X}",
             array.row_class
+        ));
+    }
+    checked_rows_end(array, SANDBOX_PERK_INDEX_ROW_SIZE, payload.len(), label)?;
+    Ok(array)
+}
+
+/// The metadata rows right after the root with nothing after them, as the stock table keeps them.
+/// A row appended to the payload extends the array only there.
+fn contiguous_index_layout(payload: &[u8]) -> Result<NativeArray, String> {
+    let label = INDEX_CATALOG;
+    let array = sandbox_perk_index_layout(payload)?;
+    if array.header != SINGLE_ARRAY_HEADER {
+        return Err(format!(
+            "{label} header is at 0x{:X}, expected 0x{SINGLE_ARRAY_HEADER:X}",
+            array.header
         ));
     }
     let end = checked_rows_end(array, SANDBOX_PERK_INDEX_ROW_SIZE, payload.len(), label)?;
@@ -983,7 +1045,7 @@ fn two_array_layout(
     primary_stride: usize,
     secondary_class: u32,
     secondary_stride: usize,
-    label: &str,
+    label: &'static str,
 ) -> Result<TwoArrayLayout, String> {
     let declared_size = usize::try_from(u64_at(payload, 0)?)
         .map_err(|_| format!("{label} size does not fit this platform"))?;
@@ -1002,12 +1064,8 @@ fn two_array_layout(
 
     let primary = native_array(payload, PRIMARY_DESCRIPTOR, label)?;
     let secondary = native_array(payload, SECONDARY_DESCRIPTOR, label)?;
-    if primary.header != ROOT_ARRAY_HEADER {
-        return Err(format!(
-            "{label} primary header is at 0x{:X}, expected 0x{ROOT_ARRAY_HEADER:X}",
-            primary.header
-        ));
-    }
+    placed_array(payload, primary, ROOT_ARRAY_HEADER, label, "primary")?;
+    placed_array(payload, secondary, ROOT_ARRAY_HEADER, label, "secondary")?;
     if primary.row_class != primary_class {
         return Err(format!(
             "{label} primary row class is 0x{:08X}, expected 0x{primary_class:08X}",
@@ -1021,30 +1079,42 @@ fn two_array_layout(
         ));
     }
     let primary_end = checked_rows_end(primary, primary_stride, payload.len(), label)?;
-    let expected_secondary_header = primary_end
-        .checked_add(ARRAY_TRAILER_SIZE)
-        .ok_or_else(|| format!("{label} inter-array offset overflowed"))?;
-    if secondary.header != expected_secondary_header {
-        return Err(format!(
-            "{label} arrays are not separated by exactly one native trailer"
-        ));
-    }
-    if payload.get(primary_end..secondary.header) != Some(NESTED_ARRAY_TRAILER.as_slice()) {
-        return Err(format!("{label} has an unexpected inter-array trailer"));
-    }
     let secondary_end = checked_rows_end(secondary, secondary_stride, payload.len(), label)?;
-    if secondary_end != payload.len() {
-        return Err(format!(
-            "{label} has {} unexpected trailing bytes",
-            payload.len() - secondary_end
-        ));
+    // Each array runs from its marker to the end of its rows.
+    let marker = size_of::<u32>();
+    if primary_end > secondary.header - marker && secondary_end > primary.header - marker {
+        return Err(format!("{label} arrays overlap"));
     }
     Ok(TwoArrayLayout {
+        label,
         primary,
         primary_end,
         secondary,
         secondary_end,
     })
+}
+
+/// Checks that an array's header is an aligned offset past the root, behind the native marker.
+fn placed_array(
+    payload: &[u8],
+    array: NativeArray,
+    first: usize,
+    label: &str,
+    name: &str,
+) -> Result<(), String> {
+    if array.header < first || !array.header.is_multiple_of(8) {
+        return Err(format!(
+            "{label} {name} header at 0x{:X} is not an aligned offset past the root",
+            array.header
+        ));
+    }
+    if u32_at(payload, array.header - size_of::<u32>())? != ARRAY_MARKER {
+        return Err(format!(
+            "{label} {name} header at 0x{:X} has no array marker before it",
+            array.header
+        ));
+    }
+    Ok(())
 }
 
 fn native_array(payload: &[u8], descriptor: usize, label: &str) -> Result<NativeArray, String> {
@@ -1142,7 +1212,7 @@ fn detail_target(
         ));
     }
     let displacement = target - layout.secondary.rows;
-    if displacement % FINISHED_SANDBOX_PERK_DETAIL_ROW_SIZE != 0
+    if !displacement.is_multiple_of(FINISHED_SANDBOX_PERK_DETAIL_ROW_SIZE)
         || target
             .checked_add(FINISHED_SANDBOX_PERK_DETAIL_ROW_SIZE)
             .is_none_or(|end| end > layout.secondary_end)

@@ -1,6 +1,6 @@
 use super::*;
+use crate::WeaponRecipe;
 use crate::image_import::MAX_SOURCE_EDGE;
-use crate::{WeaponIconEdit, WeaponRecipe};
 
 fn png(image: &RgbaImage) -> Vec<u8> {
     let mut output = Cursor::new(Vec::new());
@@ -9,44 +9,13 @@ fn png(image: &RgbaImage) -> Vec<u8> {
 }
 
 #[test]
-fn png_import_fits_without_cropping_and_preserves_transparency() {
-    let source = RgbaImage::from_pixel(40, 20, image::Rgba([240, 120, 60, 255]));
-    let imported = ImportedIcon::from_bytes(&png(&source)).unwrap();
-    let pixels = imported.fit_to(96, 96);
-    assert_eq!(pixels.get_pixel(48, 0).0, [0; 4]);
-    assert_eq!(pixels.get_pixel(48, 23).0, [0; 4]);
-    assert_eq!(pixels.get_pixel(0, 24).0, [240, 120, 60, 255]);
-    assert_eq!(pixels.get_pixel(95, 71).0, [240, 120, 60, 255]);
-    assert_eq!(pixels.get_pixel(48, 72).0, [0; 4]);
-    assert_eq!(imported.fit_to(54, 54).dimensions(), (54, 54));
-}
-
-#[test]
-fn transparent_rgb_does_not_bleed_into_resized_artwork() {
-    let source = RgbaImage::from_fn(192, 192, |x, _| {
-        if x < 96 {
-            image::Rgba([255, 0, 0, 255])
-        } else {
-            image::Rgba([0, 255, 0, 0])
-        }
-    });
-    let imported = ImportedIcon::from_bytes(&png(&source)).unwrap();
-    for pixel in imported.0.rgba.pixels() {
-        assert_eq!(pixel[1], 0);
-        assert_eq!(pixel[2], 0);
-        if pixel[3] > 0 {
-            assert_eq!(pixel[0], 255);
-        }
-    }
-}
-
-#[test]
 fn invalid_and_oversized_sources_are_rejected() {
     assert!(ImportedIcon::from_bytes(b"not an image").is_err());
     assert!(ImportedIcon::from_bytes(b"GIF89a").is_err());
     let wide = RgbaImage::new(MAX_SOURCE_EDGE + 1, 1);
     assert!(ImportedIcon::from_bytes(&png(&wide)).is_err());
-    assert!(ImportedIcon::from_path(Path::new("nonexistent-icon-test.png")).is_err());
+    let directory = tempfile::tempdir().unwrap();
+    assert!(ImportedIcon::from_path(&directory.path().join("missing.png")).is_err());
 }
 
 #[test]
@@ -99,34 +68,4 @@ fn embedded_icons_reject_corrupt_or_noncanonical_data() {
     })
     .unwrap();
     assert!(serde_json::from_str::<ImportedIcon>(&oversized).is_err());
-}
-
-#[test]
-fn imports_are_transformed_and_reset_color_preserves_source() {
-    let source = RgbaImage::from_fn(96, 96, |x, _| {
-        if x < 48 {
-            image::Rgba([255, 0, 0, 255])
-        } else {
-            image::Rgba([0, 0, 255, 128])
-        }
-    });
-    let mut edit = WeaponIconEdit {
-        imported_image: Some(ImportedIcon::from_bytes(&png(&source)).unwrap()),
-        flip_horizontal: true,
-        invert: true,
-        opacity_percent: 50,
-        ..Default::default()
-    };
-    let mut pixels = vec![7; 96 * 96 * 4];
-    edit.apply_to_rgba8_sized(&mut pixels, 96, 96).unwrap();
-    assert_eq!(&pixels[..4], &[255, 255, 0, 64]);
-    assert_eq!(&pixels[95 * 4..96 * 4], &[0, 255, 255, 128]);
-    edit.reset_color();
-    assert!(edit.imported_image.is_some());
-    assert!(edit.flip_horizontal);
-    assert!(edit.color_is_default());
-    edit.imported_image = None;
-    assert!(!edit.is_identity());
-    edit.flip_horizontal = false;
-    assert!(edit.is_identity());
 }

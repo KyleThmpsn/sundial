@@ -191,17 +191,16 @@ pub(super) fn draw_investment(
                     ui.selectable_value(&mut state.override_filter, filter, filter.label());
                 }
             });
-        if let Some(last_change) = state.last_investment_change {
-            if ui
+        if let Some(last_change) = state.last_investment_change
+            && ui
                 .add_enabled(
                     !state.read_only,
                     egui::Button::new("Undo Last Override Change"),
                 )
                 .on_hover_text(last_change.label())
                 .clicked()
-            {
-                undo_requested = true;
-            }
+        {
+            undo_requested = true;
         }
         let capacity = format!("{} / 100 Overrides", row_count + hidden_count);
         ui.weak(if hidden_count == 0 {
@@ -232,7 +231,7 @@ pub(super) fn draw_investment(
 pub(super) fn draw_filter(ui: &mut egui::Ui, query: &mut String) {
     ui.add(
         egui::TextEdit::singleline(query)
-            .hint_text("Filter rows…")
+            .hint_text("Filter Rows…")
             .desired_width(300.0),
     );
 }

@@ -57,6 +57,7 @@ struct CharacterFieldUiContext<'a> {
     settings_schema: Option<u64>,
     original_class_type: u64,
     abilities_editable: bool,
+    appearance_editable: bool,
     all_subclasses: &'a [Arc<ItemDef>],
     allow_cross_class_subclasses: bool,
     ability_unlocks_available: bool,
@@ -187,20 +188,32 @@ fn draw_character_identity_group(
                 ui.end_row();
 
                 crate::app::ui::field_label(ui, "Race", IDENTITY_LABEL_WIDTH);
-                state.selection_requested |= combo_u64(
-                    ui,
-                    "race",
-                    &mut state.values.race,
-                    &[(0, "Human"), (1, "Awoken"), (2, "Exo")],
+                ui.add_enabled_ui(context.appearance_editable, |ui| {
+                    state.selection_requested |= combo_u64(
+                        ui,
+                        "race",
+                        &mut state.values.race,
+                        &[(0, "Human"), (1, "Awoken"), (2, "Exo")],
+                    );
+                })
+                .response
+                .on_disabled_hover_text(
+                    "Race is tied to this character's saved native appearance.",
                 );
                 ui.end_row();
 
                 crate::app::ui::field_label(ui, "Gender", IDENTITY_LABEL_WIDTH);
-                state.selection_requested |= combo_u64(
-                    ui,
-                    "gender",
-                    &mut state.values.gender,
-                    &[(0, "Male"), (1, "Female")],
+                ui.add_enabled_ui(context.appearance_editable, |ui| {
+                    state.selection_requested |= combo_u64(
+                        ui,
+                        "gender",
+                        &mut state.values.gender,
+                        &[(0, "Male"), (1, "Female")],
+                    );
+                })
+                .response
+                .on_disabled_hover_text(
+                    "Gender is tied to this character's saved native appearance.",
                 );
                 ui.end_row();
                 draw_identity_details(ui, IDENTITY_LABEL_WIDTH);
@@ -331,7 +344,7 @@ fn draw_character_ability_group(
             ui.set_width(width);
             ui.horizontal_wrapped(|ui| {
                 ui.label("Choose abilities and attunement in game.");
-                crate::ui_help::info(ui, "This settings version ignores saved ability choices.");
+                crate::ui::help::info(ui, "This settings version ignores saved ability choices.");
             });
         });
         return;
@@ -605,6 +618,10 @@ impl SundialApp {
                 settings_schema,
                 original_class_type,
                 abilities_editable,
+                appearance_editable: self
+                    .document
+                    .native_account()
+                    .is_none_or(|document| document.appearance_editable(index)),
                 all_subclasses: &all_subclasses,
                 allow_cross_class_subclasses,
                 ability_unlocks_available: self.document.native_account().is_some(),
@@ -736,14 +753,19 @@ impl SundialApp {
             ui.checkbox(&mut self.show_dummy_items, "Dummy Items")
                 .on_hover_text("Include display-only items that cannot be obtained");
         }
-        if requested_plug_selection_mode != self.plug_selection_mode {
-            if requested_plug_selection_mode == PlugSelectionMode::AnyPlug
+        self.request_plug_selection_mode(requested_plug_selection_mode);
+    }
+
+    /// Switches the plug selection scope, through the acknowledgement that **All** requires.
+    pub(in crate::app) fn request_plug_selection_mode(&mut self, requested: PlugSelectionMode) {
+        if requested != self.plug_selection_mode {
+            if requested == PlugSelectionMode::AnyPlug
                 && !self.preferences.really_unsafe_warning_acknowledged
             {
                 self.remember_plug_selection_mode_after_confirmation = false;
                 self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
             } else {
-                self.plug_selection_mode = requested_plug_selection_mode;
+                self.plug_selection_mode = requested;
             }
         }
     }

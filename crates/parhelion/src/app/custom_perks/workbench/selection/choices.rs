@@ -1,9 +1,6 @@
 //! Candidate precedence, identity and eligibility, independent of the picker UI.
 use super::*;
 
-#[cfg(test)]
-mod tests;
-
 pub(super) fn collect(
     entries: &[Entry],
     documents: &[Document],

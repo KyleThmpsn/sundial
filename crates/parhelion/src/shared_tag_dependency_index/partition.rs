@@ -45,6 +45,17 @@ pub fn partition_loading_resources(
     owners: &[LoadingOwner],
     primary: TagHash,
 ) -> AuthoringResult<BTreeMap<TagHash, Vec<TagHash>>> {
+    partition_with_eager(resources, owners, primary, &BTreeSet::new())
+}
+
+/// Native eager owners retain their own indexes but can occur in another
+/// owner's dependency closure. Deferred model and dye owners remain isolated.
+pub(crate) fn partition_with_eager(
+    resources: &[LoadingResource],
+    owners: &[LoadingOwner],
+    primary: TagHash,
+    eager: &BTreeSet<TagHash>,
+) -> AuthoringResult<BTreeMap<TagHash, Vec<TagHash>>> {
     let mut graph = BTreeMap::new();
     for resource in resources {
         let tag = resource.tag;
@@ -65,6 +76,13 @@ pub fn partition_loading_resources(
             }
         }
     }
+    if eager
+        .iter()
+        .any(|tag| !owners.iter().any(|owner| owner.owner == *tag))
+    {
+        return Err(invalid("Eager loading owner is outside the resource graph"));
+    }
+    boundaries.retain(|_, owner| !eager.contains(owner));
     if !owners.iter().any(|owner| owner.owner == primary) {
         return Err(invalid("The primary loading owner is missing"));
     }

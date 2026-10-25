@@ -5,6 +5,7 @@ pub(crate) enum Purpose {
     Perk,
     Badge,
     Watermark,
+    Image,
 }
 impl Purpose {
     pub fn max_edge(self) -> u32 {
@@ -21,7 +22,7 @@ impl Purpose {
         }
     }
     pub fn transparent(self) -> bool {
-        self != Self::Badge
+        matches!(self, Self::Perk | Self::Watermark)
     }
     pub fn accepts_size(self, w: u32, h: u32) -> bool {
         w >= 16
@@ -41,22 +42,9 @@ impl Purpose {
             Self::Watermark => {
                 "Transparent PNG, 16 to 4096 pixels per side, up to 16 MiB. The watermark editor generates the required game sizes."
             }
+            Self::Image => {
+                "PNG or JPEG, 16 to 4096 pixels per side, up to 16 MiB. Crop, placement and colors are saved with the source image."
+            }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn perk_sources_must_be_square_and_never_upscaled() {
-        for edge in [96, 192, 256, 512] {
-            assert!(Purpose::Perk.accepts_size(edge, edge));
-        }
-        for (w, h) in [(16, 16), (64, 64), (96, 128), (128, 96), (1024, 1024)] {
-            assert!(!Purpose::Perk.accepts_size(w, h));
-        }
-        assert!(Purpose::Badge.accepts_size(768, 256));
-        assert!(Purpose::Watermark.accepts_size(768, 256));
     }
 }

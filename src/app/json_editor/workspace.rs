@@ -1,0 +1,197 @@
+//! Advanced JSON editing and detached-editor coordination.
+use crate::app::{
+    SundialApp, ViewMode, draw_json_account_source_notice, encode_settings_for_editor, json_editor,
+    saving::SaveAction, update_detached_window_state,
+};
+use eframe::egui;
+use serde_json::Value;
+
+fn check_json_edit_baseline(baseline: &Value, current: &Value) -> Result<(), String> {
+    if baseline != current {
+        return Err("The workspace changed after this draft was made. Copy your draft, reset the editor, then reapply your changes.".into());
+    }
+    Ok(())
+}
+
+impl SundialApp {
+    pub(in crate::app) fn sync_raw_json(&mut self) {
+        if let Ok(raw_json) = encode_settings_for_editor(self.document.json()) {
+            self.raw_json = raw_json;
+            self.raw_json_document = self.document.json().clone();
+            self.json_editor.mark_synced();
+            self.json_editor.reset_history();
+            self.json_editor.restore_location_next_draw();
+        }
+    }
+
+    pub(in crate::app) fn sync_raw_json_if_stale(&mut self) {
+        if !self.json_editor.has_unapplied_changes()
+            && self.raw_json_document != *self.document.json()
+        {
+            self.sync_raw_json();
+        }
+    }
+
+    pub(in crate::app) fn apply_raw_json(&mut self) -> bool {
+        self.apply_raw_json_with_status(true)
+    }
+
+    pub(in crate::app) fn apply_raw_json_silently(&mut self) -> bool {
+        self.apply_raw_json_with_status(false)
+    }
+
+    pub(in crate::app) fn apply_raw_json_with_status(&mut self, report_status: bool) -> bool {
+        if let Err(error) = check_json_edit_baseline(&self.raw_json_document, self.document.json())
+        {
+            self.json_editor.set_application_error(error.clone());
+            if report_status {
+                self.set_status(error, true);
+            }
+            return false;
+        }
+        match crate::strict_json::from_str::<Value>(&self.raw_json) {
+            Ok(document) => {
+                let mut candidate = self.document.clone();
+                candidate.replace_json(document.clone());
+                let compatibility_warning = match self.validation_warning_for_write(&candidate) {
+                    Ok(warning) => warning,
+                    Err(error) => {
+                        self.json_editor.set_application_error(error.clone());
+                        if report_status {
+                            self.set_status(format!("JSON not applied: {error}"), true);
+                        }
+                        return false;
+                    }
+                };
+                self.raw_json_document = document.clone();
+                self.document.replace_json(document);
+                self.record_edit("JSON Applied");
+                self.clear_picker_state();
+                if report_status {
+                    if let Some(warning) = compatibility_warning {
+                        self.set_status(
+                            format!(
+                                "JSON applied with the existing compatibility warning: {warning}. Click Save to write it"
+                            ),
+                            true,
+                        );
+                    } else {
+                        self.set_status("JSON applied. Click Save to write it", false);
+                    }
+                }
+                self.json_editor.mark_synced();
+                true
+            }
+            Err(error) => {
+                if report_status {
+                    self.set_status(
+                        format!(
+                            "JSON syntax error at line {}, column {}: {error}",
+                            error.line(),
+                            error.column()
+                        ),
+                        true,
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    pub(in crate::app) fn set_json_editor_window_open(&mut self, open: bool) {
+        update_detached_window_state(
+            &mut self.json_editor_window_open,
+            &mut self.json_editor_window_generation,
+            open,
+        );
+    }
+
+    pub(in crate::app) fn handle_json_editor_response(
+        &mut self,
+        ctx: &egui::Context,
+        response: json_editor::JsonEditorResponse,
+    ) {
+        if response.load_defaults {
+            self.json_editor.set_completion_defaults(
+                crate::app::settings::load_installed_sunrise_defaults(&self.install_path),
+            );
+        }
+        if response.save {
+            self.request_save(ctx, SaveAction::Save);
+        }
+        if response.reset {
+            self.sync_raw_json();
+            self.set_status("JSON editor reset to current settings", false);
+        }
+        if response.toggle_window {
+            self.set_json_editor_window_open(!self.json_editor_window_open);
+            self.json_editor.restore_location_next_draw();
+            if !self.json_editor_window_open {
+                self.view_mode = ViewMode::AdvancedJson;
+            }
+        }
+    }
+
+    pub(in crate::app) fn draw_json_editor_window(&mut self, ctx: &egui::Context) {
+        if !self.json_editor_window_open {
+            return;
+        }
+
+        self.sync_raw_json_if_stale();
+        let account_source = self.document.source_info();
+        let (response, close_requested) = ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of((
+                "sundial_json_editor",
+                self.json_editor_window_generation,
+            )),
+            egui::ViewportBuilder::default()
+                .with_title("Sundial: JSON Editor")
+                .with_icon(crate::ui::window_icon())
+                .with_inner_size([960.0, 720.0])
+                .with_min_inner_size([640.0, 420.0]),
+            |child_ctx, class| {
+                let close_requested = child_ctx.input(|input| input.viewport().close_requested());
+                let mut response = json_editor::JsonEditorResponse::default();
+                if class == egui::ViewportClass::EmbeddedWindow {
+                    egui::Window::new("JSON Editor")
+                        .id(egui::Id::new("embedded_json_editor_window"))
+                        .default_size([960.0, 720.0])
+                        .show(child_ctx, |ui| {
+                            draw_json_account_source_notice(ui, &account_source);
+                            response = json_editor::draw(
+                                ui,
+                                &mut self.raw_json,
+                                &mut self.json_editor,
+                                true,
+                                self.dirty,
+                            );
+                        });
+                } else {
+                    egui::CentralPanel::default().show(child_ctx, |ui| {
+                        draw_json_account_source_notice(ui, &account_source);
+                        response = json_editor::draw(
+                            ui,
+                            &mut self.raw_json,
+                            &mut self.json_editor,
+                            true,
+                            self.dirty,
+                        );
+                    });
+                }
+                (response, close_requested)
+            },
+        );
+
+        self.handle_json_editor_response(ctx, response);
+        if self.json_editor.take_auto_apply_request() {
+            let _ = self.apply_raw_json_silently();
+        }
+        if close_requested {
+            self.set_json_editor_window_open(false);
+            self.json_editor.restore_location_next_draw();
+            if self.json_editor.has_unapplied_changes() {
+                self.view_mode = ViewMode::AdvancedJson;
+            }
+        }
+    }
+}

@@ -84,8 +84,13 @@ impl PackageAuthoringApp {
             let choice_width = (ui.available_width() - 210.0).clamp(180.0, 330.0);
             ui.horizontal_wrapped(|ui| {
                 ui.monospace(format!("{}.", index + 1));
-                ui.add(egui::DragValue::new(perk).range(0..=u16::MAX - 1).speed(1))
-                    .on_hover_text("Sandbox perk index");
+                ui.add(
+                    egui::DragValue::new(perk)
+                        .range(0..=u16::MAX - 1)
+                        .clamp_existing_to_range(false)
+                        .speed(1),
+                )
+                .on_hover_text("Sandbox perk index");
                 egui::ComboBox::from_id_salt(("base-sandbox-perk", index))
                     .selected_text(sandbox_perk_choice_label(*perk, choices))
                     .width(choice_width)

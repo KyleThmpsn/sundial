@@ -1,6 +1,6 @@
 //! Real-file smoke coverage for coordinated saves and retries.
 use super::*;
-use crate::app::workspace_save::{
+use crate::app::saving::sources::{
     WorkspaceSaveError, WorkspaceSaveReceipt, save_changed_sources_with_json,
 };
 use crate::persistence::sqlite_account::snapshot;
@@ -28,15 +28,22 @@ fn save_changed_sources(
                 &path.parent().unwrap().join("json-backups"),
             )
         },
+        || Ok(()),
     )
 }
 
 #[test]
 fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
+    for case in crate::persistence::sqlite_account::tests::versions::CASES {
+        mixed_save(case);
+    }
+}
+
+fn mixed_save(case: &str) {
     let directory = TestDirectory::new("sqlite smoke 玩家");
     let settings = settings_path(&directory);
     let database = directory.0.join("data/investment.sqlite3");
-    crate::persistence::sqlite_account::tests::create_fixture(&database, 3);
+    crate::persistence::sqlite_account::tests::versions::fixture(&database, case);
     let db = Connection::open(&database).unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL; INSERT INTO character_stacks VALUES(0,0,0,1,0); ALTER TABLE profile_items ADD COLUMN future TEXT NOT NULL DEFAULT 'first'; INSERT INTO profile_items VALUES(1,5764607523034234882,11,9,3,0,'second');").unwrap();
     db.execute("INSERT INTO unlocks VALUES(-1,0,46,0,1)", [])
@@ -98,11 +105,12 @@ fn sqlite_smoke_mixed_save_conflict_rollback_retry_and_reload() {
     );
     assert_eq!(reopened.json(), edited.json());
     assert_saved_domains(&db, &reopened);
+    crate::persistence::sqlite_account::tests::versions::preserved(&db, case);
     let before_repeat = snapshot::read(&database).unwrap();
     let mut repeat = reopened.clone();
     save_changed_sources(&mut repeat, &reopened, &settings, false, true).unwrap();
     assert_eq!(snapshot::read(&database).unwrap(), before_repeat);
-    if let Some(path) = std::env::var_os("SUNDIAL_SQLITE_SMOKE_EXPORT") {
+    if let Some(path) = crate::test_support::artifacts(&format!("sqlite-smoke-{case}.sqlite3")) {
         db.backup(rusqlite::MAIN_DB, std::path::Path::new(&path), None)
             .unwrap();
     }

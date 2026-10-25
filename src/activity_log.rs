@@ -56,7 +56,7 @@ pub enum Product {
 
 impl Product {
     pub fn log_path(&self) -> Option<PathBuf> {
-        crate::paths::data_dir().map(|directory| {
+        crate::system::paths::data_dir().map(|directory| {
             directory.join("logs").join(match self {
                 Self::Sundial => "sundial.log",
                 Self::Parhelion => "parhelion.log",

@@ -28,7 +28,7 @@ pub(crate) enum Action {
 
 pub(crate) fn draw(
     ui: &mut egui::Ui,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     source: &Value,
     fields: &[Field],
     removable: bool,
@@ -173,6 +173,3 @@ fn draw_input(ui: &mut egui::Ui, input: Input, value: &mut Value, width: f32) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

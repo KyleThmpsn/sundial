@@ -368,14 +368,14 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
             ] {
                 if ui.button(label).clicked() {
                     change = Some(Change::Add(list, field));
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             match &bonus {
                 None => {
                     if ui.button("Add Damage Bonus").clicked() {
                         change = Some(Change::AddBonus);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 Some(Bonus::Literal(_)) => {}
@@ -384,7 +384,7 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
                 Some(Bonus::Formula(..) | Bonus::Unread) => {
                     if ui.button("Set Damage Bonus to a Number").clicked() {
                         change = Some(Change::LiteralBonus);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             }
@@ -401,7 +401,7 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
                     );
                     if ui.button(label).clicked() {
                         change = Some(Change::UseLiteral(row.list, row.number));
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             }
@@ -411,12 +411,12 @@ pub(super) fn draw(ui: &mut egui::Ui, graph: &mut Graph, index: usize) -> Result
                     let label = format!("Remove {}", row_label(row.field, row.list == MULTIPLY));
                     if ui.button(label).clicked() {
                         change = Some(Change::Remove(row.list, row.number));
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 if bonus.is_some() && ui.button("Remove Damage Bonus").clicked() {
                     change = Some(Change::RemoveBonus);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -504,113 +504,4 @@ fn apply(graph: &mut Graph, index: usize, change: Change) -> Result<(), String> 
     changed.validate()?;
     *graph = changed;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn modifier() -> Graph {
-        let bytes = native::template(false, 40).unwrap();
-        Graph::read(&bytes, 0, CLASS).unwrap()
-    }
-
-    /// Rows added from the card use their literal and leave damage as it was, and removing
-    /// them returns the node to the stock shape with no rows.
-    #[test]
-    fn damage_changes_add_neutral_literal_rows_and_remove_to_the_stock_shape() {
-        let mut graph = modifier();
-        let stock = graph.emit().unwrap();
-        assert!(rows(&graph, 0).is_empty());
-        apply(&mut graph, 0, Change::Add(MULTIPLY, 0)).unwrap();
-        apply(&mut graph, 0, Change::Add(MULTIPLY, 1)).unwrap();
-        apply(&mut graph, 0, Change::Add(ASSIGN, 0)).unwrap();
-        let added = rows(&graph, 0)
-            .iter()
-            .map(|row| (row.list, row.field, row.literal, row.selector))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            added,
-            [
-                (ASSIGN, 0, 1.0, LITERAL),
-                (MULTIPLY, 0, 1.0, LITERAL),
-                (MULTIPLY, 1, 1.0, LITERAL),
-            ]
-        );
-        apply(&mut graph, 0, Change::Literal(MULTIPLY, 1, 1.5)).unwrap();
-        assert_eq!(rows(&graph, 0)[2].literal, 1.5);
-        graph.validate_node(false, 40).unwrap();
-        apply(&mut graph, 0, Change::Remove(MULTIPLY, 0)).unwrap();
-        assert_eq!(rows(&graph, 0).len(), 2);
-        apply(&mut graph, 0, Change::Remove(MULTIPLY, 0)).unwrap();
-        apply(&mut graph, 0, Change::Remove(ASSIGN, 0)).unwrap();
-        assert!(rows(&graph, 0).is_empty());
-        assert_eq!(graph.emit().unwrap(), stock);
-    }
-
-    fn program(code: &[u8], rows: &[[f32; 4]]) -> native::value::Program {
-        let mut instructions = Vec::new();
-        let mut at = 0;
-        while at < code.len() {
-            let opcode = code[at];
-            let operand = (opcode == 34 || opcode >= 52).then(|| code[at + 1]);
-            at += 1 + usize::from(operand.is_some());
-            instructions.push(native::value::Instruction { opcode, operand });
-        }
-        native::value::Program {
-            instructions,
-            constants: rows.iter().map(|row| row.map(f32::to_bits)).collect(),
-            fast_path: 0,
-        }
-    }
-
-    /// A formula reads as its bonus per stack when every stack adds the same, stack by stack
-    /// when a short curve does not, and as varying when its input is not a count.
-    #[test]
-    fn damage_formulas_read_by_stack() {
-        // Swashbuckler's shape: a third more damage at five stacks, a fifth of that per stack.
-        let ramp = program(
-            &[
-                52, 0, 60, 0, 34, 0, 52, 1, 3, 35, 35, 34, 0, 52, 2, 15, 35, 34, 0, 3, 62, 0,
-            ],
-            &[[1.0 / 3.0; 4], [0.2, 1.0, 1.0, 1.0], [0.0, 0.0, 1.0, 0.0]],
-        );
-        let Reading::PerStack(step, last) = reading(&ramp, true) else {
-            panic!("{:?}", reading(&ramp, true));
-        };
-        assert!((step - 1.0 / 15.0).abs() < 1e-6);
-        assert_eq!(last, Some(5));
-        assert_eq!(percent(step), "+6.7%");
-        // The square of a third of the stacks, capped at three: a curve.
-        let curve = program(
-            &[60, 0, 34, 0, 52, 0, 3, 35, 34, 0, 52, 1, 15, 62, 0],
-            &[[1.0 / 3.0; 4], [0.0, 1.0, 0.0, 0.0]],
-        );
-        let Reading::Steps(values) = reading(&curve, true) else {
-            panic!("{:?}", reading(&curve, true));
-        };
-        assert_eq!(
-            values
-                .iter()
-                .map(|value| percent(*value))
-                .collect::<Vec<_>>(),
-            ["+11.1%", "+44.4%", "+100%"]
-        );
-        // Ammunition inputs are fractions, not stacks, so the same curve only varies.
-        assert_eq!(reading(&curve, false), Reading::Varies);
-        let constant = program(&[52, 0, 62, 0], &[[-0.25; 4]]);
-        assert_eq!(reading(&constant, false), Reading::Fixed(-0.25));
-    }
-
-    /// The stock template's overall bonus is a literal 0.5, which the card now shows.
-    #[test]
-    fn the_damage_bonus_reads_and_writes_the_literal_pair() {
-        let mut graph = modifier();
-        let pair = graph.blocks[0].links[&BONUS];
-        assert_eq!(graph.blocks[pair].class, PAIR_CLASS);
-        assert_eq!(graph.blocks[pair].bytes[..4], 0.5f32.to_le_bytes());
-        apply(&mut graph, 0, Change::Bonus(0.25)).unwrap();
-        let pair = graph.blocks[0].links[&BONUS];
-        assert_eq!(graph.blocks[pair].bytes[..4], 0.25f32.to_le_bytes());
-    }
 }

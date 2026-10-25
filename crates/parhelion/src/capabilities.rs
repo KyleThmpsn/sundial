@@ -6,19 +6,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(test)]
-use sundial::investment::MAX_AUTHORED_EMBEDDED_SOCKET_CHOICES;
 use sundial::investment::{
     MAX_WEAPON_SOCKETS, WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary,
     WeaponInventorySlot, authored_socket_choice_limit,
 };
 
 use crate::ModernDamageType;
+use crate::item::WeaponSocketPlugVariantOverride;
 use crate::recipe::{
     RecipeDamageType, RecipeInventorySlot, WeaponRecipe, WeaponRecipeOverrides,
     WeaponSocketPlugVariantRecipe,
 };
-use crate::weapon::{WeaponSocketPlugVariantOverride, variable_damage::resting_element};
+use crate::weapon::variable_damage::resting_element;
+use sundial::package_authoring::investment_schema::ELEMENTAL_DAMAGE_SOCKET_TYPE;
 
 /// The recipe field associated with a capability or validation diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,7 @@ pub enum AuthoringDiagnosticCode {
     TooManySocketColumnChoices,
     DuplicateSocketColumnPlug,
     DisabledSocketOverride,
+    DamageSocketRole,
     ZeroPlugHash,
 }
 
@@ -288,7 +289,7 @@ pub(crate) fn reconcile_presentation_donor(
 /// resolves the record for real and reports a clear error when a family has none.
 #[must_use]
 pub(crate) fn variable_damage_supported(gameplay_donor: &WeaponDonorSummary) -> bool {
-    crate::weapon_behavior::switches_element_for_type(&gameplay_donor.type_name)
+    crate::weapon::behavior::switches_element_for_type(&gameplay_donor.type_name)
 }
 
 /// The element a variable-damage weapon rests on: the first chosen one in selector order.
@@ -435,7 +436,7 @@ pub fn weapon_summary_authoring_capabilities(
             field: AuthoringField::DamageProfile,
             code: AuthoringDiagnosticCode::IncoherentDamageProfile,
             message: format!(
-                "{} has conflicting decoded damage metadata; preserving or mutating it is unsafe",
+                "{} has conflicting decoded damage metadata. Preserving or changing it is unsafe",
                 donor.name
             ),
         });
@@ -480,8 +481,8 @@ pub fn weapon_summary_authoring_capabilities(
                 label: profile.label(),
                 reason: concat!(
                     "Slot and damage are independent authoring fields. Existing elemental carriers ",
-                    "keep their topology; adding a carrier requires a compatible stock source. ",
-                    "Slot changes can retain the base appearance and animations. Unusual pairings need gameplay testing."
+                    "keep their topology. Adding a carrier requires a compatible stock source. ",
+                    "Slot changes can retain the base appearance and animations."
                 ).to_owned(),
             });
         }
@@ -582,27 +583,27 @@ pub fn validate_stat_overrides(
             });
             continue;
         };
-        if let Some(minimum) = stat.minimum_value {
-            if value < minimum {
-                diagnostics.push(AuthoringDiagnostic {
+        if let Some(minimum) = stat.minimum_value
+            && value < minimum
+        {
+            diagnostics.push(AuthoringDiagnostic {
                     field,
                     code: AuthoringDiagnosticCode::StatValueBelowMinimum,
                     message: format!(
                         "Investment stat definition {definition_index} value {value} is below its decoded minimum {minimum}"
                     ),
                 });
-            }
         }
-        if let Some(maximum) = stat.maximum_value {
-            if value > maximum {
-                diagnostics.push(AuthoringDiagnostic {
+        if let Some(maximum) = stat.maximum_value
+            && value > maximum
+        {
+            diagnostics.push(AuthoringDiagnostic {
                     field,
                     code: AuthoringDiagnosticCode::StatValueAboveMaximum,
                     message: format!(
                         "Investment stat definition {definition_index} value {value} exceeds the donor stat-group maximumValue {maximum}"
                     ),
                 });
-            }
         }
     }
     diagnostics
@@ -613,41 +614,6 @@ pub fn validate_stat_overrides(
 pub struct SupportedPlugSet {
     pub socket_index: usize,
     pub plug_hashes: Vec<u32>,
-}
-
-/// Validates complete positional socket-column overrides against installed plug pools.
-///
-/// An empty override inherits the donor unchanged. A non-empty override must be positional and
-/// complete. Package/catalog discovery intentionally stays outside this pure module. Callers must
-/// pass the compatible set decoded for each authored socket. Membership findings are safety
-/// warnings; structural column errors remain build-blocking.
-#[must_use]
-#[cfg(test)]
-pub fn validate_socket_column_overrides(
-    donor: &WeaponDonor,
-    overrides: &[Option<Vec<u32>>],
-    supported_plug_sets: &[SupportedPlugSet],
-) -> Vec<AuthoringDiagnostic> {
-    validate_socket_column_overrides_with_socket_types(donor, overrides, &[], supported_plug_sets)
-}
-
-/// Validates socket choices after applying any explicit native socket-type overrides.
-#[must_use]
-#[cfg(test)]
-pub fn validate_socket_column_overrides_with_socket_types(
-    donor: &WeaponDonor,
-    overrides: &[Option<Vec<u32>>],
-    socket_types: &[Option<u16>],
-    supported_plug_sets: &[SupportedPlugSet],
-) -> Vec<AuthoringDiagnostic> {
-    validate_socket_column_overrides_with_choice_identity(
-        donor,
-        overrides,
-        socket_types,
-        supported_plug_sets,
-        &|hash| format!("0x{hash:08X}"),
-        &|_, _, _| true,
-    )
 }
 
 pub(crate) fn validate_socket_column_overrides_with_variants(
@@ -726,6 +692,23 @@ fn validate_socket_column_overrides_with_choice_identity(
         supported_plug_sets,
         &mut diagnostics,
     );
+    // A weapon has at most one damage socket, its base's own. Giving that socket another role is
+    // fine, since the build then carries the damage type on the weapon itself.
+    for (socket_index, socket_type) in socket_types.iter().copied().enumerate() {
+        let base = donor
+            .sockets
+            .get(socket_index)
+            .map(|socket| socket.socket_type);
+        if socket_type == Some(ELEMENTAL_DAMAGE_SOCKET_TYPE)
+            && base != Some(ELEMENTAL_DAMAGE_SOCKET_TYPE)
+        {
+            diagnostics.push(AuthoringDiagnostic {
+                field: AuthoringField::SocketColumn { socket_index },
+                code: AuthoringDiagnosticCode::DamageSocketRole,
+                message: format!("Socket {} cannot hold the damage type.", socket_index + 1),
+            });
+        }
+    }
     for (socket_index, value) in overrides.iter().enumerate().take(MAX_WEAPON_SOCKETS) {
         if invalid_plug_set_indices.contains(&socket_index) {
             continue;
@@ -970,6 +953,3 @@ fn compiled_choices_resolve_to_same_plug(
         _ => false,
     }
 }
-
-#[cfg(test)]
-mod tests;

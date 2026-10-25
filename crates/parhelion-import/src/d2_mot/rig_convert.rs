@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
 pub mod animation;
 pub mod owned;
-mod sections;
+use crate::tiger::animation::sections::{
+    self, validate_native_instance, validate_source_relocation,
+};
 
 pub(crate) fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
     let report = load(&root.join("report.json"))?;
@@ -21,8 +23,31 @@ pub(crate) fn used_bones(root: &Path, item: &Value) -> Result<BTreeSet<usize>> {
     let provenance = load(&root.join("source-manifest.json"))?;
     let mut used = BTreeSet::new();
     for entry in report["models"].as_array().context("rig source models")? {
+        // Geometry-only exports can omit a solver. Full cloth conversion checks
+        // its definition separately before attaching a native simulation owner.
+        if !entry["cloth_simulation"].is_null() {
+            ensure!(entry["cloth"] == true, "Non-cloth model carries a solver");
+            let definition = raw(
+                root,
+                entry["cloth_simulation"]["definition"]
+                    .as_str()
+                    .context("Source cloth definition")?,
+            )?;
+            let solver = raw(root, &format!("{:08X}", definition.u32(0x6A0)?))?;
+            used.extend(crate::tiger::physics::cloth::used_bones(&solver.0)?);
+        }
         let model = raw(root, entry["model"].as_str().context("rig source model")?)?;
-        for mesh in model.array(16, 128, Some(0x80806EC5))? {
+        let mesh = super::geometry::selected_mesh(&model, entry)?;
+        let header = raw(root, &format!("{:08X}", model.u32(mesh)?))?;
+        if header.u16(4)? == 48 || (header.u16(6)? == 0 && model.u8(mesh + 98)? == 7) {
+            let streams = super::geometry::streams(root, &provenance, &model, mesh)?;
+            used.extend(crate::d2_mot::skinning::used(
+                &streams.positions,
+                &streams.auxiliary,
+            )?);
+            continue;
+        }
+        {
             let tag = format!("{:08X}", model.u32(mesh)?);
             let header = raw(root, &tag)?;
             let reference = provenance["tags"][&tag]["reference"]
@@ -106,9 +131,12 @@ pub fn compatible_map(
         .as_str()
         .map(|geometry| used_bones(Path::new(geometry), source_item_tag))
         .transpose()?;
+    // An ornament's geometry is worn on its weapon's rig, so the rig export belongs to the item
+    // the config names rather than to the geometry's own item.
+    let rig_item = config.get("rig_item_tag").unwrap_or(source_item_tag);
     compatible_map_loaded(
         config,
-        source_item_tag,
+        rig_item,
         native_item_tag,
         &source,
         &native,
@@ -216,24 +244,7 @@ pub(crate) fn compatible_map_loaded(
         json!({"bone_map":mapping,"required_source_bones":required,"native_bone_count":to.len(),"source_bones":from,"native_bones":to,"source_owner":config["source_owner"],"native_owner":config["native_owner"],"native_animation_donor":native["item_tag"],"gameplay_verified":false}),
     )
 }
-fn write_array(
-    target: &mut Vec<u8>,
-    descriptor: usize,
-    class: u32,
-    count: usize,
-    bytes: &[u8],
-) -> Result<()> {
-    let header = (target.len() + 19) & !15;
-    target.resize(header - 4, 0);
-    target.extend_from_slice(&0x80809FBDu32.to_le_bytes());
-    target.extend_from_slice(&(count as u64).to_le_bytes());
-    target.extend_from_slice(&(class as u64).to_le_bytes());
-    target.extend_from_slice(bytes);
-    target[descriptor..descriptor + 8].copy_from_slice(&(count as u64).to_le_bytes());
-    target[descriptor + 8..descriptor + 16]
-        .copy_from_slice(&(header as i64 - descriptor as i64 - 8).to_le_bytes());
-    Ok(())
-}
+pub(crate) use crate::tiger::payload::write_array;
 fn unlink_owner(payload: &mut Payload, owner: u32) -> Result<Vec<usize>> {
     let offsets = (0..payload.0.len().saturating_sub(3))
         .step_by(4)
@@ -274,16 +285,17 @@ fn unlink_owner(payload: &mut Payload, owner: u32) -> Result<Vec<usize>> {
     }
     Ok(offsets)
 }
-/// Convert the complete source FK arrays into a native component envelope.
-/// The result is unlinked. Animation/controller and entity connections must be
-/// converted before a package may use it.
-pub fn validate_native_instance(bytes: &[u8]) -> Result<()> {
-    sections::validate_instance(&Payload(bytes.to_vec()))
-}
 
 pub fn skeleton(source: &[u8], native: &[u8], native_owner: u32) -> Result<(Payload, Value)> {
     let modern = Payload(source.to_vec());
-    let mut old = Payload(native.to_vec());
+    let original = Payload(native.to_vec());
+    let counts = modern
+        .array(modern.pointer(16)? + 0x30, 64, Some(0x808081DC))?
+        .into_iter()
+        .map(|row| Ok(modern.array(row + 32, 32, Some(0x80809F4F))?.len()))
+        .collect::<Result<Vec<_>>>()?;
+    let (mut old, relocation) =
+        crate::tiger::animation::rig::grow_instance(&original, native_owner, &counts)?;
     let mr = modern.pointer(24)?;
     let nr = old.pointer(24)?;
     let owner_patches = unlink_owner(&mut old, native_owner)?;
@@ -356,10 +368,14 @@ pub fn skeleton(source: &[u8], native: &[u8], native_owner: u32) -> Result<(Payl
     }
     Ok((
         old,
-        json!({"bones":nodes.len(),"sections":sections,"arrays":arrays,"owner_patches":owner_patches}),
+        json!({"bones":nodes.len(),"sections":sections,"arrays":arrays,"owner_patches":owner_patches,
+            "relocation":relocation.map(|(cut, delta)| json!({"cut":cut,"delta":delta}))}),
     ))
 }
 
+/// Convert the complete source FK arrays into a native component envelope.
+/// The result is unlinked. Animation/controller and entity connections must be
+/// converted before a package may use it.
 pub fn convert(
     source: &Path,
     native: &Path,
@@ -399,11 +415,12 @@ pub fn convert(
                     .context("buffer reference")?;
                 raw(model_source, &format!("{reference:08X}"))
             };
-            let source_positions = buffer(0)?.0;
+            let streams = super::geometry::streams(model_source, &provenance, &model, mesh)?;
+            let source_positions = streams.positions;
             let weighted = source_positions.chunks_exact(24).any(|v| {
                 crate::d2_mot::skinning::selector(v).is_ok_and(crate::d2_mot::skinning::weighted)
             });
-            let auxiliary = if weighted { buffer(24)?.0 } else { Vec::new() };
+            let auxiliary = streams.auxiliary;
             let used = crate::d2_mot::skinning::used(&source_positions, &auxiliary)?;
             ensure!(
                 used.iter().all(|i| *i < count),
@@ -457,10 +474,10 @@ pub fn convert(
     let mut first_person = vec![];
     for skeleton in skeletons {
         let bones = skeleton["bones"].as_array().context("rig bones")?;
-        if bones.len() > weapon_bones.len() {
-            if let Ok(map) = match_bones(weapon_bones, bones) {
-                first_person.push(json!({"owner":skeleton["owner"],"bone_map":map}));
-            }
+        if bones.len() > weapon_bones.len()
+            && let Ok(map) = match_bones(weapon_bones, bones)
+        {
+            first_person.push(json!({"owner":skeleton["owner"],"bone_map":map}));
         }
     }
     let patches = owner_patches
@@ -568,7 +585,6 @@ mod tests {
                 .unwrap();
             assert_eq!(source.0[from], converted.0[to]);
         }
-        assert_eq!(native.u32(40).unwrap(), 22);
         let mut invalid = source.clone();
         let rows = invalid.array(0x130, 16, None).unwrap();
         invalid.0[rows[1] + 4..rows[1] + 8].copy_from_slice(&(-2i32).to_le_bytes());

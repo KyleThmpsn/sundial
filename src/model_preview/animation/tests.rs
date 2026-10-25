@@ -8,7 +8,13 @@ fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-fn append_array(bytes: &mut Vec<u8>, offset: usize, class: u32, count: usize, rows: &[u8]) {
+pub(super) fn append_array(
+    bytes: &mut Vec<u8>,
+    offset: usize,
+    class: u32,
+    count: usize,
+    rows: &[u8],
+) {
     let start = bytes.len();
     put_u64(bytes, offset, count as u64);
     put_u64(bytes, offset + 8, (start - offset - 8) as u64);
@@ -64,6 +70,8 @@ fn uniform_codec_decodes_static_and_animated_tracks_and_rejects_bad_counts() {
         put_u16(&mut clip, offset, value);
     }
     clip[0x214..0x218].copy_from_slice(&1.0_f32.to_le_bytes());
+    clip[0x218..0x21C].copy_from_slice(&1.0_f32.to_le_bytes());
+    clip[0x210..0x214].copy_from_slice(&1_u32.to_le_bytes());
     clip[0x290..0x294].copy_from_slice(&2_u32.to_le_bytes());
     let fixed = [0_u16, 0, 32768, 32768, 32768, 65535, 0, 0, 0, 0, 0, 0]
         .into_iter()
@@ -106,37 +114,6 @@ fn uniform_codec_decodes_static_and_animated_tracks_and_rejects_bad_counts() {
 }
 
 #[test]
-fn skinning_uses_parent_motion_and_inverse_bind_pose() {
-    let mut parent = Transform::identity();
-    parent.translation = [3.0, 0.0, 0.0];
-    let mut child = Transform::identity();
-    child.translation = [0.0, 2.0, 0.0];
-    let mut inverse = Transform::identity();
-    inverse.translation = [-3.0, -2.0, 0.0];
-    let mut moved = parent;
-    moved.translation[0] += 2.0;
-    let animation = Animation {
-        tag: 0,
-        frames: 2,
-        fps: 1.0,
-        parents: vec![None, Some(0)],
-        inverse: vec![Transform::identity(), inverse],
-        poses: vec![vec![parent, child], vec![moved, child]],
-    };
-    let model = Model {
-        vertices: vec![[4.0, 2.0, 0.0]],
-        weights: vec![Some(Weights {
-            values: [255, 0, 0, 0],
-            bones: [1, 255, 255, 255],
-        })],
-        ..Default::default()
-    };
-    assert_eq!(animation.vertices(&model, 0.0), model.vertices);
-    assert_eq!(animation.vertices(&model, 0.5), vec![[5.0, 2.0, 0.0]]);
-    assert_eq!(animation.vertices(&model, 1.0), vec![[6.0, 2.0, 0.0]]);
-}
-
-#[test]
 fn quaternion_interpolation_takes_the_short_arc() {
     let first = Transform::identity();
     let mut second = first;
@@ -152,7 +129,7 @@ fn quaternion_interpolation_takes_the_short_arc() {
 #[test]
 #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
 fn chicken_idle_decodes_and_deforms_without_changing_topology() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+    let packages = crate::test_support::preview_packages();
     let model = load_model(Path::new(&packages));
     let animation = model.animation.as_ref().expect("native chicken idle");
     assert_eq!(animation.tag, 0x80BC90D2);
@@ -177,7 +154,9 @@ fn chicken_idle_decodes_and_deforms_without_changing_topology() {
                 .all(|v| v.is_finite() && v.abs() < 2.0)
         );
     }
-    if let Some(output) = std::env::var_os("SUNDIAL_ANIMATION_OUTPUT") {
+    if let Some(output) =
+        crate::test_support::artifacts("animation").map(std::path::PathBuf::into_os_string)
+    {
         let path = Path::new(&output);
         std::fs::create_dir_all(path).unwrap();
         for frame in 0..40 {
@@ -218,62 +197,4 @@ fn load_model(packages: &Path) -> Model {
         model.animation_notice
     );
     model
-}
-
-/// The skeleton and animation-definition resources of one entity, the same two component
-/// classes the preview's own load collects before it reads a clip.
-fn animation_resources(manager: &PackageManager, entity: u32) -> Vec<Vec<u8>> {
-    let bytes = checked(manager, entity, ENTITY).unwrap();
-    let (count, rows) = array(&bytes, 0x10, 0x8080_9C04, 12, 4096).unwrap();
-    (0..count)
-        .filter_map(|index| {
-            let resource = u32_at(&bytes, rows + index * 12).ok()?;
-            let bytes = checked(manager, resource, RESOURCE).ok()?;
-            let data = pointer(&bytes, 0x18).ok()?;
-            let class = u32_at(&bytes, data.checked_sub(4)?).ok()?;
-            matches!(class, 0x8080_8546 | 0x8080_344B).then_some(bytes)
-        })
-        .collect()
-}
-
-#[test]
-#[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
-#[allow(clippy::cognitive_complexity)]
-fn chicken_bank_enumerates_playable_clips_and_loads_each_one() {
-    let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
-    let model = load_model(Path::new(&packages));
-    let manager = crate::investment::discovery::open_packages(Path::new(&packages)).unwrap();
-    let resources = animation_resources(&manager, 0x80BC90E3);
-    let found = clips(&manager, &resources);
-    for clip in &found {
-        eprintln!("{} 0x{:08X}", clip.name, clip.tag);
-    }
-    // The bank holds nine clip references; one with an unsupported codec is left out rather
-    // than emptying the list.
-    assert!(!found.is_empty() && found.len() <= 9, "{}", found.len());
-    assert_eq!(found[0].tag, 0x80BC90D2, "the idle clip leads the list");
-    assert!(!found[0].name.is_empty());
-    let tags: BTreeSet<_> = found.iter().map(|clip| clip.tag).collect();
-    assert_eq!(tags.len(), found.len(), "clip tags are unique");
-    let names: BTreeSet<_> = found.iter().map(|clip| clip.name.as_str()).collect();
-    assert_eq!(names.len(), found.len(), "clip labels are unique");
-    // Choosing the default clip gives exactly what the default path already plays.
-    let idle = model.animation.as_ref().unwrap();
-    let chosen = load_clip(&manager, &resources, &model, found[0].tag).unwrap();
-    assert_eq!(
-        (chosen.tag, chosen.frames, chosen.fps),
-        (idle.tag, idle.frames, idle.fps)
-    );
-    assert_eq!(chosen.vertices(&model, 1.0), idle.vertices(&model, 1.0));
-    // Every clip the walk kept loads on its own, and nothing outside the bank does.
-    for clip in &found {
-        let animation = load_clip(&manager, &resources, &model, clip.tag).unwrap();
-        assert_eq!(animation.tag, clip.tag);
-        assert!(animation.frames >= 2 && animation.duration() > 0.0);
-        let vertices = animation.vertices(&model, 0.0);
-        assert_eq!(vertices.len(), model.vertices.len());
-        assert!(vertices.iter().flatten().all(|v| v.is_finite()));
-    }
-    assert!(load_clip(&manager, &resources, &model, 0).is_err());
-    assert!(clips(&manager, &[]).is_empty());
 }

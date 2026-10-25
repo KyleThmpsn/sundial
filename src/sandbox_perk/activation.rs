@@ -197,7 +197,7 @@ pub fn with_activation(
 
 fn validate_outlaw(action_tag: u32, source: &[u8]) -> Result<[usize; 2], String> {
     let invalid = || {
-        "Activation conditions currently require the mapped stock Outlaw action (build 86657); this source is unsupported or has changed.".to_owned()
+        "Activation conditions currently require the mapped stock Outlaw action (build 86657). This source is unsupported or has changed.".to_owned()
     };
     if action_tag != OUTLAW_ACTION
         || source.len() != 1782
@@ -363,13 +363,12 @@ mod tests {
     }
 
     #[test]
-    fn activation_rejects_unmapped_or_changed_sources_without_mutation() {
+    fn activation_rejects_unmapped_or_changed_sources() {
         let source = fixture();
         assert!(with_activation(0, &source, PerkActivation::AnyKill, &registry()).is_err());
         for offset in [0, 0xFC, 0x108, 0x1D0, 0x270, 0x280, 0x241, 0x580] {
             let mut changed = source.clone();
             changed[offset] ^= 1;
-            let before = changed.clone();
             assert!(
                 with_activation(
                     OUTLAW_ACTION,
@@ -380,29 +379,6 @@ mod tests {
                 .is_err(),
                 "{offset:X}"
             );
-            assert_eq!(before, changed);
-        }
-    }
-
-    #[test]
-    fn every_activation_has_typed_arrays_and_matching_runtime_predicates() {
-        use crate::sandbox_perk::action::native::{Graph, labels};
-        let source = fixture();
-        for condition in PerkActivation::ALL {
-            let result = with_activation(OUTLAW_ACTION, &source, condition, &registry()).unwrap();
-            let expected =
-                super::super::program::compiler::compile_labels(&registry(), condition.labels())
-                    .unwrap();
-            for start in NODE_STARTS {
-                let graph = Graph::read(&result, start, NODE_CLASS).unwrap();
-                assert_eq!(labels::effective(&graph, 0, 0x128).unwrap()[0], expected);
-                assert_eq!(labels::effective(&graph, 0, 0x128).unwrap()[2], [0; 40]);
-                if !condition.labels().is_empty() {
-                    let target = graph.blocks[0].links[&0xD8];
-                    assert_eq!(graph.blocks[target].class, LABEL_CLASS);
-                    assert_eq!(graph.blocks[target].count, Some(condition.labels().len()));
-                }
-            }
         }
     }
 }

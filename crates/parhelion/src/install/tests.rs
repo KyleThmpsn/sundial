@@ -6,6 +6,7 @@ use tempfile::TempDir;
 mod account_replacement;
 mod caches;
 mod commit;
+mod loader;
 mod native_lifecycle;
 mod progress;
 mod recovery;
@@ -14,6 +15,7 @@ mod spill;
 mod transaction_safety;
 mod uninstall;
 mod validation;
+mod validation_reuse;
 
 fn test_manifest_sunrise_json() -> serde_json::Value {
     json!({

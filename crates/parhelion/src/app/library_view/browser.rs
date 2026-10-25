@@ -39,6 +39,7 @@ impl PackageAuthoringApp {
             &mut self.library_query,
             &mut self.library_state.sort,
             &mut self.library_state.kind,
+            &mut self.library_state.activities_only,
             &mut self.recipe_search_focus_pending,
         );
     }
@@ -55,6 +56,12 @@ impl PackageAuthoringApp {
                 .matching_entries(&self.recipe_entries, &self.library_donors, &query);
         self.library_state
             .sort_entries(&mut shown, &self.library_donors);
+        // Activity recipes have their own editor. Item bundles do not carry activities.
+        let shown_maps = if self.library_state.export_selection.is_some() {
+            Vec::new()
+        } else {
+            super::matching_maps(&self.map_entries, self.library_state.kind, &query)
+        };
         if let Some(selected) = &mut self.library_state.export_selection {
             ui.horizontal(|ui| {
                 ui.strong("Choose Recipes to Export");
@@ -79,7 +86,8 @@ impl PackageAuthoringApp {
                         .add_enabled_ui(!busy, |ui| {
                             draw_library_row(
                                 ui,
-                                &self.library_icons,
+                                self.catalog.as_ref(),
+                                &mut self.library_icons,
                                 entry,
                                 details,
                                 LibraryRowState {
@@ -95,6 +103,7 @@ impl PackageAuthoringApp {
                                         .contains(&entry.path),
                                     reveal: self.library_state.reveal.as_ref() == Some(&entry.path),
                                     can_restore: !(current && self.recipe_dirty),
+                                    installed: self.installed.contains(entry.identity_hash),
                                 },
                             )
                         })
@@ -113,11 +122,22 @@ impl PackageAuthoringApp {
                         *action = Some(LibraryAction::Entry(entry.path.clone(), entry_action));
                     }
                 }
-                if shown.is_empty() {
-                    ui.label("No matching recipes.");
+                if shown_maps.is_empty() && shown.is_empty() {
+                    ui.label("No Matching Results");
+                }
+                for map in &shown_maps {
+                    let clicked = ui
+                        .add_enabled_ui(!busy, |ui| super::draw_map_row(ui, map, None))
+                        .inner;
+                    #[cfg(feature = "d2-model-importer")]
+                    if clicked {
+                        *action = Some(LibraryAction::OpenActivity(map.path.clone()));
+                    }
+                    #[cfg(not(feature = "d2-model-importer"))]
+                    let _ = clicked;
                 }
             });
-        shown.len()
+        shown.len() + shown_maps.len()
     }
 
     fn draw_library_footer(
@@ -147,9 +167,11 @@ impl PackageAuthoringApp {
                 self.library_state.export_selection = None;
             }
         } else {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let noun = if matches == 1 { "recipe" } else { "recipes" };
-                ui.weak(format!("{matches} {noun}"));
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let noun = if matches == 1 { "recipe" } else { "recipes" };
+                    ui.weak(format!("{matches} {noun}"));
+                });
             });
         }
     }

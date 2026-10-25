@@ -81,6 +81,7 @@ fn socket_fixture(
             definition_hash: 100,
             previous_socket_count: previous,
             default_plugs: vec![Some(400); incoming],
+            replaced_defaults: Vec::new(),
         }],
     );
     (path, original, review)

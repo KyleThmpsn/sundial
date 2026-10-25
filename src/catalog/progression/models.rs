@@ -194,10 +194,39 @@ pub(crate) struct UnlockDefinition {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tested_by: Vec<ProgressionContextDef>,
+    /// What tests this definition. A condition that names hundreds of definitions is one context
+    /// they all share, so the catalog holds each context once.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "shared_contexts"
+    )]
+    pub tested_by: Vec<Arc<ProgressionContextDef>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_writers: Vec<UnlockWriter>,
+}
+
+/// Contexts written in full and read back one each. The catalog cache writes each shared context
+/// once instead (`cache::unlock_definitions`).
+mod shared_contexts {
+    use super::{Arc, ProgressionContextDef};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        contexts: &[Arc<ProgressionContextDef>],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(contexts.iter().map(|context| &**context))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Arc<ProgressionContextDef>>, D::Error> {
+        Ok(Vec::<ProgressionContextDef>::deserialize(deserializer)?
+            .into_iter()
+            .map(Arc::new)
+            .collect())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,7 +253,7 @@ impl UnlockDefinition {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum ProgressionContextKind {
     InventoryItem,
     Collectible,
@@ -243,7 +272,7 @@ pub(crate) enum ProgressionContextKind {
     PackageExpression,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct ProgressionContextDef {
     pub hash: u64,
     pub kind: ProgressionContextKind,

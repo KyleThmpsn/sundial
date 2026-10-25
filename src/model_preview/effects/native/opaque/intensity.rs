@@ -1,0 +1,315 @@
+//! Match the native packed intensity writer before retaining its target-Y dependencies.
+use super::*;
+use crate::model_preview::vertex::table;
+
+#[derive(Clone, Copy)]
+struct Value<'a> {
+    operand: &'a Operand,
+    lane: usize,
+    before: usize,
+}
+
+impl<'a> Value<'a> {
+    fn node(self, code: &'a Code) -> Option<(&'a Instruction, usize, usize)> {
+        let source = self.operand;
+        if source.kind != 0
+            || source.modifier != 0
+            || source.indices.len() != 1
+            || source.indices[0].relative.is_some()
+        {
+            return None;
+        }
+        let lane = source.lanes[self.lane];
+        code.instructions[..self.before]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(at, row)| {
+                let destination = row.operands.first()?;
+                (destination.kind == 0
+                    && destination.indices[0].base == source.indices[0].base
+                    && destination.mask & (1 << lane) != 0)
+                    .then_some((row, at, lane))
+            })
+    }
+    fn number(self, number: f32) -> bool {
+        literal(self.operand, self.lane, number)
+    }
+}
+
+fn value(row: &Instruction, before: usize, lane: usize, source: usize) -> Value<'_> {
+    Value {
+        operand: &row.operands[source],
+        lane,
+        before,
+    }
+}
+
+fn encoder<'a>(code: &'a Code, encoded: Value<'a>) -> Option<Value<'a>> {
+    let (affine, at, lane) = encoded.node(code)?;
+    if affine.code != 50
+        || !affine.saturate
+        || !value(affine, at, lane, 2).number(1.0 / 13.0)
+        || !value(affine, at, lane, 3).number(7.0 / 13.0)
+    {
+        return folded_encoder(code, encoded);
+    }
+    log_power(code, value(affine, at, lane, 1))
+}
+
+fn log_power<'a>(code: &'a Code, logarithm: Value<'a>) -> Option<Value<'a>> {
+    let (log, at, lane) = logarithm.node(code)?;
+    if log.code != 47 || log.saturate {
+        return None;
+    }
+    let (add, at, lane) = value(log, at, lane, 1).node(code)?;
+    if add.code != 0 || add.saturate {
+        return None;
+    }
+    if value(add, at, lane, 1).number(1.0 / 128.0) {
+        Some(value(add, at, lane, 2))
+    } else if value(add, at, lane, 2).number(1.0 / 128.0) {
+        Some(value(add, at, lane, 1))
+    } else {
+        None
+    }
+}
+
+/// A nonnegative source lets the compiler remove the encoder's lower clamp.
+/// Keep the exact logarithm, affine constants and upper clamp, then prove that bound.
+fn folded_encoder<'a>(code: &'a Code, encoded: Value<'a>) -> Option<Value<'a>> {
+    let (minimum, at, lane) = encoded.node(code)?;
+    if minimum.code != 51 || minimum.saturate || !value(minimum, at, lane, 2).number(1.0) {
+        return None;
+    }
+    let (multiply, at, lane) = value(minimum, at, lane, 1).node(code)?;
+    if multiply.code != 56 || multiply.saturate || !value(multiply, at, lane, 2).number(1.0 / 13.0)
+    {
+        return None;
+    }
+    let (add, at, lane) = value(multiply, at, lane, 1).node(code)?;
+    if add.code != 0 || add.saturate || !value(add, at, lane, 2).number(7.0) {
+        return None;
+    }
+    let power = log_power(code, value(add, at, lane, 1))?;
+    nonnegative(code, power, 0).then_some(power)
+}
+
+fn nonnegative(code: &Code, source: Value<'_>, depth: usize) -> bool {
+    if source.operand.kind == 4 && source.operand.modifier == 0 {
+        let number = f32::from_bits(source.operand.literal[source.operand.lanes[source.lane]]);
+        return number.is_finite() && number >= 0.0;
+    }
+    if depth >= 16 {
+        return false;
+    }
+    source.node(code).is_some_and(|(row, at, lane)| {
+        row.saturate
+            || row.code == 56 && same_value(code, value(row, at, lane, 1), value(row, at, lane, 2))
+            || row.code == 52
+                && (nonnegative(code, value(row, at, lane, 1), depth + 1)
+                    || nonnegative(code, value(row, at, lane, 2), depth + 1))
+    })
+}
+
+/// A translated deferred surface initializes Y to 0.5, then optionally writes the native
+/// logarithmic emission encoding. Validate every writer, including each conditional branch.
+pub(in crate::model_preview::effects::native) fn recover_translated(code: &Code) -> bool {
+    let mut initialized = false;
+    let mut emission = false;
+    for (at, row) in code.instructions.iter().enumerate().filter(|(_, row)| {
+        row.operands.first().is_some_and(|destination| {
+            destination.kind == 2 && destination.indices[0].base == 2 && destination.mask & 2 != 0
+        })
+    }) {
+        if row.code == 54 && !row.saturate && value(row, at, 1, 1).number(0.5) {
+            initialized = true;
+        } else if initialized && translated_writer(code, row, at) {
+            emission = true;
+        } else {
+            return false;
+        }
+    }
+    initialized && emission
+}
+
+fn translated_writer(code: &Code, row: &Instruction, at: usize) -> bool {
+    if row.code != 50
+        || row.saturate
+        || !value(row, at, 1, 2).number(1.0 / 26.0)
+        || !value(row, at, 1, 3).number((7.0 / 13.0 + 257.0 / 255.0) / 2.0)
+    {
+        return false;
+    }
+    let Some((log, at, lane)) = value(row, at, 1, 1).node(code) else {
+        return false;
+    };
+    if log.code != 47 || log.saturate {
+        return false;
+    }
+    let Some((power, at, lane)) = value(log, at, lane, 1).node(code) else {
+        return false;
+    };
+    let bound = |value: Value<'_>, minimum: f32| {
+        value.operand.kind == 4 && value.operand.modifier == 0 && {
+            let number = f32::from_bits(value.operand.literal[value.operand.lanes[value.lane]]);
+            number.is_finite() && number >= minimum
+        }
+    };
+    power.code == 50
+        && !power.saturate
+        && nonnegative(code, value(power, at, lane, 1), 0)
+        && bound(value(power, at, lane, 2), 0.0)
+        && bound(value(power, at, lane, 3), 1.0 / 128.0)
+}
+
+fn visibility(code: &Code, ambient: Value<'_>) -> bool {
+    ambient
+        .node(code)
+        .is_some_and(|(row, _, _)| row.code == 54 && row.saturate)
+}
+
+fn writer(code: &Code) -> Option<(usize, &Instruction)> {
+    code.instructions.iter().enumerate().rev().find(|(_, row)| {
+        row.operands
+            .first()
+            .is_some_and(|v| v.kind == 2 && v.indices[0].base == 2 && v.mask & 2 != 0)
+    })
+}
+
+pub(super) fn present(code: &Code) -> bool {
+    writer(code).is_some_and(|(at, row)| !(row.code == 54 && value(row, at, 1, 1).number(0.0)))
+}
+
+pub(in crate::model_preview::effects::native) fn recover(code: &Code) -> bool {
+    let Some((at, row)) = writer(code) else {
+        return false;
+    };
+    if row.code != 56 || row.saturate {
+        return false;
+    }
+    let packed = if value(row, at, 1, 2).number(0.5) {
+        value(row, at, 1, 1)
+    } else if value(row, at, 1, 1).number(0.5) {
+        value(row, at, 1, 2)
+    } else {
+        return false;
+    };
+    let Some((sum, at, lane)) = packed.node(code) else {
+        return false;
+    };
+    if sum.code != 0 || sum.saturate {
+        return false;
+    }
+    let a = value(sum, at, lane, 1);
+    let b = value(sum, at, lane, 2);
+    (encoder(code, a).is_some() && visibility(code, b))
+        || (encoder(code, b).is_some() && visibility(code, a))
+}
+
+/// Recognize the native conditional intensity writer or its fully folded literal.
+/// The conditional false branch retains fully visible, nonemitting material.
+pub(in crate::model_preview::effects::native) fn recover_surface(code: &Code) -> bool {
+    let Some((at, row)) = writer(code) else {
+        return false;
+    };
+    if row.code == 54 && row.operands[1].kind == 4 && row.operands[1].modifier == 0 {
+        let packed = f32::from_bits(row.operands[1].literal[row.operands[1].lanes[1]]);
+        // Closed material expressions can fold the complete logarithmic writer.
+        // Its upper endpoint is (1 + 1 + 2/255) / 2, before the UNORM target clamps it.
+        return packed.is_finite() && packed > 0.5 && packed <= 1.0 + 1.0 / 255.0;
+    }
+    if row.code != 55 || row.saturate || !value(row, at, 1, 3).number(0.5) {
+        return false;
+    }
+    let Some(power) = surface_power(code, value(row, at, 1, 2)) else {
+        return false;
+    };
+    let Some((condition, at, lane)) = value(row, at, 1, 1).node(code) else {
+        return false;
+    };
+    if condition.code != 49
+        || condition.saturate
+        || !(value(condition, at, lane, 1).number(0.00001)
+            || value(condition, at, lane, 1).number(0.0))
+    {
+        return false;
+    }
+    let compared = value(condition, at, lane, 2);
+    same_value(code, power, compared)
+}
+
+fn surface_power<'a>(code: &'a Code, packed: Value<'a>) -> Option<Value<'a>> {
+    let (half, at, lane) = packed.node(code)?;
+    if half.code != 56 || half.saturate || !value(half, at, lane, 2).number(0.5) {
+        return None;
+    }
+    let (sum, at, lane) = value(half, at, lane, 1).node(code)?;
+    if sum.code != 0 || sum.saturate || !value(sum, at, lane, 2).number(1.0 + 2.0 / 255.0) {
+        return None;
+    }
+    encoder(code, value(sum, at, lane, 1))
+}
+
+fn same_value(code: &Code, a: Value<'_>, b: Value<'_>) -> bool {
+    if !read_eq(a.operand, a.lane, b.operand, b.lane) {
+        return false;
+    }
+    if a.operand.kind == 4 {
+        return a.operand.literal[a.operand.lanes[a.lane]]
+            == b.operand.literal[b.operand.lanes[b.lane]];
+    }
+    if a.operand.kind != 0 {
+        return a.operand.kind != 2;
+    }
+    a.node(code)
+        .zip(b.node(code))
+        .is_some_and(|((_, a, x), (_, b, y))| (a, x) == (b, y))
+}
+
+fn quantize(value: f32) -> f32 {
+    (value.clamp(0.0, 1.0) * 255.0).round_ties_even() / 255.0
+}
+
+pub(in crate::model_preview) fn decode(value: f32) -> f32 {
+    // Quantize the native eight-bit material target before its recovered 2/255 correction.
+    let packed = quantize(value);
+    let encoded = (2.0 * packed - (1.0 + 2.0 / 255.0)).clamp(0.0, 1.0);
+    (13.0 * encoded - 7.0).exp2() - 1.0 / 128.0
+}
+
+pub(in crate::model_preview) fn ambient(y: f32, w: f32, power: f32) -> f32 {
+    let visibility = (2.0 * quantize(y)).clamp(0.0, 1.0) * quantize(w);
+    visibility.powi(2).max(0.0001).powf(power)
+}
+
+/// Stored Shadowkeep global default consumed by CB0[58].x in the ambient technique.
+/// Scene controllers can drive this channel in game. The preview uses its stored value.
+pub(in crate::model_preview::effects::native) fn ambient_power(
+    manager: &PackageManager,
+) -> Option<f32> {
+    let name = crate::hash::fnv1_name_hash("ao_ambient_weight");
+    let mut result: Option<f32> = None;
+    for (tag, _) in manager.get_all_by_reference(0x8080_858D) {
+        let bytes = checked(manager, tag.0, 0x8080_858D).ok()?;
+        let (count, names) = table(&bytes, 8, 0x8080_0070, 4, 1024).ok()?;
+        let (values, rows) = table(&bytes, 0x18, 0x8080_0090, 16, 1024).ok()?;
+        if count != values {
+            return None;
+        }
+        for index in 0..count {
+            if u32_at(&bytes, names + index * 4).ok()? != name {
+                continue;
+            }
+            let value = f32::from_bits(u32_at(&bytes, rows + index * 16).ok()?);
+            if !value.is_finite()
+                || !(0.0..=16.0).contains(&value)
+                || result.is_some_and(|previous| previous != value)
+            {
+                return None;
+            }
+            result = Some(value);
+        }
+    }
+    result
+}

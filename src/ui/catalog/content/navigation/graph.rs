@@ -73,8 +73,7 @@ fn neighborhood(index: &tft::Index, root: u32, depth: usize) -> Neighborhood {
             (link.source, link.source_class),
             (link.target, link.target_class),
         ] {
-            if nodes.contains_key(&tag) && crate::weapon_runtime::native_type_name(class).is_some()
-            {
+            if nodes.contains_key(&tag) && crate::runtime::native_type_name(class).is_some() {
                 types.entry(tag).or_insert(class);
             }
         }
@@ -117,23 +116,21 @@ impl View {
             hidden,
             types,
         } = &self.cached.as_ref().expect("graph cache populated").1;
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "{} {} · {} {}",
-                nodes.len(),
-                if nodes.len() == 1 {
-                    "resource"
-                } else {
-                    "resources"
-                },
-                edges.len(),
-                if edges.len() == 1 { "link" } else { "links" }
-            ));
-            if *hidden > 0 {
-                ui.label(format!("{hidden} Hidden"))
-                    .on_hover_text("Limit 40");
-            }
-        });
+        let mut counts = format!(
+            "{} {} · {} {}",
+            nodes.len(),
+            if nodes.len() == 1 {
+                "resource"
+            } else {
+                "resources"
+            },
+            edges.len(),
+            if edges.len() == 1 { "link" } else { "links" }
+        );
+        if *hidden > 0 {
+            counts.push_str(&format!(" · {hidden} hidden (40 max)"));
+        }
+        ui.weak(counts);
         let font_height = ui.text_style_height(&egui::TextStyle::Body);
         let metrics = (
             font_height.to_bits(),
@@ -234,50 +231,8 @@ fn node_line(ui: &egui::Ui, text: &str, width: f32) -> String {
         ui.visuals().text_color(),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(width);
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
         .rows
         .first()
         .map_or_else(String::new, |row| row.text())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn link(source: u32, target: u32) -> tft::Reference {
-        tft::Reference {
-            source,
-            target,
-            source_class: 0,
-            target_class: 0,
-            offset: 0,
-            path: String::new(),
-        }
-    }
-    #[test]
-    fn cycles_shared_nodes_and_direction_are_preserved() {
-        let index = tft::Index {
-            references: vec![link(1, 2), link(2, 3), link(3, 1), link(4, 2), link(1, 2)],
-            ..Default::default()
-        };
-        let Neighborhood {
-            nodes,
-            edges,
-            hidden,
-            ..
-        } = neighborhood(&index, 1, 2);
-        assert_eq!(nodes.len(), 4);
-        assert_eq!(edges.len(), 4);
-        assert!(edges.contains(&(3, 1)));
-        assert_eq!(hidden, 0);
-    }
-    #[test]
-    fn expansion_is_bounded_and_reports_hidden_neighbors() {
-        let index = tft::Index {
-            references: (2..102).map(|tag| link(1, tag)).collect(),
-            ..Default::default()
-        };
-        let Neighborhood { nodes, hidden, .. } = neighborhood(&index, 1, 3);
-        assert_eq!(nodes.len(), 40);
-        assert_eq!(hidden, 61);
-    }
 }

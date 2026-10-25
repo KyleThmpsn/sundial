@@ -1,253 +1,218 @@
+//! Item pages read against an installed game: a perk's behavior in plain words, a subclass's
+//! damage type, an emblem's second icon container, a weapon's named slot and a dummy's header.
+use super::item::ItemPage;
 use super::*;
+use crate::test_support::{primary_press, text_position};
 
-/// Renders the inspector for one representative definition of each kind from an installed
-/// catalog and writes captures when `PARHELION_UI_CAPTURE_DIR` is set.
-#[test]
-#[ignore = "Requires SUNDIAL_PROGRESSION_INSTALL and SUNDIAL_INSPECTOR_CATALOG"]
-fn installed_inspector_pages_render() {
-    let install = std::path::PathBuf::from(
-        std::env::var_os("SUNDIAL_PROGRESSION_INSTALL").expect("install path"),
-    );
-    let cache = std::path::PathBuf::from(
-        std::env::var_os("SUNDIAL_INSPECTOR_CATALOG").expect("catalog cache copy"),
-    );
-    let catalog =
-        Catalog::load_or_scan_with_progress(&install, cache, false, |_| {}).expect("catalog");
-    let targets = capture_targets(&catalog);
-    assert!(targets.len() >= 6, "too few capture targets: {targets:?}");
-    let ctx = egui::Context::default();
-    ctx.set_theme(egui::Theme::Dark);
-    crate::app::ui::configure_contrast(&ctx);
-    crate::app::preferences::configure_destiny_symbol_fonts(&ctx, &install).ok();
-    warm_icons(&ctx, &catalog, targets[0].1);
-    capture_search(&ctx, &catalog, targets[0].1);
-    for (name, hash) in targets {
-        let mut state = HashInspectionState::default();
-        state.open(hash);
-        let mut output = with_icons(&ctx, &catalog, &mut state);
-        crate::app::tests::capture::write(&ctx, &output, &format!("inspector-{name}"));
-        if name != "weapon" {
-            continue;
-        }
-        for tab in [
-            "Appearance",
-            "Sockets",
-            "Runtime",
-            "Technical",
-            "Related Records",
-        ] {
-            let Some(position) = text_center(&output, tab) else {
-                continue;
-            };
-            let click = |pressed| egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            };
-            frames(
-                &ctx,
-                &catalog,
-                &mut state,
-                vec![egui::Event::PointerMoved(position), click(true)],
-                1,
-            );
-            frames(&ctx, &catalog, &mut state, vec![click(false)], 1);
-            output = frames(&ctx, &catalog, &mut state, Vec::new(), 4);
-            let slug = tab.to_ascii_lowercase().replace(' ', "-");
-            crate::app::tests::capture::write(&ctx, &output, &format!("inspector-weapon-{slug}"));
-        }
-    }
-}
+const SALT: &str = "almanac-facts";
+const SCREEN: egui::Vec2 = egui::vec2(1500.0, 1100.0);
 
-/// The home page empty and with a query, and the toolbar dropdown over a definition page.
-fn capture_search(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
-    let typed = || vec![egui::Event::Text("ace".into())];
-    let mut state = HashInspectionState::default();
-    state.open(hash);
-    frames(ctx, catalog, &mut state, Vec::new(), 2);
-    state.go_home();
-    let output = frames(ctx, catalog, &mut state, Vec::new(), 4);
-    crate::app::tests::capture::write(ctx, &output, "inspector-home");
-    frames(ctx, catalog, &mut state, typed(), 1);
-    let output = with_icons(ctx, catalog, &mut state);
-    crate::app::tests::capture::write(ctx, &output, "inspector-home-search");
-
-    let mut state = HashInspectionState::default();
-    state.open(hash);
-    frames(ctx, catalog, &mut state, Vec::new(), 2);
-    state.search.focus = true;
-    frames(ctx, catalog, &mut state, Vec::new(), 2);
-    frames(ctx, catalog, &mut state, typed(), 1);
-    let output = with_icons(ctx, catalog, &mut state);
-    crate::app::tests::capture::write(ctx, &output, "inspector-toolbar-search");
-    state.close();
-    frames(ctx, catalog, &mut state, Vec::new(), 1);
-}
-
-fn frames(
+fn frame(
     ctx: &egui::Context,
     catalog: &Catalog,
     state: &mut HashInspectionState,
     events: Vec<egui::Event>,
-    count: usize,
 ) -> egui::FullOutput {
-    let mut output = egui::FullOutput::default();
-    let mut events = Some(events);
-    for _ in 0..count {
-        output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1180.0, 860.0),
-                )),
-                events: events.take().unwrap_or_default(),
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |_| {});
-                draw_catalog_hash_window(ctx, catalog, None, false, state, "capture");
-            },
-        );
-        crate::app::tests::capture::record(&output);
-    }
+    let output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN)),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            let ctx = ui.ctx().clone();
+            draw_catalog_hash_window(&ctx, catalog, None, false, state, SALT);
+        },
+    );
+    crate::test_support::capture::record(&output);
     output
 }
 
-/// The icon loader opens the installed packages on its first request, which takes longer than
-/// a capture waits, so load one icon before capturing.
-fn warm_icons(ctx: &egui::Context, catalog: &Catalog, hash: u64) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while catalog.icon_texture(ctx, hash).is_none() {
-        if let Some(problem) = catalog.icon_diagnostic(hash) {
-            eprintln!("icon for {hash:#010X} did not load: {problem}");
-            return;
-        }
-        if std::time::Instant::now() > deadline {
-            eprintln!("icon for {hash:#010X} did not load within a minute");
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+/// Every painted text, so a check can say what a page showed when it fails.
+fn texts(output: &egui::FullOutput) -> Vec<String> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
-/// Runs frames until package icons stop arriving from their loader, at most five seconds.
-fn with_icons(
+/// A context set up as the app sets its own, with the installed game's fonts.
+fn context(install: &std::path::Path) -> egui::Context {
+    let ctx = egui::Context::default();
+    crate::app::ui::configure_style(&ctx);
+    let _ = crate::app::preferences::configure_destiny_symbol_fonts(&ctx, install);
+    ctx
+}
+
+/// Opens `hash` on `page` and draws until the page settles.
+fn open(
     ctx: &egui::Context,
     catalog: &Catalog,
-    state: &mut HashInspectionState,
-) -> egui::FullOutput {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut output = frames(ctx, catalog, state, Vec::new(), 4);
-    let mut quiet = 0;
-    while quiet < 20 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        output = frames(ctx, catalog, state, Vec::new(), 1);
-        quiet = if output.textures_delta.set.is_empty() {
-            quiet + 1
-        } else {
-            0
-        };
+    hash: u64,
+    page: ItemPage,
+) -> (HashInspectionState, egui::FullOutput) {
+    let mut state = HashInspectionState::default();
+    state.open(hash);
+    let page_id = egui::Id::new(("definition_inspector", SALT)).with(("item_page", hash));
+    ctx.data_mut(|data| data.insert_temp(page_id, page));
+    let mut output = frame(ctx, catalog, &mut state, Vec::new());
+    for _ in 0..6 {
+        output = frame(ctx, catalog, &mut state, Vec::new());
     }
-    output
+    (state, output)
 }
 
-fn text_center(output: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
-    output.shapes.iter().find_map(|shape| match &shape.shape {
-        // The Related Records tab carries its count after the label.
-        egui::Shape::Text(text) if text.galley.job.text.starts_with(label) => {
-            Some(text.pos + text.galley.rect.center().to_vec2())
-        }
-        _ => None,
-    })
-}
-
-/// One named definition of each kind, chosen from the catalog rather than by hash.
-fn capture_targets(catalog: &Catalog) -> Vec<(&'static str, u64)> {
-    let named = |hash: u64| {
-        catalog
-            .display_name(hash)
-            .is_some_and(|name| !name.is_empty())
-    };
-    let mut targets = Vec::new();
-    let weapon = catalog
+fn first_item(catalog: &Catalog, accept: impl Fn(&ItemDef, &ItemPackageMetadata) -> bool) -> u64 {
+    catalog
         .items
         .iter()
-        .filter(|item| is_authorable_weapon_item(item) && !item.name.is_empty())
-        .max_by_key(|item| (item.sockets.len(), std::cmp::Reverse(item.hash)));
-    if let Some(weapon) = weapon {
-        targets.push(("weapon", weapon.hash));
-        targets.push(("bucket", weapon.bucket_hash));
-        if let Some(plug) = weapon
-            .default_plugs
+        .find(|item| {
+            !item.name.trim().is_empty()
+                && catalog
+                    .item_package_metadata(item.hash)
+                    .is_some_and(|metadata| accept(item, metadata))
+        })
+        .map(|item| item.hash)
+        .expect("the installed catalog has such an item")
+}
+
+#[test]
+#[ignore = "Requires SUNDIAL_INSTALL and installed packages"]
+fn item_pages_show_what_the_packages_say() {
+    let install = crate::test_support::install();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&install, &mut hasher);
+    let cache = std::env::temp_dir()
+        .join("sundial-test-catalogs")
+        .join(format!("{:016x}.json", std::hash::Hasher::finish(&hasher)));
+    let catalog = Catalog::load_or_scan_with_progress(&install, cache, false, |_| {}).unwrap();
+    let ctx = context(&install);
+    let mut receipt = serde_json::Map::new();
+
+    // A perk's behavior, read from its action, leads the opened Behavior fold.
+    let perk = first_item(&catalog, |_, metadata| !metadata.sandbox_perks.is_empty());
+    let (mut state, output) = open(&ctx, &catalog, perk, ItemPage::Runtime);
+    let fold = text_position(&output, "Behavior")
+        .unwrap_or_else(|| panic!("no Behavior fold: {:?}", texts(&output)));
+    frame(&ctx, &catalog, &mut state, primary_press(fold, true));
+    frame(&ctx, &catalog, &mut state, primary_press(fold, false));
+    let output = frame(&ctx, &catalog, &mut state, Vec::new());
+    // The fold reads the perk when asked. Its button comes after the weapon runtime's.
+    let load = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Load from Packages" => {
+                Some(text.pos + egui::vec2(3.0, 3.0))
+            }
+            _ => None,
+        })
+        .max_by(|a, b| a.y.total_cmp(&b.y))
+        .unwrap_or_else(|| panic!("no load button: {:?}", texts(&output)));
+    frame(&ctx, &catalog, &mut state, primary_press(load, true));
+    let mut output = frame(&ctx, &catalog, &mut state, primary_press(load, false));
+    let started = std::time::Instant::now();
+    while text_position(&output, "Runtime Action").is_none() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(120),
+            "the perk's action never loaded: {:?}",
+            texts(&output)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        output = frame(&ctx, &catalog, &mut state, Vec::new());
+    }
+    for _ in 0..4 {
+        output = frame(&ctx, &catalog, &mut state, Vec::new());
+    }
+    let shown = texts(&output);
+    assert!(
+        ["Trigger", "Actions"]
             .iter()
-            .flatten()
-            .filter_map(|plug| parse_hash_hex(plug))
-            .find(|hash| named(*hash))
-        {
-            targets.push(("plug", plug));
-        }
-        if let Some(stat) = catalog
-            .item_package_metadata(weapon.hash)
-            .and_then(|metadata| metadata.investment_stats.first())
-            .and_then(|stat| catalog.item_stat_definition(stat.definition_index))
-        {
-            targets.push(("stat", stat.hash));
-        }
+            .all(|heading| shown.iter().any(|text| text == heading)),
+        "the behavior reading names its trigger and actions: {shown:?}"
+    );
+    if shown.iter().any(|text| text == "Set Host Mode") {
+        assert!(
+            shown.iter().any(|text| text.starts_with("Mode: ")
+                && [" · Kinetic", " · Solar", " · Arc", " · Void"]
+                    .iter()
+                    .any(|name| text.ends_with(name))),
+            "Set Host Mode names the damage type it sets: {shown:?}"
+        );
     }
-    if let Some(collectible) = catalog
-        .collectibles()
-        .iter()
-        .find(|collectible| named(collectible.item_hash) && !collectible.paths.is_empty())
-    {
-        targets.push(("collectible", collectible.hash));
-    }
-    if let Some(record) = catalog.records().and_then(|records| {
-        records
+    crate::test_support::capture::write(&ctx, &output, "inspector-perk-behavior");
+    receipt.insert("perk".into(), serde_json::json!(format_hash_hex(perk)));
+
+    // A subclass's damage type comes from its strings.
+    let subclass = first_item(&catalog, |item, metadata| {
+        item.bucket_hash == crate::catalog::SUBCLASS_BUCKET_HASH
+            && metadata.damage_type.is_none()
+            && metadata.display_damage_type.is_some()
+    });
+    let (_, output) = open(&ctx, &catalog, subclass, ItemPage::Overview);
+    let shown = texts(&output);
+    assert!(
+        shown.iter().any(|text| text == "Damage Type"),
+        "the subclass header names its damage type: {shown:?}"
+    );
+    crate::test_support::capture::write(&ctx, &output, "inspector-subclass-header");
+    receipt.insert(
+        "subclass".into(),
+        serde_json::json!(format_hash_hex(subclass)),
+    );
+
+    // An emblem's nameplate container is the strings' second icon row.
+    let emblem = first_item(&catalog, |_, metadata| {
+        metadata.secondary_icon_container_tag.is_some()
+    });
+    let (_, output) = open(&ctx, &catalog, emblem, ItemPage::Technical);
+    let shown = texts(&output);
+    assert!(
+        shown
             .iter()
-            .filter(|record| !record.name.is_empty())
-            .max_by_key(|record| (record.objectives.len(), std::cmp::Reverse(record.hash)))
-    }) {
-        targets.push(("record", record.hash));
-        if let Some(objective) = record
-            .objectives
-            .first()
-            .and_then(|index| catalog.objective_definition(*index))
-        {
-            targets.push(("objective", objective.hash));
-        }
-    }
-    if let Some(progression) = catalog
-        .progression_definitions()
+            .any(|text| text == "Secondary Icon Container Tag"),
+        "the technical page lists the second icon container: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text == "Damage Type"),
+        "an emblem's strings name no damage type: {shown:?}"
+    );
+    crate::test_support::capture::write(&ctx, &output, "inspector-emblem-technical");
+    receipt.insert("emblem".into(), serde_json::json!(format_hash_hex(emblem)));
+
+    // A weapon's equipment slot is named.
+    let weapon = first_item(&catalog, |_, metadata| metadata.equipment_slot == Some(8));
+    let (_, output) = open(&ctx, &catalog, weapon, ItemPage::Technical);
+    let shown = texts(&output);
+    assert!(
+        shown.iter().any(|text| text == "8 · Energy"),
+        "the technical page names the slot: {shown:?}"
+    );
+    crate::test_support::capture::write(&ctx, &output, "inspector-weapon-technical");
+    receipt.insert("weapon".into(), serde_json::json!(format_hash_hex(weapon)));
+
+    // A dummy says so in its kind.
+    let dummy = catalog
+        .items
         .iter()
-        .filter(|definition| progression_display_name(definition).is_some())
-        .max_by_key(|definition| (definition.steps.len(), std::cmp::Reverse(definition.hash)))
-    {
-        targets.push(("progression", progression.hash));
-    }
-    if let Some(flag) = catalog
-        .unlock_flag_definitions()
-        .iter()
-        .find(|definition| definition.name.is_some() && !definition.tested_by.is_empty())
-    {
-        targets.push(("unlock-flag", flag.hash));
-    }
-    if let Some(material) = catalog
-        .material_requirement_sets()
-        .iter()
-        .flat_map(|set| set.requirements.iter())
-        .map(|requirement| requirement.item_hash)
-        .find(|hash| named(*hash))
-    {
-        targets.push(("material", material));
-    }
-    if let Some(node) = catalog.presentation_nodes().iter().find(|node| {
-        let children = catalog.presentation_node_children(node.hash);
-        !node.name.is_empty()
-            && !node.parents.is_empty()
-            && (!children.collectibles.is_empty() || !children.records.is_empty())
-    }) {
-        targets.push(("presentation-node", node.hash));
-    }
-    targets
+        .find(|item| !item.name.trim().is_empty() && catalog.is_dummy(item.hash))
+        .map(|item| item.hash)
+        .expect("the installed catalog has a dummy");
+    let (_, output) = open(&ctx, &catalog, dummy, ItemPage::Overview);
+    let shown = texts(&output);
+    assert!(
+        shown.iter().any(|text| text.starts_with("Dummy ")),
+        "the dummy's kind says so: {shown:?}"
+    );
+    crate::test_support::capture::write(&ctx, &output, "inspector-dummy-header");
+    receipt.insert("dummy".into(), serde_json::json!(format_hash_hex(dummy)));
+
+    crate::test_support::artifact(
+        "inspector-almanac-facts.json",
+        &serde_json::Value::Object(receipt),
+    );
 }

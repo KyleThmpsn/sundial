@@ -99,45 +99,18 @@ pub(super) fn draw_page_tabs(
     page: &mut ItemPage,
     related_count: usize,
 ) {
-    egui::Frame::NONE
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::same(3))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
-                for candidate in pages {
-                    let text = page_tab_text(ui, *candidate, related_count);
-                    if ui
-                        .add(egui::SelectableLabel::new(*page == *candidate, text))
-                        .clicked()
-                    {
-                        *page = *candidate;
-                    }
-                }
-            });
-        });
-}
-
-fn page_tab_text(ui: &egui::Ui, page: ItemPage, related_count: usize) -> egui::WidgetText {
-    if page != ItemPage::Related {
-        return page.label().into();
-    }
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        page.label(),
-        0.0,
-        egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER),
-    );
-    job.append(
-        &related_count.to_string(),
-        6.0,
-        egui::TextFormat::simple(font, crate::app::inspector::look::muted(ui)),
-    );
-    job.into()
+    crate::app::inspector::look::tab_bar(ui, |ui| {
+        for candidate in pages {
+            let count = (*candidate == ItemPage::Related).then_some(related_count);
+            let text = crate::app::inspector::look::tab_text(ui, candidate.label(), count);
+            if ui
+                .add(egui::Button::selectable(*page == *candidate, text))
+                .clicked()
+            {
+                *page = *candidate;
+            }
+        }
+    });
 }
 
 pub(super) fn draw_hash_item_matches(
@@ -149,12 +122,9 @@ pub(super) fn draw_hash_item_matches(
     let matches = content.matches;
     if matches.item_package_metadata.is_some() || matches.item.is_some() {
         ui.add_space(4.0);
-        if page == ItemPage::Preview {
-            preview::draw(ui, &content, true, false);
-        }
         match page {
-            ItemPage::Overview => draw_overview(ui, &content),
-            ItemPage::Preview => {}
+            ItemPage::Overview => with_model(ui, &content, |ui| draw_overview(ui, &content)),
+            ItemPage::Preview => with_model(ui, &content, |ui| preview::draw(ui, &content)),
             ItemPage::Sockets => draw_sockets_page(ui, &content),
             ItemPage::Runtime => draw_runtime_page(ui, &content, runtime),
             ItemPage::Technical => draw_technical_page(ui, &content, runtime),
@@ -183,6 +153,37 @@ pub(super) fn draw_hash_item_matches(
     }
 }
 
-pub(super) fn draw_preview_button(ui: &mut egui::Ui, content: ItemInspection<'_>) {
-    preview::draw(ui, &content, false, true);
+/// The narrowest a page's details get before the model gives up its column.
+const DETAILS_MIN_WIDTH: f32 = 380.0;
+
+/// A page's details with the item's model in a column beside them, or under them when the window
+/// is too narrow for both. An item with no model shows only the details.
+fn with_model(
+    ui: &mut egui::Ui,
+    content: &ItemInspection<'_>,
+    details: impl FnOnce(&mut egui::Ui),
+) {
+    if !preview::available(content) {
+        details(ui);
+        return;
+    }
+    let width = ui.available_width();
+    let side = (width * 0.45).clamp(280.0, 560.0);
+    let gap = ui.spacing().item_spacing.x * 2.0;
+    if width - side - gap < DETAILS_MIN_WIDTH {
+        details(ui);
+        let side = width.min(560.0);
+        preview::inline(ui, content, egui::vec2(side, side * 0.75));
+        return;
+    }
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(width - side - gap);
+            details(ui);
+        });
+        ui.add_space(gap - ui.spacing().item_spacing.x);
+        ui.vertical(|ui| {
+            preview::inline(ui, content, egui::vec2(side, side * 0.75));
+        });
+    });
 }

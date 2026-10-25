@@ -22,6 +22,7 @@ pub(crate) enum SqliteAccountError {
     Domain(AccountError),
     EntityIdentityExhausted,
     SourceChanged,
+    WriteBlocked(String),
     Backup(String),
 }
 
@@ -53,6 +54,7 @@ impl fmt::Display for SqliteAccountError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FileSystem(error) => write!(formatter, "could not inspect SQLite state: {error}"),
+            Self::WriteBlocked(message) => formatter.write_str(message),
             Self::Sqlite { operation, source } => {
                 write!(
                     formatter,
@@ -90,6 +92,7 @@ impl Error for SqliteAccountError {
             | Self::InvalidData { .. }
             | Self::EntityIdentityExhausted
             | Self::SourceChanged
+            | Self::WriteBlocked(_)
             | Self::Backup(_) => None,
         }
     }

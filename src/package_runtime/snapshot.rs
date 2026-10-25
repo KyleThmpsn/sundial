@@ -19,10 +19,15 @@ impl Snapshot {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(packages).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            if entry
-                .path()
-                .extension()
-                .is_none_or(|extension| !extension.eq_ignore_ascii_case("pkg"))
+            let identity = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(".sundial-content-"));
+            if !identity
+                && entry
+                    .path()
+                    .extension()
+                    .is_none_or(|extension| !extension.eq_ignore_ascii_case("pkg"))
             {
                 continue;
             }
@@ -30,8 +35,25 @@ impl Snapshot {
             files.push((
                 entry.file_name(),
                 metadata.len(),
-                metadata.modified().map_err(|error| error.to_string())?,
+                if identity {
+                    SystemTime::UNIX_EPOCH
+                } else {
+                    metadata.modified().map_err(|error| error.to_string())?
+                },
             ));
+        }
+        if let Some(install) = packages.parent() {
+            for path in super::mods::content_files(install)? {
+                let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+                files.push((
+                    path.strip_prefix(install)
+                        .map_err(|e| e.to_string())?
+                        .as_os_str()
+                        .to_owned(),
+                    metadata.len(),
+                    metadata.modified().map_err(|e| e.to_string())?,
+                ));
+            }
         }
         files.sort();
         Ok(Self {
@@ -42,7 +64,7 @@ impl Snapshot {
 
     pub(crate) fn key(&self) -> Result<String, String> {
         let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        Ok(hex::encode(Sha256::digest(bytes)))
     }
 
     /// A key for these files alone, not the directory they were read from. A build's stock
@@ -50,7 +72,7 @@ impl Snapshot {
     /// keep each file's size and modified time.
     pub(crate) fn files_key(&self) -> Result<String, String> {
         let bytes = serde_json::to_vec(&self.files).map_err(|error| error.to_string())?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        Ok(hex::encode(Sha256::digest(bytes)))
     }
 
     /// Include every patch and language variant of this package ID. Unknown

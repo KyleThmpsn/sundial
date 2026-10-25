@@ -9,7 +9,7 @@ pub(crate) struct PlugSection {
 impl PlugSection {
     pub(crate) fn new(
         ui: &egui::Ui,
-        id: impl std::hash::Hash,
+        id: impl std::hash::Hash + std::fmt::Debug,
         count: usize,
         defaults: bool,
     ) -> Self {
@@ -40,7 +40,6 @@ impl PlugSection {
                             .truncate()
                             .sense(egui::Sense::click()),
                     )
-                    .on_hover_text(&self.title)
                     .clicked()
                 {
                     self.state.toggle(ui);

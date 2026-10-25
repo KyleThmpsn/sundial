@@ -1,0 +1,214 @@
+// Failure cases: an active or failed operation is marked finished, advancing to a
+// new substep leaves the previous one active, finish events add duplicate rows,
+// duplicate notifications undo completion, rollback marks failed work successful,
+// or completion wording changes an asset or recipe name.
+use super::*;
+use std::borrow::Cow;
+
+pub(super) struct Entry {
+    line: u64,
+    label: String,
+    item: Option<String>,
+    completed: usize,
+    total: usize,
+    item_is_operation: bool,
+    finished: bool,
+    phase_finished: bool,
+}
+
+impl Entry {
+    fn message(&self) -> String {
+        let label = if self.phase_finished {
+            finished_label(&self.label)
+        } else {
+            Cow::Borrowed(self.label.as_str())
+        };
+        let item = self.item.as_deref().map(|item| {
+            if self.finished && self.item_is_operation {
+                finished_label(item)
+            } else {
+                Cow::Borrowed(item)
+            }
+        });
+        message(&label, item.as_deref(), self.completed, self.total)
+    }
+}
+
+/// Only generated operation labels are inflected. Asset and recipe names stay verbatim.
+fn finished_label(label: &str) -> Cow<'_, str> {
+    let (verb, rest) = label.split_once(' ').unwrap_or((label, ""));
+    let past = match verb.trim_end_matches(['.', '…']) {
+        "Inspecting" => "Inspected",
+        "Loading" => "Loaded",
+        "Checking" => "Checked",
+        "Comparing" => "Compared",
+        "Rechecking" => "Rechecked",
+        "Preparing" => "Prepared",
+        "Recording" => "Recorded",
+        "Compiling" => "Compiled",
+        "Resolving" => "Resolved",
+        "Planning" => "Planned",
+        "Reading" => "Read",
+        "Adding" => "Added",
+        "Building" => "Built",
+        "Linking" => "Linked",
+        "Encoding" => "Encoded",
+        "Finalizing" => "Finalized",
+        "Validating" => "Validated",
+        "Verifying" => "Verified",
+        "Authoring" => "Authored",
+        "Reusing" => "Reused",
+        "Writing" => "Wrote",
+        "Staging" => "Staged",
+        "Backing" => "Backed",
+        "Applying" => "Applied",
+        "Copying" => "Copied",
+        "Recoloring" => "Recolored",
+        "Changing" => "Changed",
+        "Swapping" => "Swapped",
+        "Installing" => "Installed",
+        "Updating" => "Updated",
+        "Refreshing" => "Refreshed",
+        "Finishing" => "Finished",
+        "Restoring" => "Restored",
+        "Finding" => "Found",
+        "Confirming" => "Confirmed",
+        _ => return Cow::Borrowed(label),
+    };
+    Cow::Owned(if rest.is_empty() {
+        past.to_owned()
+    } else {
+        format!("{past} {rest}")
+    })
+}
+
+impl Activity {
+    /// Advancing to the next operation completes the preceding log entry. A repeated
+    /// operation completes when its counter advances. Errors never advance this state,
+    /// and rollback explicitly leaves the failed operation unfinished.
+    pub(in crate::app) fn progress(
+        &mut self,
+        elapsed: Duration,
+        label: &str,
+        item: Option<&str>,
+        counts: (usize, usize),
+        item_is_operation: bool,
+        finish_previous: bool,
+    ) -> Option<String> {
+        let (completed, total) = counts;
+        let mut entry = Entry {
+            line: self.first_line + self.lines.len() as u64,
+            label: label.to_owned(),
+            item: item.map(str::to_owned),
+            completed,
+            total,
+            item_is_operation,
+            finished: total > 0 && completed == total,
+            phase_finished: false,
+        };
+        if let Some(mut previous) = self.operation.take() {
+            let same = previous.label == label
+                && previous.item.as_deref() == item
+                && previous.total == total
+                && previous.completed <= completed;
+            if same {
+                entry.line = previous.line;
+                entry.finished |= previous.finished || completed > previous.completed;
+                entry.phase_finished = previous.phase_finished;
+                let changed =
+                    previous.completed != completed || previous.finished != entry.finished;
+                let text = entry.message();
+                self.update(entry.line, elapsed, text.clone());
+                self.operation = Some(entry);
+                return changed.then_some(text);
+            }
+            let phase_changed = previous.label != label;
+            if finish_previous && (!previous.finished || phase_changed) {
+                previous.finished = true;
+                previous.phase_finished |= phase_changed;
+                if previous.label == label && previous.total == total {
+                    previous.completed = previous.completed.max(completed);
+                }
+                self.update(previous.line, elapsed, previous.message());
+            }
+        }
+        let text = entry.message();
+        self.push(elapsed, text.clone());
+        self.operation = Some(entry);
+        Some(text)
+    }
+
+    pub(in crate::app) fn build(&mut self, progress: &TimedBuildProgress) -> Option<String> {
+        use crate::workflow::{BuildActivity, OperationStatus};
+        let elapsed = progress.elapsed;
+        match &progress.activity {
+            Some(BuildActivity::Diagnostic(text)) => {
+                self.append(elapsed, text.clone());
+                Some(text.clone())
+            }
+            Some(BuildActivity::Package {
+                id,
+                step,
+                status,
+                duration,
+            }) => {
+                // The serial compiler phase is complete before package dispatch. Parallel
+                // operations thereafter close only on their own producer's terminal event.
+                if let Some(mut previous) = self.operation.take() {
+                    previous.finished = true;
+                    previous.phase_finished = true;
+                    self.update(previous.line, elapsed, previous.message());
+                }
+                let key = (*id, *step);
+                if self.packages.get(&key).is_some_and(|(_, prior)| {
+                    *prior != OperationStatus::Started || *status == OperationStatus::Started
+                }) {
+                    return None;
+                }
+                let label = progress
+                    .current_artifact
+                    .as_deref()
+                    .unwrap_or("Package operation");
+                let operation = match status {
+                    OperationStatus::Started => label.to_owned(),
+                    OperationStatus::Finished => format!(
+                        "{} ({} elapsed)",
+                        finished_label(label),
+                        format_elapsed(*duration)
+                    ),
+                    OperationStatus::Failed => {
+                        format!("Failed: {label} ({} elapsed)", format_elapsed(*duration))
+                    }
+                };
+                let text = message(
+                    progress.phase.label(),
+                    Some(&operation),
+                    progress.completed,
+                    progress.total,
+                );
+                if let Some((line, _)) = self.packages.get(&key).copied() {
+                    self.update(line, elapsed, text.clone());
+                    self.packages.insert(key, (line, *status));
+                } else {
+                    let line = self.append(elapsed, text.clone());
+                    self.packages.insert(key, (line, *status));
+                }
+                Some(text)
+            }
+            None => self.progress(
+                elapsed,
+                progress.phase.label(),
+                progress.current_artifact.as_deref(),
+                (progress.completed, progress.total),
+                matches!(
+                    progress.phase,
+                    BuildPhase::InspectingSource
+                        | BuildPhase::LoadingCatalog
+                        | BuildPhase::CompilingProject
+                        | BuildPhase::BuildingPayloads
+                ),
+                true,
+            ),
+        }
+    }
+}

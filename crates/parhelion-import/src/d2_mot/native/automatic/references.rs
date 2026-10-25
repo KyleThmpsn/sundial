@@ -1,6 +1,5 @@
 //! Recreate native rendering contracts from the user's packages, never old exports.
 use super::*;
-use crate::d2_mot::tfx;
 
 #[cfg(test)]
 mod tests;
@@ -38,7 +37,7 @@ pub(super) fn export(prepared: &Path, root: &Path, progress: &mut dyn FnMut(Stri
             &mut native_reader
         };
         reader.begin_export(&root.join(folder))?;
-        let context = tfx::context(reader, is_modern)?;
+        let context = crate::tiger::shader::globals::read(reader, is_modern)?;
         write_json(&reader.output.join("context.json"), &context)?;
         reader.finish()?;
     }

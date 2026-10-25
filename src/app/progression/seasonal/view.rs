@@ -192,7 +192,10 @@ fn draw_experience(
             ui.strong("Seasonal XP");
             ui.add_enabled(
                 editable,
-                egui::DragValue::new(xp).range(0..=i32::MAX).speed(1_000),
+                egui::DragValue::new(xp)
+                    .range(0..=i32::MAX)
+                    .clamp_existing_to_range(false)
+                    .speed(1_000),
             )
             .changed()
         })

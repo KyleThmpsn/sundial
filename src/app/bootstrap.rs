@@ -11,9 +11,18 @@ pub(super) fn parse_args() -> (Option<InstallSelection>, bool, LoadedPreferences
         match arg.as_str() {
             "--install" => {
                 if let Some(value) = args.next() {
+                    let install_path = std::path::PathBuf::from(value);
+                    // An update restart names the installation it left, so the layout saved
+                    // for that installation still applies. Another installation has none yet.
+                    let preferred_layout = install
+                        .as_ref()
+                        .filter(|saved| {
+                            crate::system::paths::paths_equal(&saved.install_path, &install_path)
+                        })
+                        .and_then(|saved| saved.preferred_layout);
                     install = Some(InstallSelection {
-                        install_path: value.into(),
-                        preferred_layout: None,
+                        install_path,
+                        preferred_layout,
                     });
                 }
             }

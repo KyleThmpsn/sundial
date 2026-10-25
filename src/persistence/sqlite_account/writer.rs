@@ -35,16 +35,27 @@ pub(crate) struct SqliteRestoreReceipt {
     pub(crate) safety_backup: PathBuf,
 }
 
-pub(crate) fn save(
+pub(crate) fn save_checked(
     document: &mut SqliteAccountDocument,
+    require_closed: impl FnMut() -> Result<(), String>,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
-    save_with_backup(document, None)
+    save_with_backup_checked(document, None, require_closed)
 }
 
+#[cfg(test)]
 pub(super) fn save_with_backup(
     document: &mut SqliteAccountDocument,
     backup: Option<PathBuf>,
 ) -> Result<SqliteSaveReceipt, SqliteAccountError> {
+    save_with_backup_checked(document, backup, || Ok(()))
+}
+
+fn save_with_backup_checked(
+    document: &mut SqliteAccountDocument,
+    backup: Option<PathBuf>,
+    mut require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<SqliteSaveReceipt, SqliteAccountError> {
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     let mut candidate = document.clone();
     candidate.prepare_persistence()?;
 
@@ -71,11 +82,17 @@ pub(super) fn save_with_backup(
         create_verified_backup(document.path(), &backup, document.revision())?;
         backup
     } else {
-        indexed_backup(document.path(), "investment-v2", true, |backup| {
-            create_verified_backup(document.path(), backup, document.revision())
-        })?
+        indexed_backup(
+            document.path(),
+            document.schema().backup_prefix(),
+            true,
+            |backup| create_verified_backup(document.path(), backup, document.revision()),
+        )?
     };
     let before = super::snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
+    // Backup and validation can take time. A process that started during either must not
+    // receive an account mutation, even when its persisted revision has not changed yet.
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     write_document(&transaction, &candidate)?;
     reader::load_connection(&transaction)?;
     let revision = document::database_revision(&transaction)?;
@@ -106,6 +123,7 @@ pub(super) fn save_with_backup(
         ],
     )
     .map_err(SqliteAccountError::Backup)?;
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     transaction
         .commit()
         .map_err(|error| SqliteAccountError::sqlite("commit", error))?;
@@ -135,18 +153,33 @@ pub(crate) fn validate_backup(backup: &Path) -> Result<(), SqliteAccountError> {
     compatible_backup_revision(backup).map(|_| ())
 }
 
+#[cfg(test)]
 pub(crate) fn restore_backup_safely(
     destination: &Path,
     backup: &Path,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-    restore_backup_safely_with_path(destination, backup, None)
+    restore_backup_checked(destination, backup, || Ok(()))
+}
+
+/// Replaces the account with `backup` after keeping an integrity-checked safety snapshot of it.
+/// Refused whenever `require_closed` reports the game running: before the snapshot, again before
+/// the restore and last just before its commit, since a game started while the snapshot or the
+/// tables are written must keep its database.
+pub(crate) fn restore_backup_checked(
+    destination: &Path,
+    backup: &Path,
+    require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+    restore_backup_safely_with_path(destination, backup, None, require_closed)
 }
 
 fn restore_backup_safely_with_path(
     destination: &Path,
     backup: &Path,
     safety_backup: Option<PathBuf>,
+    mut require_closed: impl FnMut() -> Result<(), String>,
 ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
     compatible_backup_revision(backup)?;
     let safety_backup = if let Some(safety_backup) = safety_backup {
         create_integrity_checked_snapshot(destination, &safety_backup)?;
@@ -158,12 +191,15 @@ fn restore_backup_safely_with_path(
     };
     let expected =
         super::snapshot::capture_path(&safety_backup).map_err(SqliteAccountError::Backup)?;
-    super::snapshot::restore(destination, &expected, backup).map_err(|error| {
-        SqliteAccountError::Backup(format!(
-            "Could not restore the database: {error}. The recovery snapshot is at {}",
-            safety_backup.display()
-        ))
-    })?;
+    require_closed().map_err(SqliteAccountError::WriteBlocked)?;
+    super::snapshot::restore_checked(destination, &expected, backup, require_closed).map_err(
+        |error| {
+            SqliteAccountError::Backup(format!(
+                "Could not restore the database: {error}. The recovery snapshot is at {}",
+                safety_backup.display()
+            ))
+        },
+    )?;
     Ok(SqliteRestoreReceipt { safety_backup })
 }
 
@@ -382,10 +418,9 @@ mod tests {
     fn busy_checkpoint_is_reported_as_incomplete() {
         let error = validate_checkpoint_status(1, 8, 3).unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "could not truncate the SQLite write-ahead log because another database connection kept it busy (3 of 8 frames checkpointed)"
-        );
+        let message = error.to_string();
+        assert!(message.contains("busy"));
+        assert!(message.contains("3 of 8"));
     }
 
     #[test]

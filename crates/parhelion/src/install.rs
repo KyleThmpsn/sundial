@@ -7,7 +7,12 @@
 #[cfg(test)]
 mod tests;
 
+mod loader;
 mod recovery;
+#[cfg(test)]
+pub use loader::preview_upgrade;
+pub use loader::{UPGRADE_REVIEW_STEPS, UpgradeReview, preview_upgrade_with_progress};
+pub(crate) use loader::{other_mods_change, package_window, uses_mod_loader};
 pub use recovery::recover_interrupted_install;
 use recovery::*;
 mod locking;
@@ -21,18 +26,29 @@ pub use backups::prune_package_backups;
 use backups::*;
 
 mod validation;
+use validation::package::Checked as CheckedPackage;
 use validation::*;
 mod progress;
 use progress::Observer;
 pub use progress::{InstallPhase, InstallProgress};
 mod account;
 mod identities;
+pub(crate) use identities::SHADER_STACK;
+mod kept;
 mod preparation;
 use preparation::*;
 mod replacement;
-pub use replacement::{ReplacementReview, preview_replacement};
+pub use replacement::{ReplacementReview, preview_replacement, preview_replacement_with_progress};
+
+/// The authored item hashes the installation carries, read from its native tables, for the
+/// build set to be checked against before a build runs.
+pub fn installed_item_hashes(packages: &Path) -> Result<BTreeSet<u32>, String> {
+    let packages =
+        validation::canonical_packages_directory(packages).map_err(|error| error.to_string())?;
+    identities::installed_item_hashes(&packages)
+}
 #[cfg(test)]
-pub(crate) use replacement::{test_review, test_review_with_slots};
+pub(crate) use replacement::test_review_with_slots;
 mod uninstall;
 pub use uninstall::{
     UninstallPlan, UninstallReport, preview_uninstall, preview_uninstall_with_account_cleanup,
@@ -64,9 +80,10 @@ use tiger_pkg::{Package, PackageD2PreBL};
 use crate::SUNDIAL_BUILD_SIGNATURE;
 use crate::artifact::{ArtifactMetadata, FileDigest, digest_file, has_pkg_extension};
 use crate::format::PackageLayout;
+#[cfg(test)]
+use crate::manifest::recipe_selection_fingerprint;
 use crate::manifest::{
-    MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject,
-    recipe_selection_fingerprint,
+    MANIFEST_FILE_NAME, MANIFEST_SCHEMA, ManifestDocument, ManifestProject, SelectionFingerprint,
 };
 #[cfg(test)]
 use crate::package_profile::AUTHORED_PACKAGES;
@@ -76,8 +93,8 @@ pub(crate) use crate::package_profile::AUTHORED_PATCH_ID;
 pub(crate) use crate::package_profile::CANONICAL_ARTIFACT_FILE_NAMES;
 use crate::package_profile::{
     ACCOUNT_UNLOCK_BANK, AuthoredPackage, CANONICAL_PACKAGES, PACKAGE_HEADER_PREFIX_SIZE,
-    PackageHeaderPrefix, all_authored_packages, authored_package, authored_package_for_file_name,
-    authored_packages_for_file_names, canonical_package,
+    PackageHeaderPrefix, all_authored_packages_in, authored_package,
+    authored_package_for_file_name, authored_packages_for_file_names, canonical_package,
 };
 pub(crate) use crate::package_profile::{CANONICAL_PACKAGE_IDS, SHADOWKEEP_HEADER_VERSION};
 use crate::recipe::WeaponRecipe;
@@ -200,6 +217,8 @@ pub struct InvalidatedPackageHeaderCache {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallReport {
+    pub mods: Vec<crate::ModReport>,
+    pub mod_directory: Option<PathBuf>,
     pub manifest_schema: u32,
     pub staged_run_directory: PathBuf,
     pub target_packages_directory: PathBuf,
@@ -221,6 +240,16 @@ pub struct InstallReport {
     pub profile_sync: Option<Result<AuthoredProfileSyncReport, String>>,
     /// Authored subclasses and shaders added to the account after the transaction committed.
     pub item_grants: Option<Result<AuthoredGrantReport, String>>,
+    /// Entries another Sunrise mod also changes, which the loader merges.
+    pub mod_overlaps: Vec<String>,
+    /// The backup of the mod folder an install on Dawn or Sunrise before 0.6 removed, since those
+    /// runtimes don't load it.
+    pub retired_mod_backup: Option<PathBuf>,
+    /// Why the installed run couldn't be kept for a switch back to this runtime. The install
+    /// itself committed.
+    pub kept_build_warning: Option<String>,
+    /// Whether a build is kept for the other runtime, which Parhelion offers after a switch back.
+    pub other_build_kept: bool,
     /// Account updated as part of this backed-up replacement transaction.
     pub cleaned_account: Option<PathBuf>,
 }
@@ -276,10 +305,11 @@ impl fmt::Display for InstallError {
             if rollback.succeeded() {
                 formatter.write_str(" (the previous package set was restored)")?;
             } else {
+                let count = rollback.errors.len();
                 write!(
                     formatter,
-                    " (rollback encountered {} error(s))",
-                    rollback.errors.len()
+                    " (rollback encountered {count} {})",
+                    if count == 1 { "error" } else { "errors" }
                 )?;
                 write!(formatter, ": {}", rollback.errors.join("; "))?;
             }
@@ -301,8 +331,17 @@ struct ValidatedRun {
     backup_root: PathBuf,
     source_artifacts: Vec<ArtifactMetadata>,
     artifacts: Vec<ArtifactMetadata>,
+    /// The merge data beside each package of a mod-folder build.
+    merge_data: Vec<ArtifactMetadata>,
+    map_diagnostics: Option<ArtifactMetadata>,
+    mission_scripts: Vec<ArtifactMetadata>,
+    mods: Vec<crate::mod_family::Member>,
     obsolete_artifacts: Vec<ArtifactMetadata>,
     selected_recipe_files: Vec<String>,
+    /// The staged map recipes, validated and pinned beside the weapon recipes.
+    selected_map_files: Vec<String>,
+    staged_inputs: validation::staged::Inputs,
+    packages: Vec<validation::package::Checked>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
     package_backup_retention: usize,
@@ -475,7 +514,7 @@ pub fn resync_account(
     if game_running_check()? {
         return Err("Close Destiny 2 before resyncing the account".to_owned());
     }
-    let _lock = lock_installation(target_packages_directory).map_err(|error| error.to_string())?;
+    let lock = lock_installation(target_packages_directory).map_err(|error| error.to_string())?;
     // An interrupted install leaves its transaction record until the next install or uninstall
     // repairs the package set. The account is not written against a half-committed generation.
     if target_packages_directory
@@ -490,12 +529,28 @@ pub fn resync_account(
     let game_root = target_packages_directory
         .parent()
         .ok_or_else(|| "Installed package directory has no game root".to_owned())?;
+    sundial::package_authoring::mod_content::ensure_readable(game_root)?;
+    // Installed identities include the mod folder on any runtime, but only Sunrise 0.6 or later
+    // loads it, so granting its items elsewhere would add items the game can't find.
+    if sundial::package_authoring::mod_content::has_family(game_root)?
+        && !uses_mod_loader(target_packages_directory)
+    {
+        return Err(
+            "The installed build is in Sunrise's mod folder, which this runtime doesn't load. Install it again to use it here."
+                .to_owned(),
+        );
+    }
     let (hashes, unlocks) = identities::installed_identities(target_packages_directory)
         .map_err(|error| format!("No installed Parhelion generation to resync: {error}"))?;
     let grants = identities::installed_grants(target_packages_directory, &hashes)?;
     let profile_sync = synchronize_authored_collection_unlocks(game_root, &unlocks);
     let item_grants = (!grants.is_empty())
         .then(|| identities::grant_items(game_root, target_packages_directory, &grants));
+    lock.finish(
+        game_running_check,
+        sundial::package_authoring::installed_runtime,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(AccountResyncReport {
         authored_unlocks: unlocks.len(),
         profile_sync,
@@ -514,20 +569,36 @@ pub fn install_staged_packages_with_progress(
     mut progress: impl FnMut(InstallProgress),
 ) -> Result<InstallReport, InstallError> {
     progress(InstallProgress::stage(InstallPhase::Checking));
-    let _lock = lock_installation(&request.target_packages_directory)?;
+    let lock = lock_installation(&request.target_packages_directory)?;
     recover_interrupted_install_locked(&RecoveryRequest {
         target_packages_directory: request.target_packages_directory.clone(),
         backup_root: request.backup_root.clone(),
         game_running_check: request.game_running_check,
         runtime_snapshot_check: request.runtime_snapshot_check,
     })?;
-    install_with_progress(
+    let mut report = install_with_progress(
         request,
         None,
         DEFAULT_CACHE_INVALIDATION_OPS,
-        sundial::package_authoring::replace_file_from_path_atomically,
+        publish_package,
         &mut progress,
+    )?;
+    // Kept while the installation is still locked, so the installed importer folders it reads
+    // are the ones just published.
+    report.kept_build_warning = kept::keep(
+        &report.staged_run_directory,
+        &report.target_packages_directory,
+        report.mod_directory.is_some(),
     )
+    .err()
+    .map(|error| format!("Packages installed, but this build couldn't be kept for a switch back to this runtime: {error}"));
+    report.other_build_kept = kept::find(
+        &report.target_packages_directory,
+        report.mod_directory.is_none(),
+    )
+    .is_ok_and(|kept| kept.is_some());
+    lock.finish(request.game_running_check, request.runtime_snapshot_check)?;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -536,15 +607,45 @@ fn install_staged_packages_inner(
     fail_after_commits: Option<usize>,
     cache_ops: CacheInvalidationOps,
 ) -> Result<InstallReport, InstallError> {
-    install_with_replacer(
-        request,
-        fail_after_commits,
-        cache_ops,
-        sundial::package_authoring::replace_file_from_path_atomically,
-    )
+    install_with_replacer(request, fail_after_commits, cache_ops, publish_package)
 }
 
-type PackageReplace = fn(&Path, &Path) -> Result<(), String>;
+/// Publishes a prepared package over its target, which must still hold `original`, the bytes
+/// backed up before the install, or still have no file when `original` is `None`.
+type PackageReplace = fn(&Path, &Path, Option<&FileDigest>) -> Result<(), String>;
+
+/// Publishes one prepared package. Its target is checked after the copy beside it is flushed,
+/// immediately before the rename, so a change an outside tool made after preflight is kept and
+/// refused rather than overwritten. A target that had no file is created without replacing
+/// one that appeared meanwhile.
+fn publish_package(
+    source: &Path,
+    target: &Path,
+    original: Option<&FileDigest>,
+) -> Result<(), String> {
+    let Some(expected) = original else {
+        return sundial::package_authoring::create_file_from_path(source, target);
+    };
+    sundial::package_authoring::replace_file_from_path_if_unchanged(source, target, || {
+        let metadata = fs::symlink_metadata(target)
+            .map_err(|error| format!("Could not recheck {}: {error}", target.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "Target package {} changed type after backup",
+                target.display()
+            ));
+        }
+        let current = digest_file(target)
+            .map_err(|error| format!("Could not recheck {}: {error}", target.display()))?;
+        if &current != expected {
+            return Err(format!(
+                "Target package {} changed after backup and was kept as it is",
+                target.display()
+            ));
+        }
+        Ok(())
+    })
+}
 
 #[cfg(test)]
 fn install_with_replacer(
@@ -563,10 +664,34 @@ fn install_with_progress(
     replace: PackageReplace,
     progress: Observer<'_>,
 ) -> Result<InstallReport, InstallError> {
+    validation::validate_request_paths(request)?;
+    if loader::selected(
+        &request.target_packages_directory,
+        request.runtime_snapshot_check,
+    )? {
+        return loader::install_with_observer(request, progress, &mut |_| {});
+    }
     let _staged_run_lease =
         crate::workflow::staging_retention::lease_for_read(&request.staged_run_directory)
             .map_err(InstallError::validation)?;
     let validated = validation::validate_request_with_progress(request, progress)?;
+    if validated
+        .sunrise_build_cache
+        .runtime
+        .uses_mod_loader()
+        .map_err(InstallError::validation)?
+    {
+        return Err(InstallError::validation(
+            "The runtime changed to the mod loader during preflight. Review installation again",
+        ));
+    }
+    clear_other_runtime_caches(
+        &validated.target_packages_directory,
+        validated.sunrise_build_cache.runtime.brand(),
+    )?;
+    // A failure before the commit below, or a commit that rolls back, puts a retired mod folder
+    // back.
+    let retired = loader::retire_inactive(&validated, request.game_running_check)?;
     let backup_directory = create_backup_directory(&validated.backup_root).map_err(|error| {
         InstallError::validation(format!("Could not create a package backup: {error}"))
     })?;
@@ -718,6 +843,11 @@ fn install_with_progress(
             }
         }
     }
+    // The journal sends recovery to the backup, so the backup is on disk before the journal is.
+    if let Err(message) = sync_backup_directories(&backup_directory, &validated.backup_root) {
+        cleanup_prepared_files(&prepared);
+        return Err(InstallError::after_backup(message, &backup_directory));
+    }
     if let Err(error) = write_install_transaction(&journal_path, &transaction) {
         cleanup_prepared_files(&prepared);
         return Err(InstallError::after_backup(error.message, &backup_directory));
@@ -741,7 +871,7 @@ fn install_with_progress(
         return Err(InstallError::after_backup(message, &backup_directory));
     }
 
-    commit_and_verify(
+    let result = commit_and_verify(
         CommitContext {
             validated: &validated,
             backup_directory: &backup_directory,
@@ -758,7 +888,23 @@ fn install_with_progress(
         prepared,
         transaction,
         progress,
-    )
+    );
+    // A completed rollback restores the retired mod folder. A commit or a failed rollback, which
+    // recovery owns, keeps it retired.
+    let rolled_back = result
+        .as_ref()
+        .err()
+        .and_then(|error| error.rollback.as_ref())
+        .is_some_and(|rollback| rollback.succeeded());
+    let retired_mod_backup = if rolled_back {
+        drop(retired);
+        None
+    } else {
+        retired.keep()
+    };
+    let mut report = result?;
+    report.retired_mod_backup = retired_mod_backup;
+    Ok(report)
 }
 
 fn check_game_before_validation(request: &InstallRequest) -> Result<(), InstallError> {
@@ -769,7 +915,7 @@ fn check_game_before_validation(request: &InstallRequest) -> Result<(), InstallE
     })?;
     if game_is_running {
         return Err(InstallError::validation(
-            "The game is running; close it before installing authored packages",
+            "The game is running. Close it before installing authored packages",
         ));
     }
     Ok(())
@@ -780,19 +926,28 @@ fn check_game_immediately_before_commit(request: &InstallRequest) -> Result<(), 
         .map_err(|error| format!("Could not recheck whether the game is running: {error}"))?;
     if game_is_running {
         return Err(
-            "The game started during installation preflight; no package files were changed"
+            "The game started during installation preflight. No package files were changed"
                 .to_owned(),
         );
     }
     Ok(())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ValidatedManifest {
+    inputs: validation::staged::Inputs,
+    packages: Vec<validation::package::Checked>,
     source_artifacts: Vec<ArtifactMetadata>,
     artifacts: Vec<ArtifactMetadata>,
+    merge_data: Vec<ArtifactMetadata>,
+    map_diagnostics: Option<ArtifactMetadata>,
+    mission_scripts: Vec<ArtifactMetadata>,
+    mods: Vec<crate::mod_family::Member>,
     selected_recipe_files: Vec<String>,
+    selected_map_files: Vec<String>,
     authored_unlocks: Vec<AuthoredCollectionUnlock>,
     authored_grants: Vec<identities::GrantedItem>,
+    plug_variants: Vec<replacement::StockPlugVariant>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -888,6 +1043,7 @@ fn commit_and_verify(
         }
         commit_prepared_files_with_progress(
             &prepared,
+            context.originals,
             context.fail_after_commits,
             context.replace,
             progress,
@@ -979,9 +1135,10 @@ fn commit_and_verify(
         report.backup_prune_warning = Some(error);
     }
     if context.validated.limit_package_backups {
-        match prune_package_backups(
+        match backups::prune_after_install(
             &context.validated.backup_root,
             context.validated.package_backup_retention,
+            context.backup_directory,
         ) {
             Ok(pruned) => report.pruned_backup_directories = pruned.removed_directories,
             Err(error) => report.backup_prune_warning = Some(error),
@@ -1003,17 +1160,35 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     fs::create_dir(path)
 }
 
+/// Commits prepared files over their targets as they are now, for tests that start from
+/// prepared files rather than a backed-up install.
 #[cfg(test)]
 fn commit_prepared_files(
     prepared: &[PreparedArtifact],
     fail_after_commits: Option<usize>,
     replace: PackageReplace,
 ) -> Result<(), String> {
-    commit_prepared_files_with_progress(prepared, fail_after_commits, replace, &mut |_| {})
+    let originals = prepared
+        .iter()
+        .map(|artifact| OriginalArtifact {
+            file_name: artifact.manifest.file_name.clone(),
+            target_path: artifact.target_path.clone(),
+            backup_path: None,
+            digest: digest_file(&artifact.target_path).ok(),
+        })
+        .collect::<Vec<_>>();
+    commit_prepared_files_with_progress(
+        prepared,
+        &originals,
+        fail_after_commits,
+        replace,
+        &mut |_| {},
+    )
 }
 
 fn commit_prepared_files_with_progress(
     prepared: &[PreparedArtifact],
+    originals: &[OriginalArtifact],
     fail_after_commits: Option<usize>,
     replace: PackageReplace,
     progress: Observer<'_>,
@@ -1034,7 +1209,21 @@ fn commit_prepared_files_with_progress(
                 )
             })?;
         } else {
-            replace(&artifact.temporary_path, &artifact.target_path).map_err(|error| {
+            let original = originals
+                .iter()
+                .find(|original| original.file_name == artifact.manifest.file_name)
+                .ok_or_else(|| {
+                    format!(
+                        "Internal error: {} has no backed-up original",
+                        artifact.manifest.file_name
+                    )
+                })?;
+            replace(
+                &artifact.temporary_path,
+                &artifact.target_path,
+                original.digest.as_ref(),
+            )
+            .map_err(|error| {
                 format!(
                     "Could not atomically install {}: {error}",
                     artifact.manifest.file_name
@@ -1126,6 +1315,8 @@ fn build_install_report(
         })
         .collect();
     InstallReport {
+        mods: Vec::new(),
+        mod_directory: None,
         cleaned_account: validated
             .replacement_guard
             .as_ref()
@@ -1149,6 +1340,10 @@ fn build_install_report(
         invalidated_package_header_caches,
         profile_sync,
         item_grants,
+        mod_overlaps: Vec::new(),
+        retired_mod_backup: None,
+        kept_build_warning: None,
+        other_build_kept: false,
     }
 }
 
@@ -1225,7 +1420,7 @@ fn copy_into_open_file(source: &Path, destination: &mut File) -> io::Result<File
     destination.sync_all()?;
     Ok(FileDigest {
         byte_length,
-        sha256: format!("{:X}", digest.finalize()),
+        sha256: hex::encode_upper(digest.finalize()),
     })
 }
 

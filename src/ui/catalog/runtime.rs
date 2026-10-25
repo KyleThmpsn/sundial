@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::weapon_runtime::{
+use crate::runtime::{
     WeaponRuntimeField, WeaponRuntimeFieldSource, WeaponRuntimeGraph, WeaponRuntimeOwner,
     WeaponRuntimeResource, WeaponRuntimeRoot,
 };
@@ -147,9 +147,10 @@ pub fn draw_graph(ui: &mut egui::Ui, graph: &WeaponRuntimeGraph, options: &mut R
                         resource.owner_tag, resource.concrete_class
                     ));
                     if !resource.alias_bindings.is_empty() {
+                        let others = resource.alias_bindings.len();
                         ui.label(format!(
-                            "Shared by {} other binding(s)",
-                            resource.alias_bindings.len()
+                            "Shared by {others} other {}",
+                            if others == 1 { "binding" } else { "bindings" }
                         ))
                         .on_hover_text(
                             resource
@@ -285,20 +286,23 @@ fn draw_root(ui: &mut egui::Ui, root: &WeaponRuntimeRoot, fields: &[usize]) {
                                 };
                                 ui.add_sized(
                                     [width * 0.59, 24.0],
-                                    egui::Label::new(name).truncate(),
+                                    crate::ui::cut_label_within(ui, name, width * 0.59),
                                 )
                                 .on_hover_text(&tooltip);
                                 let text = value_text(field);
                                 ui.add_sized(
                                     [width * 0.35, 24.0],
-                                    egui::Label::new(egui::RichText::new(&text).monospace())
-                                        .truncate(),
+                                    crate::ui::cut_label_within(
+                                        ui,
+                                        egui::RichText::new(&text).monospace(),
+                                        width * 0.35,
+                                    ),
                                 )
                                 .on_hover_text(format!("{text}\n{tooltip}"))
                                 .context_menu(|ui| {
                                     if ui.button("Copy Exact Value").clicked() {
                                         ui.ctx().copy_text(exact_value_text(field));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
                                 ui.end_row();
@@ -355,8 +359,5 @@ pub(crate) fn export_field(field: &WeaponRuntimeField) -> serde_json::Value {
     })
 }
 
-use crate::weapon_runtime::presentation::field_tooltip;
-pub(crate) use crate::weapon_runtime::presentation::{exact_value_text, value_text};
-
-#[cfg(test)]
-mod tests;
+use crate::runtime::presentation::field_tooltip;
+pub(crate) use crate::runtime::presentation::{exact_value_text, value_text};

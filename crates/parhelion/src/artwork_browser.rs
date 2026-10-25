@@ -1,7 +1,11 @@
 //! A virtualized icon grid with optional local artwork, loaded away from the UI thread.
+//!
+//! Rows hold what the grid searches and sizes by. A tile's thumbnail loads as it comes on screen
+//! and goes when it leaves, so a browser over every texture in the packages holds only the
+//! thumbnails it shows.
 use crate::app::pickers;
 use std::{
-    collections::BTreeSet,
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -16,24 +20,25 @@ pub(crate) mod preview;
 mod purpose;
 mod selection;
 pub(crate) use purpose::Purpose;
-#[cfg(test)]
-mod tests;
+mod thumbnails;
 mod view;
 use crate::{icon_edit::package_icons, perk::Icon};
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
 };
+use thumbnails::{Loaded, Origin, Thumbnail};
 pub(crate) use view::Browser;
+pub(crate) use view::{Abilities, Picked};
 
 struct Row {
-    icon: Icon,
-    local: Option<PathBuf>,
+    origin: Origin,
     white: bool,
     label: String,
     search: String,
     source: u8,
-    image: egui::ColorImage,
+    /// The size the tile draws its thumbnail at, known before the thumbnail is.
+    extent: egui::Vec2,
 }
 
 enum Event {
@@ -45,13 +50,16 @@ enum Event {
     ShowColors,
     Error(String),
     Preview(Icon, Result<egui::ColorImage, String>),
+    Thumbnail(Origin, Loaded),
 }
 
 #[derive(Default)]
 pub(crate) struct Picker {
     purpose: Purpose,
     rows: Vec<Row>,
-    textures: HashMap<usize, egui::TextureHandle>,
+    /// The thumbnails of the tiles on screen.
+    thumbnails: HashMap<Origin, Thumbnail>,
+    loader: Option<thumbnails::Loader>,
     source: u8,
     all_colors: bool,
     packages: Option<PathBuf>,
@@ -79,6 +87,13 @@ pub(crate) enum Selection {
 }
 
 impl Picker {
+    /// The shared browser opened on stock ability and attunement icons.
+    pub fn for_abilities() -> Self {
+        let mut picker = Self::for_purpose(Purpose::Perk);
+        picker.source = 4;
+        picker
+    }
+
     #[allow(clippy::field_reassign_with_default)] // Picker owns workers and implements Drop.
     pub fn for_purpose(purpose: Purpose) -> Self {
         let mut picker = Self::default();
@@ -94,7 +109,9 @@ impl Picker {
         self.receiver = None;
         self.sender = None;
         self.rows.clear();
-        self.textures.clear();
+        self.thumbnails.clear();
+        // Its packages may be the ones being replaced. It finishes one thumbnail and stops.
+        self.loader = None;
         self.attempted = false;
         self.local_loading = false;
         self.progress = None;
@@ -113,15 +130,12 @@ impl Picker {
                     );
                     let search = format!("{label} {:08x}", entry.tag.0).to_lowercase();
                     self.rows.push(Row {
-                        icon: Icon::Texture {
-                            tag: entry.tag.0.into(),
-                        },
-                        local: None,
+                        origin: Origin::Texture(entry.tag.0),
                         white: entry.white,
                         label,
                         search,
                         source: 1,
-                        image: entry.thumbnail,
+                        extent: thumbnails::extent(entry.size),
                     });
                 }
                 Event::Progress(done, total) => {
@@ -132,7 +146,9 @@ impl Picker {
                     match result {
                         Ok((entries, skipped)) => {
                             self.rows.retain(|row| row.source == 1);
-                            self.textures.clear();
+                            // A file read again may have changed since its thumbnail was made.
+                            self.thumbnails
+                                .retain(|origin, _| matches!(origin, Origin::Texture(_)));
                             self.skipped = skipped;
                             self.rows.extend(entries.into_iter().map(|entry| {
                                 Row {
@@ -145,15 +161,17 @@ impl Picker {
                                     } else {
                                         2
                                     },
-                                    local: Some(entry.path.clone()),
                                     white: entry.white,
                                     search: entry.name.to_lowercase(),
                                     label: format!(
                                         "{}\n{} × {}",
                                         entry.name, entry.size[0], entry.size[1]
                                     ),
-                                    icon: entry.icon,
-                                    image: entry.thumbnail,
+                                    extent: egui::Vec2::splat(64.0),
+                                    origin: Origin::File {
+                                        path: entry.path,
+                                        name: entry.name,
+                                    },
                                 }
                             }));
                         }
@@ -176,6 +194,7 @@ impl Picker {
                     self.preview_texture = None;
                     self.preview_pending = None;
                 }
+                Event::Thumbnail(origin, loaded) => self.receive_thumbnail(origin, loaded),
             }
         }
         for workers in [&mut self.workers, &mut self.local_workers] {
@@ -256,11 +275,13 @@ impl Picker {
         sender
     }
 
+    /// The chosen icon at `size`, once loaded. Returns whether an icon is chosen.
     pub fn preview(
         &mut self,
         ui: &mut egui::Ui,
         packages: Option<&Path>,
         icon: Option<&Icon>,
+        size: f32,
     ) -> bool {
         let Some(icon) = icon else {
             return false;
@@ -276,44 +297,40 @@ impl Picker {
             && self.preview_pending.is_none()
         {
             self.preview_texture = None;
-            if let Some(row) = self.rows.iter().find(|row| &row.icon == icon) {
-                self.preview = Some((icon.clone(), Ok(row.image.clone())));
-            } else {
-                match icon {
-                    Icon::Image { image, .. } => {
-                        let image = image.fit_to(64, 64);
-                        self.preview = Some((
-                            icon.clone(),
-                            Ok(egui::ColorImage::from_rgba_unmultiplied(
-                                [64, 64],
-                                image.as_raw(),
-                            )),
-                        ));
-                    }
-                    Icon::Texture { tag } => {
-                        if let (Some(packages), Ok(tag)) = (packages, tag.parse_u32()) {
-                            let packages = packages.to_owned();
-                            let sender = self.events();
-                            let icon = icon.clone();
-                            self.preview_pending = Some(icon.clone());
-                            let repaint = ui.ctx().clone();
-                            self.workers.push(thread::spawn(move || {
-                                let result =
-                                    sundial::package_authoring::open_shadowkeep_package_manager(
-                                        &packages,
-                                    )
-                                    .and_then(|manager| {
-                                        package_icons::load(&manager, tiger_pkg::TagHash(tag))
-                                    });
-                                let _ = sender.send(Event::Preview(icon, result));
-                                repaint.request_repaint();
-                            }));
-                        }
+            match icon {
+                Icon::Image { image, .. } => {
+                    let image = image.fit_to(64, 64);
+                    self.preview = Some((
+                        icon.clone(),
+                        Ok(egui::ColorImage::from_rgba_unmultiplied(
+                            [64, 64],
+                            image.as_raw(),
+                        )),
+                    ));
+                }
+                Icon::Texture { tag } => {
+                    if let (Some(packages), Ok(tag)) = (packages, tag.parse_u32()) {
+                        let packages = packages.to_owned();
+                        let sender = self.events();
+                        let icon = icon.clone();
+                        self.preview_pending = Some(icon.clone());
+                        let repaint = ui.ctx().clone();
+                        self.workers.push(thread::spawn(move || {
+                            let result =
+                                sundial::package_authoring::open_shadowkeep_package_manager(
+                                    &packages,
+                                )
+                                .and_then(|manager| {
+                                    package_icons::load(&manager, tiger_pkg::TagHash(tag))
+                                });
+                            let _ = sender.send(Event::Preview(icon, result));
+                            repaint.request_repaint();
+                        }));
                     }
                 }
             }
         }
-        let size = egui::Vec2::splat(ui.spacing().interact_size.y);
+        let size = egui::Vec2::splat(size);
         if let Some((current, result)) = &self.preview
             && current == icon
         {
@@ -385,6 +402,9 @@ impl Drop for Picker {
         self.cancel.store(true, Ordering::Relaxed);
         for worker in self.workers.drain(..) {
             let _ = worker.join();
+        }
+        if let Some(loader) = self.loader.take() {
+            loader.stop();
         }
     }
 }

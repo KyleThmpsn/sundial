@@ -16,7 +16,7 @@ use super::{
     contract::{
         APPLICATION_ID, CHARACTER_CAPACITY, CHARACTER_ITEM_CAPACITY, DISMANTLE_REWARD_CAPACITY,
         EQUIPMENT_LOCATION, EQUIPMENT_SLOTS, INVENTORY_LOCATION, PLUG_CAPACITY,
-        PROFILE_ITEM_CAPACITY, SCHEMA, SCHEMA_VERSION, SETTINGS_SCHEMA,
+        PROFILE_ITEM_CAPACITY, SCHEMA_VERSION, Schema,
     },
     settings,
 };
@@ -46,13 +46,12 @@ pub(super) fn load_connection(
             },
         ));
     }
-    if schema_version != SCHEMA_VERSION {
-        return Err(SqliteAccountError::InvalidSchema(format!(
-            "expected user_version {SCHEMA_VERSION}, found {schema_version}"
-        )));
-    }
+    let schema = Schema::read(connection)?;
     validate_schema(connection)?;
     super::validation::validate(connection)?;
+    if schema == Schema::V3 {
+        validate_character_creation(connection)?;
+    }
 
     let primary_soid: i64 = connection
         .query_row("SELECT soid FROM account WHERE id=1", [], |row| row.get(0))
@@ -97,6 +96,7 @@ pub(super) fn load_connection(
         rewards,
     )?;
     Ok(SqliteAccountLoad::Loaded(SqliteAccountSnapshot {
+        schema,
         primary_soid,
         profile,
         characters,
@@ -115,7 +115,71 @@ fn database_is_uninitialized(connection: &Connection) -> Result<bool, SqliteAcco
     Ok(table_count == 0)
 }
 
+fn validate_character_creation(db: &Connection) -> Result<(), SqliteAccountError> {
+    let error = |error| SqliteAccountError::sqlite("read character creation state from", error);
+    let mut statement = db
+        .prepare("SELECT appearance_header, appearance_header_valid FROM characters")
+        .map_err(error)?;
+    let mut rows = statement.query([]).map_err(error)?;
+    while let Some(row) = rows.next().map_err(error)? {
+        let header: Vec<u8> = row.get(0).map_err(error)?;
+        if header.len() != 36 {
+            return Err(SqliteAccountError::invalid_data(
+                "characters.appearance_header",
+                "expected exactly 36 bytes",
+            ));
+        }
+        row_bool(row, 1, "characters.appearance_header_valid")?;
+    }
+    if table_count(db, "starter_character")? != 1 {
+        return Err(SqliteAccountError::invalid_data(
+            "starter_character",
+            "expected one starter character row",
+        ));
+    }
+    let mut statement = db.prepare("SELECT id, level, preview_available, appearance_value, last_orbited_destination, content_bypass FROM starter_character").map_err(error)?;
+    let mut rows = statement.query([]).map_err(error)?;
+    if let Some(row) = rows.next().map_err(error)? {
+        if row_i64(row, 0, "starter_character.id")? != 1 {
+            return Err(SqliteAccountError::invalid_data(
+                "starter_character.id",
+                "expected singleton ID 1",
+            ));
+        }
+        row_u8(row, 1, "starter_character.level")?;
+        row_bool(row, 2, "starter_character.preview_available")?;
+        row_f32(row, 3, "starter_character.appearance_value")?;
+        row_u32(row, 4, "starter_character.last_orbited_destination")?;
+        row_bool(row, 5, "starter_character.content_bypass")?;
+    }
+    let mut statement = db
+        .prepare(
+            "SELECT class, position, definition_hash FROM starter_items ORDER BY class, position",
+        )
+        .map_err(error)?;
+    let mut rows = statement.query([]).map_err(error)?;
+    let mut counts = [0; 3];
+    while let Some(row) = rows.next().map_err(error)? {
+        let class = row_u8(row, 0, "starter_items.class")? as usize;
+        let count = counts.get_mut(class).ok_or_else(|| {
+            SqliteAccountError::invalid_data("starter_items.class", "expected class 0, 1 or 2")
+        })?;
+        *count += 1;
+        if *count > 16
+            || row_i64(row, 1, "starter_items.position")? < 0
+            || row_u32(row, 2, "starter_items.definition_hash")? == 0
+        {
+            return Err(SqliteAccountError::invalid_data(
+                "starter_items",
+                "expected at most 16 entries per class, nonnegative positions and nonzero definition hashes",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate_schema(connection: &Connection) -> Result<(), SqliteAccountError> {
+    let schema = Schema::read(connection)?;
     let application: i64 = connection
         .query_row("PRAGMA application_id", [], |row| row.get(0))
         .map_err(|error| SqliteAccountError::sqlite("read application identifier from", error))?;
@@ -128,9 +192,8 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<(), SqliteAccou
     // retained. Triggers and substituted views are rejected before any account edits are enabled.
     let reference = Connection::open_in_memory()
         .map_err(|error| SqliteAccountError::sqlite("validate contract for", error))?;
-    reference
-        .execute_batch(SCHEMA)
-        .and_then(|()| reference.execute_batch(SETTINGS_SCHEMA))
+    schema
+        .initialize_reference(&reference)
         .map_err(|error| SqliteAccountError::sqlite("validate contract for", error))?;
     let mut names = reference
         .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")

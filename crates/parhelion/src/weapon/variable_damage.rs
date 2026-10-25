@@ -7,11 +7,14 @@
 //! selector, base perks or its declaration-only intrinsic perk 479. The hold follows the gear-art
 //! row the presentation donor supplies, and the element change is the plug's three
 //! predicate-gated Set Host Mode effects.
-use super::*;
-
-/// Hard Light, the weapon whose record drives the reload hold.
+use crate::error::invalid;
 #[cfg(test)]
-pub(crate) const HARD_LIGHT_ITEM_HASH: u32 = 0xF5DE_4480;
+use crate::item::WeaponVariableDamage;
+use crate::{
+    AuthoringResult, ModernDamageType, WeaponCloneOverrides, WeaponCloneSpec,
+    WeaponSandboxPerkRuntimeOverride, WeaponSocketColumnOverride, WeaponSocketPlugVariantOverride,
+};
+
 /// Hard Light's Fundamentals plug: stock rows 462 (Arc), 463 (Solar) and 464 (Void).
 pub(crate) const FUNDAMENTALS_PLUG_HASH: u32 = 0x9C33_04DA;
 /// The native socket type of weapon trait sockets, the lane the plug is pinned into.
@@ -82,7 +85,7 @@ pub(crate) fn validate_elements(elements: &[ModernDamageType]) -> AuthoringResul
     Ok(())
 }
 
-pub(super) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
+pub(crate) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
     let Some(variable) = &spec.overrides.variable_damage else {
         return Ok(());
     };
@@ -99,7 +102,7 @@ pub(super) fn validate_spec(spec: &WeaponCloneSpec) -> AuthoringResult<()> {
 }
 
 /// The expanded spec when the weapon switches elements, or `None` when nothing changes.
-pub(super) fn expand_spec(
+pub(crate) fn expand_spec(
     spec: &WeaponCloneSpec,
     definition: &[u8],
 ) -> AuthoringResult<Option<WeaponCloneSpec>> {
@@ -107,7 +110,10 @@ pub(super) fn expand_spec(
         return Ok(None);
     }
     let mut expanded = spec.clone();
-    expanded.overrides = expand_overrides(&spec.overrides, &weapon_socket_types(definition)?)?;
+    expanded.overrides = expand_overrides(
+        &spec.overrides,
+        &crate::item::weapon_socket_types(definition)?,
+    )?;
     Ok(Some(expanded))
 }
 
@@ -124,8 +130,8 @@ pub(crate) fn expand_overrides(
     // An author can turn one of the donor's columns into a trait socket, or append one, and can
     // put The Fundamentals there themselves. Read the lanes the way the socket list draws them
     // and use the socket they chose, so the build does not lead a second lane with the same perk.
-    let lanes = crate::weapon_behavior::effective_socket_types(
-        &crate::weapon_behavior::authored_socket_roles(overrides),
+    let lanes = crate::weapon::behavior::effective_socket_types(
+        &crate::weapon::behavior::authored_socket_roles(overrides),
         socket_types,
     );
     let trait_lanes = || {
@@ -135,7 +141,7 @@ pub(crate) fn expand_overrides(
             .filter(|(_, socket_type)| **socket_type == TRAIT_SOCKET_TYPE)
             .map(|(lane, _)| lane)
     };
-    let placed = crate::weapon_behavior::authored_socket_choices(overrides);
+    let placed = crate::weapon::behavior::authored_socket_choices(overrides);
     let lane = trait_lanes()
         .find(|lane| {
             placed
@@ -155,11 +161,11 @@ pub(crate) fn expand_overrides(
     if !expanded
         .additional_behaviors
         .iter()
-        .any(|id| id == crate::weapon_behavior::ELEMENT_SWITCH)
+        .any(|id| id == crate::weapon::behavior::ELEMENT_SWITCH)
     {
         expanded
             .additional_behaviors
-            .push(crate::weapon_behavior::ELEMENT_SWITCH.to_owned());
+            .push(crate::weapon::behavior::ELEMENT_SWITCH.to_owned());
     }
     if expanded.socket_columns.is_empty() {
         expanded.socket_columns = vec![None; socket_types.len()];
@@ -181,11 +187,10 @@ pub(crate) fn expand_overrides(
         reusable_plug_set_index: None,
         randomized_plug_set_index: None,
         randomized_selection_program: Vec::new(),
+        reusable_choices: None,
     });
-    column
-        .choices
-        .retain(|choice| *choice != FUNDAMENTALS_PLUG_HASH);
-    column.choices.insert(0, FUNDAMENTALS_PLUG_HASH);
+    let moved = column.lead_with(FUNDAMENTALS_PLUG_HASH);
+    crate::item::follow_moved_variants(&mut expanded.socket_plug_variants, lane, &moved);
     if expanded
         .socket_plug_variants
         .iter()
@@ -205,6 +210,7 @@ pub(crate) fn expand_overrides(
         expanded
             .socket_plug_variants
             .push(WeaponSocketPlugVariantOverride {
+                offer_everywhere: false,
                 replace_effects: true,
                 investment_stats: Vec::new(),
                 socket_index,
@@ -250,96 +256,13 @@ mod tests {
         }
     }
 
-    fn column(choice: u32) -> Option<WeaponSocketColumnOverride> {
-        Some(WeaponSocketColumnOverride {
-            choices: vec![choice],
-            socket_type: None,
-            choice_weight_bits: Vec::new(),
-            choice_conditions: Vec::new(),
-            reusable_plug_set_index: None,
-            randomized_plug_set_index: None,
-            randomized_selection_program: Vec::new(),
-        })
-    }
-
-    #[test]
-    fn every_element_pins_the_stock_plug_without_a_variant() {
-        let expanded = expand_overrides(&overrides(&SELECTOR_ORDER), &SOCKET_TYPES).unwrap();
-        assert_eq!(expanded.socket_columns.len(), SOCKET_TYPES.len());
-        assert_eq!(expanded.socket_columns[3], column(FUNDAMENTALS_PLUG_HASH));
-        assert!(
-            expanded
-                .socket_columns
-                .iter()
-                .enumerate()
-                .all(|(lane, column)| lane == 3 || column.is_none())
-        );
-        assert!(expanded.socket_plug_variants.is_empty());
-    }
-
-    #[test]
-    fn a_subset_adds_a_private_variant_in_selector_order() {
-        let expanded = expand_overrides(
-            &overrides(&[ModernDamageType::Solar, ModernDamageType::Void]),
-            &SOCKET_TYPES,
-        )
-        .unwrap();
-        let [variant] = expanded.socket_plug_variants.as_slice() else {
-            panic!("one variant");
-        };
-        assert!(variant.replace_effects);
-        assert_eq!((variant.socket_index, variant.choice_index), (3, 0));
-        assert_eq!(variant.source_plug_hash, FUNDAMENTALS_PLUG_HASH);
-        assert_eq!(
-            variant.name.as_deref(),
-            Some("The Fundamentals (Void / Solar)")
-        );
-        assert_eq!(
-            variant
-                .sandbox_perks
-                .iter()
-                .map(|perk| perk.source_perk_index)
-                .collect::<Vec<_>>(),
-            [464, 463]
-        );
-        assert!(
-            variant
-                .sandbox_perks
-                .iter()
-                .all(|perk| perk.program.is_none())
-        );
-    }
-
-    #[test]
-    fn existing_columns_keep_their_other_lanes() {
-        let mut source = overrides(&SELECTOR_ORDER);
-        source.socket_columns = vec![None; SOCKET_TYPES.len()];
-        source.socket_columns[1] = column(0x1234_5678);
-        let expanded = expand_overrides(&source, &SOCKET_TYPES).unwrap();
-        assert_eq!(expanded.socket_columns[1], source.socket_columns[1]);
-        assert_eq!(expanded.socket_columns[3], column(FUNDAMENTALS_PLUG_HASH));
-    }
-
-    #[test]
-    fn a_chosen_trait_lane_keeps_its_choices_behind_the_fundamentals() {
-        let mut chosen = overrides(&SELECTOR_ORDER);
-        chosen.socket_columns = vec![None; SOCKET_TYPES.len()];
-        chosen.socket_columns[3] = column(0x1234_5678);
-        let expanded = expand_overrides(&chosen, &SOCKET_TYPES).unwrap();
-        assert_eq!(
-            expanded.socket_columns[3]
-                .as_ref()
-                .map(|column| column.choices.as_slice()),
-            Some([FUNDAMENTALS_PLUG_HASH, 0x1234_5678].as_slice())
-        );
-    }
-
     #[test]
     fn a_missing_trait_socket_is_rejected() {
         let mut occupied = overrides(&SELECTOR_ORDER);
         occupied
             .socket_plug_variants
             .push(WeaponSocketPlugVariantOverride {
+                offer_everywhere: false,
                 replace_effects: false,
                 investment_stats: Vec::new(),
                 socket_index: 3,

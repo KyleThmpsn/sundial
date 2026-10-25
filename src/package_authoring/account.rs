@@ -32,43 +32,12 @@ pub fn preview_authored_account_cleanup(
     authoring_bridge::preview_account_cleanup(install, item_hashes, unlocks)
 }
 
-/// Proposes removed references and retained-item socket resizing in one account transaction.
-/// The caller must review the proposal, verify its source bytes, and journal the account together
-/// with package replacement. Removing sockets truncates only the removed suffix of authored lists.
-pub fn preview_authored_account_replacement(
-    install: &Path,
-    item_hashes: &BTreeSet<u32>,
-    unlocks: &[AuthoredCollectionUnlock],
-    socket_changes: &[AuthoredSocketChange],
-) -> Result<AuthoredAccountCleanup, String> {
-    preview_authored_account_replacement_with_slots(
-        install,
-        item_hashes,
-        unlocks,
-        socket_changes,
-        None,
-    )
-}
-
-/// Includes native slot changes and verified incoming inventory capacities in the same review.
-pub fn preview_authored_account_replacement_with_slots(
-    install: &Path,
-    item_hashes: &BTreeSet<u32>,
-    unlocks: &[AuthoredCollectionUnlock],
-    socket_changes: &[AuthoredSocketChange],
-    slots: Option<&AuthoredSlotReplacement>,
-) -> Result<AuthoredAccountCleanup, String> {
-    authoring_bridge::preview_account_replacement(
-        install,
-        item_hashes,
-        unlocks,
-        socket_changes,
-        slots,
-    )
-}
-
-/// Uses an already verified runtime snapshot so account review and package mutation share one
-/// runtime identity and reject any later DLL change.
+/// Proposes removed references and retained-item socket resizing in one account transaction,
+/// with native slot changes and verified incoming inventory capacities in the same review. It
+/// uses an already verified runtime snapshot, so account review and package mutation share one
+/// runtime identity and reject any later DLL change. The caller must review the proposal, verify
+/// its source bytes, and journal the account together with package replacement. Removing sockets
+/// truncates only the removed suffix of authored lists.
 pub fn preview_authored_account_replacement_for_runtime(
     install: &Path,
     runtime: &crate::package_authoring::RuntimeSnapshot,

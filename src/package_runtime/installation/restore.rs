@@ -43,7 +43,7 @@ pub(crate) fn preview_runtime_restore(
         .unwrap();
     let allowed: BTreeSet<_> = [
         "steam_api64.dll",
-        "Sunrise",
+        super::runtime_folder(receipt.archived_dawn),
         "steam_api64.pdb",
         "Lua_LICENSE.txt",
     ]

@@ -1,17 +1,6 @@
 //! Every first-person component that directly consumes the clip bank.
 use super::*;
-use crate::d2_mot::payload::Payload;
-
-/// Validated bank fields in the controller definition and blender instance.
-pub fn bank_field(payload: &Payload) -> Result<usize> {
-    let data = payload.pointer(24)?;
-    ensure!(data >= 4, "animation consumer data header missing");
-    match payload.u32(data - 4)? {
-        0x80803640 => Ok(data + 0x108),
-        0x808036CF => Ok(payload.pointer(16)? + 0xD0),
-        class => anyhow::bail!("unsupported animation bank consumer {class:08X}"),
-    }
-}
+pub use crate::tiger::animation::bank_field;
 
 pub(super) fn prepare(
     reader: &mut Reader,

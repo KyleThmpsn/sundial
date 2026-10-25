@@ -10,7 +10,7 @@ pub(super) fn resource_name(names: &BTreeMap<u32, Vec<String>>, tag: u32) -> Opt
 }
 
 pub(super) fn type_name(class: u32) -> &'static str {
-    crate::weapon_runtime::native_type_name(class).unwrap_or("Type Not Identified")
+    crate::runtime::native_type_name(class).unwrap_or("Type Not Identified")
 }
 
 pub(super) fn source(
@@ -42,7 +42,7 @@ pub(super) fn resource_link(
     response.context_menu(|ui| {
         if name != "Unnamed Resource" && ui.button("Copy Path").clicked() {
             ui.ctx().copy_text(name.to_owned());
-            ui.close_menu();
+            ui.close();
         }
         copy_tag(ui, "Copy Resource Tag", tag);
     });
@@ -100,10 +100,7 @@ pub(super) fn draw(
                 ] {
                     ui.monospace(format!("{label}: 0x{tag:08X}"));
                 }
-                ui.label(format!(
-                    "Link Location: {} bytes from the start of the containing resource (0x{:X})",
-                    reference.offset, reference.offset
-                ));
+                ui.monospace(format!("Link Offset: 0x{:X}", reference.offset));
             });
             ui.horizontal_wrapped(|ui| {
                 copy_tag(ui, "Copy Source Tag", reference.source);
@@ -121,45 +118,4 @@ pub(super) fn resource_row(ui: &mut egui::Ui, name: &str, detail: &str) -> bool 
     crate::investment::draw_asset_choice_row_plain(ui, name, detail, false)
         .on_hover_text(format!("Open {name}"))
         .clicked()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn containing_resource_names_come_from_incoming_links_not_contained_paths() {
-        let reference = tft::Reference {
-            source: 1,
-            source_class: 0x8080_40B5,
-            offset: 32,
-            target: 2,
-            target_class: 0x8080_3B73,
-            path: "native/Projectile.tft".into(),
-        };
-        let mut index = tft::Index {
-            references: vec![reference.clone()],
-            paths: vec![tft::ContentPath {
-                source: 1,
-                offset: 24,
-                path: reference.path.clone(),
-            }],
-            ..Default::default()
-        };
-        assert_eq!(resource_name(&index.names(), 1), None);
-        assert_eq!(
-            resource_name(&index.names(), 2),
-            Some("native/Projectile.tft")
-        );
-        index.references.push(tft::Reference {
-            source: 3,
-            target: 1,
-            path: "native/PerkAction.tft".into(),
-            ..reference
-        });
-        assert_eq!(
-            resource_name(&index.names(), 1),
-            Some("native/PerkAction.tft")
-        );
-    }
 }

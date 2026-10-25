@@ -1,6 +1,5 @@
 //! Checked updater files stay next to the executable on the same filesystem.
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -9,6 +8,18 @@ use std::{
 
 pub(super) const PREFIX: &str = ".sundial-update-";
 pub(super) const PLAN: &str = "plan.json";
+/// Names the executable a workspace was made for, written as soon as the workspace exists.
+/// Another executable in the same folder holds its own update lock, so its workspace is never
+/// this one's to remove, even before its plan is written.
+pub(super) const OWNER: &str = "owner";
+
+/// The executable `directory` was made for, where its workspace says.
+pub(super) fn owner(directory: &Path) -> Option<PathBuf> {
+    fs::read(directory.join(OWNER))
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .map(PathBuf::from)
+}
 pub(super) const PAYLOAD: &str = "payload";
 pub(super) const RUNNER: &str = if cfg!(windows) {
     "runner.exe"
@@ -78,17 +89,7 @@ pub(super) fn plain_file(path: &Path) -> Result<(), String> {
 
 pub(super) fn digest(path: &Path) -> Result<String, String> {
     plain_file(path)?;
-    let mut file = File::open(path).map_err(|error| error.to_string())?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
+    crate::storage::file_sha256(path).map_err(|error| error.to_string())
 }
 
 pub(super) fn verify(path: &Path, expected: &str) -> Result<(), String> {
@@ -124,6 +125,21 @@ pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|error| error.to_string())
+}
+
+/// Flushes the entries of `directory` and of the directory holding it, so files created there
+/// stay reachable after a power loss before anything they protect is replaced. Windows journals
+/// NTFS directory changes itself and offers no directory flush through the standard library.
+pub(super) fn sync_directory(directory: &Path) -> Result<(), String> {
+    if !cfg!(unix) {
+        return Ok(());
+    }
+    for directory in std::iter::once(directory).chain(directory.parent()) {
+        File::open(directory)
+            .and_then(|handle| handle.sync_all())
+            .map_err(|error| format!("Could not flush {}: {error}", directory.display()))?;
+    }
+    Ok(())
 }
 
 pub(super) fn copy_new(source: &Path, destination: &Path) -> Result<(), String> {

@@ -77,7 +77,7 @@ pub(super) fn draw_perks(
                         );
                     });
                 }
-                egui::CollapsingHeader::new("Runtime Action")
+                egui::CollapsingHeader::new("Behavior")
                     .id_salt((
                         "inspector-sandbox-perk-action",
                         item_hash,
@@ -103,6 +103,14 @@ fn draw_details(
     options: &mut view::RuntimeViewOptions,
 ) {
     let row = details.row;
+    // The action read in plain words leads. The native records behind it follow.
+    if let Ok(action) = &details.action {
+        match &action.behavior {
+            Some(behavior) => crate::ui::catalog::behavior::draw(ui, behavior),
+            None => look::empty_state(ui, "Not Decoded"),
+        }
+    }
+    look::subheading(ui, "Runtime Action");
     look::properties(ui, ("inspector-perk-row", row.index), |p| {
         p.mono("Finished Perk", row.index.to_string());
         p.mono("Perk Hash", format!("0x{:08X}", row.perk_hash));

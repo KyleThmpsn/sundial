@@ -28,7 +28,7 @@ pub(super) fn draw_toolbar(
                 .clicked()
             {
                 state.reset_pending = true;
-                ui.close_menu();
+                ui.close();
             }
         });
         response.toggle_window = ui
@@ -44,7 +44,7 @@ pub(super) fn draw_toolbar(
                 ui.label(egui::RichText::new("Unsaved Changes").color(ui.visuals().warn_fg_color));
             }
         }
-        crate::ui_help::info(ui, "Save validates and writes settings.json.\n\nCtrl+S: Save\nCtrl+F: Find\nCtrl+H: Replace\nF3 / Shift+F3: Next / previous match\nCtrl+G: Go to path\nCtrl+Shift+F: Format JSON\nCtrl+Z / Ctrl+Y: Undo / redo text edits");
+        crate::ui::help::info(ui, "Save validates and writes settings.json.\n\nCtrl+S: Save\nCtrl+F: Find\nCtrl+H: Replace\nF3 / Shift+F3: Next / previous match\nCtrl+G: Go to path\nCtrl+Shift+F: Format JSON\nCtrl+Z / Ctrl+Y: Undo / redo text edits");
     });
     if state.reset_pending {
         ui.horizontal_wrapped(|ui| {
@@ -77,14 +77,14 @@ fn draw_folding_menu(ui: &mut egui::Ui, state: &mut JsonEditorState) {
             .filter(|region| region.id.len() > 1)
             .map(|region| region.id.clone())
             .collect();
-        ui.close_menu();
+        ui.close();
     }
     if ui
         .add_enabled(!state.folded.is_empty(), egui::Button::new("Expand All"))
         .clicked()
     {
         state.folded.clear();
-        ui.close_menu();
+        ui.close();
     }
 }
 

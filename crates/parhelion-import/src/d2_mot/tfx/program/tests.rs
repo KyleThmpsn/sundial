@@ -1,5 +1,7 @@
 use super::*;
 
+mod arithmetic;
+
 fn bindings() -> Bindings {
     Bindings {
         objects: BTreeMap::from([("A7A7FE43".into(), 5)]),
@@ -135,45 +137,18 @@ fn texture_tiling_requires_source_metadata_and_preserves_swizzle() {
     assert!(relocate(&code, 0, &BTreeMap::new()).is_err());
 }
 #[test]
-fn reused_temp_preserves_operand_order() {
-    let r = lower(
-        &decode("4200 4201 02 5500 5400 4202 03 5200 5400 5201"),
-        &bindings(),
-    )
-    .unwrap();
-    assert_eq!(hex::encode(r.code), "3400340102340203430034003401024301");
-    assert_eq!(r.evidence.len(), 2);
-}
-
-#[test]
-fn output_reads_capture_the_written_version_across_later_writes() {
-    let code = decode("4200 5200 5100 5500 4201 5200 5400 5201 5100 5202");
-    let result = lower(&code, &bindings()).unwrap();
-    assert_eq!(
-        result.code,
-        decode("3400 4300 3401 4300 3400 4301 3401 4302")
-    );
-    assert!(result.evidence.iter().all(|e| e["translated"] == true));
-}
-
-#[test]
 fn unresolved_output_reads_keep_dependencies_and_validate_bounds() {
     let result = lower(&decode("5c12345678 5200 5100 5201"), &bindings()).unwrap();
     assert!(result.code.is_empty());
     assert_eq!(
-        result.evidence[1]["unresolved"],
+        result
+            .evidence
+            .iter()
+            .find(|row| row["output"] == 1)
+            .unwrap()["unresolved"],
         json!(["object channel 12345678"])
     );
     assert!(lower(&decode("51ff"), &bindings()).is_err());
-}
-#[test]
-fn missing_channels_propagate_through_temps_and_saturation() {
-    let r = lower(&decode("5c12345678 5500 5400 2a 5200"), &bindings()).unwrap();
-    assert!(r.code.is_empty());
-    assert_eq!(
-        r.evidence[0]["unresolved"],
-        json!(["object channel 12345678"])
-    );
 }
 #[test]
 fn settled_approximation_requires_bounded_output() {

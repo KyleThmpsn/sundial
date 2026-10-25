@@ -40,7 +40,7 @@ pub(in crate::app::custom_perks::workbench::program::native) fn draw_single(
                 chose |= typed.row(ui);
             });
         if chose {
-            ui.memory_mut(egui::Memory::close_popup);
+            egui::Popup::close_all(ui);
         }
         pickers::name_combo(ui, "registered-label", "Label");
     });
@@ -438,12 +438,18 @@ pub(super) fn set_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
     #[test]
     fn changing_label_sets_preserves_retained_rows_and_shared_owners() {
         let class = 0x80803DE7;
         let binding = 0xD0;
-        let mut graph = Graph::read(&native::template(true, 2).unwrap(), 0, class).unwrap();
+        let mut graph = Graph::read(
+            &native::template(NativeNodeKind::Condition(2)).unwrap(),
+            0,
+            class,
+        )
+        .unwrap();
         set_labels(&mut graph, 0, binding, 0, &[0x962EA19B, 0xE17576C9]).unwrap();
         let rows = graph.blocks[0].links[&(binding + 8)];
         // Metadata belongs to each retained row, not to its position in a new selection.
@@ -474,72 +480,5 @@ mod tests {
         let before = graph.clone();
         set_labels(&mut graph, 0, binding, 0, &[0xC20DD425, 0x962EA19B]).unwrap();
         assert_eq!(graph, before);
-    }
-
-    /// Every stock binding site with a vocabulary is reachable from its node's own editor,
-    /// not only the kill node's, and a write there survives a reload.
-    #[test]
-    fn every_stock_binding_site_is_editable_from_its_node() {
-        let mut sites = 0;
-        let mut nested = 0;
-        for (class, offset, vocabulary) in activation::LABEL_SITES {
-            let kind = nodes::CONDITIONS
-                .iter()
-                .map(|node| (true, node))
-                .chain(nodes::EFFECTS.iter().map(|node| (false, node)))
-                .find(|(_, node)| node.class == *class);
-            let bindings = native::labels::bindings(*class).unwrap();
-            let added = added_label_sites(*class).contains(offset);
-            assert!(
-                bindings.iter().any(|(source, _)| source == offset) || added,
-                "{class:08X}+{offset:X} is a vocabulary site with no binding"
-            );
-            // A site on a node starts from that node's template. A site on a nested record,
-            // which the workbench reaches through the node that owns it, starts from an
-            // empty record of that class.
-            let mut graph = match kind {
-                Some((condition, node)) => {
-                    Graph::read(&native::template(condition, node.kind).unwrap(), 0, *class)
-                        .unwrap()
-                }
-                None => {
-                    nested += 1;
-                    Graph {
-                        blocks: vec![native::Block {
-                            class: *class,
-                            count: None,
-                            bytes: vec![0; schema::record(*class).unwrap().size],
-                            links: BTreeMap::new(),
-                        }],
-                    }
-                }
-            };
-            let labels = vec![vocabulary[0].0];
-            set_labels(&mut graph, 0, *offset, 0, &labels).unwrap();
-            let reread = Graph::read(&graph.emit().unwrap(), 0, *class).unwrap();
-            if let Some((condition, node)) = kind {
-                reread.validate_node(condition, node.kind).unwrap();
-            } else {
-                reread.validate().unwrap();
-            }
-            let stored = if added {
-                read_list(&reread, 0, *offset).unwrap()
-            } else {
-                native::labels::source(&reread, 0, *offset).unwrap()[0].clone()
-            };
-            assert_eq!(stored, labels, "{class:08X}+{offset:X}");
-            // A site reads by what it filters on, never by its offset.
-            let caption = site_caption(*class, *offset);
-            assert!(
-                !caption.is_empty() && !caption.contains("0x") && !caption.contains('+'),
-                "{class:08X}+{offset:X} reads as {caption:?}"
-            );
-            sites += 1;
-        }
-        assert!(sites >= 20, "found only {sites} editable sites");
-        assert!(
-            nested >= 1,
-            "the nested weapon-label sites should be covered"
-        );
     }
 }

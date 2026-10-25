@@ -289,7 +289,9 @@ pub(super) fn progression_definitions_from_data(
         };
         let step_count = usize::try_from(u64_at(table, row + PROGRESSION_DEFINITION_STEPS_OFFSET)?)
             .map_err(|_| "Progression step count is too large")?;
-        let mut steps = Vec::with_capacity(step_count);
+        // Sized only after the array's rows are known to lie in the table, since a damaged count
+        // could otherwise ask for any amount of memory.
+        let mut steps = Vec::new();
         if step_count != 0 {
             let (parsed_count, step_rows, step_class) =
                 array_at(table, row + PROGRESSION_DEFINITION_STEPS_OFFSET)?;
@@ -298,6 +300,8 @@ pub(super) fn progression_definitions_from_data(
                     "Unexpected progression step row class 0x{step_class:08X}"
                 ));
             }
+            rows_fit(table, step_rows, step_count, PROGRESSION_STEP_ROW_SIZE)?;
+            steps.reserve_exact(step_count);
             for step_index in 0..step_count {
                 let step_row = step_rows
                     .checked_add(
@@ -317,7 +321,7 @@ pub(super) fn progression_definitions_from_data(
         let reward_count =
             usize::try_from(u64_at(table, row + PROGRESSION_DEFINITION_REWARDS_OFFSET)?)
                 .map_err(|_| "Progression reward count is too large")?;
-        let mut reward_items = Vec::with_capacity(reward_count);
+        let mut reward_items = Vec::new();
         if reward_count != 0 {
             let (parsed_count, reward_rows, reward_class) =
                 array_at(table, row + PROGRESSION_DEFINITION_REWARDS_OFFSET)?;
@@ -326,6 +330,13 @@ pub(super) fn progression_definitions_from_data(
                     "Unexpected progression reward row class 0x{reward_class:08X}"
                 ));
             }
+            rows_fit(
+                table,
+                reward_rows,
+                reward_count,
+                PROGRESSION_REWARD_ROW_SIZE,
+            )?;
+            reward_items.reserve_exact(reward_count);
             for reward_index in 0..reward_count {
                 let reward_row = reward_rows
                     .checked_add(

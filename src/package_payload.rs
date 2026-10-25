@@ -18,6 +18,11 @@ pub fn native_array_at(
     let rows = header
         .checked_add(16)
         .ok_or("Package array row offset overflowed")?;
+    // Every row takes at least a byte after the header, so a count past the bytes left is
+    // damaged. Readers size buffers by the count, so it is bounded here before any of them do.
+    if count > data.len().saturating_sub(rows) {
+        return Err("Package array count exceeds its payload".into());
+    }
     let class_offset = header
         .checked_add(8)
         .ok_or("Package array class offset overflowed")?;
@@ -27,6 +32,22 @@ pub fn native_array_at(
 pub(crate) fn array_at(data: &[u8], descriptor: usize) -> Result<(usize, usize, u32), String> {
     let (count, _, rows, class) = native_array_at(data, descriptor)?;
     Ok((count, rows, class))
+}
+
+/// Checks that `count` rows of `stride` bytes from `rows` lie inside `data`, so a reader can
+/// size a buffer by a native count before reading any row.
+pub(crate) fn rows_fit(
+    data: &[u8],
+    rows: usize,
+    count: usize,
+    stride: usize,
+) -> Result<(), String> {
+    count
+        .checked_mul(stride)
+        .and_then(|span| rows.checked_add(span))
+        .filter(|end| *end <= data.len())
+        .map(|_| ())
+        .ok_or_else(|| "Package array rows extend past the payload".into())
 }
 
 pub(crate) fn u16_at(data: &[u8], offset: usize) -> Result<u16, String> {

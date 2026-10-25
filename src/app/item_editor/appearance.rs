@@ -1,20 +1,24 @@
 //! Composes cosmetic candidates without changing the item being edited.
 use super::*;
+use crate::dyes::{compose as compose_dyes, gear_type};
 use crate::{
     catalog::ItemPackageMetadata,
     ui::model_preview::{self, Appearance, Loadout},
 };
-use std::collections::BTreeMap;
 
 pub(crate) fn loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
+    catalog.item_package_metadata(hash)?.weapon_inventory_slot?;
+    item_loadout(catalog, hash)
+}
+
+fn item_loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
     let metadata = catalog.item_package_metadata(hash)?;
-    metadata.weapon_inventory_slot?;
     Some(Loadout {
         arrangement: arrangement(metadata)?,
         dyes: dye_rows(metadata),
         plugs: catalog
-            .item(hash)?
-            .default_plugs
+            .item(hash)
+            .map_or(&[][..], |item| item.default_plugs.as_slice())
             .iter()
             .map(|hash| {
                 hash.as_deref()
@@ -23,6 +27,31 @@ pub(crate) fn loadout(catalog: &Catalog, hash: u64) -> Option<Loadout> {
             })
             .collect(),
     })
+}
+
+/// Resolve an account item's opening-time appearance without changing its saved plugs.
+pub(crate) fn saved(
+    catalog: &Catalog,
+    hash: u64,
+    plugs: Option<&serde_json::Value>,
+) -> Option<Appearance> {
+    let mut loadout = item_loadout(catalog, hash)?;
+    match plugs {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(plugs)) => {
+            loadout.plugs = plugs
+                .iter()
+                .map(|plug| {
+                    plug.as_u64()
+                        .or_else(|| plug.as_str().and_then(crate::hash::parse_hash_hex))
+                        .and_then(|hash| u32::try_from(hash).ok())
+                        .filter(|&hash| hash != 0 && hash != u32::MAX)
+                })
+                .collect();
+        }
+        Some(_) => loadout.plugs.clear(),
+    }
+    Some(resolve(catalog, &loadout))
 }
 
 fn arrangement(metadata: &ItemPackageMetadata) -> Option<u16> {
@@ -47,7 +76,7 @@ pub(crate) fn resolve(catalog: &Catalog, loadout: &Loadout) -> Appearance {
     let mut arrangement = loadout.arrangement;
     let mut base = loadout.dyes.clone();
     for hash in loadout.plugs.iter().flatten() {
-        if catalog.is_weapon_ornament(u64::from(*hash))
+        if is_ornament(catalog, u64::from(*hash))
             && let Some(metadata) = catalog.item_package_metadata(u64::from(*hash))
             && let Some(model) = self::arrangement(metadata)
         {
@@ -100,44 +129,23 @@ pub(crate) fn with_shader(
     })
 }
 
-/// The first dye key of the gear type a key paints. Armor, weapons, ships, Sparrows and Ghost
-/// Shells each have an armor, a cloth and a suit key, starting at 0, 4, 7, 10 and 13.
-fn gear_type(key: i8) -> Option<i8> {
-    [0, 4, 7, 10, 13]
-        .into_iter()
-        .find(|&first| (first..first + 3).contains(&key))
-}
-
-fn compose_dyes(
-    base: &[Vec<(i8, u16)>; 3],
-    plugs: impl Iterator<Item = [Vec<(i8, u16)>; 3]>,
-) -> Vec<(i8, u16)> {
-    let mut dyes = BTreeMap::new();
-    let mut insert = |rows: &[(i8, u16)]| {
-        for &(key, value) in rows {
-            if key >= 0 && value != u16::MAX {
-                dyes.insert(key, value);
-            }
-        }
-    };
-    insert(&base[1]);
-    insert(&base[0]);
-    for rows in plugs {
-        for stage in [1, 0, 2] {
-            insert(&rows[stage]);
-        }
-    }
-    insert(&base[2]);
-    dyes.into_iter().collect()
-}
-
 fn visual_plug(catalog: &Catalog, hash: u64) -> bool {
-    catalog.is_weapon_ornament(hash)
+    is_ornament(catalog, hash)
         || catalog.item_package_metadata(hash).is_some_and(|metadata| {
             metadata
                 .translation_dye_rows
                 .iter()
                 .any(|rows| !rows.is_empty())
+        })
+}
+
+pub(in crate::app) fn is_ornament(catalog: &Catalog, hash: u64) -> bool {
+    catalog
+        .plug_type_name(hash)
+        .or_else(|| catalog.package_item_type_name(hash))
+        .is_some_and(|name| {
+            let name = name.trim().to_ascii_lowercase();
+            name == "ornament" || name.ends_with(" ornament")
         })
 }
 
@@ -170,7 +178,10 @@ pub(super) fn browser(
     footer: impl FnOnce(&mut egui::Ui) -> bool,
 ) -> Option<ItemEditorAction> {
     let loadout = snapshot.preview.as_ref()?;
-    model_preview::chooser::show(
+    // A scope change keeps the chooser open, so it is returned after the window rather than
+    // picked from it.
+    let mut scope = None;
+    let picked = model_preview::chooser::show(
         ui,
         id,
         &format!("Choose {}", snapshot.socket_label),
@@ -189,6 +200,7 @@ pub(super) fn browser(
                     hash: default.value(),
                 }));
             }
+            scope = super::plug_picker::draw_plug_scope_selector(ui, snapshot);
             let response = ui.add(
                 egui::TextEdit::singleline(query)
                     .hint_text("Search Shaders or Ornaments")
@@ -286,60 +298,8 @@ pub(super) fn browser(
             )
         },
     )
-    .flatten()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::catalog::ItemRenderOverride;
-
-    #[test]
-    fn shader_preview_replaces_one_socket_without_mutating_other_plugs_or_locked_dyes() {
-        let shader = |value| ItemPackageMetadata {
-            translation_dye_rows: [
-                vec![
-                    ItemRenderOverride {
-                        stage: 0,
-                        key: 4,
-                        value,
-                    },
-                    ItemRenderOverride {
-                        stage: 0,
-                        key: 6,
-                        value,
-                    },
-                ],
-                vec![],
-                vec![],
-            ],
-            ..Default::default()
-        };
-        let catalog = Catalog::for_test(vec![], [(10, shader(100)), (20, shader(200))].into());
-        let current = Loadout {
-            arrangement: 42,
-            dyes: [vec![], vec![(4, 1), (5, 2)], vec![(6, 3)]],
-            plugs: vec![Some(999), Some(10)],
-        };
-        let mut candidate = current.clone();
-        candidate.plugs[1] = Some(20);
-        assert_eq!(
-            resolve(&catalog, &candidate),
-            Appearance {
-                arrangement: 42,
-                dye_textures: Vec::new(),
-                dyes: vec![(4, 200), (5, 2), (6, 3)]
-            }
-        );
-        candidate.plugs[1] = None;
-        assert_eq!(
-            resolve(&catalog, &candidate).dyes,
-            vec![(4, 1), (5, 2), (6, 3)]
-        );
-        assert_eq!(current.plugs, vec![Some(999), Some(10)]);
-        assert_eq!(
-            resolve(&catalog, &current).dyes,
-            vec![(4, 100), (5, 2), (6, 3)]
-        );
-    }
+    .flatten();
+    scope
+        .map(|mode| ItemEditorAction::SetPlugSelectionMode { mode })
+        .or(picked)
 }

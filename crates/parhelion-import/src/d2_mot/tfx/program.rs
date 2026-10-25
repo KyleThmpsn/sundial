@@ -1,6 +1,6 @@
 //! Checked Renegades-to-Shadowkeep material-expression lowering.
 //! Opcode identities follow Charm's TfxBytecode_EoF and TfxBytecode_BL.
-use crate::d2_mot::{payload::Payload, reader::write_json};
+use crate::d2_mot::reader::write_json;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -8,6 +8,8 @@ use std::{
     fs,
     path::Path,
 };
+
+pub mod inputs;
 
 #[derive(Debug)]
 pub struct Instruction<'a> {
@@ -25,16 +27,21 @@ pub fn parse(data: &[u8]) -> Result<Vec<Instruction<'_>>> {
         let op = data[at];
         at += 1;
         let (native, size, arity) = match op {
-            5..=7 => (op, 0, 1),
+            // IsZero is unary. The multiply and add aliases at 5 and 6 are binary.
+            7 => (op, 0, 1),
             1..=15 => (op, 0, 2),
             0x13..=0x16 => (op - 3, 0, 3),
             0x18..=0x23 => (op - 3, 0, 1),
             0x28 => (0x21, 0, 1),
             0x29 => (0x22, 1, 1),
             0x2A => (0x23, 0, 1),
+            // Matching source and shipped native dye programs use this log2
+            // instruction. Only its opcode number changes.
+            0x2C => (0x25, 0, 1),
             0x2E..=0x32 => (op - 7, 0, 1),
             0x35 => (0x2E, 0, 5),
             0x42 => (0x34, 1, 0),
+            0x47 => (0x39, 1, 2),
             0x43..=0x49 => (op - 14, 1, 1),
             0x4A..=0x4F => (op - 14, 2, 0),
             0x51..=0x5B => (op - 15, 1, 0),
@@ -149,6 +156,7 @@ fn pop(stack: &mut Vec<Expression>) -> Result<Expression> {
     stack.pop().context("TFX stack underflow")
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
     ensure!(
         b.constant_count <= 256 && b.output_count <= 256 && b.sampler_count <= 256,
@@ -226,11 +234,19 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 e.matrix = i.op == 0x4C;
                 // Frame dither, time and exposure scale retain their addresses.
                 // Native material programs read exposure scale at float index 7
-                // with 3C 01 07, matching the source Frame +0x1C scalar.
+                // with 3C 01 07, matching the source Frame +0x1C scalar. Frame
+                // scalars 4 and 28 keep theirs too: material programs identical in
+                // both games read them at the same instruction (140 and 93 reads in
+                // 33 and 13 shipped programs).
                 if let Some(native) = b.external_textures.get(&[i.op, i.args[0], i.args[1]]) {
                     e.code.extend(native);
+                } else if i.op == 0x4C && i.args == [2, 0x0C] {
+                    // Paired View scopes write the same matrix to cb12[4..8]. The
+                    // modern producer reads extern 2 at row 12, Shadowkeep at row 10.
+                    e.code.extend([0x3E, 2, 0x0A]);
                 } else if (i.op == 0x4B && i.args == [1, 26])
-                    || (i.op == 0x4A && matches!(i.args, [1, 0] | [1, 1] | [1, 7] | [1, 8]))
+                    || (i.op == 0x4A
+                        && matches!(i.args, [1, 0] | [1, 1] | [1, 4] | [1, 7] | [1, 8] | [1, 28]))
                 {
                     e.code.push(i.native);
                     e.code.extend_from_slice(i.args);
@@ -306,7 +322,7 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 result.code.extend([i.native, i.args[0]]);
                 continue;
             }
-            0x56 => {
+            0x56 | 0x57 => {
                 e = pop(&mut stack)?;
                 let slot = *b.texture_slots.get(&i.args[0]).with_context(|| {
                     format!(
@@ -318,6 +334,10 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                     e.missing.is_empty()
                         && b.external_textures.values().any(|v| e.code.as_slice() == v),
                     "unverified external texture expression"
+                );
+                ensure!(
+                    i.op != 0x57 || e.code.first() == Some(&0x3F),
+                    "buffer binding requires an external resource"
                 );
                 result.code.extend(e.code);
                 result.code.extend([i.native, slot]);
@@ -336,6 +356,19 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                     .get(&i.args[0])
                     .context("TFX output read before a translated write")?
                     .clone();
+            }
+            0x35 if stack.len() >= 2 && stack[stack.len() - 2].matrix => {
+                let vector = pop(&mut stack)?;
+                let matrix = pop(&mut stack)?;
+                ensure!(!vector.matrix, "matrix transform requires a vector operand");
+                // A matrix load produces four runtime vectors but stays one expression
+                // here so temporary captures and matrix stores preserve its identity.
+                e.code.extend(matrix.code);
+                e.code.extend(vector.code);
+                e.code.push(i.native);
+                e.missing.extend(matrix.missing);
+                e.missing.extend(vector.missing);
+                ensure!(e.code.len() <= 65536, "expanded TFX expression too large");
             }
             _ if i.arity > 0 => {
                 if (0x43..=0x49).contains(&i.op) {
@@ -369,43 +402,7 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
     Ok(result)
 }
 
-pub fn object_channel_map(payload: &[u8]) -> Result<BTreeMap<String, u8>> {
-    let p = Payload(payload.to_vec());
-    let instance = p.pointer(16)?;
-    ensure!(
-        instance >= 4 && p.u32(instance - 4)? == 0x808072B8,
-        "native model owner type differs"
-    );
-    // PushObjectChannel addresses the model's ordered inputs. The independent
-    // channel-bank declaration order and vector-storage indices both differ.
-    let inputs = p.array(instance + 0x120, 96, Some(0x80809788))?;
-    ensure!(
-        inputs.len() <= 256,
-        "native object input count exceeds byte indices"
-    );
-    let mut result = BTreeMap::new();
-    for (index, input) in inputs.iter().copied().enumerate() {
-        ensure!(
-            p.u32(input + 4)? == 0x80809789,
-            "native channel input link type differs"
-        );
-        let link = usize::try_from(p.u64(input + 8)?)?;
-        ensure!(
-            p.u32(link)? == p.u32(input)?
-                && p.u32(link + 4)? == 0x80809788
-                && p.u64(link + 8)? == input as u64
-                && p.u64(link + 24)? == 0x808097C1,
-            "native channel input lacks reciprocal vector property"
-        );
-        ensure!(
-            result
-                .insert(format!("{:08X}", p.u32(link + 32)?), u8::try_from(index)?)
-                .is_none(),
-            "duplicate native object channel"
-        );
-    }
-    Ok(result)
-}
+pub use crate::tiger::channel::object_channel_map;
 
 fn read(path: &Path) -> Result<Value> {
     let bytes = fs::read(path)?;

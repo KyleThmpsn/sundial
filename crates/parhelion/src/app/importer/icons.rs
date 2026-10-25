@@ -1,5 +1,14 @@
 use super::*;
-use parhelion_import::d2_mot::{icon, reader::Reader};
+use parhelion_import::d2_mot::icon;
+mod reader;
+use reader::Reader;
+
+// Older thumbnails contain only the primary artwork. The package stamp cannot
+// invalidate those when our layer composition changes.
+const CACHE_VERSION: &str = "v3";
+
+#[cfg(test)]
+mod tests;
 
 enum Loaded {
     Icon(usize, Result<egui::ColorImage, String>),
@@ -18,8 +27,17 @@ pub(super) struct Icons {
 
 impl Icons {
     pub fn poll(&mut self, ctx: &egui::Context) {
+        let mut disconnected = false;
         if let Some(results) = &self.results {
-            while let Ok(loaded) = results.try_recv() {
+            loop {
+                let loaded = match results.try_recv() {
+                    Ok(loaded) => loaded,
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                };
                 match loaded {
                     Loaded::Icon(index, result) => {
                         self.pending.remove(&index);
@@ -42,9 +60,34 @@ impl Icons {
                 }
             }
         }
+        if disconnected {
+            self.requests = None;
+            self.results = None;
+            for index in std::mem::take(&mut self.pending) {
+                self.cache.insert(
+                    index,
+                    Err(
+                        "The icon loader stopped unexpectedly. Refresh the importer to retry."
+                            .into(),
+                    ),
+                );
+            }
+        }
     }
 
-    pub fn request(&mut self, ctx: &egui::Context, modern: &Path, visible: &[usize]) {
+    pub fn request(
+        &mut self,
+        ctx: &egui::Context,
+        source: Source,
+        settings: &Settings,
+        visible: &[usize],
+    ) {
+        let folder = match source {
+            Source::Modern => settings.modern_packages.as_deref(),
+            Source::Roi => settings.d1_roi.as_deref(),
+            _ => None,
+        };
+        let Some(folder) = folder else { return };
         let missing: Vec<_> = visible
             .iter()
             .copied()
@@ -59,21 +102,39 @@ impl Icons {
         }
         if self.requests.is_none() {
             let Ok(root) = data_root() else { return };
-            let modern = modern.to_owned();
+            let folder = folder.to_owned();
+            let xg = settings.d1_xg_library.clone();
             let ctx = ctx.clone();
             let (requests, incoming) = mpsc::sync_channel::<Vec<usize>>(1);
             let (sender, results) = mpsc::channel();
             self.requests = Some(requests);
             self.results = Some(results);
             thread::spawn(move || {
-                let cache = service::package_stamp(&modern)
-                    .ok()
-                    .map(|stamp| root.join("importer/icons").join(stamp));
-                if let Some(cache) = &cache {
-                    let _ = std::fs::create_dir_all(cache);
-                }
+                let generation = service::package_stamp(&folder).ok().and_then(|stamp| {
+                    parhelion_import::cache::Generation::directory(
+                        &root.join("importer/icons").join(CACHE_VERSION).join(
+                            if source == Source::Roi {
+                                "d1-roi"
+                            } else {
+                                "d2-mot"
+                            },
+                        ),
+                        &stamp,
+                    )
+                });
+                let cache = generation
+                    .as_ref()
+                    .map(parhelion_import::cache::Generation::path);
                 let mut reader = None;
-                while let Ok(mut indices) = incoming.recv() {
+                loop {
+                    let mut indices = match incoming.recv_timeout(Duration::from_secs(10)) {
+                        Ok(indices) => indices,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            reader = None;
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     // Prioritize the latest viewport after fast scrolling.
                     for latest in incoming.try_iter() {
                         let mut dropped = std::mem::replace(&mut indices, latest);
@@ -86,8 +147,8 @@ impl Icons {
                         let path = cache
                             .as_ref()
                             .map(|cache| cache.join(format!("{index}.png")));
-                        if let Some(image) = path.as_ref().and_then(|path| image::open(path).ok()) {
-                            let image = image.into_rgba8();
+                        if let Some(image) = path.as_ref().and_then(|path| cached_image(path).ok())
+                        {
                             let image = egui::ColorImage::from_rgba_unmultiplied(
                                 [image.width() as usize, image.height() as usize],
                                 image.as_raw(),
@@ -99,28 +160,27 @@ impl Icons {
                             continue;
                         }
                         let reader = reader.get_or_insert_with(|| {
-                            Reader::discovery(&modern, &root.join("importer/icons"), true)
-                                .map_err(|error| format!("{error:#}"))
+                            Reader::open(source, &folder, &root.join("importer/icons"), xg.clone())
                         });
                         let result = reader
                             .as_mut()
                             .map_err(|error| error.clone())
-                            .and_then(|reader| {
-                                icon::read_layers(reader, index)
-                                    .map_err(|error| format!("{error:#}"))
-                            })
-                            .and_then(|layers| composite(&layers))
-                            .map(|(size, rgba)| {
-                                if let Some(path) = &path {
-                                    let _ = image::save_buffer(
-                                        path,
-                                        &rgba,
-                                        size[0] as u32,
-                                        size[1] as u32,
-                                        image::ColorType::Rgba8,
-                                    );
+                            .and_then(|reader| reader.read(index))
+                            .map(|image| {
+                                let image = thumbnail(&image);
+                                if let Some(path) = &path
+                                    && let Some(parent) = path.parent()
+                                    && let Ok(temporary) = tempfile::NamedTempFile::new_in(parent)
+                                    && image
+                                        .save_with_format(temporary.path(), image::ImageFormat::Png)
+                                        .is_ok()
+                                {
+                                    let _ = temporary.persist(path);
                                 }
-                                egui::ColorImage::from_rgba_unmultiplied(size, &rgba)
+                                egui::ColorImage::from_rgba_unmultiplied(
+                                    [image.width() as usize, image.height() as usize],
+                                    image.as_raw(),
+                                )
                             });
                         if sender.send(Loaded::Icon(index, result)).is_err() {
                             return;
@@ -161,76 +221,24 @@ impl Icons {
     }
 }
 
-/// Blends the layers bottom-up at their native size, anchored top-left, on a canvas as large
-/// as the largest layer.
-pub(super) fn composite(layers: &[icon::Layer]) -> Result<([usize; 2], Vec<u8>), String> {
-    let size = [
-        layers
-            .iter()
-            .map(|layer| usize::from(layer.width))
-            .max()
-            .unwrap_or(0),
-        layers
-            .iter()
-            .map(|layer| usize::from(layer.height))
-            .max()
-            .unwrap_or(0),
-    ];
-    if size[0] == 0 || size[1] == 0 {
-        return Err("no icon layers".into());
-    }
-    let mut rgba = vec![0_u8; size[0] * size[1] * 4];
-    for layer in layers {
-        let (width, height) = (usize::from(layer.width), usize::from(layer.height));
-        let Ok(pixels) = decode(layer) else { continue };
-        for y in 0..height.min(size[1]) {
-            for x in 0..width.min(size[0]) {
-                let from = (y * width + x) * 4;
-                let to = (y * size[0] + x) * 4;
-                sundial::image_processing::blend_rgba_pixel(
-                    &mut rgba[to..to + 4],
-                    [
-                        pixels[from],
-                        pixels[from + 1],
-                        pixels[from + 2],
-                        pixels[from + 3],
-                    ],
-                );
-            }
-        }
-    }
-    Ok((size, rgba))
+fn cached_image(path: &Path) -> Result<image::RgbaImage, String> {
+    let bytes = crate::image_import::read_path(path)?;
+    crate::image_import::decode_png(&bytes).map(|image| thumbnail(&image))
 }
 
-pub(super) fn decode(layer: &icon::Layer) -> Result<Vec<u8>, String> {
-    let (width, height) = (usize::from(layer.width), usize::from(layer.height));
-    match layer.format {
-        28 | 29 => Ok(layer.data.clone()),
-        71 | 72 => sundial::image_processing::decode_bc1(&layer.data, width, height),
-        74 | 75 | 77 | 78 | 98 | 99 => {
-            let columns = width.div_ceil(4);
-            let mut rgba = vec![0; width * height * 4];
-            for (index, block) in layer.data.chunks_exact(16).enumerate() {
-                let mut pixels = [0; 64];
-                match layer.format {
-                    74 | 75 => bcdec_rs::bc2(block, &mut pixels, 16),
-                    77 | 78 => bcdec_rs::bc3(block, &mut pixels, 16),
-                    _ => bcdec_rs::bc7(block, &mut pixels, 16),
-                }
-                for y in 0..4 {
-                    for x in 0..4 {
-                        let px = (index % columns) * 4 + x;
-                        let py = (index / columns) * 4 + y;
-                        if px < width && py < height {
-                            let to = (py * width + px) * 4;
-                            let from = (y * 4 + x) * 4;
-                            rgba[to..to + 4].copy_from_slice(&pixels[from..from + 4]);
-                        }
-                    }
-                }
-            }
-            Ok(rgba)
-        }
-        format => Err(format!("unsupported icon texture format {format}")),
-    }
+fn thumbnail(image: &image::RgbaImage) -> image::RgbaImage {
+    // Bound GPU bytes as well as the number of cached viewport thumbnails.
+    let scale = 128.0 / f64::from(image.width().max(image.height()).max(128));
+    let width = (f64::from(image.width()) * scale).round().max(1.0) as u32;
+    let height = (f64::from(image.height()) * scale).round().max(1.0) as u32;
+    crate::image_import::resize(image, width, height)
+}
+
+/// Use the source-independent browser composition, while native exports remain primary-only.
+pub(super) fn composite(layers: &[icon::Layer]) -> Result<([usize; 2], Vec<u8>), String> {
+    let image = icon::composite(layers).map_err(|error| format!("{error:#}"))?;
+    Ok((
+        [usize::from(image.width), usize::from(image.height)],
+        image.rgba,
+    ))
 }

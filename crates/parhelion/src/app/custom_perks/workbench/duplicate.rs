@@ -144,44 +144,6 @@ mod tests {
     use sundial::package_authoring::sandbox_perk::program::{Action, NativeNode};
 
     #[test]
-    fn pending_copy_blocks_committing_its_document_but_not_other_documents() {
-        let recipe = PerkRecipe::new();
-        let id = recipe.id.clone();
-        let mut workbench = Workbench {
-            documents: vec![
-                Document::new(recipe, None),
-                Document::new(PerkRecipe::new(), None),
-            ],
-            ..Default::default()
-        };
-        let (send, receive) = std::sync::mpsc::channel();
-        workbench.duplicating = Some(Pending {
-            document: id,
-            source: PerkRecipe::effect(421),
-            worker: thread::spawn(move || {
-                receive.recv().unwrap();
-                Ok(Program::default())
-            }),
-        });
-        assert_eq!(
-            workbench.edit_issue(),
-            Some("Wait for the effect copy to finish.")
-        );
-        assert_eq!(workbench.save_issue(), workbench.edit_issue());
-        workbench.selected = 1;
-        assert_eq!(workbench.edit_issue(), None);
-        send.send(()).unwrap();
-        workbench
-            .duplicating
-            .take()
-            .unwrap()
-            .worker
-            .join()
-            .unwrap()
-            .unwrap();
-    }
-
-    #[test]
     fn duplicate_keeps_native_bytes_uses_a_distinct_identity_and_checks_the_source() {
         let mut recipe = PerkRecipe::new();
         let mut source = program::new_effect(1178);

@@ -4,7 +4,7 @@ use crate::{
     appended_tags::MAX_PACKAGE_ENTRY_COUNT,
     error::{invalid, validation},
     format::{BLOCK_SIZE, MAX_BLOCK_COUNT},
-    package_profile::{MAX_AUTHORED_STANDALONE_PACKAGE_ID, PARHELION_ASSET_PACKAGE_ID},
+    package_profile::window,
 };
 
 pub(crate) struct AssetPackage {
@@ -13,8 +13,108 @@ pub(crate) struct AssetPackage {
     pub references: Vec<NewTagReferenceOverride>,
 }
 
+#[derive(Default)]
 pub(crate) struct AssetPackages {
     pub packages: Vec<AssetPackage>,
+    /// Allocation decisions, retained so a cached fragment can replay its resource groups.
+    pub reservations: Vec<Reservation>,
+    /// A complete import graph uses its own last package. Native authoring uses `None`.
+    pub owner: Option<sundial::package_authoring::mod_content::Importer>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Reservation {
+    pub package_index: usize,
+    pub base: usize,
+    pub bounds: Vec<usize>,
+}
+
+/// A pure package choice. No empty package or tag slot is inserted until commit.
+pub(crate) struct GroupPlan {
+    pub package_index: usize,
+    pub package_id: u16,
+    pub base: usize,
+    bounds: Vec<usize>,
+}
+
+impl GroupPlan {
+    pub(crate) fn reservation(&self) -> Reservation {
+        Reservation {
+            package_index: self.package_index,
+            base: self.base,
+            bounds: self.bounds.clone(),
+        }
+    }
+}
+
+/// Allocation-only candidate state. It borrows no payloads and copies no existing assets.
+pub(crate) struct Layout {
+    count: usize,
+    last: Option<(u16, Budget)>,
+}
+
+impl Layout {
+    pub(crate) fn append(
+        &mut self,
+        bounds: &[usize],
+        lengths: impl IntoIterator<Item = usize>,
+    ) -> AuthoringResult<GroupPlan> {
+        let added = Budget::for_lengths(lengths)?;
+        let reserved = Budget::for_lengths(bounds.iter().copied())?;
+        // reserve_group callers may emit clips and audio in a different order than their
+        // upper bounds, or omit shared clips. The native entry and block budgets matter.
+        if added.entries > reserved.entries || added.blocks > reserved.blocks {
+            return Err(validation(
+                "Cached assets exceeded their recorded group bounds",
+            ));
+        }
+        let plan = choose(self.count, self.last, bounds.to_vec())?;
+        let mut budget = if plan.package_index == self.count {
+            self.count += 1;
+            Budget {
+                entries: 0,
+                blocks: 0,
+            }
+        } else {
+            self.last.expect("existing last package").1
+        };
+        budget.entries += added.entries;
+        budget.blocks += added.blocks;
+        self.last = Some((plan.package_id, budget));
+        Ok(plan)
+    }
+}
+
+fn choose(
+    count: usize,
+    last: Option<(u16, Budget)>,
+    bounds: Vec<usize>,
+) -> AuthoringResult<GroupPlan> {
+    let added = Budget::for_lengths(bounds.iter().copied())?;
+    if added.entries == 0 || !added.within_capacity() {
+        return Err(invalid(
+            "A resource group exceeds one native asset package's entry or block capacity",
+        ));
+    }
+    if let Some((id, current)) = last
+        && current.fits(added)
+    {
+        return Ok(GroupPlan {
+            package_index: count - 1,
+            package_id: id,
+            base: current.entries,
+            bounds,
+        });
+    }
+    let id = window()
+        .nth(count)
+        .ok_or_else(|| invalid("The authored asset package id range is exhausted"))?;
+    Ok(GroupPlan {
+        package_index: count,
+        package_id: id,
+        base: 0,
+        bounds,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -71,6 +171,8 @@ impl AssetPackages {
     ) -> AuthoringResult<Self> {
         let mut assets = Self {
             packages: Vec::new(),
+            reservations: Vec::new(),
+            owner: None,
         };
         let index = assets.reserve_group(tags.iter().map(|tag| tag.payload.len()))?;
         assets.packages[index].tags = tags;
@@ -84,36 +186,157 @@ impl AssetPackages {
         &mut self,
         lengths: impl IntoIterator<Item = usize>,
     ) -> AuthoringResult<usize> {
-        let added = Budget::for_lengths(lengths)?;
+        let plan = self.plan_group(lengths)?;
+        if plan.package_index == self.packages.len() {
+            self.packages.push(AssetPackage {
+                id: plan.package_id,
+                tags: Vec::new(),
+                references: Vec::new(),
+            });
+        }
+        self.register(plan.package_id);
+        self.reservations.push(plan.reservation());
+        Ok(plan.package_index)
+    }
+
+    pub(crate) fn plan_group(
+        &self,
+        lengths: impl IntoIterator<Item = usize>,
+    ) -> AuthoringResult<GroupPlan> {
+        let mut bounds = Vec::new();
+        for length in lengths {
+            if bounds.len() == MAX_PACKAGE_ENTRY_COUNT {
+                return Err(invalid(
+                    "A resource group exceeds one native asset package's entry capacity",
+                ));
+            }
+            bounds.push(length);
+        }
+        if !crate::package_profile::host().is_standalone() {
+            let layout = self.layout()?;
+            return choose(layout.count, layout.last, bounds);
+        }
+        let added = Budget::for_lengths(bounds.iter().copied())?;
         if added.entries == 0 || !added.within_capacity() {
             return Err(invalid(
-                "A resource group exceeds one native asset package's entry or block capacity",
+                "A resource group exceeds one native asset package's capacity",
             ));
         }
-        if let Some(last) = self.packages.last() {
-            let current = Budget::for_lengths(last.tags.iter().map(|tag| tag.payload.len()))?;
-            if current.fits(added) {
-                return Ok(self.packages.len() - 1);
+        let owned = self
+            .packages
+            .iter()
+            .enumerate()
+            .filter(|(_, package)| crate::mod_family::build::owner(package.id) == self.owner)
+            .collect::<Vec<_>>();
+        if let Some(&(index, package)) = owned.last() {
+            let budget = Budget::for_lengths(package.tags.iter().map(|tag| tag.payload.len()))?;
+            if budget.fits(added) {
+                return Ok(GroupPlan {
+                    package_index: index,
+                    package_id: package.id,
+                    base: budget.entries,
+                    bounds,
+                });
             }
         }
-        let index = self.packages.len();
-        let id = u16::try_from(index)
-            .ok()
-            .and_then(|n| PARHELION_ASSET_PACKAGE_ID.checked_add(n))
-            .filter(|id| *id <= MAX_AUTHORED_STANDALONE_PACKAGE_ID)
-            .ok_or_else(|| invalid("The authored asset package id range is exhausted"))?;
-        self.packages.push(AssetPackage {
-            id,
-            tags: Vec::new(),
-            references: Vec::new(),
-        });
-        Ok(index)
+        let id = match self.owner {
+            Some(owner) => {
+                crate::mod_family::build::allocate(owner, owned.len()).map_err(invalid)?
+            }
+            None => window()
+                .nth(owned.len())
+                .ok_or_else(|| invalid("The authored asset package id range is exhausted"))?,
+        };
+        Ok(GroupPlan {
+            package_index: self.packages.len(),
+            package_id: id,
+            base: 0,
+            bounds,
+        })
+    }
+
+    pub(crate) fn layout(&self) -> AuthoringResult<Layout> {
+        Ok(Layout {
+            count: self.packages.len(),
+            last: self
+                .packages
+                .last()
+                .map(|package| {
+                    Budget::for_lengths(package.tags.iter().map(|tag| tag.payload.len()))
+                        .map(|budget| (package.id, budget))
+                })
+                .transpose()?,
+        })
+    }
+
+    /// Validate the decision and the complete group before one append operation.
+    pub(crate) fn commit_group(
+        &mut self,
+        plan: GroupPlan,
+        tags: Vec<NewTagSpec>,
+        references: Vec<NewTagReferenceOverride>,
+    ) -> AuthoringResult<usize> {
+        let current = self.plan_group(plan.bounds.iter().copied())?;
+        if (current.package_index, current.package_id, current.base)
+            != (plan.package_index, plan.package_id, plan.base)
+        {
+            return Err(validation(
+                "The private asset package plan changed before commit",
+            ));
+        }
+        if tags.is_empty()
+            || tags.len() > plan.bounds.len()
+            || tags
+                .iter()
+                .zip(&plan.bounds)
+                .any(|(tag, bound)| tag.payload.is_empty() || tag.payload.len() > *bound)
+        {
+            return Err(validation(
+                "Materialized assets exceeded their declared bounds",
+            ));
+        }
+        let final_count = plan
+            .base
+            .checked_add(tags.len())
+            .ok_or_else(|| invalid("Asset count overflow"))?;
+        let mut seen = std::collections::BTreeSet::new();
+        for reference in &references {
+            if !(plan.base..final_count).contains(&reference.new_tag_ordinal)
+                || !seen.insert(reference.new_tag_ordinal)
+                || matches!(reference.reference, crate::NewTagReference::Appended(index) if index >= final_count)
+            {
+                return Err(validation(
+                    "Materialized asset reference is outside its package group",
+                ));
+            }
+        }
+        self.reservations.push(plan.reservation());
+        self.register(plan.package_id);
+        if plan.package_index == self.packages.len() {
+            self.packages.push(AssetPackage {
+                id: plan.package_id,
+                tags,
+                references,
+            });
+        } else {
+            let package = &mut self.packages[plan.package_index];
+            package.tags.extend(tags);
+            package.references.extend(references);
+        }
+        Ok(plan.package_index)
     }
 
     pub(crate) fn validate(&self) -> AuthoringResult<()> {
-        for (index, package) in self.packages.iter().enumerate() {
+        let window = window();
+        let mut native = 0;
+        let mut ids = std::collections::BTreeSet::new();
+        for package in &self.packages {
             let budget = Budget::for_lengths(package.tags.iter().map(|tag| tag.payload.len()))?;
-            if package.id as usize != PARHELION_ASSET_PACKAGE_ID as usize + index
+            let imported = crate::mod_family::build::owner(package.id).is_some();
+            let valid_id = imported || window.nth(native) == Some(package.id);
+            native += usize::from(!imported);
+            if !valid_id
+                || !ids.insert(package.id)
                 || budget.entries == 0
                 || !budget.within_capacity()
             {
@@ -124,12 +347,28 @@ impl AssetPackages {
         }
         Ok(())
     }
+
+    fn register(&self, id: u16) {
+        if let Some(owner) = self.owner {
+            crate::mod_family::build::use_id(owner, id);
+        } else {
+            crate::mod_family::build::native(id);
+        }
+    }
+
+    pub(crate) fn native_count(&self) -> usize {
+        self.packages
+            .iter()
+            .filter(|p| crate::mod_family::build::owner(p.id).is_none())
+            .count()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::NewTagStorageMode;
+    use crate::package_profile::PARHELION_ASSET_PACKAGE_ID;
     use tiger_pkg::TagHash;
 
     fn tag(size: usize) -> NewTagSpec {
@@ -161,7 +400,7 @@ mod tests {
         let full = Budget::for_lengths([BLOCK_SIZE * MAX_BLOCK_COUNT]).unwrap();
         let one = Budget::for_lengths([1]).unwrap();
         assert!(!full.fits(one));
-        let mut assets = AssetPackages { packages: vec![] };
+        let mut assets = AssetPackages::default();
         assert!(
             assets
                 .reserve_group([BLOCK_SIZE * MAX_BLOCK_COUNT + 1])

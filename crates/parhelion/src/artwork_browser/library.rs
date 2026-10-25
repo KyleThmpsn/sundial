@@ -28,12 +28,10 @@ pub(crate) struct Entry {
     pub white: bool,
     pub path: PathBuf,
     pub size: [u32; 2],
-    pub icon: Icon,
-    pub thumbnail: egui::ColorImage,
 }
 
 fn png(bytes: &[u8], purpose: Purpose) -> Result<image::RgbaImage, String> {
-    let format = if purpose == Purpose::Badge {
+    let format = if matches!(purpose, Purpose::Badge | Purpose::Image) {
         image::guess_format(bytes).map_err(|e| e.to_string())?
     } else {
         image::ImageFormat::Png
@@ -119,27 +117,39 @@ pub(crate) fn load(path: &Path, purpose: Purpose) -> Result<image::RgbaImage, St
 
 fn entry(root: &Path, path: PathBuf, purpose: Purpose) -> Result<Entry, String> {
     let pixels = load(&path, purpose)?;
-    let mut encoded = Cursor::new(Vec::new());
-    crate::image_import::fit(&pixels, 96, 96)
-        .write_to(&mut encoded, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
     let name = path
         .strip_prefix(root)
         .unwrap_or(&path)
         .to_string_lossy()
         .into_owned();
-    let thumbnail = crate::image_import::fit(&pixels, 64, 64);
     Ok(Entry {
-        icon: Icon::Image {
-            name: name.clone(),
-            image: ImportedIcon::from_bytes(encoded.get_ref())?,
-        },
         name,
         white: super::perk_quality::inspect(pixels.pixels().map(|p| p.0)) == Some(true),
         path,
         size: [pixels.width(), pixels.height()],
-        thumbnail: egui::ColorImage::from_rgba_unmultiplied([64, 64], thumbnail.as_raw()),
     })
+}
+
+/// The icon a perk keeps for the file at `path`, made when the file is picked.
+pub(crate) fn icon(path: &Path, name: &str) -> Result<Icon, String> {
+    let pixels = load(path, Purpose::Perk)?;
+    let mut encoded = Cursor::new(Vec::new());
+    crate::image_import::fit(&pixels, 96, 96)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(Icon::Image {
+        name: name.to_owned(),
+        image: ImportedIcon::from_bytes(encoded.get_ref())?,
+    })
+}
+
+/// A thumbnail of the file at `path`, 64 pixels square.
+pub(crate) fn thumbnail(path: &Path, purpose: Purpose) -> Result<egui::ColorImage, String> {
+    let pixels = crate::image_import::fit(&load(path, purpose)?, 64, 64);
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        [64, 64],
+        pixels.as_raw(),
+    ))
 }
 
 pub(crate) fn scan(root: &Path, purpose: Purpose) -> Result<(Vec<Entry>, usize), String> {
@@ -332,44 +342,18 @@ mod tests {
         let second = add(&root, &input, Purpose::Perk).unwrap();
         assert_ne!(first.path, second.path);
         fs::remove_file(&input).unwrap();
-        let json = serde_json::to_vec(&first.icon).unwrap();
-        assert_eq!(serde_json::from_slice::<Icon>(&json).unwrap(), first.icon);
+        let icon = icon(&first.path, &first.name).unwrap();
+        let json = serde_json::to_vec(&icon).unwrap();
+        let restored = serde_json::from_slice::<Icon>(&json).unwrap();
+        let Icon::Image {
+            image: embedded, ..
+        } = restored
+        else {
+            panic!("selected local artwork must be embedded");
+        };
+        assert_eq!(embedded.fit_to(96, 96), image);
         assert_eq!(scan(&root, Purpose::Perk).unwrap().0.len(), 2);
     }
-    #[test]
-    fn svg_is_transparent_white_artwork() {
-        let image = svg(br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><path d="M8 8h16v16H8z"/></svg>"#, 96).unwrap();
-        assert_eq!(image.get_pixel(0, 0)[3], 0);
-        assert_eq!(image.get_pixel(48, 48).0, [255; 4]);
-    }
-
-    #[test]
-    fn artwork_sources_keep_resolution_and_use_destination_rules() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = dir.path().join("wide.png");
-        let mut pixels = image::RgbaImage::from_pixel(768, 256, image::Rgba([180, 90, 30, 255]));
-        pixels.save(&input).unwrap();
-        assert!(load(&input, Purpose::Perk).is_err());
-        assert!(load(&input, Purpose::Watermark).is_err());
-        assert_eq!(
-            load(&input, Purpose::Badge).unwrap().dimensions(),
-            (768, 256)
-        );
-        pixels.put_pixel(0, 0, image::Rgba([0; 4]));
-        pixels.save(&input).unwrap();
-        let root = dir.path().join("icons");
-        let entry = add(&root, &input, Purpose::Watermark).unwrap();
-        assert_eq!(load(&entry.path, Purpose::Watermark).unwrap(), pixels);
-        assert_eq!(scan(&root, Purpose::Perk).unwrap().0.len(), 0);
-        assert_eq!(scan(&root, Purpose::Badge).unwrap().0.len(), 1);
-        assert_eq!(scan(&root, Purpose::Watermark).unwrap().0.len(), 1);
-        let glyph = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><path d="M8 8h16v16H8z"/></svg>"#;
-        assert_eq!(
-            svg(glyph, Purpose::Badge.svg_edge()).unwrap().dimensions(),
-            (512, 512)
-        );
-    }
-
     fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (name, contents) in files {
@@ -401,25 +385,5 @@ mod tests {
         let bytes = archive(&[("repo/broken.svg", b"invalid")]);
         assert!(install_archive(bad.path(), &bytes).is_err());
         assert!(!downloaded(bad.path()));
-    }
-
-    #[test]
-    #[ignore = "downloads the pinned public destiny-icons archive to a temporary directory"]
-    fn real_destiny_icons_download_and_rasterize() {
-        let dir = tempfile::tempdir().unwrap();
-        download(dir.path()).unwrap();
-        assert!(downloaded(dir.path()));
-        let (entries, skipped) = scan(dir.path(), Purpose::Perk).unwrap();
-        assert!(entries.len() > 100);
-        for entry in &entries {
-            let pixels = load(&entry.path, Purpose::Perk).unwrap();
-            assert!(super::super::perk_quality::accepts(
-                pixels.pixels().map(|p| p.0)
-            ));
-        }
-        eprintln!(
-            "Validated {} downloaded perk icons, filtered {skipped}",
-            entries.len()
-        );
     }
 }

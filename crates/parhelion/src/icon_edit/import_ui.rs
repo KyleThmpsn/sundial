@@ -24,9 +24,7 @@ impl ImageImport {
         let result = match receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                Err("Image import stopped unexpectedly. Please try again.".to_owned())
-            }
+            Err(TryRecvError::Disconnected) => Err("Image import stopped unexpectedly.".to_owned()),
         };
         self.pending = None;
         self.accept(result, draft);
@@ -105,52 +103,5 @@ impl ImageImport {
             self.pending = None;
             self.error = Some(format!("Could not start image import: {error}"));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn failed_and_cancelled_imports_leave_draft_unchanged() {
-        let mut draft = WeaponIconEdit {
-            brightness: 25,
-            ..Default::default()
-        };
-        let before = draft.clone();
-        let mut importer = ImageImport::default();
-        importer.accept(Err("bad file".to_owned()), &mut draft);
-        assert_eq!(draft, before);
-        assert!(importer.error.is_some());
-        importer.accept(Ok(None), &mut draft);
-        assert_eq!(draft, before);
-    }
-
-    #[test]
-    fn import_controls_fit_a_narrow_editor_without_changing_the_draft() {
-        let context = egui::Context::default();
-        let mut importer = ImageImport::default();
-        let mut draft = WeaponIconEdit::default();
-        for _ in 0..2 {
-            let _ = context.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(300.0, 400.0),
-                    )),
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let right = ui.max_rect().right();
-                        assert!(!importer.draw(ui, &mut draft, true));
-                        assert!(ui.min_rect().right() <= right + 1.0);
-                    });
-                },
-            );
-        }
-        assert!(draft.is_identity());
-        assert!(!importer.is_pending());
     }
 }

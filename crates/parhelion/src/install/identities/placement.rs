@@ -106,8 +106,8 @@ fn native_weapon_slot(item: &[u8]) -> Result<Option<u8>, String> {
     if bucket > 2 {
         return Ok(None);
     }
-    let inventory = crate::weapon::weapon_inventory_slot(item).map_err(|e| e.to_string())?;
-    let equipment = crate::weapon::weapon_equipment_slot(item).map_err(|e| e.to_string())?;
+    let inventory = crate::item::weapon_inventory_slot(item).map_err(|e| e.to_string())?;
+    let equipment = crate::item::weapon_equipment_slot(item).map_err(|e| e.to_string())?;
     if inventory != equipment {
         return Err("A retained weapon's native inventory and equipment slots disagree".into());
     }

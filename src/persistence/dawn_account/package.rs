@@ -15,61 +15,111 @@ use std::{
     time::Duration,
 };
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use sundial_account::{AuthoredUnlock, UnlockScope};
 
 use crate::account::{
     AuthoredAccountCleanup, AuthoredCollectionUnlock, AuthoredItemMove, AuthoredMoveOutcome,
     AuthoredSlotReplacement, AuthoredSocketChange, placement,
 };
+use crate::persistence::native_account::snapshot::{self, Snapshot};
+
+/// The tables a cleanup may change. `item_sockets` and `item_rolls` follow their item through
+/// its cascade, and `metadata` carries the advanced revision. A change anywhere else came from
+/// something the review did not plan, such as a trigger, and is refused.
+const CLEANED: [&str; 7] = [
+    "metadata",
+    "character_items",
+    "profile_items",
+    "item_sockets",
+    "item_rolls",
+    "dismantle_rewards",
+    "durable_flags",
+];
 
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// The same layout check an ordinary account save makes. A package operation must not reach
+/// further into an account than the editor would.
+fn guard(db: &Connection) -> Result<(), String> {
+    super::schema_guard::validate(db).map_err(err)
+}
+
 /// A complete logical snapshot, with any uncheckpointed write-ahead log folded in.
 ///
-/// Reading the file's bytes directly would miss whatever Dawn has not checkpointed yet, and Dawn
-/// runs in WAL mode, so the backup API is the only honest way to capture it.
+/// Dawn runs in WAL mode, so the file's bytes alone would miss whatever it has not checkpointed.
+/// Reading through SQLite inside one read transaction sees exactly the committed account.
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
-    let source = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(err)?;
-    capture(&source)
+    let mut db = snapshot::open(path, false)?;
+    let tx = db.transaction().map_err(err)?;
+    guard(&tx)?;
+    snapshot::capture(&tx)
 }
 
-fn capture(source: &Connection) -> Result<Vec<u8>, String> {
-    let directory = tempfile::tempdir().map_err(err)?;
-    let staged = directory.path().join("player-state.db");
-    let mut destination = Connection::open(&staged).map_err(err)?;
-    rusqlite::backup::Backup::new(source, &mut destination)
-        .map_err(err)?
-        .run_to_completion(128, Duration::from_millis(1), None)
-        .map_err(err)?;
-    destination
-        .pragma_update(None, "wal_checkpoint", "TRUNCATE")
-        .ok();
-    drop(destination);
-    std::fs::read(&staged).map_err(err)
-}
-
-/// Applies reviewed bytes, refusing when the account moved since the review.
+/// Applies a reviewed proposal, refusing when the account moved since the review.
+///
+/// The comparison and the update share one SQLite write transaction, and SQLite keeps its own
+/// journal. Replacing the file instead would let a writer commit between the check and the
+/// rename, and a write-ahead log left beside the new file could bring removed rows back.
 pub(crate) fn replace(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), String> {
-    if read(path)? != expected {
-        return Err("The Dawn account changed after review".into());
+    let expected: Snapshot = serde_json::from_slice(expected).map_err(err)?;
+    let after: Snapshot = serde_json::from_slice(updated).map_err(err)?;
+    let mut db = snapshot::open(path, true)?;
+    // Changed tables are rewritten whole, so a cascade must not take rows from a table restored
+    // earlier. The foreign key check below still covers the result.
+    db.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA synchronous=FULL;")
+        .map_err(err)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(err)?;
+    guard(&tx)?;
+    let before = snapshot::snapshot(&tx)?;
+    if before != expected {
+        return Err("The Dawn account changed after review. Reload the package operation".into());
     }
-    crate::storage::replace_file(path, updated).map_err(err)?;
-    // A snapshot is a whole database. Leaving the old write-ahead log beside it would let Dawn
-    // recover records the replacement just removed.
-    for suffix in ["-wal", "-shm"] {
-        let companion = path.with_file_name(format!(
-            "{}{suffix}",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        if companion.exists() {
-            std::fs::remove_file(&companion).map_err(err)?;
-        }
+    if before.schema != after.schema
+        || before.version != after.version
+        || before.application != after.application
+        || before.tables.keys().ne(after.tables.keys())
+        || before
+            .tables
+            .iter()
+            .any(|(name, table)| table.columns != after.tables[name].columns)
+    {
+        return Err("The account proposal changes the Dawn database schema".into());
     }
-    Ok(())
+    let changed = after
+        .tables
+        .iter()
+        .filter(|(name, table)| before.tables[*name] != **table)
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    for name in &changed {
+        tx.execute(&format!("DELETE FROM {}", snapshot::quote(name)), [])
+            .map_err(err)?;
+    }
+    // Explicit inserts may advance sequences, so the sequence table goes back last.
+    for name in changed
+        .iter()
+        .filter(|name| **name != "sqlite_sequence")
+        .chain(changed.iter().filter(|name| **name == "sqlite_sequence"))
+    {
+        snapshot::insert_table(&tx, name, &after.tables[*name])?;
+    }
+    let invalid = tx
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(err)?
+        .exists([])
+        .map_err(err)?;
+    if invalid || snapshot::snapshot(&tx)? != after {
+        return Err(
+            "The Dawn account update did not match the reviewed proposal. The account was not changed"
+                .into(),
+        );
+    }
+    tx.commit().map_err(err)
 }
 
 /// Removes everything the account holds from packages that are going away.
@@ -80,15 +130,18 @@ pub(crate) fn preview_replacement(
     changes: &[AuthoredSocketChange],
     slots: Option<&AuthoredSlotReplacement>,
 ) -> Result<AuthoredAccountCleanup, String> {
-    let source = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let mut source = snapshot::open(path, false)?;
+    let tx = source.transaction().map_err(err)?;
+    guard(&tx)?;
+    let original = snapshot::snapshot(&tx)?;
+    let original_bytes = serde_json::to_vec(&original).map_err(err)?;
+    let mut staged = Connection::open_in_memory().map_err(err)?;
+    rusqlite::backup::Backup::new(&tx, &mut staged)
+        .map_err(err)?
+        .run_to_completion(128, Duration::from_millis(1), None)
         .map_err(err)?;
-    let original_bytes = capture(&source)?;
+    drop(tx);
     drop(source);
-
-    let directory = tempfile::tempdir().map_err(err)?;
-    let staged_path = directory.path().join("player-state.db");
-    std::fs::write(&staged_path, &original_bytes).map_err(err)?;
-    let staged = Connection::open(&staged_path).map_err(err)?;
     // The item tables cascade into item_sockets and item_rolls, which is how a removed item takes
     // its own sockets and roll with it rather than orphaning them.
     staged
@@ -107,6 +160,7 @@ pub(crate) fn preview_replacement(
         slot_moves: Vec::new(),
     };
 
+    report.cleared_plugs += fall_back(&staged, hashes, changes)?;
     for hash in hashes {
         let plug = i64::from(*hash);
         report.cleared_plugs += staged
@@ -173,11 +227,23 @@ pub(crate) fn preview_replacement(
             .map_err(err)?;
     }
 
-    drop(staged);
-    let cleaned =
-        Connection::open_with_flags(&staged_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(err)?;
-    report.cleaned_bytes = capture(&cleaned)?;
+    let cleaned = snapshot::snapshot(&staged)?;
+    if let Some(name) = original
+        .tables
+        .iter()
+        .find(|(name, table)| {
+            !CLEANED.contains(&name.as_str()) && cleaned.tables.get(*name) != Some(*table)
+        })
+        .map(|(name, _)| name)
+    {
+        return Err(format!(
+            "The Dawn account cleanup would also change {name}. The account was not changed"
+        ));
+    }
+    if original.schema != cleaned.schema {
+        return Err("The Dawn account cleanup would change the database schema".into());
+    }
+    report.cleaned_bytes = serde_json::to_vec(&cleaned).map_err(err)?;
     Ok(report)
 }
 
@@ -271,7 +337,48 @@ fn relocate(
     Ok(moves)
 }
 
-/// Grows or shrinks the stored socket lanes of retained items whose definition changed shape.
+/// Replaces each saved plug the replacement removes from an item whose layout changed with its
+/// lane's incoming default, and returns how many it replaced. Emptying the lane instead would
+/// hide the socket in game. Removed plugs on other items are emptied after.
+fn fall_back(
+    staged: &Connection,
+    removed: &BTreeSet<u32>,
+    changes: &[AuthoredSocketChange],
+) -> Result<usize, String> {
+    let mut replaced = 0;
+    for change in changes {
+        let rows: Vec<(String, i64, i64)> = staged
+            .prepare(
+                "SELECT s.instance_soid,s.lane,s.plug_hash FROM item_sockets s \
+                 JOIN character_items i ON i.instance_soid=s.instance_soid \
+                 WHERE i.definition_hash=?1 AND i.socket_policy=1 AND s.plug_hash IS NOT NULL",
+            )
+            .map_err(err)?
+            .query_map([i64::from(change.definition_hash)], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(err)?
+            .collect::<Result<_, _>>()
+            .map_err(err)?;
+        for (soid, lane, plug) in rows {
+            if !u32::try_from(plug).is_ok_and(|plug| removed.contains(&plug)) {
+                continue;
+            }
+            if let Some(default) = change.fallback(usize::try_from(lane).map_err(err)?) {
+                replaced += staged
+                    .execute(
+                        "UPDATE item_sockets SET plug_hash=?1 WHERE instance_soid=?2 AND lane=?3",
+                        params![i64::from(default), soid, lane],
+                    )
+                    .map_err(err)?;
+            }
+        }
+    }
+    Ok(replaced)
+}
+
+/// Grows or shrinks the stored socket lanes of retained items whose definition changed shape,
+/// and moves a lane that still holds a replaced default to the new default.
 ///
 /// Only items that carry their own lanes are touched: an item on native defaults has no lanes
 /// to resize, and Dawn refuses one that stores lanes anyway. Every lane up to the new count is
@@ -282,20 +389,8 @@ fn resize(
     changes: &[AuthoredSocketChange],
     report: &mut BTreeMap<u32, usize>,
 ) -> Result<(), String> {
-    let mut seen = BTreeSet::new();
+    crate::account::validate_socket_changes(removed, changes)?;
     for change in changes {
-        if removed.contains(&change.definition_hash)
-            || !seen.insert(change.definition_hash)
-            || change.previous_socket_count > super::contract::PLUG_CAPACITY
-            || change.default_plugs.len() > super::contract::PLUG_CAPACITY
-            || change
-                .default_plugs
-                .iter()
-                .flatten()
-                .any(|hash| *hash == 0 || *hash == u32::MAX)
-        {
-            return Err("Conflicting or unsupported replacement socket layouts".into());
-        }
         let items: Vec<(String, usize)> = staged
             .prepare(
                 "SELECT i.instance_soid,(SELECT count(*) FROM item_sockets s \
@@ -311,31 +406,85 @@ fn resize(
             .map_err(err)?;
         for (soid, count) in items {
             let new = change.default_plugs.len();
-            if count == new {
-                continue;
-            }
-            if count != change.previous_socket_count {
-                return Err(
-                    "An authored item's socket count differs from the reviewed package".into(),
-                );
-            }
-            staged
-                .execute(
-                    "DELETE FROM item_sockets WHERE instance_soid=?1 AND lane>=?2",
-                    params![soid, i64::try_from(new).map_err(err)?],
-                )
-                .map_err(err)?;
-            for (lane, hash) in change.default_plugs.iter().enumerate().skip(count) {
+            let mut changed = false;
+            if count != new {
+                if count != change.previous_socket_count {
+                    return Err(
+                        "An authored item's socket count differs from the reviewed package".into(),
+                    );
+                }
                 staged
                     .execute(
-                        "INSERT INTO item_sockets(instance_soid,lane,plug_hash) VALUES(?1,?2,?3)",
-                        params![soid, i64::try_from(lane).map_err(err)?, hash.map(i64::from)],
+                        "DELETE FROM item_sockets WHERE instance_soid=?1 AND lane>=?2",
+                        params![soid, i64::try_from(new).map_err(err)?],
                     )
                     .map_err(err)?;
+                for (lane, hash) in change.default_plugs.iter().enumerate().skip(count) {
+                    staged
+                        .execute(
+                            "INSERT INTO item_sockets(instance_soid,lane,plug_hash) VALUES(?1,?2,?3)",
+                            params![soid, i64::try_from(lane).map_err(err)?, hash.map(i64::from)],
+                        )
+                        .map_err(err)?;
+                }
+                trim_roll(staged, &soid, new)?;
+                changed = true;
             }
-            *report.entry(change.definition_hash).or_default() += 1;
+            // A saved selection of a lane's replaced default follows the definition to its new
+            // one. Dawn keeps every lane's row, so an empty new default stores an empty lane.
+            for &(lane, old) in &change.replaced_defaults {
+                let updated = staged
+                    .execute(
+                        "UPDATE item_sockets SET plug_hash=?1 WHERE instance_soid=?2 AND lane=?3 AND plug_hash=?4",
+                        params![
+                            change.default_plugs[lane].map(i64::from),
+                            soid,
+                            i64::try_from(lane).map_err(err)?,
+                            i64::from(old)
+                        ],
+                    )
+                    .map_err(err)?;
+                changed |= updated > 0;
+            }
+            if changed {
+                *report.entry(change.definition_hash).or_default() += 1;
+            }
         }
     }
+    Ok(())
+}
+
+/// Drops the saved roll of lanes a shrunk item no longer has. Dawn requires every rolled lane to
+/// have a socket at that position, and the socket is gone with the definition that defined it.
+fn trim_roll(staged: &Connection, soid: &str, lanes: usize) -> Result<(), String> {
+    let roll: Option<(i64, Vec<u8>)> = staged
+        .prepare("SELECT lane_mask,owned_rows FROM item_rolls WHERE instance_soid=?1")
+        .map_err(err)?
+        .query_map([soid], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(err)?
+        .next()
+        .transpose()
+        .map_err(err)?;
+    let Some((mask, mut owned)) = roll else {
+        return Ok(());
+    };
+    if owned.len() != 96 {
+        return Err("An item's saved roll does not have twelve lanes".into());
+    }
+    let kept = if lanes >= 12 {
+        mask
+    } else {
+        mask & ((1_i64 << lanes) - 1)
+    };
+    for row in owned.chunks_exact_mut(8).skip(lanes) {
+        row.fill(0);
+    }
+    staged
+        .execute(
+            "UPDATE item_rolls SET lane_mask=?2,owned_rows=?3 WHERE instance_soid=?1",
+            params![soid, kept, owned],
+        )
+        .map_err(err)?;
     Ok(())
 }
 

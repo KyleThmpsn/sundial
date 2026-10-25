@@ -32,7 +32,7 @@ fn name(row: &Value) -> Result<(), String> {
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty() && name.len() <= 40)
         .map(|_| ())
-        .ok_or_else(|| "Package name must contain 1â€“40 bytes".into())
+        .ok_or_else(|| "Package name must contain 1 to 40 bytes".into())
 }
 
 fn integer(row: &Value, key: &str, min: i64, max: i64) -> Result<i64, String> {

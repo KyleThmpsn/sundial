@@ -53,11 +53,11 @@ impl JsonEditorState {
                 .clicked()
             {
                 self.format_document(text);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Copy All").clicked() {
                 ui.ctx().copy_text(text.clone());
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
             if ui
@@ -65,7 +65,7 @@ impl JsonEditorState {
                 .on_hover_text("Ctrl+G")
                 .clicked()
             {
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .toggle_value(&mut self.completion_open, "Add Setting")
@@ -74,7 +74,7 @@ impl JsonEditorState {
             {
                 response.load_defaults = true;
                 self.navigation_open = true;
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .add_enabled(
@@ -86,7 +86,7 @@ impl JsonEditorState {
                 let start = self.error_position.unwrap();
                 let end = start + text[start..].chars().next().map_or(0, char::len_utf8);
                 self.pending_jump = Some((start, end));
-                ui.close_menu();
+                ui.close();
             }
         });
     }
@@ -197,16 +197,15 @@ impl JsonEditorState {
         if suggestions.is_empty() {
             ui.label("This object already contains every suggested setting.");
         }
-        if let Some((key, value)) = chosen {
-            if let Some(location) = self
+        if let Some((key, value)) = chosen
+            && let Some(location) = self
                 .locations
                 .iter()
                 .find(|entry| entry.pointer == self.pointer)
-            {
-                let updated =
-                    super::super::operations::add_member(text, location.range, key, value, empty);
-                self.commit_edit(text, updated);
-            }
+        {
+            let updated =
+                super::super::operations::add_member(text, location.range, key, value, empty);
+            self.commit_edit(text, updated);
         }
     }
 

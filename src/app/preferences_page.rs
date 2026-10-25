@@ -11,7 +11,7 @@ use super::{
     ARMOR_SLOTS, ConfirmationDialog, INVENTORY_LAYOUT_PREVIEW_HASH, InventoryLayoutPreviewItem,
     PreferencesTab, SundialApp, WEAPON_SLOTS, diagnostics, equipment, preferences,
 };
-use crate::account_contract::EQUIPMENT_SLOTS as SLOTS;
+use crate::account::contract::EQUIPMENT_SLOTS as SLOTS;
 use crate::game_settings;
 use crate::package_authoring::open_directory;
 use eframe::egui;
@@ -215,7 +215,7 @@ impl SundialApp {
                 ui.add_space(6.0);
                 match selected_tab {
                     PreferencesTab::Interface => self.draw_interface_preferences(ui, ctx),
-                    PreferencesTab::Editing => self.draw_editing_preferences(ui, ctx),
+                    PreferencesTab::Editing => self.draw_editing_preferences(ui),
                     PreferencesTab::Installation => self.draw_installation_preferences(ui, ctx),
                     PreferencesTab::SavingRecovery => self.draw_saving_recovery_preferences(ui),
                 }
@@ -297,7 +297,7 @@ impl SundialApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Loadout Layout");
-            crate::ui_help::info(
+            crate::ui::help::info(
                 ui,
                 "Used on Characters & loadouts. Character inventory keeps its item cards.",
             );
@@ -308,19 +308,21 @@ impl SundialApp {
             preferences_changed = true;
         }
 
+        ui.add_space(8.0);
+        super::ui::section_heading(ui, "Model Previews");
+        preferences_changed |= ui
+            .checkbox(&mut self.preferences.show_preview_fps, "Show Preview FPS")
+            .on_hover_text("Show a small frame rate counter in model previews.")
+            .changed();
         preferences_changed
     }
 
-    pub(super) fn draw_editing_preferences(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-    ) -> bool {
+    pub(super) fn draw_editing_preferences(&mut self, ui: &mut egui::Ui) -> bool {
         let mut preferences_changed = false;
 
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Item Editing");
-            crate::ui_help::info(
+            crate::ui::help::info(
                 ui,
                 "Choose the plug selection mode Sundial uses when it starts.",
             );
@@ -349,6 +351,11 @@ impl SundialApp {
                 &mut requested_mode,
                 PlugSelectionMode::GearType,
                 PlugSelectionMode::GearType.label(),
+            );
+            ui.radio_value(
+                &mut requested_mode,
+                PlugSelectionMode::GearKind,
+                PlugSelectionMode::GearKind.label(),
             );
             ui.radio_value(
                 &mut requested_mode,
@@ -387,45 +394,22 @@ impl SundialApp {
         );
         preferences_changed |= hash_response.changed();
 
+        preferences_changed |= ui
+            .checkbox(
+                &mut self.preferences.show_tooltip_source,
+                "Show Package and Hash in Item Tooltips",
+            )
+            .changed();
+
         ui.add_space(12.0);
         super::ui::section_heading(ui, "Experimental");
-        let mut enable_parhelion = self.preferences.experimental_package_authoring;
-        let package_authoring_response = ui
-            .horizontal(|ui| {
-                let response =
-                    ui.checkbox(&mut enable_parhelion, "Enable Parhelion Weapon Workbench");
-                crate::ui_help::info(
-                    ui,
-                    "Build custom weapons from stock weapons, perks and appearances.",
-                );
-                response
-            })
-            .inner;
-        if package_authoring_response.changed() {
-            preferences_changed |= self.request_parhelion_enabled(enable_parhelion);
-        }
-        if self.preferences.experimental_package_authoring && ui.button("Open Parhelion").clicked()
-        {
-            self.open_package_authoring(ctx);
-        }
-        if !self.dawn_account_runtime() {
-            ui.add_space(6.0);
-            preferences_changed |= ui
-                .checkbox(
-                    &mut self.preferences.experimental_extended_fov,
-                    "Allow Field of View up to 155",
-                )
-                .changed();
-            ui.label("Needs Sunrise settings v16 or newer. Saved values are kept when off.");
-        }
-        ui.add_space(6.0);
         let power_above_cap_response = ui
             .horizontal(|ui| {
                 let response = ui.checkbox(
                     &mut self.preferences.experimental_power_above_cap,
                     "Allow Power Above Item Caps",
                 );
-                crate::ui_help::info(ui, "New items still start at their cap.");
+                crate::ui::help::info(ui, "New items still start at their cap.");
                 response
             })
             .inner;
@@ -440,7 +424,7 @@ impl SundialApp {
                     &mut self.preferences.experimental_cross_class_subclasses,
                     "Allow Cross-Class Subclasses",
                 );
-                crate::ui_help::info(
+                crate::ui::help::info(
                     ui,
                     "Shows every class's subclasses and lets Sundial equip them.",
                 );
@@ -456,7 +440,7 @@ impl SundialApp {
                     &mut self.preferences.experimental_progression,
                     "Enable Progression Editing",
                 );
-                crate::ui_help::info(
+                crate::ui::help::info(
                     ui,
                     "Edit Unlocks, Investment overrides and Collections acquisition. Browsing is always available.",
                 );
@@ -476,7 +460,7 @@ impl SundialApp {
         let mut preferences_changed = false;
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Installation and Compatibility");
-            crate::ui_help::info(ui, "Sundial finds settings.json inside the game install.");
+            crate::ui::help::info(ui, "Sundial finds settings.json inside the game install.");
         });
         ui.add_space(10.0);
         let account_source = self.document.source_info();
@@ -663,7 +647,7 @@ impl SundialApp {
                     &mut self.preferences.review_changes_before_saving,
                     "Review Changes Before Saving",
                 );
-                crate::ui_help::info(
+                crate::ui::help::info(
                     ui,
                     "Lists changed fields before saving. Checks and backups always run.",
                 );
@@ -675,7 +659,7 @@ impl SundialApp {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             super::ui::section_heading(ui, "Automatic Backups");
-            crate::ui_help::info(ui, "Backs up before every save, per installation. Recovery snapshots and settings.json.bak copies are never removed.");
+            crate::ui::help::info(ui, "Backs up before every save, per installation. Recovery snapshots and settings.json.bak copies are never removed.");
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -720,7 +704,7 @@ impl SundialApp {
             if account_source.kind != AccountSourceKind::Json && !dawn {
                 reset_account = ui
                     .button("Reset Account Database…")
-                    .on_hover_text("Reset characters, inventory, progression and account preferences to Sunrise defaults. A full recovery backup is made first")
+                    .on_hover_text("Reset characters, inventory, progression and account preferences to Sunrise defaults. A full recovery backup is made first.")
                     .clicked();
                 if matches!(
                     account_source.kind,
@@ -728,7 +712,7 @@ impl SundialApp {
                 ) {
                     restore_account = ui
                         .button("Restore Backup…")
-                        .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first")
+                        .on_hover_text("Restore a verified Sundial account backup. The current database is preserved first.")
                         .clicked();
                 }
             }

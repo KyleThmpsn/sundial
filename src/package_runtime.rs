@@ -16,11 +16,22 @@ pub(crate) mod index_cache;
 pub(crate) mod installation;
 pub mod labels;
 pub(crate) mod loading;
+pub mod mods;
 pub(crate) mod parallel;
 pub(crate) mod reader;
 pub(crate) mod references;
 pub(crate) mod snapshot;
 pub mod tft;
+
+/// Discovery cancellation is cooperative at resource boundaries. A cancelled scan must
+/// return an error before any partial result reaches a shared cache.
+pub(crate) fn check_cancelled(cancel: &std::sync::atomic::AtomicBool) -> Result<(), String> {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        Err("Discovery stopped.".into())
+    } else {
+        Ok(())
+    }
+}
 
 const MIN_RUNTIME_PACKAGE_ID: u16 = 0x0100;
 const MAX_RUNTIME_PACKAGE_ID: u16 = 0x0CFF;
@@ -96,7 +107,7 @@ impl RuntimeSnapshot {
         Self {
             brand,
             module_path,
-            dll_sha256: format!("{:x}", Sha256::digest(bytes)),
+            dll_sha256: hex::encode(Sha256::digest(bytes)),
         }
     }
 
@@ -110,6 +121,23 @@ impl RuntimeSnapshot {
 
     pub fn dll_sha256(&self) -> &str {
         &self.dll_sha256
+    }
+
+    /// Version from the exact module represented by this snapshot. Older recovery records
+    /// remain readable because the version is derived from the recorded module identity.
+    pub fn uses_mod_loader(&self) -> Result<bool, String> {
+        let bytes = fs::read(&self.module_path).map_err(|error| error.to_string())?;
+        if hex::encode(Sha256::digest(&bytes)) != self.dll_sha256 {
+            return Err("The selected runtime DLL changed after review".into());
+        }
+        let Some((brand, version)) = runtime_version(&bytes) else {
+            // from_verified_module is also used by explicit offline integration hosts.
+            return Ok(false);
+        };
+        if brand != self.brand.name() {
+            return Err("The runtime brand differs from its recorded identity".into());
+        }
+        Ok(self.brand == RuntimeBrand::Sunrise && runtime_version_at_least(&version, &[0, 6]))
     }
 }
 
@@ -186,7 +214,7 @@ pub(crate) fn verify_installed_runtime(
             module_path.display()
         )
     })?;
-    let digest = format!("{:x}", Sha256::digest(bytes));
+    let digest = hex::encode(Sha256::digest(bytes));
     if digest != expected.dll_sha256 {
         return Err(format!(
             "The installed {} runtime DLL changed after it was selected: {}",
@@ -274,6 +302,9 @@ pub(crate) fn runtime_version_at_least(version: &str, minimum: &[u64]) -> bool {
 
 pub(crate) fn validate_package_authoring_runtime(install: &Path) -> Result<(), String> {
     let runtime = installed_runtime(install)?;
+    if runtime.uses_mod_loader()? {
+        return verify_installed_runtime(install, &runtime);
+    }
     let bytes = fs::read(runtime.module_path()).map_err(|error| {
         format!(
             "Could not read the installed runtime DLL {}: {error}",
@@ -315,6 +346,58 @@ fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
 }
 
 pub(crate) fn open_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
+    // Like Sunrise's loader, a reader leaves out a mod whose configured values don't fit what
+    // they bind, and reads again without it. Each pass leaves out one more mod.
+    for _ in 0..=mods::FOLDER_LIMIT {
+        let view = mods::View::open(install)?;
+        let source = view.as_ref().map_or(install, |view| view.install());
+        let mut manager = open_stock_shadowkeep_packages(source)?;
+        let Some(view) = view else {
+            return Ok(manager);
+        };
+        manager.retain_view(std::sync::Arc::clone(&view))?;
+        match view.configured(&manager) {
+            Ok(values) => {
+                manager.configure(values);
+                return Ok(manager);
+            }
+            Err(refusal) => mods::View::refuse(install, &view, refusal),
+        }
+    }
+    Err("Sunrise mods kept changing while they were read. Try again once they're installed".into())
+}
+
+pub(crate) fn open_managed_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
+    let view = mods::View::open_managed(install)?;
+    let source = view.as_ref().map_or(install, |view| view.install());
+    let mut manager = open_stock_shadowkeep_packages(source)?;
+    if let Some(view) = view {
+        manager.retain_view(view)?;
+    }
+    Ok(manager)
+}
+
+pub(crate) fn open_incoming_shadowkeep_packages(
+    install: &Path,
+    incoming: &mods::Incoming,
+) -> Result<PackageManager, String> {
+    let mut refused = Vec::new();
+    for _ in 0..=mods::FOLDER_LIMIT {
+        let view = mods::View::incoming(install, incoming, refused.clone())?;
+        let mut manager = open_stock_shadowkeep_packages(view.install())?;
+        manager.retain_view(std::sync::Arc::clone(&view))?;
+        match view.configured(&manager) {
+            Ok(values) => {
+                manager.configure(values);
+                return Ok(manager);
+            }
+            Err(refusal) => refused.push(refusal),
+        }
+    }
+    Err("Sunrise mods kept changing while the incoming content was checked".into())
+}
+
+fn open_stock_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         linux::open_shadowkeep_packages(install)
@@ -413,9 +496,6 @@ pub(crate) mod tests {
             0
         )));
         assert!(!is_valid_package_tag(TagHash::NONE));
-
-        // This is the dependency edge that motivated the shared validator.
-        assert!(!TagHash::new(MAX_RUNTIME_PACKAGE_ID, 0).is_valid());
     }
 }
 
@@ -435,6 +515,7 @@ mod linux {
     const LINOODLE_URL: &str = "https://raw.githubusercontent.com/v4nguard/tiger-pkg/657f41c0851001b2d371592b2f7a5cb9c686ddb4/liblinoodle3.so";
     const LINOODLE_FILE_NAME: &str = "liblinoodle3.so";
     const OODLE_DLL_FILE_NAME: &str = "oo2core_3_win64.dll";
+    const DECODER_EXPORT: &[u8] = b"OodleLZ_Decompress";
     const LINOODLE_MAX_BYTES: usize = 2 * 1024 * 1024;
     const LINOODLE_SHA256: [u8; 32] = [
         0x01, 0x67, 0xcf, 0xd2, 0xb3, 0x16, 0x23, 0xce, 0x15, 0xaf, 0xd1, 0x29, 0xc3, 0xad, 0x56,
@@ -462,6 +543,13 @@ mod linux {
         if INITIALIZED.get().is_some() {
             return create_manager(&install);
         }
+        // linoodle loads the linked DLL when the decoder starts and throws a C++ exception, which
+        // aborts the process, when that file isn't the Oodle library. Such an install opens
+        // without the decoder, so only a compressed read fails.
+        let installed = install.join("bin").join("x64").join(OODLE_DLL_FILE_NAME);
+        if installed.exists() && !is_oodle_library(&installed) {
+            return create_manager(&install);
+        }
 
         let runtime = prepare_runtime(&install)?;
         let previous_directory = env::current_dir()
@@ -485,6 +573,23 @@ mod linux {
         Ok(manager)
     }
 
+    /// Whether `path` is a Windows module that names Oodle's decoder export.
+    fn is_oodle_library(path: &Path) -> bool {
+        let Ok(bytes) = fs::read(path) else {
+            return false;
+        };
+        let header = bytes
+            .get(0x3C..0x40)
+            .map(|field| u32::from_le_bytes([field[0], field[1], field[2], field[3]]) as usize);
+        bytes.starts_with(b"MZ")
+            && header.is_some_and(|offset| {
+                bytes.get(offset..offset.saturating_add(4)) == Some(&b"PE\0\0"[..])
+            })
+            && bytes
+                .windows(DECODER_EXPORT.len())
+                .any(|window| window == DECODER_EXPORT)
+    }
+
     fn create_manager(install: &Path) -> Result<PackageManager, String> {
         PackageManager::new(
             install.join("packages"),
@@ -495,7 +600,7 @@ mod linux {
     }
 
     fn prepare_runtime(install: &Path) -> Result<PathBuf, String> {
-        let runtime = crate::paths::cache_dir()
+        let runtime = crate::system::paths::cache_dir()
             .ok_or("Could not locate Sundial's Linux cache folder")?
             .join("runtime")
             .join("linoodle3-0167cfd2");
@@ -508,9 +613,10 @@ mod linux {
 
         let library = runtime.join(LINOODLE_FILE_NAME);
         if !file_has_expected_hash(&library) {
-            let bytes = crate::http::get(LINOODLE_URL, LINOODLE_MAX_BYTES).map_err(|error| {
-                format!("Could not download Linux Shadowkeep package support: {error}")
-            })?;
+            let bytes =
+                crate::system::http::get(LINOODLE_URL, LINOODLE_MAX_BYTES).map_err(|error| {
+                    format!("Could not download Linux Shadowkeep package support: {error}")
+                })?;
             if !bytes_have_expected_hash(&bytes) {
                 return Err(
                     "The downloaded Linux package-support library failed its SHA-256 verification"

@@ -1,9 +1,48 @@
 use std::path::Path;
+use std::{cell::Cell, time::Duration};
 
 use crate::{AuthoringError, AuthoringResult, format::BLOCK_SIZE};
 
 pub(crate) const FULL_RAW_FLAGS: u16 = 0;
 const COMPRESSED_FLAGS: u16 = 1;
+
+/// Per-worker native timings. Package readback remains a separate emitted operation.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Timings {
+    pub blocks: usize,
+    pub compression: Duration,
+    pub verification: Duration,
+}
+
+thread_local! {
+    static TIMINGS: Cell<Timings> = Cell::new(Timings::default());
+}
+
+impl Timings {
+    pub(crate) fn take() -> Self {
+        TIMINGS.with(|timings| timings.replace(Self::default()))
+    }
+
+    /// Adds timings another thread recorded to this thread's.
+    fn absorb(other: Self) {
+        TIMINGS.with(|timings| {
+            let mut value = timings.get();
+            value.blocks += other.blocks;
+            value.compression += other.compression;
+            value.verification += other.verification;
+            timings.set(value);
+        });
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    fn record(update: impl FnOnce(&mut Self)) {
+        TIMINGS.with(|timings| {
+            let mut value = timings.get();
+            update(&mut value);
+            timings.set(value);
+        });
+    }
+}
 
 #[cfg(all(windows, target_pointer_width = "64"))]
 mod oodle;
@@ -45,7 +84,7 @@ pub(crate) struct PackageBlockEncoder {
     compressor: Option<std::sync::Arc<oodle::Compressor>>,
 }
 
-/// One loaded encoder per DLL path for the whole process.
+/// Share one loaded encoder per DLL path while callers still own it.
 ///
 /// Every package a build emits opens the same DLL, and opening it is a `LoadLibrary` plus an
 /// ABI check. The path is canonical by the time it reaches here, so it keys the cache.
@@ -54,21 +93,22 @@ fn shared_compressor(runtime: &Path) -> AuthoringResult<std::sync::Arc<oodle::Co
     use std::{
         collections::HashMap,
         path::PathBuf,
-        sync::{Arc, Mutex, OnceLock},
+        sync::{Arc, Mutex, OnceLock, Weak},
     };
-    static ENCODERS: OnceLock<Mutex<HashMap<PathBuf, Arc<oodle::Compressor>>>> = OnceLock::new();
+    static ENCODERS: OnceLock<Mutex<HashMap<PathBuf, Weak<oodle::Compressor>>>> = OnceLock::new();
     let mut encoders = ENCODERS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| {
             AuthoringError::InvalidInput("The package encoder cache is poisoned".into())
         })?;
-    if let Some(compressor) = encoders.get(runtime) {
-        return Ok(Arc::clone(compressor));
+    if let Some(compressor) = encoders.get(runtime).and_then(Weak::upgrade) {
+        return Ok(compressor);
     }
+    encoders.retain(|_, value| value.strong_count() > 0);
     let compressor =
         Arc::new(oodle::Compressor::open(runtime).map_err(AuthoringError::InvalidInput)?);
-    encoders.insert(runtime.to_path_buf(), Arc::clone(&compressor));
+    encoders.insert(runtime.to_path_buf(), Arc::downgrade(&compressor));
     Ok(compressor)
 }
 
@@ -123,6 +163,53 @@ impl PackageBlockEncoder {
         #[cfg(not(all(windows, target_pointer_width = "64")))]
         let compressed = None;
         select_verified_storage(plaintext, compressed)
+    }
+
+    /// Encodes `blocks` in order across the available cores, each kept raw when its flag is set.
+    /// The calling thread's timings include every block.
+    pub(crate) fn encode_all(
+        &self,
+        package_id: u16,
+        blocks: &[(Vec<u8>, bool)],
+    ) -> AuthoringResult<Vec<EncodedPackageBlock>> {
+        let encode = |(plaintext, raw): &(Vec<u8>, bool)| {
+            if *raw {
+                EncodedPackageBlock::raw(plaintext)
+            } else {
+                self.encode(package_id, plaintext)
+            }
+        };
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(blocks.len());
+        if threads <= 1 {
+            return blocks.iter().map(encode).collect();
+        }
+        let share = blocks.len().div_ceil(threads);
+        let parts = std::thread::scope(|scope| {
+            let workers = blocks
+                .chunks(share)
+                .map(|part| {
+                    scope.spawn(move || {
+                        let encoded = part.iter().map(encode).collect::<AuthoringResult<Vec<_>>>();
+                        (encoded, Timings::take())
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join())
+                .collect::<Vec<_>>()
+        });
+        let mut encoded = Vec::with_capacity(blocks.len());
+        for part in parts {
+            let (part, timings) = part.map_err(|_| {
+                AuthoringError::InvalidInput("A package block encoder thread panicked".into())
+            })?;
+            Timings::absorb(timings);
+            encoded.extend(part?);
+        }
+        Ok(encoded)
     }
 }
 

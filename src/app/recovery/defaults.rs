@@ -49,11 +49,13 @@ impl SundialApp {
             );
             return;
         }
-        if let Err(error) = require_game_closed_for_reset(platform::destiny_is_running()) {
+        let require_closed = || require_game_closed_for_reset(platform::destiny_is_running());
+        if let Err(error) = require_closed() {
             self.set_status(format!("Account not reset: {error}"), true);
             return;
         }
-        match plan.apply() {
+        // The reset checks again before its recovery snapshot and just before it commits.
+        match plan.apply_checked(require_closed) {
             Ok(receipt) => {
                 if self.reload() {
                     let warning = self

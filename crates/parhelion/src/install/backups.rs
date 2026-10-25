@@ -15,6 +15,11 @@ pub(super) fn mark_backup_complete(transaction: &InstallTransactionRecord) -> Re
 }
 
 fn completed_backup_owner(path: &Path) -> Option<PathBuf> {
+    match fs::symlink_metadata(path.join("mod-recovery.json")) {
+        Ok(_) => return loader::completed_backup_owner(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
     let marker = path.join(COMPLETED_BACKUP_RECORD);
     let metadata = fs::symlink_metadata(&marker).ok()?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -131,27 +136,53 @@ pub(super) fn backup_one_original(
     }
 }
 
+/// Keeps the generation's validated recipes beside its package backup: weapon recipes at the top
+/// of the recipe folder and map recipes in its `maps` folder, so a map and a weapon that share a
+/// file name never meet. An existing file is never replaced.
 pub(super) fn backup_recipe_snapshots(
     validated: &ValidatedRun,
     backup_directory: &Path,
 ) -> Result<Option<PathBuf>, String> {
-    if !validated.backup_recipe_snapshots || validated.selected_recipe_files.is_empty() {
+    if !validated.backup_recipe_snapshots
+        || (validated.selected_recipe_files.is_empty() && validated.selected_map_files.is_empty())
+    {
         return Ok(None);
     }
     let recipe_backup_directory = backup_directory.join(RECIPE_BACKUP_DIRECTORY);
-    fs::create_dir(&recipe_backup_directory).map_err(|error| {
-        format!(
-            "Could not create recipe backup directory {}: {error}",
-            recipe_backup_directory.display()
-        )
-    })?;
-    for relative_path in &validated.selected_recipe_files {
+    let map_backup_directory = recipe_backup_directory.join("maps");
+    for directory in std::iter::once(&recipe_backup_directory)
+        .chain((!validated.selected_map_files.is_empty()).then_some(&map_backup_directory))
+    {
+        fs::create_dir(directory).map_err(|error| {
+            format!(
+                "Could not create recipe backup directory {}: {error}",
+                directory.display()
+            )
+        })?;
+    }
+    let recipes = validated
+        .selected_recipe_files
+        .iter()
+        .map(|path| (path, &recipe_backup_directory))
+        .chain(
+            validated
+                .selected_map_files
+                .iter()
+                .map(|path| (path, &map_backup_directory)),
+        );
+    for (relative_path, directory) in recipes {
         let source = validated.staged_run_directory.join(relative_path);
-        reject_symlink(&source, "staged recipe backup source").map_err(|error| error.message)?;
+        sundial::package_authoring::mod_content::checked_path(
+            &validated.staged_run_directory,
+            &source,
+        )?;
+        let expected = validated.staged_inputs.file(relative_path).ok_or_else(|| {
+            format!("Staged recipe has no validated content digest: {relative_path}")
+        })?;
         let file_name = Path::new(relative_path)
             .file_name()
             .ok_or_else(|| format!("Staged recipe path has no filename: {relative_path}"))?;
-        let target = recipe_backup_directory.join(file_name);
+        let target = directory.join(file_name);
         let copied = copy_file_create_new(&source, &target).map_err(|error| {
             format!(
                 "Could not back up staged recipe {}: {error}",
@@ -164,9 +195,9 @@ pub(super) fn backup_recipe_snapshots(
                 source.display()
             )
         })?;
-        if copied != current {
+        if copied != current || TransactionDigest::from(expected) != copied {
             return Err(format!(
-                "Staged recipe {} changed while it was being backed up",
+                "Staged recipe {} changed after validation or while it was being backed up",
                 source.display()
             ));
         }
@@ -181,20 +212,92 @@ pub(super) fn backup_recipe_snapshots(
         })
 }
 
+/// Flushes the directory entries that make a backup generation reachable after a power loss:
+/// every directory inside it, the generation itself, and each directory from there up to the
+/// backup root's parent, which may have been created for it. Its files were flushed as they were
+/// written. The journal names the backup only after this, so recovery can never be left
+/// pointing at a backup whose names the disk did not record.
+///
+/// Windows journals NTFS directory changes itself and offers no directory flush through the
+/// standard library, so there this checks nothing.
+pub(super) fn sync_backup_directories(backup: &Path, backup_root: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        fn nested(directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    nested(&entry.path(), found)?;
+                    found.push(entry.path());
+                }
+            }
+            Ok(())
+        }
+        let flush = |directory: &Path| {
+            fs::File::open(directory)
+                .and_then(|handle| handle.sync_all())
+                .map_err(|error| {
+                    format!(
+                        "Could not flush backup directory {}: {error}",
+                        directory.display()
+                    )
+                })
+        };
+        let mut inner = Vec::new();
+        nested(backup, &mut inner)
+            .map_err(|error| format!("Could not list backup {}: {error}", backup.display()))?;
+        // Deepest first, so each entry is recorded before the directory that names it.
+        for directory in &inner {
+            flush(directory)?;
+        }
+        let root = fs::canonicalize(backup_root).map_err(|error| {
+            format!(
+                "Could not resolve backup root {}: {error}",
+                backup_root.display()
+            )
+        })?;
+        let mut current = Some(backup);
+        while let Some(directory) = current {
+            flush(directory)?;
+            if directory == root.as_path() {
+                if let Some(parent) = directory.parent() {
+                    flush(parent)?;
+                }
+                break;
+            }
+            current = directory.parent();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (backup, backup_root);
+    Ok(())
+}
+
 pub(super) fn create_backup_directory(backup_root: &Path) -> io::Result<PathBuf> {
+    create_dated_backup_directory(backup_root, "packages")
+}
+
+pub(super) fn create_dated_backup_directory(
+    backup_root: &Path,
+    purpose: &str,
+) -> io::Result<PathBuf> {
     fs::create_dir_all(backup_root)?;
     let canonical_root = fs::canonicalize(backup_root)?;
+    let now = time::OffsetDateTime::now_utc();
+    let stamp = format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}_UTC",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
     for attempt in 0..128u64 {
-        let token = unique_token()
-            .split('-')
-            .map(|part| {
-                let value = part.trim_start_matches('0');
-                if value.is_empty() { "0" } else { value }
-            })
-            .collect::<Vec<_>>()
-            .join("-");
-        let candidate = canonical_root.join(format!("parhelion-backup-v2-{token}-{attempt}"));
-        match fs::create_dir(&candidate) {
+        let candidate = canonical_root.join(format!(
+            "{AUTOMATIC_BACKUP_PREFIX}{stamp}-{purpose}-{attempt}"
+        ));
+        match create_private_directory(&candidate) {
             Ok(()) => return fs::canonicalize(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -213,6 +316,23 @@ pub fn prune_package_backups(
     backup_root: &Path,
     retain: usize,
 ) -> Result<BackupPruneReport, String> {
+    prune(backup_root, retain, None)
+}
+
+/// Keeps the current install's backup ahead of older generations, regardless of timestamps.
+pub(super) fn prune_after_install(
+    backup_root: &Path,
+    retain: usize,
+    current: &Path,
+) -> Result<BackupPruneReport, String> {
+    prune(backup_root, retain, Some(current))
+}
+
+fn prune(
+    backup_root: &Path,
+    retain: usize,
+    current: Option<&Path>,
+) -> Result<BackupPruneReport, String> {
     if !(1..=MAX_PACKAGE_BACKUP_RETENTION).contains(&retain) {
         return Err(format!(
             "Package backup retention must be between 1 and {MAX_PACKAGE_BACKUP_RETENTION}"
@@ -220,7 +340,7 @@ pub fn prune_package_backups(
     }
     let root_metadata = match fs::symlink_metadata(backup_root) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == io::ErrorKind::NotFound && current.is_none() => {
             return Ok(BackupPruneReport::default());
         }
         Err(error) => {
@@ -244,6 +364,34 @@ pub fn prune_package_backups(
     })?;
     let _lock = lock_directory(&canonical_root, ".parhelion-retention.lock")
         .map_err(|error| error.message)?;
+    let current = current
+        .map(|path| {
+            let metadata = fs::symlink_metadata(path).map_err(|error| {
+                format!(
+                    "Could not inspect current package backup {}: {error}",
+                    path.display()
+                )
+            })?;
+            let resolved = fs::canonicalize(path).map_err(|error| {
+                format!(
+                    "Could not resolve current package backup {}: {error}",
+                    path.display()
+                )
+            })?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || resolved
+                    .parent()
+                    .is_none_or(|parent| !paths_equal(parent, &canonical_root))
+            {
+                return Err(format!(
+                    "Current package backup is not a regular directory in its configured root: {}",
+                    path.display()
+                ));
+            }
+            Ok(resolved)
+        })
+        .transpose()?;
     let mut automatic = Vec::new();
     for entry in fs::read_dir(&canonical_root).map_err(|error| {
         format!(
@@ -293,7 +441,17 @@ pub fn prune_package_backups(
         })?;
         automatic.push((modified, name, path));
     }
-    automatic.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    let is_current = |path: &Path| {
+        current
+            .as_ref()
+            .is_some_and(|current| paths_equal(current, path))
+    };
+    automatic.sort_by(|left, right| {
+        is_current(&right.2)
+            .cmp(&is_current(&left.2))
+            .then_with(|| right.0.cmp(&left.0))
+            .then_with(|| right.1.cmp(&left.1))
+    });
 
     let mut report = BackupPruneReport::default();
     let mut owner_counts: Vec<(PathBuf, usize)> = Vec::new();
@@ -309,7 +467,7 @@ pub fn prune_package_backups(
             *count += 1;
             *count
         } else {
-            owner_counts.push((owner, 1));
+            owner_counts.push((owner.clone(), 1));
             1
         };
         if count <= retain {
@@ -325,7 +483,7 @@ pub fn prune_package_backups(
         if metadata.file_type().is_symlink()
             || !metadata.is_dir()
             || !is_automatic_backup_name(&name)
-            || completed_backup_owner(&path).is_none()
+            || completed_backup_owner(&path).is_none_or(|current| !paths_equal(&current, &owner))
             || path
                 .parent()
                 .is_none_or(|parent| !paths_equal(parent, &canonical_root))
@@ -350,6 +508,22 @@ pub(super) fn is_automatic_backup_name(name: &str) -> bool {
     let Some(suffix) = name.strip_prefix(AUTOMATIC_BACKUP_PREFIX) else {
         return false;
     };
+    if let Some((stamp, operation)) = suffix.split_once("_UTC-") {
+        let Some(attempt) = ["packages-", "before-install-", "before-removal-"]
+            .into_iter()
+            .find_map(|prefix| operation.strip_prefix(prefix))
+        else {
+            return false;
+        };
+        return stamp.len() == 19
+            && stamp.bytes().enumerate().all(|(index, byte)| match index {
+                4 | 7 | 13 | 16 => byte == b'-',
+                10 => byte == b'_',
+                _ => byte.is_ascii_digit(),
+            })
+            && !attempt.is_empty()
+            && attempt.bytes().all(|byte| byte.is_ascii_digit());
+    }
     let compact = suffix.strip_prefix("v2-");
     let mut parts = compact.unwrap_or(suffix).split('-');
     let nanos = parts.next().unwrap_or_default();
@@ -378,7 +552,6 @@ fn compact_backup_names_remain_unique_and_preserve_legacy_recognition() {
     let second = create_backup_directory(root.path()).unwrap();
     assert_ne!(first, second);
     let name = first.file_name().unwrap().to_str().unwrap();
-    assert!(name.len() < 54);
     assert!(is_automatic_backup_name(name));
     assert!(is_automatic_backup_name(
         "parhelion-backup-000000000000000018D32BD1B4C12E54-000072DC-0000000000000000-0"

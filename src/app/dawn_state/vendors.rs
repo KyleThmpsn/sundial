@@ -103,7 +103,7 @@ pub(super) fn draw(
                         points: 0,
                         rewards: 0,
                     });
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -131,10 +131,18 @@ pub(super) fn draw(
                     let hash = progression_hash(catalog, row.vendor);
                     inspector::definition_context_menu(&vendor, "Inspect Definition", hash);
                     ui.push_id((row.position, "points"), |ui| {
-                        ui.add(egui::DragValue::new(&mut row.points).range(0..=i32::MAX))
+                        ui.add(
+                            egui::DragValue::new(&mut row.points)
+                                .range(0..=i32::MAX)
+                                .clamp_existing_to_range(false),
+                        )
                     });
                     ui.push_id((row.position, "rewards"), |ui| {
-                        ui.add(egui::DragValue::new(&mut row.rewards).range(0..=i32::MAX))
+                        ui.add(
+                            egui::DragValue::new(&mut row.rewards)
+                                .range(0..=i32::MAX)
+                                .clamp_existing_to_range(false),
+                        )
                     })
                     .inner
                     .on_hover_text("Lifetime packages already claimed, not pending rewards.");
@@ -210,7 +218,8 @@ fn unlocks(
         egui::CollapsingHeader::new(label)
             .id_salt((owner, kind))
             .show(ui, |ui| {
-                ui.menu_button(
+                crate::ui::sticky_menu_button(
+                    ui,
                     format!("Add {}", if kind == 0 { "Flag" } else { "Value" }),
                     |ui| {
                         let search_id = ui.make_persistent_id((owner, kind, "search"));
@@ -219,7 +228,7 @@ fn unlocks(
                             .unwrap_or_default();
                         ui.add(
                             egui::TextEdit::singleline(&mut query)
-                                .hint_text("Search by name or index…")
+                                .hint_text("Search by Name or Index…")
                                 .desired_width(280.0),
                         );
                         ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
@@ -273,7 +282,7 @@ fn unlocks(
                                             slot: index as u16,
                                             value: if kind == 0 { 1 } else { 0 },
                                         });
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             },

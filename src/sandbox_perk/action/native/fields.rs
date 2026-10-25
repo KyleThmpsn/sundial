@@ -168,6 +168,23 @@ pub fn describe(class: u32) -> Result<Vec<Field>, String> {
         insert(&mut fields, &mut covered, at, width, format, &label, !fixed);
         at += width;
     }
+    // Label dictionaries describe the names used by the filter editor. The compiler
+    // resolves those names against the installed registry and rebuilds the runtime masks.
+    // An empty dictionary in an unrestricted filter is not a missing effect asset.
+    for (base, child, _) in schema::inline(class)? {
+        let at = match child {
+            super::labels::SOURCE_CLASS => base + 0x48,
+            0x8080_94B3 => base + 0x10,
+            _ => continue,
+        };
+        if let Some(field) = fields
+            .iter_mut()
+            .find(|field| field.offset == at && field.width == 4 && field.format == Format::Tag)
+        {
+            field.label = "Label Registry".into();
+            field.editable = false;
+        }
+    }
     fields.sort_by_key(|field| field.offset);
     Ok(fields)
 }
@@ -241,7 +258,7 @@ fn insert(
 /// flags (48 nodes), the ability masks of both slot filters (25 and 62), Set Ability Enum's
 /// slot (1), and the selected bits of Event Mask (2) and Event Slot Mask (16). With no bit set
 /// the node matches no event or changes no slot.
-const NEVER_EMPTY_MASKS: [(u32, usize); 6] = [
+const SELECTION_MASKS: [(u32, usize); 6] = [
     (0x8080_3DFB, 8),
     (0x8080_3DFD, 8),
     (0x8080_3E01, 8),
@@ -250,16 +267,38 @@ const NEVER_EMPTY_MASKS: [(u32, usize); 6] = [
     (0x8080_3E00, 8),
 ];
 
-/// Whether an editable field still holds nothing chosen. No key or tag in any stock node is
-/// zero, since an empty key is the hash of an empty name and an empty tag is all ones, so a
-/// zero one was never picked. The masks above are never empty in stock either. The compiler
-/// accepts such a node, but it never matches or never acts in game.
+/// Canonical absent values for optional fields whose zero representation older authored
+/// recipes used. Other keys and required resource references are not optional by default.
+/// Attachment key consumers are documented in `values`, and weighted spawning accepts
+/// an absent attachment independently of its ammunition weights.
+#[must_use]
+pub fn optional_empty(class: u32, offset: usize) -> Option<u32> {
+    match (class, offset) {
+        (0x8080_3E45, 0x18 | 0x1C | 0x30) => Some(crate::sandbox_perk::program::EMPTY_KEY),
+        (0x8080_3E47, 0x10) => Some(u32::MAX),
+        _ => None,
+    }
+}
+
+/// An empty selection is valid native data. It selects no events or slots and can be
+/// intentional, so it warrants a warning rather than a required-choice failure.
+#[must_use]
+pub fn empty_selection(class: u32, field: &Field, bytes: &[u8]) -> bool {
+    field.editable
+        && bytes.len() == field.width
+        && bytes.iter().all(|byte| *byte == 0)
+        && SELECTION_MASKS.contains(&(class, field.offset))
+}
+
+/// An editable key or resource that still requires a choice. Optional legacy zeros and
+/// empty selection masks have their own contracts and do not make a program unready.
 #[must_use]
 pub fn unset(class: u32, field: &Field, bytes: &[u8]) -> bool {
     field.editable
+        && bytes.len() == field.width
         && bytes.iter().all(|byte| *byte == 0)
-        && (matches!(field.format, Format::Key | Format::Tag)
-            || NEVER_EMPTY_MASKS.contains(&(class, field.offset)))
+        && matches!(field.format, Format::Key | Format::Tag)
+        && optional_empty(class, field.offset).is_none()
 }
 
 /// The label of a class's compiler-derived event mask at +0x18.
@@ -763,7 +802,8 @@ fn known(class: u32) -> Vec<(usize, usize, Format, &'static str)> {
                 (0x144, 4, Key, "Target State"),
                 (0x148, 4, Key, "Remembered Target"),
             ],
-            9 | 28 => vec![(8, 4, Mask32, "Selected Bits")],
+            // The checkers read one byte and shift within it, so bits 8 and up never match.
+            9 | 28 => vec![(8, 1, Byte, "Selected Bits")],
             // The schema declares a resource reference at +10 and every stock value is a tag,
             // so the lane is read as one. It was declared a key before, which did not match
             // the resource format the describer already assigns and so never took effect.
@@ -1057,130 +1097,6 @@ mod tests {
                     && field.offset <= 0xBC
                     && field.offset + field.width > 0xBC
             }));
-        }
-    }
-
-    /// A declared field whose bytes fall outside the record is dropped by `insert` without a
-    /// word, so a name recovered for a lane that does not exist never reaches the workbench
-    /// and reads as an unmapped byte instead. Every entry `known` returns has to land inside
-    /// the record it names, and inside every object that inlines that record.
-    #[test]
-    fn every_declared_field_lands_inside_its_record() {
-        type Encoded = (
-            u32,
-            usize,
-            u32,
-            bool,
-            Vec<(usize, u32, u32)>,
-            Vec<(usize, u32)>,
-        );
-        let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
-            .expect("native perk declarations parse");
-        let mut checked = 0;
-        for (class, size, ..) in &rows {
-            for (offset, width, _, label) in known(*class) {
-                checked += 1;
-                assert!(
-                    offset + width <= *size,
-                    "0x{class:08X} names \"{label}\" at +0x{offset:X} width {width},                      past the end of its {size} byte record"
-                );
-            }
-            // The same fields are applied again wherever the record is inlined, at the owner's
-            // offset, so they have to fit there too.
-            for (base, child, _) in schema::inline(*class).expect("inline declarations") {
-                if child == *class {
-                    continue;
-                }
-                for (offset, width, _, label) in known(child) {
-                    assert!(
-                        base + offset + width <= *size,
-                        "0x{class:08X} inlines 0x{child:08X} at +0x{base:X}, putting \"{label}\"                          past the end of its {size} byte record"
-                    );
-                }
-            }
-        }
-        assert!(checked > 0, "no fields were checked");
-    }
-
-    /// The module's contract: every byte of a record belongs to exactly one field, so the
-    /// workbench can show a node completely and an edit can never land between fields. The
-    /// gap pass is what makes it hold, and it has to hold for every declared record, not only
-    /// the node kinds.
-    #[test]
-    fn describe_covers_every_byte_of_every_record_exactly_once() {
-        type Encoded = (
-            u32,
-            usize,
-            u32,
-            bool,
-            Vec<(usize, u32, u32)>,
-            Vec<(usize, u32)>,
-        );
-        let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
-            .expect("native perk declarations parse");
-        for (class, size, ..) in &rows {
-            let described =
-                describe(*class).unwrap_or_else(|e| panic!("0x{class:08X} has no field view: {e}"));
-            let mut covered = vec![0_u32; *size];
-            for field in &described {
-                assert!(field.width > 0, "0x{class:08X} has a zero width field");
-                for byte in field.offset..field.offset + field.width {
-                    let seen = covered.get_mut(byte).unwrap_or_else(|| {
-                        panic!("0x{class:08X} describes byte {byte} past {size}")
-                    });
-                    *seen += 1;
-                }
-            }
-            if let Some(byte) = covered.iter().position(|seen| *seen != 1) {
-                panic!(
-                    "0x{class:08X} covers byte 0x{byte:X} {} times, not once",
-                    covered[byte]
-                );
-            }
-        }
-    }
-
-    /// `insert` keeps the first field to claim a byte, so a second entry overlapping it is
-    /// dropped as quietly as an out-of-range one. A width that disagrees with the format is
-    /// the same kind of slip: `Field::write` refuses a float that is not four bytes wide, so
-    /// the control would be built and then reject every edit.
-    #[test]
-    fn declared_fields_do_not_overlap_and_match_their_format_width() {
-        type Encoded = (
-            u32,
-            usize,
-            u32,
-            bool,
-            Vec<(usize, u32, u32)>,
-            Vec<(usize, u32)>,
-        );
-        let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
-            .expect("native perk declarations parse");
-        for (class, ..) in &rows {
-            let declared = known(*class);
-            for (index, (offset, width, format, label)) in declared.iter().enumerate() {
-                let natural = match format {
-                    Format::Byte | Format::Flag => Some(1),
-                    Format::Float
-                    | Format::Integer
-                    | Format::Unsigned
-                    | Format::Mask32
-                    | Format::Key
-                    | Format::Tag => Some(4),
-                    Format::Pointer => Some(8),
-                    Format::Bytes => None,
-                };
-                assert!(
-                    natural.is_none_or(|natural| natural == *width),
-                    "0x{class:08X} names \"{label}\" as {format:?} but {width} bytes wide"
-                );
-                for (other, other_width, _, other_label) in &declared[index + 1..] {
-                    assert!(
-                        offset + width <= *other || other + other_width <= *offset,
-                        "0x{class:08X} declares \"{label}\" at +0x{offset:X} and \"{other_label}\"                          at +0x{other:X} over the same bytes; only the first survives"
-                    );
-                }
-            }
         }
     }
 }

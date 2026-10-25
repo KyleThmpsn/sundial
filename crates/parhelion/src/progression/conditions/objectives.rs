@@ -113,14 +113,6 @@ fn select_anchored_terms(
 mod tests {
     use super::*;
     #[test]
-    fn broad_counter_uses_narrow_page_anchor() {
-        let candidates = BTreeMap::from([(10, BTreeSet::from([3])), (20, BTreeSet::from([3, 7]))]);
-        assert_eq!(
-            select_anchored_terms(&candidates).unwrap(),
-            BTreeSet::from([3])
-        );
-    }
-    #[test]
     fn two_counted_contributions_are_rejected() {
         assert!(
             select_anchored_terms(&BTreeMap::from([

@@ -375,7 +375,7 @@ pub(super) fn characters(connection: &Connection) -> Incompatible<CharacterState
         inventory_capacity: Some(contract::CHARACTER_ITEM_CAPACITY),
         enforce_loaded_inventory_capacity: true,
         max_item_plugs: contract::PLUG_CAPACITY,
-        item_flag_mask: crate::account_contract::INVENTORY_FLAG_MASK.into(),
+        item_flag_mask: crate::account::contract::INVENTORY_FLAG_MASK.into(),
         enforce_unique_instance_soids: true,
     };
     match CharacterState::try_new(capabilities, Vec::new(), characters) {

@@ -1,4 +1,17 @@
+//! The app's own tests: unit checks of its state, and headless UI contract and layout
+//! checks, which open no window and change no installed content.
 use super::*;
+use crate::test_support::driver::painted_text as text;
+
+mod accessibility;
+#[cfg(feature = "d2-model-importer")]
+mod activities;
+mod added_sockets;
+mod artwork;
+mod barrel_controls;
+mod build_selection;
+mod magazine_readout;
+mod recipe_editing;
 
 #[test]
 fn exporting_the_open_recipe_updates_its_save_baseline() {
@@ -34,326 +47,68 @@ fn exporting_the_open_recipe_updates_its_save_baseline() {
     assert_eq!(WeaponRecipe::load_json(&external).unwrap(), app.recipe);
 }
 
-fn investment_stat(definition_index: u16, value: i32) -> WeaponInvestmentStat {
-    WeaponInvestmentStat {
-        definition_index,
-        definition_hash: None,
-        name: format!("Stat {definition_index}"),
-        value,
-        minimum_value: None,
-        maximum_value: None,
-        display_as_numeric: false,
-        is_linear: false,
-        display_interpolation: Vec::new(),
+fn render(width: f32, draw: impl FnMut(&mut egui::Ui)) -> (egui::FullOutput, f32) {
+    render_with_capture(width, None, draw)
+}
+
+fn render_with_capture(
+    width: f32,
+    capture_name: Option<&str>,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> (egui::FullOutput, f32) {
+    let ctx = egui::Context::default();
+    let mut overflow = 0.0_f32;
+    let mut output = egui::FullOutput::default();
+    for _ in 0..2 {
+        output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 1600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    workbench_style(ui);
+                    let right = ui.max_rect().right();
+                    draw(ui);
+                    overflow = (ui.min_rect().right() - right).max(0.0);
+                });
+            },
+        );
+        if capture_name.is_some() {
+            custom_perks::workbench::tests::capture::record(&output);
+        }
     }
+    if let Some(name) = capture_name {
+        custom_perks::workbench::tests::capture::write(&ctx, &output, name);
+    }
+    (output, overflow)
 }
 
-#[test]
-fn stat_display_donor_adds_missing_rows_without_overwriting_recipe_values() {
-    let mut overrides = WeaponRecipeOverrides {
-        investment_stats: vec![WeaponStatOverride {
-            definition_index: 20,
-            value: 91,
-        }],
-        removed_investment_stats: vec![14, 30],
-        ..WeaponRecipeOverrides::default()
-    };
-    let gameplay = [investment_stat(14, 600), investment_stat(20, 45)];
-    let profile = [
-        investment_stat(14, 720),
-        investment_stat(20, 60),
-        investment_stat(30, 80),
-    ];
-
-    merge_stat_profile_investment_rows(&mut overrides, &gameplay, &profile);
-
-    assert!(overrides.removed_investment_stats.is_empty());
-    assert_eq!(
-        overrides.investment_stats,
-        vec![
-            WeaponStatOverride {
-                definition_index: 20,
-                value: 91,
-            },
-            WeaponStatOverride {
-                definition_index: 30,
-                value: 80,
-            },
-        ]
-    );
+fn text_origin(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+    text_origins(output, label)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("Missing rendered label: {label}"))
 }
 
-#[test]
-fn standard_workbench_controls_are_not_reported_as_technical_overrides() {
-    let mut recipe = PackageAuthoringApp::default().recipe;
-    recipe.overrides.investment_stats.push(WeaponStatOverride {
-        definition_index: 14,
-        value: 50,
-    });
-    recipe.overrides.socket_columns = vec![Some(WeaponSocketColumnRecipe {
-        choices: vec![HexHash::new(0xAAAA_AAAA)],
-        ..WeaponSocketColumnRecipe::default()
-    })];
-
-    assert!(technical_recipe_features(&recipe).is_empty());
-    let column = recipe.overrides.socket_columns[0].as_mut().unwrap();
-    column.socket_type = Some(92);
-    assert!(technical_recipe_features(&recipe).is_empty());
-    let column = recipe.overrides.socket_columns[0].as_mut().unwrap();
-    column.choice_weight_bits = vec![0.5_f32.to_bits()];
-    column.reusable_plug_set_index = Some(18);
-    let details = technical_recipe_features(&recipe);
-    assert_eq!(details.len(), 1);
-    assert!(details[0].contains("Socket 1: choice weights, reusable plug set"));
-    assert!(details[0].contains("Socket Options → Show Socket Details"));
-}
-
-#[test]
-fn runtime_value_scope_preserves_saved_values_and_gates_show_all() {
-    assert!(runtime_field_is_in_editor_scope(
-        WeaponRuntimeFieldSource::OpaqueNativeType,
-        false,
-        true,
-        false,
-        false,
-    ));
-    assert!(!runtime_field_is_in_editor_scope(
-        WeaponRuntimeFieldSource::OpaqueNativeType,
-        true,
-        false,
-        true,
-        false,
-    ));
-    assert!(runtime_field_is_in_editor_scope(
-        WeaponRuntimeFieldSource::OpaqueNativeType,
-        true,
-        false,
-        true,
-        true,
-    ));
-    assert!(!runtime_field_is_in_editor_scope(
-        WeaponRuntimeFieldSource::OpaqueNativeType,
-        false,
-        false,
-        true,
-        true,
-    ));
-}
-
-#[test]
-fn removing_a_socket_choice_keeps_native_metadata_aligned() {
-    let mut recipe = PackageAuthoringApp::default().recipe;
-    recipe.overrides.socket_columns = vec![Some(WeaponSocketColumnRecipe {
-        choices: [1, 2, 3].into_iter().map(HexHash::new).collect(),
-        choice_weight_bits: vec![10, 20, 30],
-        choice_conditions: [1, 2, 3]
-            .into_iter()
-            .map(|operand| {
-                vec![WeaponNumericInstructionRecipe {
-                    opcode: 10,
-                    operand,
-                }]
-            })
-            .collect(),
-        ..WeaponSocketColumnRecipe::default()
-    })];
-
-    set_recipe_socket_column(&mut recipe, 1, 0, &[1, 2, 3], vec![1, 3], Some(1));
-
-    let column = recipe.overrides.socket_columns[0].as_ref().unwrap();
-    assert_eq!(column.choices, vec![HexHash::new(1), HexHash::new(3)]);
-    assert_eq!(column.choice_weight_bits, vec![10, 30]);
-    assert_eq!(
-        column
-            .choice_conditions
-            .iter()
-            .map(|program| program[0].operand)
-            .collect::<Vec<_>>(),
-        vec![1, 3]
-    );
-}
-
-#[test]
-fn removing_a_socket_choice_shifts_only_later_picker_queries() {
-    let mut queries = BTreeMap::from([
-        (0, "default".to_owned()),
-        (1, "removed".to_owned()),
-        (2, "next".to_owned()),
-        (5, "later".to_owned()),
-    ]);
-
-    shift_socket_choice_queries_after_removal(&mut queries, 1);
-
-    assert_eq!(
-        queries,
-        BTreeMap::from([
-            (0, "default".to_owned()),
-            (1, "next".to_owned()),
-            (4, "later".to_owned()),
-        ])
-    );
-}
-
-#[test]
-fn disabled_socket_configuration_starts_invalid_and_preserves_other_rows() {
-    let mut recipe = PackageAuthoringApp::default().recipe;
-    recipe.overrides.socket_columns = vec![Some(WeaponSocketColumnRecipe {
-        choices: vec![HexHash::new(0xAAAA_AAAA)],
-        ..WeaponSocketColumnRecipe::default()
-    })];
-
-    materialize_socket_column(&mut recipe, 3, 2, &[], true);
-
-    assert_eq!(
-        recipe.overrides.socket_columns[0].as_ref().unwrap().choices,
-        vec![HexHash::new(0xAAAA_AAAA)]
-    );
-    let pending = recipe.overrides.socket_columns[2].as_ref().unwrap();
-    assert_eq!(pending.socket_type, Some(u16::MAX));
-    assert_eq!(pending.choices, vec![HexHash::new(0)]);
-}
-
-#[test]
-fn build_worker_events_update_progress_then_finish_with_an_error() {
-    let mut app = PackageAuthoringApp::default();
-    let (sender, receiver) = mpsc::channel();
-    app.build_receiver = Some(receiver);
-    let started = Instant::now();
-    app.build_started = Some(started);
-    sender
-        .send(BuildWorkerEvent::Progress(TimedBuildProgress {
-            phase: BuildPhase::ValidatingPackages,
-            current_artifact: Some("test.pkg".to_owned()),
-            completed: 2,
-            total: 6,
-            elapsed: Duration::from_millis(750),
-        }))
-        .unwrap();
-
-    app.poll_build();
-
-    let progress = app.build_progress.as_ref().unwrap();
-    assert_eq!(progress.phase, BuildPhase::ValidatingPackages);
-    assert_eq!(progress.current_artifact.as_deref(), Some("test.pkg"));
-    assert_eq!((progress.completed, progress.total), (2, 6));
-    assert!((progress.fraction() - (1.0 / 3.0)).abs() < f32::EPSILON);
-    assert_eq!(
-        app.build_elapsed(started + Duration::from_secs(9)),
-        Duration::from_secs(9)
-    );
-
-    sender
-        .send(BuildWorkerEvent::Finished {
-            result: Err("synthetic failure".to_owned().into()),
-            elapsed: Duration::from_secs(2),
-        })
-        .unwrap();
-    app.poll_build();
-
-    assert!(app.build_receiver.is_none());
-    assert!(matches!(app.latest_build, Some(Err(ref error)) if error == "synthetic failure"));
-    assert_eq!(
-        app.build_progress.as_ref().unwrap().elapsed,
-        Duration::from_secs(2)
-    );
-    assert_eq!(
-        app.build_elapsed(started + Duration::from_secs(20)),
-        Duration::from_secs(2)
-    );
-}
-
-#[test]
-fn successful_build_event_enters_completed_install_ready_state() {
-    let mut app = PackageAuthoringApp::default();
-    let (sender, receiver) = mpsc::channel();
-    app.build_receiver = Some(receiver);
-    sender
-        .send(BuildWorkerEvent::Finished {
-            result: Ok(BuildReport {
-                weapons: Vec::new(),
-                run_directory: PathBuf::from("staged-run"),
-                manifest_path: PathBuf::from("staged-run/manifest.json"),
-                artifacts: Vec::new(),
-                selection_fingerprint: "fingerprint".to_owned(),
-                staged_recipe_paths: Vec::new(),
-            }),
-            elapsed: Duration::from_secs(3),
-        })
-        .unwrap();
-
-    app.poll_build();
-
-    assert!(app.build_receiver.is_none());
-    assert!(matches!(app.latest_build, Some(Ok(_))));
-    let progress = app.build_progress.as_ref().unwrap();
-    assert_eq!(progress.phase, BuildPhase::Complete);
-    assert_eq!((progress.completed, progress.total), (1, 1));
-    assert_eq!(progress.elapsed, Duration::from_secs(3));
-}
-
-#[test]
-fn dirty_recipe_requires_confirmation_before_replacement() {
-    let mut app = PackageAuthoringApp {
-        recipe_dirty: true,
-        ..PackageAuthoringApp::default()
-    };
-    app.recipe.name = "Unsaved name".to_owned();
-
-    assert!(!app.request_recipe_action(PendingRecipeAction::New(ItemKind::Weapon)));
-    assert_eq!(app.recipe.name, "Unsaved name");
-    assert_eq!(
-        app.pending_recipe_action,
-        Some(PendingRecipeAction::New(ItemKind::Weapon))
-    );
-
-    let action = app.pending_recipe_action.take().unwrap();
-    assert!(app.execute_recipe_action(action));
-    assert_eq!(app.recipe.name, "New Recipe");
-    assert!(!app.recipe_dirty);
-}
-
-#[test]
-fn close_approval_is_deferred_until_dirty_recipe_is_discarded() {
-    let mut app = PackageAuthoringApp {
-        recipe_dirty: true,
-        ..PackageAuthoringApp::default()
-    };
-
-    assert!(!app.request_recipe_action(PendingRecipeAction::Close));
-    assert!(!app.take_close_approved());
-    assert_eq!(app.pending_recipe_action, Some(PendingRecipeAction::Close));
-
-    let action = app.pending_recipe_action.take().unwrap();
-    assert!(!app.execute_recipe_action(action));
-    assert!(app.take_close_approved());
-    assert!(!app.take_close_approved());
-}
-
-#[test]
-fn inherited_socket_column_starts_with_the_scalar_default() {
-    assert_eq!(
-        inherited_socket_choices(
-            Some(0xAAAA_AAAA),
-            &[0xBBBB_BBBB, 0xAAAA_AAAA, 0xCCCC_CCCC],
-            3,
-        ),
-        vec![0xAAAA_AAAA, 0xBBBB_BBBB, 0xCCCC_CCCC]
-    );
-}
-
-#[test]
-fn inherited_socket_column_deduplicates_and_honors_the_authored_limit() {
-    assert_eq!(
-        inherited_socket_choices(
-            Some(0xAAAA_AAAA),
-            &[0xAAAA_AAAA, 0xBBBB_BBBB, 0xCCCC_CCCC],
-            2,
-        ),
-        vec![0xAAAA_AAAA, 0xBBBB_BBBB]
-    );
-    assert_eq!(
-        inherited_socket_choices(None, &[0xBBBB_BBBB, 0xBBBB_BBBB], 3),
-        vec![0xBBBB_BBBB]
-    );
-    assert!(inherited_socket_choices(Some(0xAAAA_AAAA), &[0xBBBB_BBBB], 0).is_empty());
+fn text_origins(output: &egui::FullOutput, label: &str) -> Vec<egui::Pos2> {
+    fn find(shape: &egui::Shape, label: &str, positions: &mut Vec<egui::Pos2>) {
+        match shape {
+            egui::Shape::Text(value) if value.galley.job.text == label => positions.push(value.pos),
+            egui::Shape::Vec(values) => {
+                for value in values {
+                    find(value, label, positions);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut positions = Vec::new();
+    for shape in &output.shapes {
+        find(&shape.shape, label, &mut positions);
+    }
+    positions
 }

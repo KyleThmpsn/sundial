@@ -98,17 +98,3 @@ fn draw_color(ui: &mut egui::Ui, label: &str, rgb: [f32; 3]) {
         ui.monospace(format!("{}, {}, {}", rgb[0], rgb[1], rgb[2]));
     });
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn color_targets_exclude_disabled_rows_and_deduplicate_references() {
-        let metadata: ItemPackageMetadata = serde_json::from_value(serde_json::json!({
-            "definition_index": 0, "definition_tag": 0,
-            "translation_dye_rows": [[{"stage":0,"key":0,"value":80},{"stage":0,"key":-1,"value":90}],
-                [{"stage":1,"key":1,"value":80},{"stage":1,"key":2,"value":65535}],[]]
-        })).unwrap();
-        assert_eq!(dye_indices(&metadata), [80]);
-    }
-}

@@ -6,18 +6,29 @@ use std::{
     process::Command,
 };
 
-pub use crate::package_runtime::reader::PackageManager;
+pub use crate::animation::curve as animation_curve;
+pub use crate::package_runtime::mods as mod_content;
+pub use crate::package_runtime::reader::{PackageManager, initialize_source_decoder};
 pub use crate::package_runtime::{RuntimeBrand, RuntimeSnapshot};
 use eframe::egui;
+
+pub mod ui;
+
+/// A closed native material expression, evaluated with the runtime's arithmetic.
+/// Dynamic inputs and expressions outside the bounded native interpreter return `None`.
+pub fn constant_material_expression(code: &[u8], constants: &[[f32; 4]]) -> Option<[f32; 4]> {
+    crate::dyes::material::program::Program::constant(code, constants)
+}
+
 use serde::de::DeserializeOwned;
 
+pub use crate::catalog::class_items::class_from_item_strings;
 pub use crate::catalog::stock_subclass_list_classes;
-pub use crate::class_items::class_from_item_strings;
-pub use crate::investment_localization::{resolve_item_name, resolve_item_type_name};
+pub use crate::investment::localization::{resolve_item_name, resolve_item_type_name};
 
 /// Shared display-only classification used by the native item pickers.
 pub fn is_dummy_item(hash: u32) -> bool {
-    crate::dummy_items::contains(u64::from(hash))
+    crate::catalog::dummy_items::contains(u64::from(hash))
 }
 
 /// Validated native weapon bucket capacities, shared with the installed inventory catalog.
@@ -40,15 +51,31 @@ pub fn inventory_bucket_capacity(
 pub use crate::package_runtime::tft;
 pub use crate::package_runtime::{is_valid_package_tag, resolve_live_named_tag};
 
-pub use crate::weapon_dyes::{
-    DYE_TEXTURE_EDGE, DyeFinish, DyeMaterial, DyeSurfaceMaterial, DyeTexture, IridescenceRow,
-    WeaponDyeColors, dye_surfaces, load_dye_materials, load_dye_textures, load_iridescence_rows,
-    load_weapon_dye_colors,
+/// Decode bounded Wwise Vorbis media through the same codebook and sample reader as inspection.
+/// Importers still own speaker assignment, loop metadata and the native streaming envelope.
+pub fn decode_audio_wave(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    crate::model_preview::assets::decoded_wave(bytes)
+}
+
+/// Checked reference fields in a newly authored payload, using a native template's layout.
+/// Raw buffers, shader bytecode and audio backing data have no reflected fields.
+pub fn declared_payload_references(
+    manager: &PackageManager,
+    template: u32,
+    payload: &[u8],
+) -> Result<Vec<(usize, u32)>, String> {
+    crate::package_runtime::references::payload_fields(manager, template, payload)
+}
+
+pub use crate::dyes::{
+    DYE_TEXTURE_EDGE, DyeFinish, DyeMaterial, DyeSource, DyeSurfaceMaterial, DyeTexture,
+    DyeTextureSource, IridescenceRow, WeaponDyeColors, decode_source_material, dye_surfaces,
+    load_dye_materials, load_dye_textures, load_iridescence_rows, load_weapon_dye_colors,
 };
 
 /// Native icon-definition layouts shared by Sundial's reader and package-authoring utilities.
 pub mod icon_schema {
-    pub use crate::icon_schema::{
+    pub use crate::catalog::icons::schema::{
         ICON_BACKGROUND_LAYER_OFFSET, ICON_DEFINITION_CLASS, ICON_DEFINITION_SIZE,
         ICON_FOREGROUND_LAYER_OFFSET, ICON_LAYER_ARRAY_CLASS, ICON_LAYER_CLASS,
         ICON_LAYER_LANE_CLASS, ICON_LAYER_REFERENCE_OFFSETS, ICON_LAYER_TEXTURE_CLASS,
@@ -59,7 +86,7 @@ pub mod icon_schema {
 
 /// Native investment table shapes shared by Sundial's reader and package-authoring utilities.
 pub mod investment_schema {
-    pub use crate::investment_schema::{
+    pub use crate::investment::schema::{
         ARC_DAMAGE_PLUG_ITEM_HASH, ARC_DAMAGE_PLUG_ITEM_INDEX, COLLECTIBLE_CONDITION_OFFSETS,
         COLLECTIBLE_DEFINITION_ROW_CLASS, COLLECTIBLE_DEFINITION_ROW_SIZE,
         COLLECTIBLE_DISPLAY_DESCRIPTION_REFERENCE_OFFSET, COLLECTIBLE_DISPLAY_ICON_INDEX_OFFSET,
@@ -100,8 +127,9 @@ pub mod investment_schema {
         ITEM_SANDBOX_PERK_ROW_SIZE, ITEM_SOCKET_ENTRY_LIST_BLOCK_POINTER_OFFSET,
         ITEM_SOCKET_ENTRY_LIST_BLOCK_SIZE, ITEM_SOCKET_ENTRY_LIST_INDEX_OFFSET,
         ITEM_STRING_AMMO_CLASS, ITEM_STRING_AMMO_CLASS_OFFSET, ITEM_STRING_AMMO_TYPE_OFFSET,
-        ITEM_STRING_DESCRIPTION_REFERENCE_OFFSET, ITEM_STRING_ICON_INDEX_OFFSET,
-        ITEM_STRING_INDEX_ROW_CLASS, ITEM_STRING_NAME_REFERENCE_OFFSET,
+        ITEM_STRING_DAMAGE_TYPE_OFFSET, ITEM_STRING_DESCRIPTION_REFERENCE_OFFSET,
+        ITEM_STRING_ICON_INDEX_OFFSET, ITEM_STRING_INDEX_ROW_CLASS,
+        ITEM_STRING_NAME_REFERENCE_OFFSET, ITEM_STRING_SECONDARY_ICON_INDEX_OFFSET,
         ITEM_STRING_SOURCE_REFERENCE_OFFSET, ITEM_STRING_STAT_GROUP_INDEX_OFFSET,
         ITEM_STRING_STAT_GROUP_POINTER_OFFSET, ITEM_STRING_STAT_GROUP_RESOURCE_CLASS,
         ITEM_STRING_TYPE_REFERENCE_OFFSET, ITEM_STRING_UI_TEMPLATE_HASH_OFFSET,
@@ -132,19 +160,123 @@ pub mod investment_schema {
         ROOT_ITEM_HASH_INDEX_TABLE_SLOT, ROOT_ITEM_METADATA_INDEX_TABLE_SLOT,
         ROOT_MATERIAL_REQUIREMENT_TABLE_SLOT, ROOT_OBJECTIVE_DEFINITION_TABLE_SLOT,
         ROOT_PRESENTATION_NODE_DEFINITION_TABLE_SLOT, ROOT_RECORD_DEFINITION_TABLE_SLOT,
-        ROOT_SANDBOX_PATTERN_INDEX_TABLE_SLOT, ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT,
-        ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT, ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT,
-        ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT, ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT,
-        SHARED_EXPRESSION_POOL_COUNT, SHARED_EXPRESSION_POOL_DIRECT_ROW_CLASS,
-        SHARED_EXPRESSION_POOL_DIRECT_ROW_SIZE, SHARED_EXPRESSION_POOL_HASHED_EXPRESSION_OFFSET,
-        SHARED_EXPRESSION_POOL_HASHED_ROW_CLASS, SHARED_EXPRESSION_POOL_HASHED_ROW_SIZE,
-        SHARED_EXPRESSION_POOL_PARALLEL_ROW_CLASS, SOLAR_DAMAGE_PLUG_ITEM_HASH,
-        SOLAR_DAMAGE_PLUG_ITEM_INDEX, UNLOCK_FLAG_DEFINITION_ROW_CLASS,
-        UNLOCK_FLAG_DEFINITION_ROW_SIZE, UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS,
-        UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE, UNLOCK_FLAG_DISPLAY_ROW_CLASS,
-        UNLOCK_FLAG_DISPLAY_ROW_SIZE, UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS,
-        UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE, VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX,
-        investment_globals_table_tag, investment_root_table_tag, item_version_array,
+        ROOT_REUSABLE_PLUG_SET_TABLE_SLOT, ROOT_SANDBOX_PATTERN_INDEX_TABLE_SLOT,
+        ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT, ROOT_SHARED_EXPRESSION_POOL_TABLE_SLOT,
+        ROOT_SOCKET_ENTRY_LIST_TABLE_SLOT, ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT,
+        ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT, SHARED_EXPRESSION_POOL_COUNT,
+        SHARED_EXPRESSION_POOL_DIRECT_ROW_CLASS, SHARED_EXPRESSION_POOL_DIRECT_ROW_SIZE,
+        SHARED_EXPRESSION_POOL_HASHED_EXPRESSION_OFFSET, SHARED_EXPRESSION_POOL_HASHED_ROW_CLASS,
+        SHARED_EXPRESSION_POOL_HASHED_ROW_SIZE, SHARED_EXPRESSION_POOL_PARALLEL_ROW_CLASS,
+        SOLAR_DAMAGE_PLUG_ITEM_HASH, SOLAR_DAMAGE_PLUG_ITEM_INDEX,
+        UNLOCK_FLAG_DEFINITION_ROW_CLASS, UNLOCK_FLAG_DEFINITION_ROW_SIZE,
+        UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS, UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE,
+        UNLOCK_FLAG_DISPLAY_ROW_CLASS, UNLOCK_FLAG_DISPLAY_ROW_SIZE,
+        UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS, UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE,
+        VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX, investment_globals_table_tag,
+        investment_root_table_tag, item_version_array, set_subclass_equipment_class,
+        subclass_equipment_class,
+    };
+    pub use crate::investment::schema::{
+        ITEM_METRIC_BLOCK_CLASS, ITEM_METRIC_BLOCK_POINTER_OFFSET, ITEM_METRIC_CATEGORY_ROW_CLASS,
+        emblem_metric_categories,
+    };
+    pub use crate::investment::schema::{armor_equipment_class, set_armor_equipment_class};
+}
+
+/// Ability definition rows, which a Subclass pool record names its ability by.
+pub mod ability_definition {
+    pub use crate::ability::definition::{
+        DEFINITION_TABLE_CLASS, DEFINITION_TABLE_SLOT, Definition, IDENTITY_TABLE_CLASS,
+        IDENTITY_TABLE_SLOT, MOST_ROWS, append, definitions, entity, pattern, patterns,
+    };
+}
+
+/// The glyph an ability's HUD tile shows, which its energy controller names and a bank row
+/// can name in its place.
+pub mod ability_hud {
+    pub use crate::ability::hud::{
+        AttachedGlyph, GLYPH_FIELD, GLYPH_TABLE, GlyphSite, VariantGlyph, all_variant_glyphs,
+        attached_glyphs, glyph_keys, glyph_site, variant_glyphs,
+    };
+}
+
+/// The ability keys of On a Specific Ability and Ends on a Specific Ability conditions.
+pub mod ability_reference {
+    pub use crate::ability::reference::{references, retarget};
+}
+
+/// A Subclass ability modifier's bank and the keys of its own property rows.
+pub mod ability_modifier {
+    pub use crate::ability::modifier::{
+        RECHARGE_INPUT, bank_slot, charge_key, entity_bank, is_bank, parameter_key, recharge_key,
+        recharge_modifier, settable_parameters, takes_recharge,
+    };
+}
+
+/// Movement controller values with traced consumers, such as a Blink's distance.
+pub mod ability_materials {
+    pub use crate::ability::materials::{MaterialRoute, Routes, material_routes};
+}
+
+pub mod ability_movement {
+    pub use crate::ability::movement::{
+        MovementValue, PARAMETER_RESET, RowLane, Unit, discover, parameter_lane, row_lane,
+        row_lanes, validate_bank_context,
+    };
+}
+
+/// The entity graphs an entity spawns or attaches, placed by component resource.
+pub mod ability_palette {
+    pub use crate::ability::palette::{
+        Graphs, MATERIAL_BINDINGS, MATERIAL_CLASS, PALETTE_FORMAT, PALETTE_HEIGHT, PALETTE_WIDTH,
+        PARTICLE_SYSTEM_CLASS, Palette, PaletteUse, ParticleSite, SYSTEM_MATERIAL, ability_graphs,
+        ability_graphs_in, ability_palettes, binding_tag_offset, bindings, palette_data,
+        palette_pixels, palettes, palettes_in_graphs, particle_sites,
+    };
+}
+
+pub mod ability_tint {
+    pub use crate::ability::tint::{
+        ColorConstant, ConstantStore, Tint, TintUse, ability_tints, color_constants, is_tint,
+        tints_in_graphs,
+    };
+}
+
+/// Settings of an ability's parts that their native readers act on, such as a region's recovery.
+pub mod ability_settings {
+    pub use crate::ability::settings::{
+        Codec, Creation, Kind, Lane, NativeProperty, Setting, Unit, creations, discover,
+        validate_values,
+    };
+}
+
+pub mod ability_spawns {
+    pub use crate::ability::spawns::{
+        Discovery, Links, Spawn, describe, is_table, links, names, reached_graphs, self_spawns,
+        spawned_graphs, spawns, table_entries, table_graphs, tables,
+    };
+}
+pub mod ability_damage {
+    pub use crate::ability::damage::{
+        ARC, KINETIC, Profile, SOLAR, VOID, profile, references, retype, set_fixed_amount,
+    };
+}
+
+/// Ability bank property rows, and the charge row edit.
+pub mod ability_bank {
+    pub use crate::ability::bank::{
+        AbilityTarget, CHARGE_DEFINITION_CLASS, CHARGE_INSTANCE_CLASS, CHARGE_ROWS,
+        CLASS_ABILITY_CHARGE_KEY, CLASS_ABILITY_SLOT, ChargeRow, DEFINITION_ROW_CLASS,
+        FixedModifier, FixedSelection, GRENADE_SLOT, GroupEntry, GroupModifier, HandlerIndex,
+        INSTANCE_ROW_CLASS, JUMP_SLOT, MELEE_CHARGE_KEY, MELEE_DAMAGE_PROFILE, MELEE_SLOT,
+        MOVEMENT_SLOT, Modifier, PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind,
+        ParameterName, PropertyRow, SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS,
+        SLOT_PARAMETERS, SUPER_SLOT, StockParameter, UNPLACED_BANKS, bank_name, bank_names,
+        bank_owner, block_count, constant_protection_definition, handler_slot, instance_shift,
+        parameter_abilities, parameter_kind, parameter_label, parameter_meaning, parameter_name,
+        parameters, property_rows, register_bank_names, retarget_references, row_modifiers,
+        slot_banks, slot_name, slot_parameters, tuning_key, validate, validate_native_owner,
+        with_charge_row, with_property_row, with_property_row_mode,
     };
 }
 
@@ -171,18 +303,19 @@ pub mod sandbox_perk {
         validate_sandbox_perk_index_catalog, validate_sandbox_perk_runtime_map,
     };
     pub use crate::sandbox_perk::{
-        action, activation, dependencies, ingredients, nodes, program, projectile,
+        action, activation, dependencies, entity, ingredients, nodes, program,
     };
 }
 
-/// Weapon sandbox-pattern and runtime entity graph helpers shared with package authoring tools.
-pub mod weapon_entity {
-    pub use crate::weapon_entity::{
-        ComponentWiring, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS,
-        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE,
-        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG, SANDBOX_PATTERN_GLOBAL_ID_OFFSET,
-        SANDBOX_PATTERN_INDEX_ROW_CLASS, SANDBOX_PATTERN_INDEX_ROW_SIZE,
-        SANDBOX_PATTERN_NESTED_CLASS, SANDBOX_PATTERN_NESTED_OFFSET, SANDBOX_PATTERN_ROW_CLASS,
+/// Sandbox-pattern and runtime entity graph helpers shared with package authoring tools.
+pub mod entity {
+    pub use crate::entity::{
+        ComponentSplice, ComponentSpliceRecord, ComponentWiring,
+        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_CLASS,
+        SANDBOX_PATTERN_ENTITY_ASSIGNMENT_ROW_SIZE, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
+        SANDBOX_PATTERN_GLOBAL_ID_OFFSET, SANDBOX_PATTERN_INDEX_ROW_CLASS,
+        SANDBOX_PATTERN_INDEX_ROW_SIZE, SANDBOX_PATTERN_NESTED_CLASS,
+        SANDBOX_PATTERN_NESTED_OFFSET, SANDBOX_PATTERN_OBJECT_OFFSET, SANDBOX_PATTERN_ROW_CLASS,
         SANDBOX_PATTERN_ROW_SIZE, SandboxPatternIdentity, WEAPON_BARREL_COMPONENT_KEY,
         WEAPON_CONTROLLER_COMPONENT_KEY, WEAPON_ENTITY_CLASS, WEAPON_ENTITY_COMPONENT_ROW_CLASS,
         WEAPON_ENTITY_COMPONENT_ROW_SIZE, WEAPON_ENTITY_DEFINITION_MAP_ROW_CLASS,
@@ -191,40 +324,50 @@ pub mod weapon_entity {
         WEAPON_INPUT_COMPONENT_KEY, WEAPON_MAGAZINE_COMPONENT_KEY, WEAPON_RELOAD_COMPONENT_KEY,
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, WEAPON_TRIGGER_CHARGE_COMPONENT_KEY,
         WEAPON_TRIGGER_COMPONENT_KEY, WeaponComponentBinding, append_weapon_entity_assignment,
-        coupled_weapon_component_bindings, extend_weapon_components,
-        graft_weapon_component_binding, graft_weapon_component_bindings,
-        graft_weapon_component_bindings_or_rewire, graft_weapon_component_bindings_with, owner,
+        barrel, barrel_pellets, coupled_weapon_component_bindings, extend_weapon_components,
+        extend_weapon_components_detaching, graft_weapon_component_binding,
+        graft_weapon_component_bindings, graft_weapon_component_bindings_or_rewire,
+        graft_weapon_component_bindings_with, grow_projectile_trajectories, owner,
+        plan_component_splice, projectile_trajectory_capacity, remove_weapon_components,
         retarget_weapon_component_owner, retarget_weapon_component_owner_payload,
-        sandbox_pattern_identity, sandbox_pattern_identity_at, validate_weapon_entity,
+        sandbox_pattern_identity, sandbox_pattern_identity_at, spread, validate_weapon_entity,
         weapon_component_binding, weapon_component_binding_hashes, weapon_component_bindings,
         weapon_entity_assignment,
     };
 }
 
-/// Typed, data-driven weapon runtime discovery shared with package authoring tools.
-pub mod weapon_runtime {
-    pub use crate::weapon_runtime::{
-        NativeMember, NativeStructure, NativeStructureField, ResolvedWeaponRuntimeField,
-        WeaponRuntimeBinding, WeaponRuntimeEntitySource, WeaponRuntimeField,
-        WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource, WeaponRuntimeGraph,
-        WeaponRuntimeOwner, WeaponRuntimePathElement, WeaponRuntimeResource,
+/// Typed, data-driven runtime entity discovery shared with package authoring tools.
+pub mod runtime {
+    pub use crate::runtime::{
+        BindingHash, GraphTag, NativeMember, NativeStructure, NativeStructureField,
+        ResolvedWeaponRuntimeField, SchemaHandle, WeaponRuntimeBinding, WeaponRuntimeEntitySource,
+        WeaponRuntimeField, WeaponRuntimeFieldLocator, WeaponRuntimeFieldSource,
+        WeaponRuntimeGraph, WeaponRuntimeOwner, WeaponRuntimePathElement, WeaponRuntimeResource,
         WeaponRuntimeResourceShape, WeaponRuntimeRoot, WeaponRuntimeRootKind, WeaponRuntimeValue,
         WeaponRuntimeValueKind, WeaponRuntimeValueOverride, component_binding_label,
         decode_weapon_runtime_field_value, encode_weapon_runtime_field_value,
-        encode_weapon_runtime_value, load_weapon_runtime_entity_at_pattern_index_with_manager,
-        load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph,
-        load_weapon_runtime_graph_for_entity, load_weapon_runtime_graph_with_manager,
-        load_weapon_runtime_resource_shape, native_holders, native_member_names, native_members,
+        encode_weapon_runtime_value, load_weapon_runtime_entities_at_pattern_indices_with_manager,
+        load_weapon_runtime_entity_at_pattern_index_with_manager,
+        load_weapon_runtime_entity_for_item_with_manager, load_weapon_runtime_entity_with_manager,
+        load_weapon_runtime_graph, load_weapon_runtime_graph_for_entity,
+        load_weapon_runtime_graph_with_manager, load_weapon_runtime_resource_shape, native_holders,
+        native_member_names, native_members, native_pointer_layout, native_type_inherits,
         native_type_name, resolve_weapon_runtime_field, runtime_fields_share_semantics,
     };
-    pub use crate::weapon_runtime::{modifiers, presentation};
+    pub use crate::runtime::{modifiers, presentation};
+}
+
+/// Every resource that references a resource, over the whole installation.
+pub mod referrers {
+    pub use crate::package_runtime::references::referrers::{CANCELLED, Referrers, Usage, read};
 }
 
 /// The named points a weapon's gear art carries, and the names recovered for them.
 pub mod gear_markers {
     pub use crate::gear_markers::{
         CANCELLED, Marker, MarkerEntry, MarkerIndex, MarkerObject, MarkerSet, Neighbour,
-        build_index, cached_index, describe, marker_name, nearest_named, read_appearance,
+        build_index, cached_index, describe, is_marker_set, marker_name, nearest_named,
+        offset_markers, read_appearance, read_appearance_parts, shift_markers,
     };
 }
 
@@ -242,11 +385,20 @@ pub fn parse_json<T: DeserializeOwned>(encoded: &str) -> Result<T, serde_json::E
     crate::strict_json::from_str(encoded)
 }
 
+/// Parses a document that may nest `envelope` containers deeper than [`parse_json`] allows, such
+/// as a bundle of recipes or a recipe holding custom perks, with the same checks.
+pub fn parse_json_envelope<T: DeserializeOwned>(
+    encoded: &str,
+    envelope: usize,
+) -> Result<T, serde_json::Error> {
+    crate::strict_json::from_str_within(encoded, envelope)
+}
+
 /// Reads authored JSON with Sundial's duplicate-key and nesting checks.
 pub fn read_json<R: io::Read, T: DeserializeOwned>(reader: R) -> Result<T, serde_json::Error> {
     crate::strict_json::from_reader(reader)
 }
-pub use crate::paths::{path_is_within, paths_equal, resolve_path_for_comparison};
+pub use crate::system::paths::{path_is_within, paths_equal, resolve_path_for_comparison};
 
 /// Sundial-owned preferences used by an in-process package-authoring utility.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -266,6 +418,8 @@ pub struct PackageAuthoringUpdate {
     pub dirty: bool,
     /// Whether a verified package installation completed since the previous update.
     pub packages_changed: bool,
+    /// Whether an account operation finished and the active account should be refreshed.
+    pub account_changed: bool,
     /// A preference change requested from the hosted Parhelion settings surface.
     pub preferences_changed: Option<PackageAuthoringPreferences>,
     /// Opens the host preferences without closing the workbench.
@@ -287,6 +441,13 @@ pub trait PackageAuthoringUtility: Send {
 
     /// Writes view state that normally saves on focus loss. Sundial can exit with the utility open.
     fn save_on_exit(&mut self) {}
+
+    /// Writes again any work kept outside the recipe whose last save failed, such as perk
+    /// drafts, and returns why some is still unsaved. Sundial asks before exiting while it is.
+    /// A closed utility keeps this work, so Sundial asks whether or not the window is open.
+    fn unsaved_work(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Creates a directory when needed and opens it in the platform file browser.
@@ -343,7 +504,7 @@ pub fn resolve_packages_directory(packages: &Path) -> Result<PathBuf, String> {
     }
     if resolved
         .parent()
-        .is_none_or(|parent| !crate::paths::paths_equal(parent, &root))
+        .is_none_or(|parent| !crate::system::paths::paths_equal(parent, &root))
     {
         return Err(format!(
             "The selected packages directory resolves outside its game folder: {} points to {}. Select an installation whose packages belong to that game folder.",
@@ -390,6 +551,19 @@ pub fn verify_installed_runtime(install: &Path, expected: &RuntimeSnapshot) -> R
     crate::package_runtime::verify_installed_runtime(install, expected)
 }
 
+/// Atomically moves a staged file or directory without replacing a concurrent destination.
+pub fn move_authoring_path(source: &Path, destination: &Path) -> Result<(), String> {
+    crate::package_runtime::installation::move_without_replacing(source, destination).map_err(
+        |error| {
+            format!(
+                "Could not publish {} at {}: {error}",
+                source.display(),
+                destination.display()
+            )
+        },
+    )
+}
+
 /// Checks that the selected installation advertises the runtime hooks required by authoring.
 /// Package headers, generated manifest rows and client cache state are separate install checks.
 pub fn validate_package_authoring_runtime(packages: &Path) -> Result<(), String> {
@@ -404,6 +578,28 @@ pub fn validate_package_authoring_runtime(packages: &Path) -> Result<(), String>
 }
 
 pub use crate::investment::discovery::open_packages as open_shadowkeep_package_manager;
+
+/// Only stock and the managed generation, for ownership checks during removal and recovery.
+pub fn open_managed_shadowkeep_package_manager(packages: &Path) -> Result<PackageManager, String> {
+    crate::package_runtime::open_managed_shadowkeep_packages(
+        packages
+            .parent()
+            .ok_or("Packages directory has no install root")?,
+    )
+}
+
+/// Prospective loader view with the staged generation and every other admitted mod.
+pub fn open_incoming_shadowkeep_package_manager(
+    packages: &Path,
+    incoming: &mod_content::Incoming,
+) -> Result<PackageManager, String> {
+    crate::package_runtime::open_incoming_shadowkeep_packages(
+        packages
+            .parent()
+            .ok_or("Packages directory has no install root")?,
+        incoming,
+    )
+}
 
 /// Reports whether the Destiny 2 client is currently running.
 pub fn destiny_is_running() -> Result<bool, String> {
@@ -421,10 +617,42 @@ pub fn replace_file_from_path_atomically(source: &Path, destination: &Path) -> R
     })
 }
 
+/// Replaces `destination` with the contents of `source` only while `unchanged` accepts the
+/// destination. It is checked after the copy beside the destination is flushed, immediately
+/// before the rename.
+pub fn replace_file_from_path_if_unchanged(
+    source: &Path,
+    destination: &Path,
+    unchanged: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    crate::storage::replace_file_from_path_if(source, destination, || {
+        unchanged().map_err(io::Error::other)
+    })
+    .map_err(|error| {
+        format!(
+            "Could not atomically replace {} from {}: {error}",
+            destination.display(),
+            source.display()
+        )
+    })
+}
+
+/// Publishes the contents of `source` at `destination` only when nothing is there yet, leaving
+/// a file that appeared meanwhile as it is.
+pub fn create_file_from_path(source: &Path, destination: &Path) -> Result<(), String> {
+    crate::storage::create_file_from_path(source, destination).map_err(|error| {
+        format!(
+            "Could not create {} from {}: {error}",
+            destination.display(),
+            source.display()
+        )
+    })
+}
+
 /// Returns Parhelion's writable data directory below Sundial's per-user data directory.
 #[must_use]
 pub fn parhelion_data_directory() -> Option<PathBuf> {
-    crate::paths::data_dir().map(|directory| directory.join("parhelion"))
+    crate::system::paths::data_dir().map(|directory| directory.join("parhelion"))
 }
 
 /// Returns Parhelion's writable recipe library.
@@ -438,19 +666,29 @@ pub fn replace_authoring_file(path: &Path, contents: &[u8]) -> io::Result<()> {
     crate::storage::replace_file(path, contents)
 }
 
+/// Publishes an authoring document only while its observed bytes still match.
+/// The caller must hold its document or library write lease as well.
+pub fn replace_authoring_file_if_unchanged(
+    path: &Path,
+    contents: &[u8],
+    expected: &[u8],
+) -> io::Result<()> {
+    crate::storage::replace_file_if_unchanged(path, contents, expected)
+}
+
 /// Shared bounds-checked native readers. Mutation and authoring policy remain in Parhelion.
 pub mod native_payload {
     pub use crate::package_payload::{bytes_at, native_array_at, relative_offset, write_bytes};
 }
 pub mod native_weapon {
-    pub use crate::native_weapon::*;
+    pub use crate::investment::weapon::*;
 }
 
 /// Checked decoding only. Loading-index writing and enrollment belong to Parhelion.
 pub use crate::package_runtime::loading::index as loading_index;
 
 pub mod account;
-pub use crate::account_contract::{
+pub use crate::account::contract::{
     SHADOWKEEP_ACCOUNT_FLAG_BANK, SHADOWKEEP_ACCOUNT_FLAG_EXTENSION_CAPACITY,
     SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY, SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET,
     SHADOWKEEP_ACCOUNT_FLAG_STOCK_ROWS, SHADOWKEEP_ACCOUNT_VALUE_REGION_OFFSET,

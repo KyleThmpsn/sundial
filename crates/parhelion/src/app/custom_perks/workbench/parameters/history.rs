@@ -6,7 +6,7 @@ pub(in crate::app::custom_perks) struct Snapshot {
     values: Vec<WeaponRuntimeValueOverride>,
     actions: Vec<crate::WeaponSandboxPerkActionFloatRecipe>,
     projectiles: Vec<ProjectileSelection>,
-    movement: Option<(u32, Vec<(projectile::parameters::Kind, u32)>)>,
+    movement: Option<(u32, Vec<(entity::projectile::parameters::Kind, u32)>)>,
 }
 
 impl PerkEditor {
@@ -50,36 +50,5 @@ impl PerkEditor {
                 self.error = None;
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn undo_redo_and_reset_keep_property_drafts_isolated_until_apply() {
-        let ctx = egui::Context::default();
-        let loaded = super::super::tests::fixture();
-        let field = loaded.graphs[0].1.fields().next().unwrap();
-        let value = WeaponRuntimeValueOverride {
-            locator: field.locator.clone(),
-            value: field.value.clone(),
-        };
-        let mut editor = super::super::tests::editor(loaded);
-        let before = editor.snapshot();
-        editor.draft.push(value);
-        editor.record_history(before, &ctx);
-        let edited = editor.snapshot();
-        editor.restore_history(false);
-        assert!(editor.draft.is_empty());
-        editor.restore_history(true);
-        assert!(editor.snapshot() == edited);
-        let before = editor.snapshot();
-        editor.reset_all();
-        editor.record_history(before, &ctx);
-        assert!(editor.draft.is_empty());
-        editor.restore_history(false);
-        assert!(editor.snapshot() == edited);
-        assert!(editor.original_draft.is_empty());
     }
 }

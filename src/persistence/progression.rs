@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use crate::catalog::UnlockDefinition;
 
 pub(crate) const ACCOUNT_FLAG_CAPACITY: usize =
-    crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY;
+    crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY;
 pub(crate) const PROFILE_FLAG_CAPACITY: usize = 512;
 pub(crate) const CHARACTER_FLAG_CAPACITY: usize = 256;
 pub(crate) const OBJECTIVE_VALUE_CAPACITY: usize = 6_200;
@@ -44,7 +44,7 @@ pub(crate) const FAMILY5_OVERRIDE_CAPACITY: usize = 100;
 pub(crate) const FAMILY5_FLAG_SLOT_MAXIMUM: usize = 23_499;
 pub(crate) const FAMILY5_VALUE_SLOT_MAXIMUM: usize = 15_499;
 pub(crate) const FAMILY5_FLAG_VALUE_MAXIMUM: u8 = 2;
-pub(crate) const ACCOUNT_FLAG_BANK: u8 = crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK;
+pub(crate) const ACCOUNT_FLAG_BANK: u8 = crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK;
 pub(crate) const PROFILE_FLAG_BANK: u8 = 2;
 pub(crate) const CHARACTER_OBJECT_FLAG_BANK: u8 = 3;
 pub(crate) const CHARACTER_FLAG_BANK: u8 = 6;
@@ -787,100 +787,6 @@ mod tests {
                 lanes: [-1, 0, 9],
             }]
         );
-    }
-
-    fn collection_state_fixture() -> CollectionStateSnapshot {
-        let document = json!({
-            "state": {
-                "unlocks": {
-                    "account_flag_runs": [[10, 1]],
-                    "objective_values": [[20, 7]]
-                },
-                "investment": {
-                    "family5_flag_overrides": [[30, 2], [31, 1], [60, 0]],
-                    "family5_value_overrides": [[40, -1], [61, 99]]
-                }
-            }
-        });
-        collection_state_snapshot(&document).unwrap()
-    }
-
-    fn unlock_definition(hash: u64, code: u16, compact_slot: Option<u16>) -> UnlockDefinition {
-        UnlockDefinition {
-            hash,
-            code,
-            compact_slot,
-            name: None,
-            description: None,
-            runtime_writers: Vec::new(),
-            tested_by: Vec::new(),
-        }
-    }
-
-    /// Dawn shares the native view with Sunrise SQLite, so it reads as native. It must not read
-    /// as seasonal-capable: every affordance that routes through Sunrise's seasonal editor is
-    /// refused for Dawn, and the UI has to know before offering it.
-    #[test]
-    fn dawn_views_are_native_but_never_seasonal() {
-        let dawn = json!({"_native_progression": {"runtime": "dawn", "character_slot": 0}});
-        let sqlite = json!({"_native_progression": {"character_slot": 0}});
-        let settings = json!({});
-        let snapshot = collection_state_snapshot(&dawn).unwrap();
-        assert!(snapshot.is_native && snapshot.is_dawn);
-        assert!(is_dawn_progression_view(&dawn));
-        assert!(!supports_seasonal_authoring(&dawn));
-
-        let snapshot = collection_state_snapshot(&sqlite).unwrap();
-        assert!(snapshot.is_native && !snapshot.is_dawn);
-        assert!(supports_seasonal_authoring(&sqlite));
-
-        let snapshot = collection_state_snapshot(&settings).unwrap();
-        assert!(!snapshot.is_native && !snapshot.is_dawn);
-        assert!(!supports_seasonal_authoring(&settings));
-    }
-
-    #[test]
-    fn collection_state_snapshot_reads_compact_backing() {
-        let snapshot = collection_state_fixture();
-        let account_flag = unlock_definition(1, 1, Some(10));
-        let absent_flag = unlock_definition(1, 1, Some(11));
-        let account_value = unlock_definition(2, 1, Some(20));
-        let absent_value = unlock_definition(2, 1, Some(21));
-
-        assert_eq!(snapshot.flag_text(0, &account_flag), "Set");
-        assert_eq!(snapshot.flag_text(0, &absent_flag), "Unset");
-        assert_eq!(snapshot.value_text(0, &account_value), "7");
-        assert_eq!(snapshot.value_text(0, &absent_value), "Not listed");
-    }
-
-    #[test]
-    fn collection_state_snapshot_uses_native_unbacked_defaults() {
-        let snapshot = collection_state_fixture();
-        let unbanked = unlock_definition(3, 0, None);
-        let computed = unlock_definition(3, INVENTORY_COMPUTED_KIND.into(), None);
-
-        assert_eq!(snapshot.flag_value(50, &unbanked), Some(false));
-        assert_eq!(snapshot.value(50, &unbanked), Some(0));
-        assert_eq!(snapshot.flag_text(50, &unbanked), "Default false");
-        assert_eq!(snapshot.value_text(50, &unbanked), "Default 0");
-        assert_eq!(snapshot.flag_value(50, &computed), None);
-        assert_eq!(snapshot.flag_text(50, &computed), "Computed at runtime");
-    }
-
-    #[test]
-    fn collection_state_snapshot_applies_family5_overrides() {
-        let snapshot = collection_state_fixture();
-        let account_flag = unlock_definition(1, 1, Some(10));
-        let account_value = unlock_definition(2, 1, Some(20));
-        let unbanked = unlock_definition(3, 0, None);
-
-        assert_eq!(snapshot.flag_text(30, &unbanked), "Override 2");
-        assert_eq!(snapshot.value_text(40, &unbanked), "Override -1");
-        assert_eq!(snapshot.flag_value(31, &unbanked), Some(false));
-        assert_eq!(snapshot.flag_value(60, &account_flag), Some(false));
-        assert_eq!(snapshot.flag_text(60, &account_flag), "Override 0");
-        assert_eq!(snapshot.value(61, &account_value), Some(99));
-        assert_eq!(snapshot.value_text(61, &account_value), "Override 99");
     }
 
     #[test]

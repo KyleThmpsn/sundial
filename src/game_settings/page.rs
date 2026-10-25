@@ -11,7 +11,7 @@ use super::{
     widgets::{CommandBatch, json_string_choice},
 };
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum Tab {
     Player,
     Controls,
@@ -29,7 +29,6 @@ pub(crate) struct PageContext<'a> {
     pub account_settings: Result<&'a Map<String, Value>, &'a str>,
     pub bindings_editable: bool,
     pub json_account: bool,
-    pub extended_fov: bool,
     pub dawn: Option<&'a mut super::dawn::Runtime>,
     pub tab: &'a mut Tab,
     pub key_bindings: &'a mut KeyBindingUiState,
@@ -43,7 +42,6 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
         account_settings,
         bindings_editable,
         json_account,
-        extended_fov,
         dawn,
         tab,
         key_bindings,
@@ -59,7 +57,7 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
     }
     ui.horizontal(|ui| {
         ui.heading("Game Settings");
-        crate::ui_help::info(
+        crate::ui::help::info(
             ui,
             if dawn.is_some() {
                 "Edit Dawn runtime configuration and database-backed player preferences."
@@ -120,11 +118,13 @@ pub(crate) fn draw_page(ui: &mut egui::Ui, context: PageContext<'_>) -> PageEdit
             },
             Tab::Controls => draw_account_settings(ui, account_settings, draw_controls),
             Tab::Audio => draw_account_settings(ui, account_settings, draw_audio),
+            // Sunrise accepts a field of view up to 155 from settings v16. Dawn and older Sunrise
+            // stay at the menu's 105.
             Tab::Display => draw_account_settings(ui, account_settings, |ui, settings| {
                 draw_display(
                     ui,
                     settings,
-                    !dawn_available && extended_fov && (runtime_available || !json_account),
+                    runtime_available,
                     if dawn_available { 2 } else { 4 },
                 )
             }),
@@ -164,7 +164,7 @@ pub(super) fn draw_account_settings(
 pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
     ui.horizontal(|ui| {
         ui.heading("Player");
-        crate::ui_help::info(
+        crate::ui::help::info(
             ui,
             "Change the player identity and language reported to Destiny 2.",
         );
@@ -175,7 +175,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
         ui.set_width(ui.available_width().min(360.0));
         ui.horizontal(|ui| {
             ui.strong("Player Name");
-            crate::ui_help::info(ui, "Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
+            crate::ui::help::info(ui, "Use 1–63 printable ASCII characters. Changes take effect after fully restarting Destiny 2.");
             if let Some(current) = document.pointer("/steam/user/persona_name").and_then(Value::as_str) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(format!("{}/63", current.len()));
@@ -216,7 +216,7 @@ pub(super) fn draw_player(ui: &mut egui::Ui, document: &mut Value) -> bool {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.strong("Game Language");
-            crate::ui_help::info(
+            crate::ui::help::info(
                 ui,
                 "Controls the language reported to Destiny 2 through Steam.",
             );

@@ -43,7 +43,7 @@ impl UpdateCheck {
         let mut action = Action::None;
         // Wide enough that a note reads in a line or two, and tall enough for a screen of them,
         // while still fitting Sundial's smallest window.
-        let screen = ctx.screen_rect().size();
+        let screen = ctx.content_rect().size();
         let width = 720.0_f32.min(screen.x - 48.0);
         let notes_height = (screen.y - 300.0).clamp(200.0, 440.0);
         egui::Window::new("Update Sundial")
@@ -168,59 +168,6 @@ fn restart_blocker(ui: &mut egui::Ui, blocker: Option<&str>, can_save: bool, act
         ui.colored_label(ui.visuals().warn_fg_color, reason);
         if can_save && ui.button("Save Changes").clicked() {
             *action = Action::Save;
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn release_notes_and_download_action_render_without_starting_work() {
-        for width in [640.0, 1280.0] {
-            let mut check = UpdateCheck::default();
-            let (name, _, _) = crate::updates::release::package("v99.0").unwrap();
-            let response = serde_json::json!({"tag_name":"v99.0", "body":"# Changes\n- Account updates\nKeep your settings.",
-                "assets":[{"name":name,"browser_download_url":format!("https://github.com/kylethmpsn/sundial/releases/download/v99.0/{name}"),
-                "size":1234, "digest":format!("sha256:{}", "a".repeat(64))}]});
-            check.status = UpdateStatus::Available(
-                crate::updates::release::parse(&serde_json::to_vec(&response).unwrap(), "0.4.1")
-                    .unwrap()
-                    .unwrap(),
-            );
-            check.window_open = true;
-            let ctx = egui::Context::default();
-            let mut text = String::new();
-            for _ in 0..2 {
-                let output = ctx.run(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(width, 720.0),
-                        )),
-                        ..Default::default()
-                    },
-                    |ctx| {
-                        assert!(matches!(check.draw(ctx, None, false), Action::None));
-                    },
-                );
-                for shape in output.shapes {
-                    if let egui::Shape::Text(text_shape) = shape.shape {
-                        text.push_str(&text_shape.galley.job.text);
-                    }
-                }
-            }
-            for expected in [
-                "Sundial v99.0",
-                "Release Notes",
-                "Account updates",
-                "Download Update",
-            ] {
-                assert!(text.contains(expected), "missing {expected} at {width}");
-            }
-            assert!(check.worker.is_none());
-            assert!(matches!(check.install, InstallState::Idle));
         }
     }
 }

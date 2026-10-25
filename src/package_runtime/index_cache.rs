@@ -32,7 +32,7 @@ pub(crate) fn cached_only<T: Serialize + DeserializeOwned>(
     {
         return Ok(Some(Arc::clone(index)));
     }
-    let Some(root) = crate::paths::cache_dir() else {
+    let Some(root) = crate::system::paths::cache_dir() else {
         return Ok(None);
     };
     let path = root
@@ -73,7 +73,7 @@ pub(crate) fn cached<T: Serialize + DeserializeOwned>(
         return Ok(Arc::clone(index));
     }
     let key = snapshot.key()?;
-    let path = crate::paths::cache_dir()
+    let path = crate::system::paths::cache_dir()
         .map(|root| root.join(directory).join(format!("{version}-{key}.json")));
     let saved = path
         .as_deref()
@@ -111,7 +111,7 @@ pub(crate) fn cached<T: Serialize + DeserializeOwned>(
     if fresh {
         // Building an index reads and decodes the packages behind it, and the index that
         // survives is a fraction of what that cost. A cache hit borrowed nothing to return.
-        crate::memory::release_free_memory();
+        crate::system::memory::release_free_memory();
     }
     Ok(index)
 }

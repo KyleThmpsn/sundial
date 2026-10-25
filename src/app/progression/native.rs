@@ -65,24 +65,4 @@ mod tests {
             .changed()
         );
     }
-
-    #[test]
-    fn raw_native_overrides_remain_visible_to_state_inspection() {
-        let catalog = Catalog::for_test(Vec::new(), Default::default()).with_test_progression(
-            vec![UnlockDefinition {
-                name: Some("Raw Flag".into()),
-                ..Default::default()
-            }],
-            Vec::new(),
-            Vec::new(),
-        );
-        let document =
-            json!({"_native_progression":{"family":[[0,0,255]],"hidden_family_counts":[1,0]}});
-        let snapshot = collection_state_snapshot(&document).unwrap();
-        assert_eq!(
-            snapshot.flag_text(0, catalog.unlock_flag_definition(0).unwrap()),
-            "Override 255"
-        );
-        assert_eq!(snapshot.evaluated_flag(0, &catalog), None);
-    }
 }

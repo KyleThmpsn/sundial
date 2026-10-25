@@ -1,4 +1,5 @@
 use super::*;
+use sundial::package_authoring::sandbox_perk::program::DamageMode;
 
 /// What the picker's cached rows were built from.
 #[derive(Clone, PartialEq)]
@@ -25,7 +26,7 @@ impl PerkEditor {
     pub(super) fn projectile_labels_for(
         &self,
         ctx: &egui::Context,
-        catalog: &Arc<projectile::catalog::Catalog>,
+        catalog: &Arc<entity::catalog::Catalog>,
     ) -> Arc<BTreeMap<u32, String>> {
         let id = egui::Id::new((
             "projectile-display-names",
@@ -90,12 +91,15 @@ impl PerkEditor {
             self.draft.retain(|value| !belongs(&value.locator));
             self.value_text.retain(|(locator, _), _| !belongs(locator));
         }
+        // A damage type set on the slot stays with whichever projectile fires from it.
+        let damage_type = self.projectile_damage(source);
         self.projectile_draft
             .retain(|selection| selection.source_graph != source);
-        if let Some(selected) = selected {
+        if selected.is_some() || damage_type.is_some() {
             self.projectile_draft.push(ProjectileSelection {
                 source_graph: source,
-                donor_graph: selected,
+                donor_graph: selected.unwrap_or(source),
+                damage_type,
             });
         }
         self.projectile_draft
@@ -103,8 +107,39 @@ impl PerkEditor {
         self.parameter_error = None;
     }
 
-    /// Draws every projectile slot in one list. Used when the action has no readable summary
-    /// to place the slots on. Returns whether a selection changed.
+    /// The damage type the projectile firing from slot `source` is given, if any.
+    fn projectile_damage(&self, source: u32) -> Option<DamageMode> {
+        self.projectile_draft
+            .iter()
+            .find(|selection| selection.source_graph == source)
+            .and_then(|selection| selection.damage_type)
+    }
+
+    /// Gives the projectile firing from slot `source` the damage type `damage`, or with `None`
+    /// its own again. A slot that keeps its original projectile with no damage type needs no
+    /// selection.
+    fn set_projectile_damage(&mut self, source: u32, damage: Option<DamageMode>) {
+        match self
+            .projectile_draft
+            .iter_mut()
+            .find(|selection| selection.source_graph == source)
+        {
+            Some(selection) => selection.damage_type = damage,
+            None if damage.is_some() => self.projectile_draft.push(ProjectileSelection {
+                source_graph: source,
+                donor_graph: source,
+                damage_type: damage,
+            }),
+            None => {}
+        }
+        self.projectile_draft.retain(|selection| {
+            selection.donor_graph != selection.source_graph || selection.damage_type.is_some()
+        });
+        self.projectile_draft
+            .sort_by_key(|selection| selection.source_graph);
+    }
+
+    /// Draws every projectile slot in one list. Returns whether a selection changed.
     pub(super) fn draw_projectiles(
         &mut self,
         ui: &mut egui::Ui,
@@ -123,6 +158,7 @@ impl PerkEditor {
             if let Some(selected) = self.draw_projectile_slot(ui, loaded, source) {
                 change = Some((source, selected));
             }
+            self.draw_projectile_damage(ui, source);
         }
         if let Some((source, selected)) = change {
             self.select_projectile(loaded, source, selected);
@@ -132,12 +168,42 @@ impl PerkEditor {
         false
     }
 
+    /// The damage type of the projectile firing from slot `source`: its own, or one set here,
+    /// which every damage profile its private copy's graphs name takes.
+    fn draw_projectile_damage(&mut self, ui: &mut egui::Ui, source: u32) {
+        const TYPES: [(DamageMode, &str); 4] = [
+            (DamageMode::Kinetic, "Kinetic"),
+            (DamageMode::Arc, "Arc"),
+            (DamageMode::Solar, "Solar"),
+            (DamageMode::Void, "Void"),
+        ];
+        let current = self.projectile_damage(source);
+        let mut choice = current;
+        let label = |choice: Option<DamageMode>| {
+            choice
+                .and_then(|choice| TYPES.iter().find(|(each, _)| *each == choice))
+                .map_or("Original", |(_, label)| label)
+        };
+        ui.horizontal(|ui| {
+            ui.label("Damage Type");
+            let response = egui::ComboBox::from_id_salt(("perk-projectile-damage", source))
+                .selected_text(label(current))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, "Original");
+                    for (each, name) in TYPES {
+                        ui.selectable_value(&mut choice, Some(each), name);
+                    }
+                })
+                .response;
+            let _ = crate::app::style::named_control(response, "Projectile Damage Type");
+        });
+        if choice != current {
+            self.set_projectile_damage(source, choice);
+        }
+    }
+
     /// The catalog notices shown once above the projectile pickers.
-    pub(super) fn draw_projectile_notes(
-        &self,
-        ui: &mut egui::Ui,
-        loaded: &PrivatePerkRuntimeGraph,
-    ) {
+    fn draw_projectile_notes(&self, ui: &mut egui::Ui, loaded: &PrivatePerkRuntimeGraph) {
         if !loaded.projectile_catalog.errors.is_empty() {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -156,7 +222,7 @@ impl PerkEditor {
 
     /// One projectile or emitter picker. Returns a new selection when the user picked one,
     /// with `None` inside meaning the original asset.
-    pub(super) fn draw_projectile_slot(
+    fn draw_projectile_slot(
         &mut self,
         ui: &mut egui::Ui,
         loaded: &PrivatePerkRuntimeGraph,
@@ -164,7 +230,7 @@ impl PerkEditor {
     ) -> Option<Option<u32>> {
         {
             let labels = self.projectile_labels_for(ui.ctx(), &loaded.projectile_catalog);
-            let label_for = |entry: &projectile::catalog::Entry| {
+            let label_for = |entry: &entity::catalog::Entry| {
                 labels
                     .get(&entry.graph)
                     .cloned()
@@ -342,9 +408,9 @@ impl PerkEditor {
     /// The picker's rows for one filter and query, sorted the way the list shows them.
     fn projectile_choices(
         &self,
-        catalog: &projectile::catalog::Catalog,
+        catalog: &entity::catalog::Catalog,
         key: &ChoiceKey,
-        label_for: impl Fn(&projectile::catalog::Entry) -> String,
+        label_for: impl Fn(&entity::catalog::Entry) -> String,
     ) -> Vec<(usize, String)> {
         let mut choices = catalog
             .entries
@@ -353,7 +419,7 @@ impl PerkEditor {
             .filter(|(_, choice)| {
                 matches!(
                     choice.kind,
-                    projectile::Kind::Projectile | projectile::Kind::Emitter
+                    entity::Kind::Projectile | entity::Kind::Emitter
                 )
             })
             .filter(|(_, choice)| {
@@ -365,8 +431,8 @@ impl PerkEditor {
             })
             .filter(|(_, choice)| {
                 key.filter == 0
-                    || (key.filter == 1 && choice.kind == projectile::Kind::Projectile)
-                    || (key.filter == 2 && choice.kind == projectile::Kind::Emitter)
+                    || (key.filter == 1 && choice.kind == entity::Kind::Projectile)
+                    || (key.filter == 2 && choice.kind == entity::Kind::Emitter)
             })
             .filter_map(|(index, choice)| {
                 let label = label_for(choice);

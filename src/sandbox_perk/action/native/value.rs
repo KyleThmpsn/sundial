@@ -73,6 +73,15 @@ impl Program {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_inputs(1)
+    }
+
+    /// Validate the same four-lane stack contract for a caller's explicit input table.
+    /// Scalar perk callers retain one input through `validate`. Channel banks can bind more.
+    pub fn validate_inputs(&self, inputs: usize) -> Result<(), String> {
+        if inputs > 256 {
+            return Err("The value program exceeds its input operand range.".into());
+        }
         if self.constants.len() > 256 || self.instructions.len() > 4096 || self.fast_path > 1 {
             return Err("The value program exceeds its native limits.".into());
         }
@@ -124,8 +133,15 @@ impl Program {
                     ));
                 }
             };
-            if matches!(op, 60 | 62) && instruction.operand != Some(0) {
-                return Err("Perk value programs have one input and one output.".into());
+            if op == 60
+                && instruction
+                    .operand
+                    .is_none_or(|index| usize::from(index) >= inputs)
+            {
+                return Err("The value program exceeds its input table.".into());
+            }
+            if op == 62 && instruction.operand != Some(0) {
+                return Err("The value program has one output.".into());
             }
             if stack < required {
                 return Err("The value program would underflow its stack.".into());
@@ -207,13 +223,22 @@ impl Program {
             let row = |offset: usize| rows.get(at + offset).copied();
             let value = match instruction.opcode {
                 0 => break,
-                1..=3 | 5 | 6 | 8 | 9 | 15 => {
+                1..=6 | 8 | 9 | 15 => {
                     let b = stack.pop()?;
                     let a = stack.pop()?;
                     match instruction.opcode {
                         1 | 6 => lanes(|i| a[i] + b[i]),
                         2 => lanes(|i| a[i] - b[i]),
                         3 | 5 => lanes(|i| a[i] * b[i]),
+                        4 => {
+                            // Original 3B7D8F uses ordinary division outside its
+                            // small-denominator branch. Only evaluate the proven
+                            // positive denominator range used by reciprocal drivers.
+                            if b.iter().any(|v| !v.is_finite() || *v < 1.0) {
+                                return None;
+                            }
+                            lanes(|i| a[i] / b[i])
+                        }
                         8 => lanes(|i| a[i].min(b[i])),
                         9 => lanes(|i| a[i].max(b[i])),
                         // The newer vector holds the coefficients and the older one the input.
@@ -239,22 +264,13 @@ impl Program {
                     lanes(|i| start[i] + (end[i] - start[i]) * time[i])
                 }
                 55 => {
-                    // Cubic, quadratic, linear and constant rows hold one segment per lane,
-                    // and the fifth row holds where each segment starts.
-                    let time = stack.pop()?[0];
-                    let knots = row(4)?;
-                    if knots.windows(2).any(|pair| pair[0] > pair[1]) {
-                        return None;
-                    }
-                    let segment = (1..4).take_while(|&i| time >= knots[i]).count();
-                    let coefficients = [
-                        row(0)?[segment],
-                        row(1)?[segment],
-                        row(2)?[segment],
-                        row(3)?[segment],
-                    ];
-                    [polynomial(coefficients, time); 4]
+                    // The original interpreter XOR-reduces selected lanes. Before
+                    // the first knot no lane is selected, so the result is zero.
+                    crate::expression::math::spline(stack.pop()?, rows.get(at..at + 5)?, None)
+                        .ok()?
                 }
+                56 => piecewise_cubic(stack.pop()?, row)?,
+                58 => piecewise_linear(stack.pop()?, row)?,
                 60 => [input; 4],
                 62 => {
                     output = Some(stack.pop()?[0]);
@@ -268,6 +284,56 @@ impl Program {
     }
 }
 
+/// Opcode 0x38: an eight-segment cubic over a uniform input. Rows 0 to 3 hold the first four
+/// segments' coefficients and rows 4 to 7 the last four, one lane per segment, and rows 8 and 9
+/// the knots. Before the first knot the result is zero.
+fn piecewise_cubic(input: [f32; 4], row: impl Fn(usize) -> Option<[f32; 4]>) -> Option<[f32; 4]> {
+    let time = input[0];
+    if input.iter().any(|&lane| lane != time) {
+        return None;
+    }
+    let knots = [row(8)?, row(9)?].concat();
+    if knots.windows(2).any(|pair| pair[0] > pair[1]) {
+        return None;
+    }
+    let Some(segment) = (0..8).rev().find(|&i| time >= knots[i]) else {
+        return Some([0.0; 4]);
+    };
+    let base = segment / 4 * 4;
+    let lane = segment % 4;
+    let [a, b, c, d] = [
+        row(base)?[lane],
+        row(base + 1)?[lane],
+        row(base + 2)?[lane],
+        row(base + 3)?[lane],
+    ];
+    // Native 3B7880 multiplies the squared time separately. Preserve that order at the narrow
+    // transitions of steep source curves.
+    Some([(a * time + b) * (time * time) + (c * time + d); 4])
+}
+
+/// Opcode 0x3A: a base row plus four deltas, each weighted by the input's progress through its
+/// knot interval in row 5.
+fn piecewise_linear(time: [f32; 4], row: impl Fn(usize) -> Option<[f32; 4]>) -> Option<[f32; 4]> {
+    let knots = row(5)?;
+    let progress = lanes(|i| {
+        let width = if i == 3 { 1.0 } else { knots[i + 1] } - knots[i];
+        let offset = time[i] - knots[i];
+        if width.abs() > 0.0001 {
+            (offset / width).clamp(0.0, 1.0)
+        } else {
+            f32::from(u8::from(offset >= 0.0))
+        }
+    });
+    let mut result = row(0)?;
+    for (i, lane) in result.iter_mut().enumerate() {
+        let delta = row(i + 1)?;
+        let terms = lanes(|j| delta[j] * progress[j]);
+        // Native 3B6D20 sums paired lanes before adding the base.
+        *lane += (terms[0] + terms[2]) + (terms[1] + terms[3]);
+    }
+    Some(result)
+}
 fn lanes(lane: impl FnMut(usize) -> f32) -> [f32; 4] {
     std::array::from_fn(lane)
 }
@@ -306,7 +372,7 @@ pub(super) fn replace_array(
     bytes: Vec<u8>,
 ) -> Result<(), String> {
     let stride = schema::record(class)?.size;
-    if stride == 0 || bytes.len() % stride != 0 {
+    if stride == 0 || !bytes.len().is_multiple_of(stride) {
         return Err("Invalid native array stride.".into());
     }
     let count = bytes.len() / stride;

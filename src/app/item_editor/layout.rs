@@ -37,7 +37,7 @@ pub(crate) fn draw_responsive_item_cards<T>(
 
 pub(crate) fn draw_virtualized_responsive_item_cards<T>(
     ui: &mut egui::Ui,
-    scope: impl Hash,
+    scope: impl Hash + std::fmt::Debug,
     items: &[T],
     minimum_card_width: f32,
     maximum_card_width: f32,
@@ -163,12 +163,12 @@ pub(super) fn spaced_picker_list_height(
     visible_rows as f32 * row_height + visible_rows.saturating_sub(1) as f32 * row_spacing
 }
 
-pub(super) fn popup_direction(screen: egui::Rect, anchor: egui::Rect) -> egui::AboveOrBelow {
+pub(super) fn popup_direction(screen: egui::Rect, anchor: egui::Rect) -> egui::RectAlign {
     let room_above = (anchor.top() - screen.top()).max(0.0);
     let room_below = (screen.bottom() - anchor.bottom()).max(0.0);
     if room_below >= room_above {
-        egui::AboveOrBelow::Below
+        egui::RectAlign::BOTTOM_START
     } else {
-        egui::AboveOrBelow::Above
+        egui::RectAlign::TOP_START
     }
 }

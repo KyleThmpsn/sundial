@@ -568,12 +568,12 @@ impl Level {
         }
         let width = texture.width.div_ceil(factor);
         let height = texture.height.div_ceil(factor);
+        let linear = srgb_bytes();
         let decode = |value: u8, channel: usize| {
-            let value = f32::from(value) / 255.0;
             if color && channel < 3 {
-                srgb_decode(value)
+                linear[usize::from(value)]
             } else {
-                value
+                f32::from(value) / 255.0
             }
         };
         let mut texels = Vec::with_capacity(width * height);
@@ -651,6 +651,13 @@ fn ramp(colors: &[[u8; 3]], position: f32) -> [f32; 3] {
             weight,
         )
     })
+}
+
+/// Each byte's linear value. A texture decodes every texel each time a surface is drawn, which
+/// the page does on every edit, so the curve is worked out once per byte instead.
+fn srgb_bytes() -> &'static [f32; 256] {
+    static LINEAR: OnceLock<[f32; 256]> = OnceLock::new();
+    LINEAR.get_or_init(|| std::array::from_fn(|byte| srgb_decode(byte as f32 / 255.0)))
 }
 
 fn srgb_decode(value: f32) -> f32 {

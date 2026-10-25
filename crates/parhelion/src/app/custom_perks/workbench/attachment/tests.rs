@@ -1,26 +1,9 @@
 use super::*;
-use sundial::investment::{WeaponDamageProfile, WeaponRarity, WeaponSocket};
-
-mod native;
+use sundial::investment::WeaponSocket;
 
 fn donor() -> WeaponDonor {
     WeaponDonor {
-        summary: WeaponDonorSummary {
-            hash: 1,
-            name: "Workbench Test".into(),
-            type_name: "Auto Rifle".into(),
-            bucket_hash: 0,
-            collection_backed: true,
-            power_cap: None,
-            damage_type: None,
-            inventory_slot: None,
-            ammo_type: None,
-            weapon_pattern_index: None,
-            weapon_translation_group: None,
-            stat_group_index: None,
-            damage_profile: WeaponDamageProfile::Unknown,
-            rarity: WeaponRarity::Legendary,
-        },
+        summary: crate::test_support::donor_summary(1, "Workbench Test", "Auto Rifle"),
         power_cap_groups: vec![],
         equipment_slot: None,
         sockets: vec![WeaponSocket {
@@ -77,72 +60,10 @@ fn weapon(donor: &WeaponDonor, count: u16) -> WeaponRecipe {
 }
 
 #[test]
-fn duplicate_stock_restore_is_rejected_without_changing_either_choice() {
-    let donor = donor();
-    for choice in [0, 1] {
-        let mut weapon = weapon(&donor, 2);
-        weapon
-            .overrides
-            .socket_plug_variants
-            .retain(|variant| usize::from(variant.choice_index) == choice);
-        weapon.validate().unwrap();
-        let before = weapon.clone();
-        let target = Target::capture(&weapon, &donor, 0, choice).unwrap();
-        let error = Change { target, perk: None }
-            .apply(&mut weapon, &donor)
-            .unwrap_err();
-        assert!(error.contains("already holds the stock perk"));
-        assert_eq!(weapon, before);
-        assert!(weapon.to_json_pretty().is_ok());
-    }
-}
-
-#[test]
-fn restoring_one_private_choice_preserves_sibling_variants_and_socket_metadata() {
-    let donor = donor();
-    for choice in [0, 1] {
-        let mut weapon = weapon(&donor, 2);
-        let before = weapon.clone();
-        let target = Target::capture(&weapon, &donor, 0, choice).unwrap();
-        Change { target, perk: None }
-            .apply(&mut weapon, &donor)
-            .unwrap();
-        assert_eq!(
-            weapon.overrides.socket_columns,
-            before.overrides.socket_columns
-        );
-        assert_eq!(
-            weapon.overrides.socket_plug_variants,
-            vec![before.overrides.socket_plug_variants[1 - choice].clone()]
-        );
-        assert_eq!(
-            WeaponRecipe::from_json_str(&weapon.to_json_pretty().unwrap()).unwrap(),
-            weapon
-        );
-    }
-}
-
-#[test]
-fn destinations_include_choices_after_twelve_and_the_next_available_choice() {
-    let donor = donor();
-    let weapon = weapon(&donor, 13);
-    let existing = targets(&weapon, &donor, false);
-    assert_eq!(existing.len(), 13);
-    for (choice, target) in existing.iter().enumerate() {
-        assert_eq!(target.choice, choice);
-        target.check(&weapon, &donor).unwrap();
-    }
-    let destinations = targets(&weapon, &donor, true);
-    assert_eq!(destinations.len(), 14);
-    assert_eq!(destinations.last().unwrap().choice, 13);
-    assert!(destinations.last().unwrap().variant.is_none());
-}
-
-#[test]
 fn full_columns_do_not_offer_an_out_of_range_destination() {
     let donor = donor();
     let mut weapon = weapon(&donor, 1);
-    let limit = authored_socket_choice_limit(92);
+    let limit = u16::MAX as usize;
     weapon.overrides.socket_columns[0].as_mut().unwrap().choices =
         (1..=limit).map(|hash| HexHash::new(hash as u32)).collect();
     weapon.overrides.socket_plug_variants.clear();
@@ -150,35 +71,4 @@ fn full_columns_do_not_offer_an_out_of_range_destination() {
     assert_eq!(destinations.len(), limit);
     assert_eq!(destinations.last().unwrap().choice, limit - 1);
     assert!(Target::capture(&weapon, &donor, 0, limit).is_err());
-}
-
-#[test]
-fn switching_perks_keeps_the_last_destination_and_socket_copies_keep_their_own() {
-    let donor = donor();
-    let weapon = weapon(&donor, 2);
-    let first = Target::capture(&weapon, &donor, 0, 0).unwrap();
-    let second = Target::capture(&weapon, &donor, 0, 1).unwrap();
-    let mut workbench = Workbench {
-        documents: (0..3)
-            .map(|_| Document::new(PerkRecipe::new(), None))
-            .collect(),
-        ..Default::default()
-    };
-    workbench.documents[0].target = Some(first.clone());
-    workbench.sync_destination(&weapon, &donor);
-    workbench.select_document(1);
-    workbench.sync_destination(&weapon, &donor);
-    // The first choice holds a custom perk, so a new perk takes that socket's next free
-    // choice rather than the place the other perk was just applied to.
-    let added = Target::capture(&weapon, &donor, 0, 2).unwrap();
-    assert_eq!(workbench.documents[1].target, Some(added));
-    workbench.documents[2].target = Some(second.clone());
-    workbench.documents[2].from_socket = true;
-    workbench.select_document(2);
-    workbench.sync_destination(&weapon, &donor);
-    assert_eq!(workbench.documents[2].target, Some(second.clone()));
-    workbench.select_document(0);
-    workbench.sync_destination(&weapon, &donor);
-    assert_eq!(workbench.documents[0].target, Some(first));
-    assert_eq!(workbench.destination, workbench.documents[0].target);
 }

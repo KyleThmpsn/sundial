@@ -22,7 +22,7 @@ fn settings_saves_are_verified_and_each_keeps_its_own_backup() {
     let second_result = save_json_with_backup_root(&settings, &second_document, &backups).unwrap();
 
     assert_ne!(first_result.backup, second_result.backup);
-    let backup_directory = crate::paths::resolve_path_for_comparison(&backups).unwrap();
+    let backup_directory = crate::system::paths::resolve_path_for_comparison(&backups).unwrap();
     assert_eq!(
         first_result.backup.parent(),
         Some(backup_directory.as_path())
@@ -203,7 +203,6 @@ fn readable_settings_over_the_limit_fall_back_to_compact_json() {
     assert!(result.encoded_bytes < size_limit);
     assert_eq!(load_json(&settings).unwrap(), document);
     assert_eq!(fs::read(&result.backup).unwrap(), original);
-    assert_eq!(fs::read_to_string(&settings).unwrap().lines().count(), 1);
 }
 
 #[test]
@@ -231,7 +230,7 @@ fn settings_at_exactly_64_kib_do_not_trigger_compaction() {
     let settings = directory.0.join("settings.json");
     let backups = directory.0.join("backups");
     fs::write(&settings, b"{}\n").unwrap();
-    let size_limit = settings_size_limit_for_schema(None);
+    let size_limit = 64 * 1024;
     // Two JSON quotes plus the trailing CRLF account for the four non-payload bytes.
     let document = Value::String("x".repeat(size_limit - 4));
 

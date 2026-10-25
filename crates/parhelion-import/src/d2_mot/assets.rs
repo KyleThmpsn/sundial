@@ -6,9 +6,9 @@ use crate::d2_mot::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
-pub(crate) mod item;
+pub mod item;
 mod model;
-mod shader;
+pub(crate) mod shader;
 
 pub fn validate(p: &Value) -> Result<&str> {
     let object = p.as_object().context("asset profile must be an object")?;

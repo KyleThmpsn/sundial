@@ -78,12 +78,13 @@ impl StagedRun {
     }
 
     pub(super) fn finish<T>(mut self, result: Result<T, String>) -> Result<T, String> {
-        let cleanup = if result.is_ok() {
-            self.complete()
-        } else {
-            self.discard()
-        };
-        super::package_views::finish_with_cleanup(result, cleanup, drop)
+        match result.and_then(|value| self.complete().map(|()| value)) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let cleanup = self.discard();
+                super::package_views::finish_with_cleanup(Err(error), cleanup, drop)
+            }
+        }
     }
 
     fn complete(&mut self) -> Result<(), String> {
@@ -107,14 +108,14 @@ impl StagedRun {
             .map_err(|error| format!("Could not save staged-run completion: {error}"))?;
         drop(file);
         self.completed = true;
-        let cleanup = prune_locked(root, Some(&self.directory)).map_err(|error| {
-            format!(
+        if let Err(error) = prune_locked(root, Some(&self.directory)) {
+            eprintln!(
                 "Build completed at {}, but older staging cleanup failed: {error}",
                 self.directory.display()
-            )
-        });
+            );
+        }
         drop(self.lease.take());
-        cleanup
+        Ok(())
     }
 
     fn discard(&mut self) -> Result<(), String> {
@@ -135,6 +136,12 @@ impl Drop for StagedRun {
             eprintln!("Could not clean failed staged build: {error}");
         }
     }
+}
+
+/// Whether `name` is one of the files that mark a run as this module's, so a copy without them is
+/// an unmarked run, which stays installable and is never pruned.
+pub(crate) fn is_marker(name: &std::ffi::OsStr) -> bool {
+    name == LEASE_FILE || name == COMPLETE_FILE
 }
 
 /// Unmarked legacy runs remain installable and are never pruned by this module.
@@ -344,8 +351,18 @@ fn owned_inventory(directory: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn owned_file_name(name: &str) -> bool {
+    use sundial::package_authoring::mod_content::{map_diagnostics, mission_script};
+
+    // Partial runs can fail before their manifest is written. Recognize the
+    // producers' flat artifact names without requiring completed file contents.
     matches!(name, LEASE_FILE | COMPLETE_FILE | MANIFEST_FILE_NAME)
+        || name == crate::merge_data::REPORT_FILE_NAME
+        || name == map_diagnostics::FILE_NAME
+        || mission_script::path(name).is_some()
         || authored_package_for_file_name(name).is_some()
+        || name
+            .strip_suffix(".merge")
+            .is_some_and(|stem| authored_package_for_file_name(&format!("{stem}.pkg")).is_some())
 }
 
 fn collect_recipes(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {

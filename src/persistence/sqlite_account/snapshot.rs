@@ -6,7 +6,9 @@ use crate::persistence::native_account::snapshot::{insert_table, quote, snapshot
 use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 mod recovery;
-pub(super) use recovery::{restore, restore_snapshot};
+#[cfg(test)]
+pub(super) use recovery::restore;
+pub(super) use recovery::{restore_checked, restore_snapshot};
 
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
     let mut db = open(path, false)?;

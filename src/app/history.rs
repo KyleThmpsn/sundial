@@ -1,4 +1,7 @@
 //! Explicit edit commits and undo/redo for workspace documents.
+
+#[cfg(test)]
+mod tests;
 use super::{DOCUMENT_HISTORY_LIMIT, DocumentHistoryEntry, SundialApp, equipment};
 
 impl SundialApp {

@@ -10,6 +10,24 @@ fn write_payload(run: &StagedRun) {
     fs::write(run.directory.join(MANIFEST_FILE_NAME), b"{}").unwrap();
     fs::create_dir(run.directory.join("recipes")).unwrap();
     fs::write(run.directory.join("recipes/weapon.json"), b"{}").unwrap();
+    crate::merge_data::stage(
+        &run.directory,
+        &crate::merge_data::MergeData {
+            sidecars: vec![(
+                PARHELION_ASSET_PACKAGE.file_name.replace(".pkg", ".merge"),
+                b"synthetic merge data".to_vec(),
+            )],
+            report: b"{}".to_vec(),
+        },
+    )
+    .unwrap();
+    fs::write(
+        run.directory
+            .join(sundial::package_authoring::mod_content::map_diagnostics::FILE_NAME),
+        b"{}",
+    )
+    .unwrap();
+    fs::write(run.directory.join("mission_retention.lua"), b"return {}").unwrap();
 }
 
 fn completed(root: &Path, slug: &str) -> PathBuf {
@@ -21,13 +39,18 @@ fn completed(root: &Path, slug: &str) -> PathBuf {
 }
 
 #[test]
-fn keeps_only_the_newest_completed_build() {
+fn a_completion_write_failure_is_reported_and_preserves_the_previous_build() {
     let root = tempfile::tempdir().unwrap();
-    let first = completed(root.path(), "first");
-    let second = completed(root.path(), "second");
-    assert!(!first.exists());
-    assert!(second.join(MANIFEST_FILE_NAME).is_file());
-    assert!(lease_for_read(&second).unwrap().is_some());
+    let previous = completed(root.path(), "previous");
+    let run = StagedRun::begin(root.path(), "failed-completion").unwrap();
+    write_payload(&run);
+    let failed = run.directory.clone();
+    fs::write(failed.join(COMPLETE_FILE), b"blocked completion").unwrap();
+    let error = run.finish(Ok(())).unwrap_err();
+    assert!(error.contains("completed staged run"), "{error}");
+    assert!(!failed.exists());
+    assert!(previous.join(MANIFEST_FILE_NAME).is_file());
+    assert!(lease_for_read(&previous).unwrap().is_some());
 }
 
 #[test]
@@ -73,12 +96,17 @@ fn unmarked_legacy_and_unknown_content_are_preserved() {
     fs::write(legacy.join(MANIFEST_FILE_NAME), b"{}").unwrap();
     let first = completed(root.path(), "owned");
     fs::write(first.join("personal-notes.txt"), b"keep this").unwrap();
+    fs::write(first.join("personal-notes.merge"), b"keep this too").unwrap();
     let second = completed(root.path(), "next");
     assert!(legacy.is_dir());
     assert!(lease_for_read(&legacy).unwrap().is_none());
     assert_eq!(
         fs::read(first.join("personal-notes.txt")).unwrap(),
         b"keep this"
+    );
+    assert_eq!(
+        fs::read(first.join("personal-notes.merge")).unwrap(),
+        b"keep this too"
     );
     assert!(second.is_dir());
 }
@@ -180,12 +208,15 @@ fn staged_recipe_writes_match_normalized_saves_without_overwriting_or_temp_files
     let root = tempfile::tempdir().unwrap();
     let recipe = crate::recipe::WeaponRecipe::every_end();
     let path = root.path().join("weapon.parhelion.json");
-    super::super::write_staged_recipe(&recipe, &path).unwrap();
+    let encoded = crate::manifest::canonical_recipe(&recipe).unwrap();
+    super::super::write_staged_recipe(&encoded, &path).unwrap();
     assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        format!("{}\n", recipe.to_json_pretty().unwrap())
+        crate::recipe::WeaponRecipe::load_json(&path).unwrap(),
+        recipe
     );
-    assert!(super::super::write_staged_recipe(&recipe, &path).is_err());
+    // The snapshot is the encoding and a newline, which installation fingerprints without it.
+    assert_eq!(fs::read_to_string(&path).unwrap(), format!("{encoded}\n"));
+    assert!(super::super::write_staged_recipe(&encoded, &path).is_err());
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
 }
 

@@ -1,5 +1,6 @@
 //! Restart admission uses the same document and Parhelion state as normal closing.
-use super::{SundialApp, save_support::SaveAction};
+
+use super::{SundialApp, saving::SaveAction};
 use crate::updates::Action;
 use eframe::egui;
 
@@ -35,7 +36,16 @@ impl SundialApp {
                     .prepare_restart(ctx, self.install_path.clone());
             }
             Action::Commit if self.update_restart_blocker().is_none() => {
-                if self.update_check.commit_restart() {
+                // Work Parhelion could not save blocks the restart rather than asking, since
+                // exiting from that question would leave the update uncommitted.
+                if let Some(reason) = self
+                    .package_authoring
+                    .as_mut()
+                    .and_then(|package_authoring| package_authoring.unsaved_work())
+                {
+                    let reason = reason.trim_end_matches('.');
+                    self.set_status(format!("{reason}. Restart once it saves."), true);
+                } else if self.update_check.commit_restart() {
                     self.exit_confirmed = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }

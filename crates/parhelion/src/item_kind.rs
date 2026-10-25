@@ -19,17 +19,25 @@ pub enum ItemKind {
     GhostShell,
     Shader,
     Subclass,
+    Emblem,
+    /// A custom perk on its own, offered in every socket of its type rather than placed on one
+    /// item.
+    Mod,
 }
 
 impl ItemKind {
-    /// Menu order: weapons, armor, then the rest of the loadout, shaders and subclasses.
-    pub const ALL: [Self; 7] = [
+    /// Menu order: weapons, armor, then the rest of the loadout, emblems, shaders, mods and
+    /// subclasses. Declaration order stays the order kinds were added, which gear pages are
+    /// allocated in.
+    pub const ALL: [Self; 9] = [
         Self::Weapon,
         Self::Armor,
         Self::Sparrow,
         Self::Ship,
         Self::GhostShell,
+        Self::Emblem,
         Self::Shader,
+        Self::Mod,
         Self::Subclass,
     ];
 
@@ -49,6 +57,8 @@ impl ItemKind {
             Self::GhostShell => "Ghost Shell",
             Self::Shader => "Shader",
             Self::Subclass => "Subclass",
+            Self::Emblem => "Emblem",
+            Self::Mod => "Mod",
         }
     }
 
@@ -62,6 +72,8 @@ impl ItemKind {
             Self::GhostShell => "Ghost Shells",
             Self::Shader => "Shaders",
             Self::Subclass => "Subclasses",
+            Self::Emblem => "Emblems",
+            Self::Mod => "Mods",
         }
     }
 
@@ -76,7 +88,23 @@ impl ItemKind {
             Self::GhostShell => "Ghost Shell",
             Self::Shader => "shader",
             Self::Subclass => "subclass",
+            Self::Emblem => "emblem",
+            Self::Mod => "mod",
         }
+    }
+
+    /// Whether the item can show a lore tab. A shader or mod is a plug with no lore block, and
+    /// none of the 484 stock emblems carries one either.
+    #[must_use]
+    pub const fn has_lore_tab(self) -> bool {
+        !matches!(self, Self::Shader | Self::Emblem | Self::Mod)
+    }
+
+    /// Whether the item has a Collections entry and an unlock. A subclass is granted on install
+    /// and a mod is offered by the sockets of its type, so neither has one.
+    #[must_use]
+    pub const fn has_collections(self) -> bool {
+        !matches!(self, Self::Subclass | Self::Mod)
     }
 
     /// Flavor text a new recipe starts with.
@@ -90,6 +118,8 @@ impl ItemKind {
             Self::GhostShell => "A Ghost Shell authored with Parhelion.",
             Self::Shader => "A shader authored with Parhelion.",
             Self::Subclass => "A subclass authored with Parhelion.",
+            Self::Emblem => "An emblem authored with Parhelion.",
+            Self::Mod => "A mod authored with Parhelion.",
         }
     }
 
@@ -110,6 +140,10 @@ impl ItemKind {
             Self::GhostShell => &[4_023_194_814],
             Self::Shader => &[2_973_005_342],
             Self::Subclass => &[3_284_755_031],
+            Self::Emblem => &[4_274_335_291],
+            // A mod's base is the custom perk's template plug, which comes from the plug catalog,
+            // not an inventory bucket.
+            Self::Mod => &[],
         }
     }
 
@@ -127,6 +161,10 @@ impl ItemKind {
             Self::Shader => &[(14, 0)],
             // Equipment slot 0 with the second byte set, as all nine stock subclasses carry it.
             Self::Subclass => &[(16, 0x0100)],
+            Self::Emblem => &[(27, 13)],
+            // A mod keeps its template plug's bucket. Stock mods use 13 (weapon mods) and 37
+            // (armor mods), and its type comes from its classification plug instead.
+            Self::Mod => &[],
         }
     }
 

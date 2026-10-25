@@ -79,20 +79,7 @@ pub(super) fn texture(c: &mut Effect, binding: &Value) -> Result<String> {
             u64::from(tag(&texture["buffer"])?),
         )
     } else {
-        let donor = if matches!(format, 29 | 72 | 75 | 78 | 99) {
-            "dye-4-texture-0"
-        } else {
-            "dye-4-texture-1"
-        };
-        (
-            c.graph.read(donor)?.0,
-            c.graph.node(donor)?["template"]
-                .as_u64()
-                .context("fixed texture template")?,
-            c.graph.node(&format!("{donor}-data"))?["template"]
-                .as_u64()
-                .context("fixed texture data template")?,
-        )
+        c.texture_template(matches!(format, 29 | 72 | 75 | 78 | 99))?
     };
     put(&mut header, 0, &u32::try_from(data.len())?.to_le_bytes())?;
     put(&mut header, 4, &format.to_le_bytes())?;

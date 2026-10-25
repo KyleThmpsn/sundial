@@ -6,8 +6,8 @@ use serde_json::{Map, Value};
 use super::{
     page::{group, missing_group},
     schema::{
-        FIELD_OF_VIEW_KEY, FIELD_OF_VIEW_MAXIMUM, FIELD_OF_VIEW_MINIMUM,
-        VERTICAL_SYNC_INTERVAL_KEY, show_presence_gated_preference,
+        FIELD_OF_VIEW_KEY, FIELD_OF_VIEW_MAXIMUM, FIELD_OF_VIEW_MENU_MAXIMUM,
+        FIELD_OF_VIEW_MINIMUM, VERTICAL_SYNC_INTERVAL_KEY, show_presence_gated_preference,
     },
     widgets::{
         CommandBatch, boolean, choice, display_refresh_rate_hz, fixed, float_slider,
@@ -308,9 +308,20 @@ pub(super) fn draw_display(
                     if extended_fov {
                         FIELD_OF_VIEW_MAXIMUM
                     } else {
-                        105
+                        FIELD_OF_VIEW_MENU_MAXIMUM
                     },
                 );
+                if let Some(value) = values
+                    .get(FIELD_OF_VIEW_KEY)
+                    .and_then(Value::as_u64)
+                    .filter(|value| extended_fov && *value > FIELD_OF_VIEW_MENU_MAXIMUM)
+                {
+                    ui.label("");
+                    ui.weak(format!(
+                        "The in-game menu shows at most {FIELD_OF_VIEW_MENU_MAXIMUM}, but your field of view will be {value}."
+                    ));
+                    ui.end_row();
+                }
             }
             fixed(ui, values, "calibration_primary", "Renderer Calibration");
             fixed(

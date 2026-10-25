@@ -4,41 +4,16 @@ use sundial::package_authoring::account::AuthoredAccountCleanup;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UninstallPlan {
-    target: PathBuf,
-    artifacts: Vec<ArtifactMetadata>,
-    stock: Vec<ArtifactMetadata>,
-    cleanup: Option<AuthoredAccountCleanup>,
-    cleanup_error: Option<String>,
+    pub(super) target: PathBuf,
+    pub(super) artifacts: Vec<ArtifactMetadata>,
+    pub(super) stock: Vec<ArtifactMetadata>,
+    pub(super) cleanup: Option<AuthoredAccountCleanup>,
+    pub(super) cleanup_error: Option<String>,
+    pub(super) mod_folder: Option<loader::Folder>,
+    pub(super) mod_family: BTreeMap<String, loader::Folder>,
 }
 
 impl UninstallPlan {
-    #[cfg(test)]
-    pub(crate) fn preview_fixture() -> Self {
-        Self {
-            target: PathBuf::from("C:/Example Game/packages"),
-            artifacts: AUTHORED_PACKAGES
-                .iter()
-                .map(|profile| ArtifactMetadata {
-                    file_name: profile.file_name.into(),
-                    byte_length: 100,
-                    sha256: "0".repeat(64),
-                })
-                .collect(),
-            stock: vec![],
-            cleanup: Some(AuthoredAccountCleanup {
-                settings_path: PathBuf::from("C:/Example Game/Sunrise/settings.json"),
-                original_bytes: vec![],
-                cleaned_bytes: vec![],
-                removed_items: BTreeMap::from([(100, 2)]),
-                resized_items: BTreeMap::new(),
-                slot_moves: vec![],
-                cleared_plugs: 1,
-                cleared_unlocks: 3,
-                removed_reward_rules: 0,
-            }),
-            cleanup_error: None,
-        }
-    }
     pub fn target(&self) -> &Path {
         &self.target
     }
@@ -69,9 +44,24 @@ pub struct UninstallReport {
 /// Read-only review. Unknown signatures, aliases and incomplete sets fail closed.
 pub fn preview_uninstall(packages: &Path) -> Result<UninstallPlan, InstallError> {
     let target = canonical_packages_directory(packages)?;
+    let install = target
+        .parent()
+        .ok_or_else(|| InstallError::validation("Missing game root"))?;
+    sundial::package_authoring::mod_content::ensure_readable(install)
+        .map_err(InstallError::validation)?;
+    if sundial::package_authoring::mod_content::has_family(install)
+        .map_err(InstallError::validation)?
+    {
+        return loader::preview_uninstall(&target);
+    }
+    preview_legacy(&target)
+}
+
+pub(super) fn preview_legacy(packages: &Path) -> Result<UninstallPlan, InstallError> {
+    let target = canonical_packages_directory(packages)?;
     validate_target_package_chain(&target)?;
     let mut artifacts = Vec::new();
-    for profile in all_authored_packages() {
+    for profile in all_authored_packages_in(&[target.as_path()]) {
         let path = target.join(profile.file_name);
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -90,6 +80,8 @@ pub fn preview_uninstall(packages: &Path) -> Result<UninstallPlan, InstallError>
         .map(|name| snapshot(&target, name))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(UninstallPlan {
+        mod_folder: None,
+        mod_family: BTreeMap::new(),
         target,
         artifacts,
         stock,
@@ -112,7 +104,9 @@ pub fn preview_uninstall_with_account_cleanup(
     Ok(plan)
 }
 
-fn prepare_account_cleanup(plan: &UninstallPlan) -> Result<AuthoredAccountCleanup, String> {
+pub(super) fn prepare_account_cleanup(
+    plan: &UninstallPlan,
+) -> Result<AuthoredAccountCleanup, String> {
     let (hashes, unlocks) = identities::installed_identities(&plan.target)?;
     sundial::package_authoring::account::preview_authored_account_cleanup(
         plan.target.parent().ok_or("Missing game root")?,
@@ -138,6 +132,12 @@ pub fn uninstall_custom_packages(
     backup_root: &Path,
     check: GameRunningCheck,
 ) -> Result<UninstallReport, InstallError> {
+    if plan.mod_folder.is_some() {
+        return loader::uninstall_with_observer(plan, backup_root, check, &mut |_| {});
+    }
+    if loader::selected(&plan.target, sundial::package_authoring::installed_runtime)? {
+        return loader::uninstall_legacy(plan, backup_root, check);
+    }
     uninstall_inner(
         plan,
         backup_root,
@@ -176,6 +176,16 @@ pub(super) fn uninstall_inner(
         ));
     }
     let sunrise = validate_sunrise_build_cache_with(&plan.target, runtime_snapshot_check)?;
+    if sunrise
+        .runtime
+        .uses_mod_loader()
+        .map_err(InstallError::validation)?
+    {
+        return Err(InstallError::validation(
+            "The runtime changed to the mod loader during removal review. Review the installation again",
+        ));
+    }
+    clear_other_runtime_caches(&plan.target, sunrise.runtime.brand())?;
     let headers = validate_package_header_caches(&plan.target)?;
     fs::create_dir_all(&root).map_err(|error| InstallError::validation(error.to_string()))?;
     let root = canonical_directory(&root, "uninstall backup root")?;
@@ -217,7 +227,7 @@ pub(super) fn uninstall_inner(
     if let Some(cleanup) = &plan.cleanup {
         if prepare_account_cleanup(plan).map_err(InstallError::validation)? != *cleanup {
             return Err(after_backup(
-                "Account data changed since review; review again".into(),
+                "Account data changed since review. Review again".into(),
             ));
         }
         record.account_cleanup = Some(account::prepare(cleanup, &plan.target, &backup)?);
@@ -225,6 +235,8 @@ pub(super) fn uninstall_inner(
     validate_install_transaction(&record, &plan.target)?;
     let journal = plan.target.join(INSTALL_TRANSACTION_FILE_NAME);
     write_install_transaction(&backup.join("uninstall-recovery.json"), &record)?;
+    // The journal sends recovery to the backup, so the backup is on disk before the journal is.
+    sync_backup_directories(&backup, &root).map_err(after_backup)?;
     write_install_transaction(&journal, &record)?;
     let result = commit_removal(
         plan,
@@ -263,7 +275,7 @@ pub(super) fn uninstall_inner(
             });
             let message = match recovered {
                 Ok(RecoveryOutcome::Recovered { .. }) => format!(
-                    "Uninstall failed; the original custom package set was restored. {error}"
+                    "Uninstall failed. The original custom package set was restored. {error}"
                 ),
                 Ok(_) => format!(
                     "The operation reached a terminal state, but finalization reported an error. Review the current package set before continuing. {error}"
@@ -364,9 +376,13 @@ fn commit_removal(
 
 fn verify_plan(plan: &UninstallPlan) -> Result<(), InstallError> {
     let current = preview_uninstall(&plan.target)?;
-    if current.artifacts != plan.artifacts || current.stock != plan.stock {
+    if current.artifacts != plan.artifacts
+        || current.stock != plan.stock
+        || current.mod_folder != plan.mod_folder
+        || current.mod_family != plan.mod_family
+    {
         return Err(InstallError::validation(
-            "Packages changed since the uninstall review. Review the current set again; no files were removed.",
+            "Packages changed since the uninstall review. Review the current set again. No files were removed.",
         ));
     }
     Ok(())

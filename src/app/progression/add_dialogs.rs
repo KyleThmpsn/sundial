@@ -100,7 +100,7 @@ pub(super) fn draw_add_investment_window(
         .show(ctx, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut state.add_query)
-                    .hint_text("Filter package definitions…")
+                    .hint_text("Filter Package Definitions…")
                     .desired_width(f32::INFINITY),
             );
             ui.horizontal(|ui| {
@@ -146,10 +146,11 @@ pub(super) fn draw_add_investment_window(
                                 };
                                 ui.add_sized(
                                     [label_width, 24.0],
-                                    egui::Label::new(add_definition_label(
-                                        catalog, definition, objective,
-                                    ))
-                                    .truncate(),
+                                    crate::ui::cut_label_within(
+                                        ui,
+                                        add_definition_label(catalog, definition, objective),
+                                        label_width,
+                                    ),
                                 )
                                 .on_hover_text(
                                     add_definition_tooltip(definition_index, definition, objective),

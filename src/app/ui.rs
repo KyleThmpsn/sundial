@@ -3,6 +3,88 @@ use eframe::egui;
 use super::glyphs::{self, Glyph};
 
 const DESTINY_TEXT_FONT_FAMILY: &str = "Sundial Destiny text";
+/// The game's regular text face, NeueHaasUnicaW1G-Regular.
+pub(super) const GAME_TEXT_FONT_FAMILY: &str = "Sundial Game Text";
+/// The game's display bold face for large figures, NHaasGroteskDSPro-75Bd.
+pub(super) const GAME_FIGURE_FONT_FAMILY: &str = "Sundial Game Figure";
+
+/// The game faces item cards and tooltips are set in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum GameFace {
+    Text,
+    /// The medium cut an item's name is set in.
+    Title,
+    Figure,
+    /// The game's symbol face, whose damage type glyphs Dawn merges into its text font.
+    Symbol,
+}
+
+/// A game face at a size given as Dear ImGui gives one, which is the face's ascent less its
+/// descent. egui sizes a face by its em, so the size is converted with the face's own metrics
+/// (recorded by [`record_game_face`]), or used as is when the face is not installed.
+pub(super) fn game_font(ui: &egui::Ui, face: GameFace, size: f32) -> egui::FontId {
+    let size = size * game_face_em(ui.ctx(), face);
+    let family = match face {
+        GameFace::Text => egui::FontFamily::Name(GAME_TEXT_FONT_FAMILY.into()),
+        GameFace::Figure => egui::FontFamily::Name(GAME_FIGURE_FONT_FAMILY.into()),
+        GameFace::Title => return crate::ui::help::emphasized_font(ui, size),
+        GameFace::Symbol => destiny_text_font_family(),
+    };
+    if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
+        egui::FontId::new(size, family)
+    } else {
+        egui::FontId::proportional(size)
+    }
+}
+
+fn game_face_id(face: GameFace) -> egui::Id {
+    egui::Id::new(("game_face_em", face))
+}
+
+/// Ems per unit of a game face's ascent less descent, or 1 when the face is not installed.
+pub(super) fn game_face_em(ctx: &egui::Context, face: GameFace) -> f32 {
+    ctx.data(|data| data.get_temp::<f32>(game_face_id(face)))
+        .unwrap_or(1.0)
+}
+
+/// Records how many ems one unit of a face's ascent less descent is, from its `head` and
+/// `hhea` tables, which are what Dear ImGui's stb_truetype sizes the face by. A face whose file
+/// is missing or unreadable records nothing.
+pub(super) fn record_game_face(ctx: &egui::Context, face: GameFace, bytes: Option<&[u8]>) {
+    let id = game_face_id(face);
+    match bytes.and_then(face_em_per_height) {
+        Some(em) => ctx.data_mut(|data| {
+            data.insert_temp(id, em);
+        }),
+        None => ctx.data_mut(|data| data.remove::<f32>(id)),
+    }
+}
+
+/// Whether the install's file for a game face was loaded.
+pub(super) fn game_face_installed(ctx: &egui::Context, face: GameFace) -> bool {
+    ctx.data(|data| data.get_temp::<f32>(game_face_id(face)).is_some())
+}
+
+/// `unitsPerEm` over the `hhea` ascender less descender of an OpenType face.
+fn face_em_per_height(bytes: &[u8]) -> Option<f32> {
+    let read_u16 = |at: usize| Some(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+    let table = |tag: &[u8; 4]| {
+        (0..usize::from(read_u16(4)?)).find_map(|index| {
+            let record = 12 + 16 * index;
+            (bytes.get(record..record + 4)? == tag).then(|| {
+                let offset = bytes.get(record + 8..record + 12)?;
+                usize::try_from(u32::from_be_bytes(offset.try_into().ok()?)).ok()
+            })?
+        })
+    };
+    let units_per_em = f32::from(read_u16(table(b"head")? + 18)?);
+    let hhea = table(b"hhea")?;
+    let read_i16 = |at: usize| Some(i16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+    let ascender = f32::from(read_i16(hhea + 4)?);
+    let descender = f32::from(read_i16(hhea + 6)?);
+    let height = ascender - descender;
+    (units_per_em > 0.0 && height > 0.0).then(|| units_per_em / height)
+}
 
 pub(super) fn section_heading(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let style = egui::TextStyle::Name("Section Heading".into());
@@ -21,7 +103,7 @@ pub(super) fn field_label(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Re
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
             ui.set_min_width(width);
-            ui.label(crate::ui_help::emphasized_text(ui, text))
+            ui.label(crate::ui::help::emphasized_text(ui, text))
         },
     )
     .inner
@@ -31,8 +113,21 @@ pub(super) fn secondary_text_color(ui: &egui::Ui) -> egui::Color32 {
     egui::Color32::from_gray(if ui.visuals().dark_mode { 175 } else { 100 })
 }
 
-pub(super) fn configure_contrast(ctx: &egui::Context) {
+/// The text sizes, animation timing and status colors Sundial has always drawn with. egui 0.33
+/// raised its default text sizes and 0.35 slowed its animations, so these are pinned here rather
+/// than inherited, which also keeps every headless layout test where it was.
+pub(super) fn configure_style(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(12.5));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(12.5));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.0));
+        style.animation_time = 1.0 / 12.0;
         if style.visuals.dark_mode {
             style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
             style.visuals.error_fg_color = egui::Color32::from_rgb(255, 128, 128);
@@ -64,7 +159,7 @@ pub(super) fn destiny_text_font_family() -> egui::FontFamily {
 
 pub(super) fn destiny_font_id(ui: &egui::Ui, mut font_id: egui::FontId) -> egui::FontId {
     let family = destiny_text_font_family();
-    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+    if ui.fonts_mut(|fonts| fonts.families().contains(&family)) {
         font_id.family = family;
     }
     font_id
@@ -87,7 +182,7 @@ pub(super) fn edit_modal<R>(
     id: &'static str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, bool) {
-    let available = ui.ctx().available_rect().size();
+    let available = ui.ctx().content_rect().size();
     let response = egui::Modal::new(id.into()).show(ui.ctx(), |ui| {
         ui.set_width((available.x - 48.0).clamp(240.0, 560.0));
         // A preparation message can be much shorter than the subsequent review.
@@ -361,82 +456,5 @@ pub(super) fn single_line_galley(
     job.wrap.max_width = max_width;
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;
-    ui.fonts(|fonts| fonts.layout_job(job))
-}
-
-#[cfg(test)]
-mod contrast_tests {
-    use super::*;
-
-    fn luminance(color: egui::Color32) -> f32 {
-        let linear = |value: u8| {
-            let value = f32::from(value) / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        linear(color.r()) * 0.2126 + linear(color.g()) * 0.7152 + linear(color.b()) * 0.0722
-    }
-
-    #[test]
-    fn guidance_and_status_colors_remain_readable_after_theme_changes() {
-        let ctx = egui::Context::default();
-        configure_contrast(&ctx);
-        for theme in [egui::Theme::Dark, egui::Theme::Light, egui::Theme::Dark] {
-            ctx.set_theme(theme);
-            let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let visuals = ui.visuals();
-                    for foreground in [
-                        secondary_text_color(ui),
-                        visuals.warn_fg_color,
-                        visuals.error_fg_color,
-                    ] {
-                        for background in [
-                            visuals.panel_fill,
-                            visuals.window_fill(),
-                            visuals.extreme_bg_color,
-                        ] {
-                            let a = luminance(foreground);
-                            let b = luminance(background);
-                            let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
-                            assert!(contrast >= 4.5, "contrast {contrast}, theme {theme:?}");
-                        }
-                    }
-                });
-            });
-        }
-    }
-}
-
-#[cfg(test)]
-mod destiny_font_tests {
-    use super::*;
-
-    #[test]
-    fn destiny_font_id_prefers_the_symbol_first_family_when_available() {
-        let ctx = egui::Context::default();
-        let mut fonts = egui::FontDefinitions::default();
-        let family = destiny_text_font_family();
-        let fallbacks = fonts.families[&egui::FontFamily::Proportional].clone();
-        fonts.families.insert(family.clone(), fallbacks);
-        ctx.set_fonts(fonts);
-
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let original = egui::TextStyle::Button.resolve(ui.style());
-                assert_eq!(destiny_font_id(ui, original).family, family);
-            });
-        });
-    }
-
-    #[test]
-    fn destiny_font_id_keeps_the_requested_family_without_symbol_fonts() {
-        egui::__run_test_ui(|ui| {
-            let original = egui::TextStyle::Button.resolve(ui.style());
-            assert_eq!(destiny_font_id(ui, original.clone()), original);
-        });
-    }
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }

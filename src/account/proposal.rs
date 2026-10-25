@@ -41,7 +41,7 @@ pub fn preview_replacement(
     }
     super::validate_authored_cleanup_backend(settings_path)?;
     let (mut cleaned, removed_items, cleared_plugs, cleared_unlocks, removed_reward_rules) =
-        clean(&original, hashes, unlocks)?;
+        clean(&original, hashes, unlocks, socket_changes)?;
     let slot_moves = placement::relocate(&mut cleaned, hashes, slots)?;
     let resized_items = sockets::resize(&mut cleaned, hashes, socket_changes)?;
     let cleaned_bytes = if cleaned == original {
@@ -64,10 +64,13 @@ pub fn preview_replacement(
 
 type Cleaned = (Value, BTreeMap<u32, usize>, usize, usize, usize);
 
+/// Removes items and saved plugs the replacement removes. A removed plug on an item whose layout
+/// changed falls back to its lane's incoming default, so the socket is not left empty.
 fn clean(
     original: &Value,
     hashes: &BTreeSet<u32>,
     unlocks: &[AuthoredCollectionUnlock],
+    changes: &[AuthoredSocketChange],
 ) -> Result<Cleaned, String> {
     if crate::game_settings::schema_version(original).is_some_and(|v| v >= 18) {
         return Err("Settings v18 requires a Sunrise investment database".into());
@@ -86,8 +89,8 @@ fn clean(
         Some(value) => value.as_array().ok_or("Characters must be an array")?.len(),
     };
     for character in 0..count {
-        plugs += clean_inventory(&mut document, character, hashes, &mut removed)?;
-        plugs += clean_equipment(&mut document, character, hashes, &mut removed)?;
+        plugs += clean_inventory(&mut document, character, hashes, changes, &mut removed)?;
+        plugs += clean_equipment(&mut document, character, hashes, changes, &mut removed)?;
     }
     for row in inventory::profile_items(&document)
         .map_err(|e| e.to_string())?
@@ -127,10 +130,19 @@ fn clean(
     Ok((document, removed, plugs, cleared, rewards))
 }
 
+/// The plug a removed saved selection in `lane` of item `hash` becomes.
+fn fallback(changes: &[AuthoredSocketChange], hash: u32, lane: usize) -> Option<u32> {
+    changes
+        .iter()
+        .find(|change| change.definition_hash == hash)
+        .and_then(|change| change.fallback(lane))
+}
+
 fn clean_inventory(
     document: &mut Value,
     character: usize,
     hashes: &BTreeSet<u32>,
+    changes: &[AuthoredSocketChange],
     removed: &mut BTreeMap<u32, usize>,
 ) -> Result<usize, String> {
     let mut plugs = 0;
@@ -148,9 +160,9 @@ fn clean_inventory(
             *removed.entry(row.definition_hash).or_default() += 1;
         } else if let inventory::ItemPlugs::Authored(mut values) = row.plugs {
             let mut changed = 0;
-            for value in &mut values {
+            for (lane, value) in values.iter_mut().enumerate() {
                 if value.is_some_and(|hash| hashes.contains(&hash)) {
-                    *value = None;
+                    *value = fallback(changes, row.definition_hash, lane);
                     changed += 1;
                 }
             }
@@ -174,20 +186,20 @@ fn clean_equipment(
     document: &mut Value,
     character: usize,
     hashes: &BTreeSet<u32>,
+    changes: &[AuthoredSocketChange],
     removed: &mut BTreeMap<u32, usize>,
 ) -> Result<usize, String> {
     let mut plugs = 0;
     for row in equipment::equipped_item_snapshots(document, character)? {
-        if let Some(hash) = row
+        let item = row
             .definition_hash
-            .and_then(|hash| u32::try_from(hash).ok())
-            .filter(|hash| hashes.contains(hash))
-        {
+            .and_then(|hash| u32::try_from(hash).ok());
+        if let Some(hash) = item.filter(|hash| hashes.contains(hash)) {
             // Only a weapon slot can be left empty. Armor, a Ghost Shell, a Sparrow or a Ship
             // has to be swapped for another item before the authored one is removed.
-            if !crate::account_contract::WEAPON_SLOTS.contains(&row.slot) {
+            if !crate::account::contract::WEAPON_SLOTS.contains(&row.slot) {
                 return Err(format!(
-                    "A removed Parhelion item is equipped in the {} slot. Equip another item there first.",
+                    "A removed custom item is equipped in the {} slot. Equip another item there first.",
                     equipment::equipment_slot_label(row.slot)
                 ));
             }
@@ -198,13 +210,14 @@ fn clean_equipment(
                 if let equipment::EquippedPlugValue::Hash(hash) = value
                     && u32::try_from(*hash).is_ok_and(|hash| hashes.contains(&hash))
                 {
+                    let replacement = item.and_then(|item| fallback(changes, item, index));
                     equipment::set_equipment_item_plug(
                         document,
                         character,
                         row.slot,
                         index,
                         &[],
-                        None,
+                        replacement.map(u64::from),
                     )?;
                     plugs += 1;
                 }

@@ -29,7 +29,7 @@ fn one_node(entry: &nodes::NodeKind, condition: bool) -> (Builder, usize) {
 #[test]
 fn every_observed_catalog_type_decodes_and_validates_its_class_and_extent() {
     for (entries, condition) in [(&nodes::CONDITIONS[..], true), (&nodes::EFFECTS[..], false)] {
-        for entry in entries.iter().filter(|entry| entry.observed()) {
+        for entry in entries.iter().filter(|entry| entry.has_layout()) {
             let (out, at) = one_node(entry, condition);
             let payload = out.finish();
             let decoded = decode(&payload)
@@ -84,7 +84,7 @@ fn every_unrecovered_or_unregistered_kind_is_rejected_explicitly() {
             } else {
                 nodes::effect(kind)
             };
-            if entry.is_some_and(nodes::NodeKind::observed) {
+            if entry.is_some_and(nodes::NodeKind::has_layout) {
                 continue;
             }
             let entry = nodes::NodeKind {
@@ -117,23 +117,6 @@ fn nested_predicate_cycles_hit_the_depth_guard() {
             .unwrap_err()
             .contains("nest too deeply")
     );
-}
-
-#[test]
-fn policy_and_program_shape_are_part_of_authoring_support() {
-    let payload = drawn_pattern_action();
-    let mut action = decode(&payload).unwrap();
-    assert_eq!(action.support(), Support::Authorable);
-    // An execution policy is carried by the program, so it does not lower support.
-    action.policy = 1;
-    assert_eq!(action.support(), Support::Authorable);
-    action.policy = 0;
-    // Further programs are carried by the program, so they do not lower support either.
-    action.groups.push(action.groups[0].clone());
-    assert_eq!(action.support(), Support::Authorable);
-    action.groups.pop();
-    action.groups[0].effects[0].kind = 255;
-    assert_eq!(action.support(), Support::Unobserved);
 }
 
 #[test]

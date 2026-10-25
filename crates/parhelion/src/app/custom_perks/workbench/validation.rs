@@ -7,14 +7,34 @@ pub(super) struct Location {
     pub effect: u16,
     pub action: Option<usize>,
     pub native: Option<sundial::package_authoring::sandbox_perk::program::NativeIssue>,
+    pub native_field: Option<program::native::problem::Target>,
 }
 
+#[derive(Clone)]
 pub(super) struct Issue {
     pub message: String,
     pub location: Option<Location>,
     /// Whether it keeps Apply to Weapon and the socket picker closed. A warning names a likely
     /// mistake the game still runs, so it is shown but never blocks.
     pub blocking: bool,
+}
+
+pub(super) fn located_check(
+    recipe: &PerkRecipe,
+    position: usize,
+    check: program::native::problem::Check,
+) -> Issue {
+    Issue {
+        message: format!("Effect {}: {}", position + 1, check.message),
+        location: Some(Location {
+            document: recipe.id.clone(),
+            effect: recipe.effects[position].source_perk_index,
+            action: None,
+            native: None,
+            native_field: Some(check.target),
+        }),
+        blocking: check.blocking,
+    }
 }
 
 impl Workbench {
@@ -31,13 +51,19 @@ impl Workbench {
 
     /// The open perk's issue, as `validation_issue` reads it, from the document's cache.
     pub(super) fn selected_issue(&mut self) -> Option<Issue> {
+        let diagnostics = self.selected_diagnostics();
         let index = self.selected;
         let (problem, warning) = self.document_issues(index)?;
         let recipe = &self.documents[index].recipe;
         if let Some(message) = problem {
             return Some(self.locate(recipe, message, true));
         }
-        Some(self.locate(recipe, warning?, false))
+        if let Some(issue) = diagnostics.iter().find(|issue| issue.blocking) {
+            return Some(issue.clone());
+        }
+        warning
+            .map(|message| self.locate(recipe, message, false))
+            .or_else(|| diagnostics.into_iter().next())
     }
 
     /// A document's problem, or its warning when it has no problem, from its cache.
@@ -83,6 +109,16 @@ impl Workbench {
                 blocking,
             };
         }
+        // Retain the exact field that produced this diagnostic, including a nested
+        // condition or a warning after an otherwise complete action.
+        for (position, effect) in recipe.effects.iter().enumerate() {
+            if let Some(check) = native_checks(effect.program.as_ref())
+                .into_iter()
+                .find(|check| check.blocking == blocking && check.message == message)
+            {
+                return located_check(recipe, position, check);
+            }
+        }
         for (position, effect) in recipe.effects.iter().enumerate() {
             let flagged = if blocking {
                 document.effects = vec![effect.clone()];
@@ -91,8 +127,6 @@ impl Workbench {
                         .discovery
                         .perk_issue(effect.source_perk_index)
                         .is_some()
-                    || counter_issue(effect.program.as_ref()).is_some()
-                    || choice_issue(effect.program.as_ref()).is_some()
             } else {
                 ending_issue(effect.program.as_ref()).is_some()
             };
@@ -115,6 +149,9 @@ impl Workbench {
                 }
                 let mut one = program.clone();
                 one.actions.clear();
+                one.ability_tunings.clear();
+                one.ability_inputs.clear();
+                one.ability_rows.clear();
                 if one.validate().is_err() {
                     return None;
                 }
@@ -138,6 +175,7 @@ impl Workbench {
                     effect: effect.source_perk_index,
                     action,
                     native,
+                    native_field: None,
                 }),
                 blocking,
             };
@@ -152,7 +190,10 @@ impl Workbench {
     pub(super) fn finish_reveal(&mut self, target: Option<Location>, response: &egui::Response) {
         if let Some(target) = target {
             let unhandled_action = self.reveal_action.take().is_some();
-            if target.native.is_none() && (target.action.is_none() || unhandled_action) {
+            if target.native.is_none()
+                && target.native_field.is_none()
+                && (target.action.is_none() || unhandled_action)
+            {
                 response.scroll_to_me(Some(egui::Align::Min));
             }
             self.reveal_problem = None;
@@ -162,6 +203,9 @@ impl Workbench {
     pub(super) fn draw_issue(&mut self, ui: &mut egui::Ui, issue: &Issue) {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(ui.visuals().warn_fg_color, &issue.message);
+            if ui.small_button("All Diagnostics…").clicked() {
+                self.diagnostics_open = true;
+            }
             if issue.location.is_some()
                 && ui
                     .add_enabled(
@@ -202,13 +246,7 @@ pub(super) fn event_fired(
             .any(|condition| LASTING_TRIGGERS.contains(&condition.kind))
 }
 
-/// How many of a plug's effects the runtime reads: `items::kSandboxPerkCapacity` in the
-/// Sunrise package reader, which Dawn shares, keeps four sandbox-perk entries per item or
-/// plug and `read_sandbox_perks` returns at that count (`docs/sunrise-contracts.md`, and
-/// `perk_bank::project` counts the same four). Everything at Once's fifth and sixth effects
-/// never fired in game on 2026-09-27 while its first four did. A warning, not a problem:
-/// the package and the game accept it.
-pub(super) const RUNNING_EFFECT_LIMIT: usize = 4;
+use crate::perk::SANDBOX_PERK_CAPACITY;
 
 /// A likely mistake the game still runs, the first one in the perk. It is shown wherever a
 /// problem is, but it never keeps the perk from being applied or chosen. `runtime` names the
@@ -217,11 +255,17 @@ pub(super) fn perk_warning(recipe: &PerkRecipe, runtime: &str) -> Option<String>
     recipe
         .effects
         .iter()
-        .find_map(|effect| ending_issue(effect.program.as_ref()))
+        .find_map(|effect| {
+            native_checks(effect.program.as_ref())
+                .into_iter()
+                .find(|check| !check.blocking)
+                .map(|check| check.message)
+                .or_else(|| ending_issue(effect.program.as_ref()))
+        })
         .or_else(|| {
-            (recipe.effects.len() > RUNNING_EFFECT_LIMIT).then(|| {
+            (recipe.effects.len() > SANDBOX_PERK_CAPACITY).then(|| {
                 format!(
-                    "{runtime} reads a plug's first {RUNNING_EFFECT_LIMIT} effects. The rest never run."
+                    "{runtime} reads a plug's first {SANDBOX_PERK_CAPACITY} effects. The rest never run."
                 )
             })
         })
@@ -253,88 +297,27 @@ pub(super) fn ending_issue(
     ))
 }
 
-/// A counter with no contributing conditions never moves, so its effect can never fire.
-/// The compiler accepts the bare node, since it is a valid node; the workbench is where it
-/// becomes a named problem, in the status bar and beside the counter itself. A counter counts
-/// the same way inside a requirement, a "while" check or an ending, so every one is checked.
-pub(super) fn counter_issue(
+/// All located native choices and warnings, including those behind an earlier warning.
+pub(super) fn native_checks(
     program: Option<&sundial::package_authoring::sandbox_perk::program::Program>,
-) -> Option<String> {
-    use sundial::package_authoring::sandbox_perk::{action, program::Trigger};
-    let program = program?;
-    let empty = if let Some(native) = &program.native {
-        let decoded = action::decode(&native.graph.emit().ok()?).ok()?;
-        decoded
-            .conditions()
-            .iter()
-            .any(|condition| condition.kind == 26 && condition.children.is_empty())
-    } else {
-        program.trigger == Trigger::Native
-            && program.native_trigger.as_ref().is_some_and(|node| {
-                node.kind == 26
-                    && action::decode_condition_node(&node.bytes)
-                        .is_ok_and(|condition| condition.children.is_empty())
-            })
+) -> Vec<program::native::problem::Check> {
+    let Some(program) = program else {
+        return Vec::new();
     };
-    empty.then(|| {
-        "The counter has nothing to count. Add a contributing condition such as a kill.".to_owned()
-    })
+    match &program.native {
+        Some(native) => super::program::native::problem::checks(&native.graph),
+        None => sundial::package_authoring::sandbox_perk::program::native_draft(program)
+            .map(|draft| super::program::native::problem::checks(&draft.graph))
+            .unwrap_or_default(),
+    }
 }
 
-/// A key, tag or selection a node still needs, which compiles but never acts in game.
+/// A required key or resource that still needs a choice. Empty selections only warn.
 pub(super) fn choice_issue(
     program: Option<&sundial::package_authoring::sandbox_perk::program::Program>,
 ) -> Option<String> {
-    let program = program?;
-    match &program.native {
-        Some(native) => super::program::native::unset_choice(&native.graph),
-        None => sundial::package_authoring::sandbox_perk::program::native_draft(program)
-            .ok()
-            .and_then(|draft| super::program::native::unset_choice(&draft.graph)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sundial::package_authoring::sandbox_perk::program::{
-        Action, NativeGroup, NativeNode, Program, Trigger,
-    };
-
-    /// A kill that starts a behavior with no ending can never start it again, whether it is
-    /// the effect's only behavior or a second one beside it. A duration ends it, and a trigger
-    /// that turns the effect on for good, such as On Draw, is not a problem.
-    #[test]
-    fn a_repeatable_trigger_with_no_ending_is_named() {
-        let program = |kind, duration_ms| Program {
-            trigger: Trigger::Native,
-            native_trigger: NativeNode::condition(kind),
-            duration_ms,
-            actions: vec![Action::add_rounds(1)],
-            ..Program::default()
-        };
-        assert_eq!(
-            ending_issue(Some(&program(2, 0))).as_deref(),
-            Some(
-                "This effect never ends, so it cannot start again. End it at once or set a Duration."
-            )
-        );
-        assert!(ending_issue(Some(&program(2, 5_000))).is_none());
-        assert!(ending_issue(Some(&program(16, 0))).is_none());
-        let second = Program {
-            trigger: Trigger::Drawn,
-            actions: vec![Action::add_rounds(1)],
-            additional_groups: vec![NativeGroup {
-                activation: vec![NativeNode::condition(2).unwrap()],
-                effects: vec![NativeNode::effect(16).unwrap()],
-                ..NativeGroup::default()
-            }],
-            ..Program::default()
-        };
-        assert!(
-            ending_issue(Some(&second))
-                .unwrap()
-                .starts_with("Behavior 2 never ends")
-        );
-    }
+    native_checks(program)
+        .into_iter()
+        .find(|check| check.blocking)
+        .map(|check| check.message)
 }

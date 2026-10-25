@@ -45,17 +45,23 @@ pub(super) fn characters(
     snapshot: &SqliteAccountSnapshot,
 ) -> Result<BTreeMap<EntityId, CharacterPersistence>, SqliteAccountError> {
     let error = |error| SqliteAccountError::sqlite("read character metadata from", error);
-    let mut statement = connection
-        .prepare(
-            "SELECT row_number() OVER (ORDER BY slot)-1, next_inventory_serial FROM characters ORDER BY slot;",
-        )
-        .map_err(error)?;
+    let query = if snapshot.schema == super::super::Schema::V3 {
+        "SELECT slot, next_inventory_serial, appearance_header_valid, race, gender FROM characters ORDER BY slot"
+    } else {
+        "SELECT slot, next_inventory_serial, 0, race, gender FROM characters ORDER BY slot"
+    };
+    let mut statement = connection.prepare(query).map_err(error)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
                 row.get::<_, usize>(0)?,
                 CharacterPersistence {
                     next_inventory_serial: row.get(1)?,
+                    appearance_identity: if row.get::<_, bool>(2)? {
+                        Some((row.get(3)?, row.get(4)?))
+                    } else {
+                        None
+                    },
                 },
             ))
         })

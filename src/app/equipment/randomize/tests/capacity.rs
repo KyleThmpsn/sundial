@@ -28,7 +28,7 @@ fn catalog() -> Catalog {
         );
     }
     let emotes = emote_catalog();
-    let hash = crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH;
+    let hash = crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH;
     items.push(emotes.item(hash).unwrap().clone());
     metadata.insert(hash, *emotes.inventory_metadata(hash).unwrap());
     Catalog::for_test_with_inventory(items, HashMap::new(), metadata)
@@ -99,7 +99,7 @@ fn full_loadout_respects_each_native_bucket_and_retained_locked_items() {
 #[test]
 fn missing_native_capacity_cannot_fall_back_to_ten_items() {
     let source = catalog();
-    let emote_hash = crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH;
+    let emote_hash = crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH;
     let catalog = Catalog::for_test_with_inventory(
         vec![
             source.item(99).unwrap().clone(),

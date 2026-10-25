@@ -2,7 +2,6 @@
 
 mod capacity;
 mod dawn;
-mod native_sanity;
 mod socket_shape;
 
 use crate::app::account_workspace as account;
@@ -11,7 +10,7 @@ use std::collections::HashMap;
 use super::*;
 
 fn emote_catalog() -> Catalog {
-    use crate::account_contract::{EMOTE_BUCKET_HASH, EMOTE_COLLECTION_DEFINITION_HASH};
+    use crate::account::contract::{EMOTE_BUCKET_HASH, EMOTE_COLLECTION_DEFINITION_HASH};
     use crate::catalog::{ItemStackability, SocketDef};
     let collection = ItemDef {
         hash: EMOTE_COLLECTION_DEFINITION_HASH,
@@ -114,7 +113,7 @@ fn emote_loadout_uses_collection_rolls_only_on_v13_and_later() {
         let emote = equipped.iter().find(|item| item.slot == "emote").unwrap();
         let held = account::character_inventory(&document, 0).unwrap().unwrap();
         let expected = if version >= 13 {
-            crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH
+            crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH
         } else {
             7
         };
@@ -173,9 +172,9 @@ fn missing_v13_emote_collection_does_not_partially_replace_the_loadout() {
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_INSTALL with the supported native packages"]
+#[ignore = "requires SUNDIAL_INSTALL with the supported native packages"]
 fn native_emote_loadout_respects_collection_capacity_and_randomizes_four_choices() {
-    let install = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_INSTALL").unwrap());
+    let install = crate::test_support::install();
     let cache = crate::test_support::TestDirectory::new("emote-native-catalog");
     let catalog =
         Catalog::load_or_scan_with_progress(&install, cache.0.join("catalog.json"), false, |_| {})
@@ -194,7 +193,7 @@ fn native_emote_loadout_respects_collection_capacity_and_randomizes_four_choices
         },
     )
     .unwrap();
-    let hash = crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH;
+    let hash = crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH;
     let definition = catalog.item(hash).unwrap();
     let equipped = account::equipped_item_snapshots(&document, 0).unwrap();
     let emote = equipped.iter().find(|item| item.slot == "emote").unwrap();
@@ -205,7 +204,7 @@ fn native_emote_loadout_respects_collection_capacity_and_randomizes_four_choices
         .filter(|item| {
             catalog
                 .item(u64::from(item.definition_hash))
-                .is_some_and(|item| item.bucket_hash == crate::account_contract::EMOTE_BUCKET_HASH)
+                .is_some_and(|item| item.bucket_hash == crate::account::contract::EMOTE_BUCKET_HASH)
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -307,7 +306,7 @@ fn emote_loadout_preserves_locked_items_and_obeys_inventory_replacement() {
                 held[1..]
                     .iter()
                     .all(|item| parse_unsigned_value(&item["definition_hash"])
-                        == Some(crate::account_contract::EMOTE_COLLECTION_DEFINITION_HASH))
+                        == Some(crate::account::contract::EMOTE_COLLECTION_DEFINITION_HASH))
             );
         } else {
             assert_eq!(held, &vec![locked, unlocked]);
@@ -316,141 +315,9 @@ fn emote_loadout_preserves_locked_items_and_obeys_inventory_replacement() {
 }
 
 #[test]
-fn replacing_flair_preserves_unrecognized_inventory_items() {
-    let mut document = account::WorkspaceDocument::json_only(serde_json::json!({
-        "version": 8, "state": {"characters": [{"inventory": [{
-            "instance_soid": 2, "definition_hash": 999, "level": 100,
-            "quantity": 1, "plugs": null
-        }]}]}
-    }));
-    let before = document.clone();
-    let catalog = Catalog::for_test(Vec::new(), HashMap::new());
-    clear_selected_inventory(
-        &mut document,
-        &catalog,
-        0,
-        LoadoutOptions {
-            equipment_flair: true,
-            replace_held_inventory: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(document, before);
-    assert_eq!(loadout_scope_for_bucket(u64::MAX), None);
-}
-
-#[test]
-fn exotic_detection_uses_rarity_not_perk_sockets() {
-    use crate::catalog::{ItemPackageMetadata, ItemRarity, SocketDef};
-    let mut item = ItemDef {
-        hash: 1,
-        name: "Custom weapon".into(),
-        type_name: "Sidearm".into(),
-        bucket_hash: SLOTS[0].2,
-        class_type: 3,
-        default_plugs: vec![],
-        sockets: vec![],
-        abilities: Default::default(),
-    };
-    let catalog = Catalog::for_test(
-        vec![item.clone()],
-        HashMap::from([(
-            1,
-            ItemPackageMetadata {
-                rarity: ItemRarity::Exotic,
-                ..Default::default()
-            },
-        )]),
-    );
-    assert!(is_exotic(&catalog, &item));
-    item.sockets.push(SocketDef {
-        socket_type: 377,
-        ..Default::default()
-    });
-    let catalog = Catalog::for_test(
-        vec![item.clone()],
-        HashMap::from([(
-            1,
-            ItemPackageMetadata {
-                rarity: ItemRarity::Legendary,
-                ..Default::default()
-            },
-        )]),
-    );
-    assert!(!is_exotic(&catalog, &item));
-}
-
-#[test]
 fn hash_choices_skip_the_engine_empty_marker() {
     let mut rng = Rng::from_seed(7);
     let no_definition_hash = u64::from(NO_DEFINITION_HASH.get());
     assert_eq!(rng.pick_valid_hash(&[no_definition_hash, 7]), Some(7));
     assert_eq!(rng.pick_valid_hash(&[no_definition_hash]), None);
-}
-
-#[test]
-fn unchecked_loadout_scopes_are_excluded_without_affecting_the_others() {
-    let options = LoadoutOptions {
-        weapons: false,
-        armor: true,
-        equipment_flair: false,
-        subclass: true,
-        replace_held_inventory: false,
-        keep_locked_items: true,
-    };
-    let selected = SLOTS
-        .iter()
-        .filter(|(slot, _, _)| options.includes(loadout_scope_for_slot(slot)))
-        .map(|(slot, _, _)| *slot)
-        .collect::<Vec<_>>();
-    assert_eq!(selected.len(), ARMOR_SLOTS.len() + 1);
-    assert!(selected.contains(&"helmet"));
-    assert!(selected.contains(&SUBCLASS_SLOT));
-    assert!(!selected.contains(&"kinetic"));
-    assert!(!selected.contains(&"ship"));
-}
-
-#[test]
-fn random_item_search_preserves_equipped_and_inventory_rolls() {
-    let document = account::WorkspaceDocument::json_only(serde_json::json!({
-    "version": 6,
-    "state": {
-        "characters": [{
-            "equipment": {
-                "kinetic": {
-                    "instance_soid": 1,
-                    "definition_hash": 11,
-                    "level": 100,
-                    "quantity": 1,
-                    "plugs": [101, null, 103]
-                }
-            },
-            "inventory": [{
-                "instance_soid": 2,
-                "definition_hash": 22,
-                "level": 100,
-                "quantity": 1,
-                "plugs": [201, 202]
-            }]
-        }]
-    }
-    }));
-    let matching_hashes = HashSet::from([11, 22]);
-
-    let choices = matching_item_instances(&document, 0, &matching_hashes);
-
-    assert_eq!(choices.len(), 2);
-    assert_eq!(choices[0].request.item_hash, 11);
-    assert_eq!(
-        choices[0].request.authored_plugs,
-        Some(serde_json::json!([101, null, 103]))
-    );
-    assert_eq!(choices[0].location, "Equipped · Kinetic");
-    assert_eq!(choices[1].request.item_hash, 22);
-    assert_eq!(
-        choices[1].request.authored_plugs,
-        Some(serde_json::json!([201, 202]))
-    );
-    assert_eq!(choices[1].location, "Inventory · item 1");
 }

@@ -1,5 +1,5 @@
 use super::*;
-use projectile::parameters::{self, Parameter};
+use entity::projectile::parameters::{self, Parameter};
 
 pub(in crate::app::custom_perks) fn mapped(
     loaded: &PrivatePerkRuntimeGraph,
@@ -23,8 +23,7 @@ pub(in crate::app::custom_perks) fn mapped(
 }
 
 impl PerkEditor {
-    /// Draws every mapped projectile property. Used for an independently opened entity and
-    /// for an action with no readable summary to place the properties on.
+    /// Draws every mapped projectile property.
     pub(super) fn draw_movement(&mut self, ui: &mut egui::Ui, loaded: &PrivatePerkRuntimeGraph) {
         let parameters = mapped(loaded);
         if parameters.is_empty() {
@@ -33,30 +32,6 @@ impl PerkEditor {
         ui.add_space(8.0);
         ui.strong("Projectile Properties");
         self.draw_parameter_rows(ui, loaded, parameters);
-    }
-
-    /// Draws the mapped properties of the graphs listed, for placement on an effect block.
-    /// Returns whether anything was drawn.
-    pub(super) fn draw_movement_for(
-        &mut self,
-        ui: &mut egui::Ui,
-        loaded: &PrivatePerkRuntimeGraph,
-        graphs: &[u32],
-    ) -> bool {
-        let parameters = mapped(loaded)
-            .into_iter()
-            .filter(|(tag, _)| graphs.contains(tag))
-            .collect::<Vec<_>>();
-        if parameters.is_empty() {
-            return false;
-        }
-        ui.label(
-            egui::RichText::new("Projectile Properties")
-                .small()
-                .strong(),
-        );
-        self.draw_parameter_rows(ui, loaded, parameters);
-        true
     }
 
     fn draw_parameter_rows(

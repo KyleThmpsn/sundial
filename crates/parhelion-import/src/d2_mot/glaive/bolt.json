@@ -1,0 +1,292 @@
+{
+  "projectile": "80CEE9B0",
+  "sequence": "80CED44A",
+  "branch": "void",
+  "systems": [
+    "80CED41C",
+    "80CED422",
+    "80CED427",
+    "80CED443"
+  ],
+  "fired_graph": {
+    "source_graph": 2159790046,
+    "patches": [
+      {
+        "binding_hash": 3972653003,
+        "resource_index": 3,
+        "offset": 648,
+        "expected": "0x04000000",
+        "bytes": "0x12000000"
+      },
+      {
+        "binding_hash": 3972653003,
+        "resource_index": 3,
+        "offset": 656,
+        "expected": "0xA0020000",
+        "bytes": "0x90030000"
+      },
+      {
+        "binding_hash": 3972653003,
+        "resource_index": 3,
+        "offset": 664,
+        "expected": "0x01000000",
+        "bytes": "0x0B000000"
+      },
+      {
+        "binding_hash": 3972653003,
+        "resource_index": 3,
+        "offset": 672,
+        "expected": "0xB0020000",
+        "bytes": "0xB0030000"
+      },
+      {
+        "binding_hash": 3972653003,
+        "resource_index": 3,
+        "offset": 744,
+        "expected": "0x98020000",
+        "bytes": "0x38040000"
+      },
+      {
+        "binding_hash": 3972653003,
+        "resource_index": 3,
+        "offset": 760,
+        "expected": "0xA8020000",
+        "bytes": "0x48040000"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 324,
+        "expected": "0x00001643",
+        "bytes": "0x0000F042"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 332,
+        "expected": "0x000020429A99193F0000E0400000A041D9899D3D",
+        "bytes": "0x0000F0420000000000007A440000FA446F12833A"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 360,
+        "expected": "0x00C07944",
+        "bytes": "0x00009643"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 3708,
+        "expected": "0x0000000000000000",
+        "bytes": "0x0AD7233C0AD7233C"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 3720,
+        "expected": "0x0000C040",
+        "bytes": "0x00002041"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 3732,
+        "expected": "0x00C07944",
+        "bytes": "0x00009643"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 3752,
+        "expected": "0x00001643",
+        "bytes": "0x0000F042"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 3776,
+        "expected": "0x000000000000803F",
+        "bytes": "0xFEFF7F3F00000000"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 3792,
+        "expected": "0x0000000000000000",
+        "bytes": "0x8470514184705141"
+      },
+      {
+        "binding_hash": 606964890,
+        "resource_index": 0,
+        "offset": 5108,
+        "expected": "0x000020429A99193F0000E0400000A041",
+        "bytes": "0x0000F0420000000000007A440000FA44"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 5872,
+        "expected": "0x0001",
+        "bytes": "0x0201"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 5524,
+        "expected": "0x000000000000000017B7D13817B7D138",
+        "bytes": "0x00000000000000000000803F0000803F"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 6496,
+        "expected": "0x0001",
+        "bytes": "0x0201"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 6148,
+        "expected": "0x00000000000000000000003F0000003F",
+        "bytes": "0x00000000000000000000803F0000803F"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 5328,
+        "expected": "0x0200000000000000",
+        "bytes": "0x0100000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 5360,
+        "expected": "0x0200000000000000",
+        "bytes": "0x0100000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 6808,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 7056,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 7432,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 7680,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 8056,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 8304,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 8680,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 8928,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 3816,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 4064,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 4440,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 4688,
+        "expected": "0x0100000000000000",
+        "bytes": "0x0000000000000000"
+      }
+    ],
+    "appends": [
+      {
+        "binding_hash": 3972653003,
+        "resource_index": 3,
+        "expected_owner_size": 1744,
+        "bytes": "0x000000000000000000000000BD9F8080120000000000000009008080000000003C0022003400032323220038012322003E0000000000000000000000BD9F80800B000000000000009000808000000000A794D73C0000803F0000803F0000803F35BD914200000000B1B2BAC0FE062942203EA1C1000000000B6CC840C739A6C200000000103E7849180B08C0562E5242000000003A5389C845BA9D3FB1D31CC1604F2742000000000000000000000000159FD1C2000000000000000000000000BD05A9420000000000000000000000003345ABC1622FF43D622FF43D622FF43D00000000DC9D8D3EFE9D8D3ECDCC0C3F419F383F0000803F0000803F0000803F000000000000000000000000BD9F80800400000000000000090080800000000034003E000000000000000000BD9F80800100000000000000900080800000000000000000000000000000000000000000"
+      }
+    ],
+    "particles": [
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 5840,
+        "expected": 2163569677,
+        "system": "particle-system-80CED41C"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 0,
+        "offset": 6464,
+        "expected": 2163569678,
+        "system": "particle-system-80CED427"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 3472,
+        "expected": 2163159259,
+        "system": "particle-system-80CED422"
+      },
+      {
+        "binding_hash": 2281497049,
+        "resource_index": 1,
+        "offset": 5344,
+        "expected": 2163159274,
+        "system": "particle-system-80CED443"
+      }
+    ]
+  }
+}

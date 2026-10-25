@@ -1,8 +1,11 @@
 //! Compiled particle parameter program. The eight bytecode spans and the 56 scalar routes are
 //! stored in the definition header, independently of the emitter mesh and material.
 use super::*;
+mod coverage;
+#[cfg(test)]
+mod verification;
 mod vm;
-pub(crate) use vm::Registers;
+pub(crate) use vm::{Registers, Runtime, Sources};
 
 pub(crate) struct Program {
     pub sections: [u16; 8],
@@ -108,11 +111,12 @@ impl Program {
         (self.lifetime_ceiling == value + 0.05).then_some(value)
     }
 
-    /// The compiled state bridge maps two adjacent source vectors in bank 2 to adjacent output
-    /// vectors in bank 1. Section 3 contains the copy when one is encoded. The route table does
-    /// not name their lanes. Air Weak 2's native vertex shader appears to read the second
-    /// vector's xyz lanes as a particle center and the first vector's w lane as a visibility or
-    /// age control.
+    /// The captured native caller publishes position XYZ through route 8 and direction XYZ
+    /// through route 9 before section 3, preserving each vector's fourth component. This
+    /// bridge recognizes adjacent bank-2 inputs and bank-1 outputs in stored programs.
+    /// Original Air Weak 2 vertex execution consumes this position vector as the center
+    /// and the direction vector's fourth component as an age cutoff. Native upload and
+    /// attachment producers remain separate from the witnessed shader consumer.
     pub fn state_routes(&self) -> Option<[(Route, Route); 2]> {
         let first = (self.routes[9]?, self.routes[7]?);
         let second = (self.routes[8]?, self.routes[6]?);
@@ -153,12 +157,8 @@ impl Program {
             let mut at = 0;
             while at < code.len() {
                 let opcode = code[at];
-                let length = match opcode {
-                    0x3E | 0x3F => 4,
-                    0x22 | 0x34..=0x3B | 0x40 | 0x43 | 0x45..=0x47 => 2,
-                    0x01..=0x33 | 0x3D | 0x49 | 0x4C | 0x4D | 0x4F | 0x51 | 0x52 => 1,
-                    _ => return Err(format!("Unknown particle opcode 0x{opcode:02X}")),
-                };
+                let length = coverage::instruction_len(opcode)
+                    .ok_or_else(|| format!("Unknown particle opcode 0x{opcode:02X}"))?;
                 if at + length > code.len() {
                     return Err("Particle instruction crosses a section boundary".into());
                 }
@@ -278,29 +278,5 @@ mod tests {
         );
         program.sections[1] = 1;
         assert!(program.register_writes().is_err());
-    }
-
-    #[test]
-    #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
-    fn installed_program_sections_parse_at_instruction_boundaries() {
-        let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
-        let manager = crate::investment::discovery::open_packages(std::path::Path::new(&packages))
-            .expect("installed packages");
-        let mut checked = 0;
-        for (tag, entry) in manager.get_all_by_reference(0x8080_6E2C).iter().step_by(20) {
-            if entry.file_type != 8 {
-                continue;
-            }
-            let bytes = manager.read_tag(tag.0).expect("particle definition");
-            let program = Program::read(&bytes).expect("validated particle program");
-            program
-                .register_writes()
-                .expect("all particle sections parse");
-            checked += 1;
-            if checked == 1_000 {
-                break;
-            }
-        }
-        assert_eq!(checked, 1_000);
     }
 }

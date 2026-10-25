@@ -125,8 +125,7 @@ fn draw_changes(ui: &mut egui::Ui, id: &str, rows: &[Change]) {
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.set_min_width(name_width);
-                        ui.add(egui::Label::new(destiny_text(ui, &row.name)).truncate())
-                            .on_hover_text(destiny_text(ui, &row.name));
+                        ui.add(egui::Label::new(destiny_text(ui, &row.name)).truncate());
                     },
                 );
                 ui.label(&row.before);

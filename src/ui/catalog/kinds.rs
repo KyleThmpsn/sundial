@@ -211,6 +211,10 @@ fn sort_uses(rows: &mut [StockUse], column: UseColumn, descending: bool) {
 }
 
 impl Kinds {
+    /// Selected stock configuration, separate from the selected kind.
+    pub fn selected_stock_use(&self) -> Option<u16> {
+        self.selected_use
+    }
     /// Show one kind, clearing any filter that would hide it.
     pub fn open(&mut self, family: Family, kind: u8) {
         self.query.clear();
@@ -362,7 +366,6 @@ impl Kinds {
     ) {
         if rows.is_empty() {
             ui.strong("No Matching Kinds");
-            ui.label("Clear the search or change a filter.");
             return;
         }
         for family in Family::ALL {
@@ -387,7 +390,7 @@ impl Kinds {
                     selected,
                     &[
                         egui::RichText::new(node.kind.to_string()),
-                        crate::ui_help::emphasized_text(ui, node.name),
+                        crate::ui::help::emphasized_text(ui, node.name),
                         egui::RichText::new(
                             count.map_or_else(|| "…".into(), |count| count.to_string()),
                         ),
@@ -456,6 +459,11 @@ impl Kinds {
                         node.class, node.struct_size
                     ));
                 }
+                ui.label(format!(
+                    "{} occurrences in the client {} survey",
+                    node.occurrences,
+                    crate::sandbox_perk::nodes::CLIENT_BUILD
+                ));
                 ui.label(node.support.detail());
                 ui.label(node.evidence);
             });
@@ -515,7 +523,7 @@ impl Kinds {
     ) -> Option<u16> {
         let mut open = None;
         ui.horizontal(|ui| {
-            let width = (ui.available_width() - 65.0).max(120.0);
+            let width = (ui.available_width() - super::CLEAR_WIDTH).max(120.0);
             super::search(ui, &mut self.use_query, false, width, "Search Stock Uses");
         });
         self.uses.refresh(source, &self.use_query, self.sort, rows);
@@ -598,7 +606,7 @@ impl Kinds {
                         selected,
                         &[
                             egui::RichText::new(index.to_string()),
-                            crate::ui_help::emphasized_text(ui, &row.name),
+                            crate::ui::help::emphasized_text(ui, &row.name),
                             egui::RichText::new(&row.description).weak(),
                         ],
                     )
@@ -616,7 +624,7 @@ impl Kinds {
                     response.context_menu(|ui| {
                         if self.reference_links && ui.button("Open in Perk Effects").clicked() {
                             open = Some(index);
-                            ui.close_menu();
+                            ui.close();
                         }
                         if let Some(actions) = actions.as_deref_mut() {
                             actions(ui, Some(index), UseLocation::Menu);
@@ -752,6 +760,3 @@ fn matches_query(node: &NodeKind, query: &str) -> bool {
     let text = format!("{} {} {}", node.kind, node.name, node.summary).to_lowercase();
     query.split_whitespace().all(|word| text.contains(word))
 }
-
-#[cfg(test)]
-mod tests;

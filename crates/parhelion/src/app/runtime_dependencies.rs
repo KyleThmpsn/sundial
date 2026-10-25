@@ -1,8 +1,6 @@
 //! Read-only dependency evidence. Nothing in this browser rejects an authored combination.
 use super::*;
 mod details;
-#[cfg(test)]
-mod tests;
 use sundial::{
     investment::{PerkPatternUse, PerkSources},
     package_authoring::sandbox_perk::dependencies::{self, Entity, Index, Perk},
@@ -187,8 +185,8 @@ impl PackageAuthoringApp {
             .open(&mut open)
             .default_size([1100.0, 720.0])
             .resizable(true)
-            .max_width((ctx.screen_rect().width() - 32.0).max(320.0))
-            .max_height((ctx.screen_rect().height() - 64.0).max(240.0))
+            .max_width((ctx.content_rect().width() - 32.0).max(320.0))
+            .max_height((ctx.content_rect().height() - 64.0).max(240.0))
             .show(ctx, |ui| {
                 workbench_style(ui);
                 self.runtime_dependencies
@@ -274,13 +272,12 @@ impl Browser {
             if ui
                 .add_enabled(!self.history.is_empty(), egui::Button::new("Back"))
                 .clicked()
+                && let Some((page, selected)) = self.history.pop()
             {
-                if let Some((page, selected)) = self.history.pop() {
-                    self.page = page;
-                    self.selected = selected;
-                    self.query.clear();
-                    self.reveal_selection = true;
-                }
+                self.page = page;
+                self.selected = selected;
+                self.query.clear();
+                self.reveal_selection = true;
             }
             if ui
                 .selectable_label(self.page == Page::Perks, "Perks")
@@ -294,10 +291,10 @@ impl Browser {
             {
                 self.navigate(Page::Patterns, target.map_or(0, usize::from));
             }
-            if let Some(target) = target {
-                if ui.button("Recipe Pattern").clicked() {
-                    self.navigate(Page::Patterns, usize::from(target));
-                }
+            if let Some(target) = target
+                && ui.button("Recipe Pattern").clicked()
+            {
+                self.navigate(Page::Patterns, usize::from(target));
             }
             if ui.button("Refresh").clicked() {
                 self.index = None;
@@ -379,7 +376,7 @@ impl Browser {
         ui.add(
             egui::TextEdit::singleline(&mut self.query)
                 .desired_width(f32::INFINITY)
-                .hint_text("Search by name or number"),
+                .hint_text("Search by Name or Number"),
         );
         ui.checkbox(&mut self.show_unnamed, "Include Unnamed")
             .on_hover_text("Shows entries with no named weapon or perk.");
@@ -398,10 +395,11 @@ impl Browser {
             ui.weak("No matches.");
             return false;
         }
-        if !labels.iter().any(|(value, _)| *value == self.selected) && !self.reveal_selection {
-            if let Some((value, _)) = labels.first() {
-                self.selected = *value;
-            }
+        if !labels.iter().any(|(value, _)| *value == self.selected)
+            && !self.reveal_selection
+            && let Some((value, _)) = labels.first()
+        {
+            self.selected = *value;
         }
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt(("dependency-rows", self.page as u8))

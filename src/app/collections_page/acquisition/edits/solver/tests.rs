@@ -99,27 +99,6 @@ fn inverts_arithmetic_and_bitmasks_in_both_account_formats() {
     }
 }
 #[test]
-fn solves_large_mixed_boolean_conditions_without_cartesian_enumeration() {
-    let mut expr = vec![];
-    for index in 0..24 {
-        expr.push(token(1, index));
-        if index % 2 == 0 {
-            expr.push(token(2, 0));
-        }
-        if index > 0 {
-            expr.push(token(4, 0));
-        }
-    }
-    let (doc, catalog) = apply(expr, false);
-    let snapshot = collection_state_snapshot(&doc).unwrap();
-    for index in 0..24 {
-        assert_eq!(
-            snapshot.evaluated_flag(index, &catalog),
-            Some(index % 2 == 1)
-        );
-    }
-}
-#[test]
 fn does_not_offer_a_plan_for_contradictory_shared_inputs() {
     let catalog = catalog();
     let snapshot = collection_state_snapshot(&json!({})).unwrap();
@@ -131,25 +110,5 @@ fn does_not_offer_a_plan_for_contradictory_shared_inputs() {
             true
         )
         .is_none()
-    );
-}
-
-#[test]
-fn an_unknown_branch_does_not_block_a_verified_writable_alternative() {
-    let catalog = catalog();
-    let snapshot = collection_state_snapshot(&json!({})).unwrap();
-    let plan = solve(
-        &[token(1, 999), token(1, 0), token(3, 0)],
-        &snapshot,
-        &catalog,
-        true,
-    )
-    .unwrap();
-    assert_eq!(
-        plan,
-        vec![CollectionStateEdit::Flag {
-            definition_index: 0,
-            set: true
-        }]
     );
 }

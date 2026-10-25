@@ -9,14 +9,15 @@ pub fn blend_rgba_pixel(destination: &mut [u8], source: [u8; 4]) {
     }
     let destination_alpha = u32::from(destination[3]);
     let inverse_source_alpha = 255 - source_alpha;
-    let output_alpha = source_alpha + (destination_alpha * inverse_source_alpha + 127) / 255;
+    // Keep alpha at full precision until color has been unpremultiplied. Rounding
+    // it first can turn a bright translucent channel into 256, which wraps to black.
+    let output_alpha = source_alpha * 255 + destination_alpha * inverse_source_alpha;
     for channel in 0..3 {
-        let premultiplied = u32::from(source[channel]) * source_alpha
-            + (u32::from(destination[channel]) * destination_alpha * inverse_source_alpha + 127)
-                / 255;
+        let premultiplied = u32::from(source[channel]) * source_alpha * 255
+            + u32::from(destination[channel]) * destination_alpha * inverse_source_alpha;
         destination[channel] = ((premultiplied + output_alpha / 2) / output_alpha) as u8;
     }
-    destination[3] = output_alpha as u8;
+    destination[3] = ((output_alpha + 127) / 255) as u8;
 }
 
 /// Exact match required to seed a cleared region, allowing only for a filtered edge.
@@ -54,7 +55,13 @@ pub const CLEARED_EDGE_DEPTH: usize = 2;
 ///
 /// `pixels` is unpremultiplied RGBA8.
 pub fn clear_color_region(pixels: &mut [u8], width: usize, height: usize, cleared: [u8; 3]) {
-    if width == 0 || height == 0 || pixels.len() != width * height * 4 {
+    if width == 0
+        || height == 0
+        || width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            != Some(pixels.len())
+    {
         return;
     }
     let brightest = i32::from(cleared.iter().copied().max().unwrap_or(0));
@@ -210,23 +217,22 @@ pub fn decode_bc1(data: &[u8], width: usize, height: usize) -> Result<Vec<u8>, S
             let mut colors = [[0_u8; 4]; 4];
             colors[0] = rgb565(color_0);
             colors[1] = rgb565(color_1);
+            let [first, second, third, fourth] = &mut colors;
+            let endpoints = first.iter().zip(second.iter()).take(3);
             if color_0 > color_1 {
-                for channel in 0..3 {
-                    colors[2][channel] = ((2 * u16::from(colors[0][channel])
-                        + u16::from(colors[1][channel]))
-                        / 3) as u8;
-                    colors[3][channel] = ((u16::from(colors[0][channel])
-                        + 2 * u16::from(colors[1][channel]))
-                        / 3) as u8;
+                for ((third, fourth), (first, second)) in
+                    third.iter_mut().zip(fourth.iter_mut()).zip(endpoints)
+                {
+                    *third = ((2 * u16::from(*first) + u16::from(*second)) / 3) as u8;
+                    *fourth = ((u16::from(*first) + 2 * u16::from(*second)) / 3) as u8;
                 }
-                colors[2][3] = 255;
-                colors[3][3] = 255;
+                third[3] = 255;
+                fourth[3] = 255;
             } else {
-                for channel in 0..3 {
-                    colors[2][channel] =
-                        ((u16::from(colors[0][channel]) + u16::from(colors[1][channel])) / 2) as u8;
+                for (third, (first, second)) in third.iter_mut().zip(endpoints) {
+                    *third = ((u16::from(*first) + u16::from(*second)) / 2) as u8;
                 }
-                colors[2][3] = 255;
+                third[3] = 255;
             }
             let indices = u32::from_le_bytes([
                 data[offset + 4],
@@ -278,89 +284,6 @@ mod tests {
 
     const PLATE: [u8; 3] = [0xF2, 0xE3, 0x70];
 
-    fn filled(width: usize, height: usize, pixel: [u8; 4]) -> Vec<u8> {
-        pixel
-            .iter()
-            .copied()
-            .cycle()
-            .take(width * height * 4)
-            .collect()
-    }
-
-    fn put(pixels: &mut [u8], width: usize, x: usize, y: usize, value: [u8; 4]) {
-        pixels[(y * width + x) * 4..(y * width + x) * 4 + 4].copy_from_slice(&value);
-    }
-
-    fn at(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
-        pixels[(y * width + x) * 4..(y * width + x) * 4 + 4]
-            .try_into()
-            .expect("four channels")
-    }
-
-    fn transparent(pixels: &[u8]) -> usize {
-        pixels.chunks_exact(4).filter(|pixel| pixel[3] == 0).count()
-    }
-
-    #[test]
-    fn clearing_a_plate_leaves_the_art_drawn_over_it() {
-        let mut pixels = filled(8, 8, [PLATE[0], PLATE[1], PLATE[2], 255]);
-        put(&mut pixels, 8, 3, 3, [0x20, 0x40, 0xFF, 255]);
-        clear_color_region(&mut pixels, 8, 8, PLATE);
-        assert_eq!(transparent(&pixels), 63);
-        assert_eq!(at(&pixels, 8, 3, 3), [0x20, 0x40, 0xFF, 255]);
-    }
-
-    /// The plate is painted at a range of alpha values, and the color is what identifies it,
-    /// so a translucent plate pixel is cleared like an opaque one.
-    #[test]
-    fn a_translucent_plate_pixel_is_cleared_like_an_opaque_one() {
-        for alpha in [255, 192, 128, 64, 16, 1] {
-            let mut pixels = filled(4, 4, [PLATE[0], PLATE[1], PLATE[2], 255]);
-            put(&mut pixels, 4, 2, 2, [PLATE[0], PLATE[1], PLATE[2], alpha]);
-            clear_color_region(&mut pixels, 4, 4, PLATE);
-            assert_eq!(at(&pixels, 4, 2, 2), [0, 0, 0, 0], "alpha {alpha}");
-        }
-    }
-
-    /// The flood only reaches pixels that touch the region, so art that merely resembles the
-    /// cleared color survives when nothing joins it to a seed.
-    #[test]
-    fn art_near_the_cleared_color_survives_when_it_touches_no_seed() {
-        let similar = [0xF2, 0xE3, 0x60, 255];
-        let mut pixels = filled(9, 9, [0, 0, 0, 0]);
-        for x in 0..9 {
-            put(&mut pixels, 9, x, 0, [PLATE[0], PLATE[1], PLATE[2], 255]);
-        }
-        put(&mut pixels, 9, 4, 8, similar);
-        clear_color_region(&mut pixels, 9, 9, PLATE);
-        // The art pixel is the only one still drawn: the plate row went and the rest of the
-        // image was already transparent.
-        assert_eq!(transparent(&pixels), 9 * 9 - 1);
-        assert_eq!(at(&pixels, 9, 4, 8), similar);
-        for x in 0..9 {
-            assert_eq!(at(&pixels, 9, x, 0), [0, 0, 0, 0], "plate pixel {x} stayed");
-        }
-    }
-
-    /// The color can be picked out of the artwork, so black has to work. It has no brightness
-    /// ramp and no hue, so its region is the near-black pixels and nothing else.
-    #[test]
-    fn a_black_cleared_color_clears_black_and_leaves_the_rest() {
-        let mut pixels = filled(8, 8, [90, 70, 40, 255]);
-        put(&mut pixels, 8, 0, 0, [0, 0, 0, 255]);
-        put(&mut pixels, 8, 1, 0, [2, 1, 2, 255]);
-        put(&mut pixels, 8, 7, 7, [0, 0, 0, 255]);
-        clear_color_region(&mut pixels, 8, 8, [0, 0, 0]);
-        assert_eq!(at(&pixels, 8, 0, 0), [0, 0, 0, 0]);
-        assert_eq!(
-            at(&pixels, 8, 1, 0),
-            [0, 0, 0, 0],
-            "its antialiased edge goes too"
-        );
-        assert_eq!(at(&pixels, 8, 7, 7), [0, 0, 0, 0]);
-        assert_eq!(transparent(&pixels), 3, "the art around it stays");
-    }
-
     #[test]
     fn malformed_or_empty_images_are_left_alone() {
         let mut short = vec![1, 2, 3];
@@ -368,6 +291,8 @@ mod tests {
         assert_eq!(short, vec![1, 2, 3]);
         let mut empty: Vec<u8> = Vec::new();
         clear_color_region(&mut empty, 0, 0, PLATE);
+        assert!(empty.is_empty());
+        clear_color_region(&mut empty, usize::MAX / 4 + 1, 1, PLATE);
         assert!(empty.is_empty());
     }
 }

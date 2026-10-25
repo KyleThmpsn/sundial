@@ -1,0 +1,6226 @@
+{
+  "concrete": {
+    "239": 2821,
+    "246": 2868,
+    "248": 2881,
+    "274": 2720,
+    "275": 2887,
+    "276": 2699,
+    "278": 2704,
+    "322": 2711,
+    "327": 2712,
+    "378": 2747,
+    "429": 2759,
+    "433": 2744,
+    "437": 2737,
+    "438": 2736,
+    "439": 2739,
+    "444": 2752,
+    "478": 2845,
+    "482": 2840,
+    "486": 2860,
+    "494": 2833,
+    "498": 2877,
+    "499": 2871,
+    "501": 2873
+  },
+  "types": {
+    "2821": {
+      "name": "hclClothContainer",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 56,
+      "members": [
+        {
+          "name": "collidables",
+          "type": 2594,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "clothDatas",
+          "type": 2593,
+          "offset": 40,
+          "flags": 32
+        }
+      ]
+    },
+    "2005": {
+      "name": "hkReferencedObject",
+      "parent": 2006,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": [
+        {
+          "name": "propertyBag",
+          "type": 1698,
+          "offset": 8,
+          "flags": 36
+        },
+        {
+          "name": "memSizeAndFlags",
+          "type": 1683,
+          "offset": 16,
+          "flags": 37
+        },
+        {
+          "name": "refCount",
+          "type": 1683,
+          "offset": 18,
+          "flags": 37
+        }
+      ]
+    },
+    "2006": {
+      "name": "hkBaseObject",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": []
+    },
+    "1698": {
+      "name": "hkPropertyBag",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1703,
+      "size": 8,
+      "members": [
+        {
+          "name": "bag",
+          "type": 1541,
+          "offset": 0,
+          "flags": 35
+        }
+      ]
+    },
+    "1703": {
+      "name": "hkDefaultPropertyBag",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 72,
+      "members": [
+        {
+          "name": "propertyMap",
+          "type": 1544,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "transientPropertyMap",
+          "type": 1544,
+          "offset": 32,
+          "flags": 35
+        },
+        {
+          "name": "locked",
+          "type": 1434,
+          "offset": 64,
+          "flags": 33
+        }
+      ]
+    },
+    "1544": {
+      "name": "hkHashMap",
+      "parent": 1512,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": []
+    },
+    "1512": {
+      "name": "hkHashBase",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "items",
+          "type": 1439,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "index",
+          "type": 2088,
+          "offset": 16,
+          "flags": 35
+        }
+      ]
+    },
+    "1439": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1477,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 1436,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "1477": {
+      "name": "hkHashMapDetail::MapTuple",
+      "parent": 1441,
+      "format": 7,
+      "subtype": 0,
+      "size": 48,
+      "members": []
+    },
+    "1441": {
+      "name": "hkTuple",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 48,
+      "members": [
+        {
+          "name": "0",
+          "type": 1699,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "1",
+          "type": 1755,
+          "offset": 16,
+          "flags": 32
+        }
+      ]
+    },
+    "1699": {
+      "name": "hkPropertyId",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "desc",
+          "type": 1542,
+          "offset": 0,
+          "flags": 37
+        },
+        {
+          "name": "type",
+          "type": 3106,
+          "offset": 0,
+          "flags": 16
+        },
+        {
+          "name": "name",
+          "type": 1432,
+          "offset": 0,
+          "flags": 16
+        },
+        {
+          "name": "flags",
+          "type": 1701,
+          "offset": 0,
+          "flags": 16
+        }
+      ]
+    },
+    "1542": {
+      "name": "hkPtrAndInt",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "ptrAndInt",
+          "type": 1454,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "1454": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1700,
+      "size": 8,
+      "members": []
+    },
+    "1700": {
+      "name": "hkPropertyDesc",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": [
+        {
+          "name": "type",
+          "type": 3106,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "name",
+          "type": 1432,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "flags",
+          "type": 1543,
+          "offset": 16,
+          "flags": 32
+        }
+      ]
+    },
+    "3106": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1790,
+      "size": 8,
+      "members": []
+    },
+    "1790": {
+      "name": "hkReflect::Type",
+      "parent": 0,
+      "format": 1,
+      "subtype": 0,
+      "size": 0,
+      "members": []
+    },
+    "1432": {
+      "name": "const char*",
+      "parent": 0,
+      "format": 131,
+      "subtype": 0,
+      "size": 8,
+      "members": []
+    },
+    "1543": {
+      "name": "hkFlags",
+      "parent": 0,
+      "format": 32772,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1682,
+          "offset": 0,
+          "flags": 34
+        }
+      ]
+    },
+    "1682": {
+      "name": "hkUint32",
+      "parent": 1426,
+      "format": 32772,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "1426": {
+      "name": "unsigned int",
+      "parent": 0,
+      "format": 32772,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "1701": {
+      "name": "hkPropertyFlags::Enum",
+      "parent": 0,
+      "format": 33284,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "1755": {
+      "name": "hkReflect::Any",
+      "parent": 0,
+      "format": 8,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "type",
+          "type": 1623,
+          "offset": 0,
+          "flags": 36
+        },
+        {
+          "name": "status",
+          "type": 1430,
+          "offset": 8,
+          "flags": 36
+        },
+        {
+          "name": "buf",
+          "type": 1567,
+          "offset": 16,
+          "flags": 36
+        }
+      ]
+    },
+    "1623": {
+      "name": "hkReflect::QualifiedType",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1790,
+      "size": 8,
+      "members": [
+        {
+          "name": "type",
+          "type": 3106,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "1430": {
+      "name": "unsigned char",
+      "parent": 0,
+      "format": 8196,
+      "subtype": 0,
+      "size": 1,
+      "members": []
+    },
+    "1567": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 1064,
+      "subtype": 1679,
+      "size": 16,
+      "members": []
+    },
+    "1679": {
+      "name": "hkUintReal",
+      "parent": 1426,
+      "format": 32772,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "1436": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1477,
+      "size": 8,
+      "members": []
+    },
+    "1427": {
+      "name": "int",
+      "parent": 0,
+      "format": 33284,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "2088": {
+      "name": "hkHashMapDetail::Index",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 16,
+      "members": [
+        {
+          "name": "entries",
+          "type": 1415,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "hashMod",
+          "type": 1427,
+          "offset": 8,
+          "flags": 32
+        }
+      ]
+    },
+    "1415": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1435,
+      "size": 8,
+      "members": []
+    },
+    "1435": {
+      "name": "void",
+      "parent": 0,
+      "format": 0,
+      "subtype": 0,
+      "size": 0,
+      "members": []
+    },
+    "1434": {
+      "name": "bool",
+      "parent": 0,
+      "format": 8194,
+      "subtype": 0,
+      "size": 1,
+      "members": []
+    },
+    "1541": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1703,
+      "size": 8,
+      "members": []
+    },
+    "1683": {
+      "name": "hkUint16",
+      "parent": 1428,
+      "format": 16388,
+      "subtype": 0,
+      "size": 2,
+      "members": []
+    },
+    "1428": {
+      "name": "unsigned short",
+      "parent": 0,
+      "format": 16388,
+      "subtype": 0,
+      "size": 2,
+      "members": []
+    },
+    "2594": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2500,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2433,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2500": {
+      "name": "hkRefPtr",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2868,
+      "size": 8,
+      "members": [
+        {
+          "name": "ptr",
+          "type": 2496,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2868": {
+      "name": "hclCollidable",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 160,
+      "members": [
+        {
+          "name": "transform",
+          "type": 2050,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "linearVelocity",
+          "type": 2026,
+          "offset": 96,
+          "flags": 32
+        },
+        {
+          "name": "angularVelocity",
+          "type": 2026,
+          "offset": 112,
+          "flags": 32
+        },
+        {
+          "name": "userData",
+          "type": 1689,
+          "offset": 128,
+          "flags": 32
+        },
+        {
+          "name": "shape",
+          "type": 2624,
+          "offset": 136,
+          "flags": 32
+        },
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 144,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionRadius",
+          "type": 2023,
+          "offset": 152,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionPriority",
+          "type": 1687,
+          "offset": 156,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionEnabled",
+          "type": 1675,
+          "offset": 157,
+          "flags": 32
+        },
+        {
+          "name": "virtualCollisionPointCollisionEnabled",
+          "type": 1675,
+          "offset": 158,
+          "flags": 32
+        },
+        {
+          "name": "enabled",
+          "type": 1675,
+          "offset": 159,
+          "flags": 32
+        }
+      ]
+    },
+    "2050": {
+      "name": "hkTransform",
+      "parent": 2049,
+      "format": 4136,
+      "subtype": 0,
+      "size": 64,
+      "members": []
+    },
+    "2049": {
+      "name": "hkTransformf",
+      "parent": 0,
+      "format": 4136,
+      "subtype": 1421,
+      "size": 64,
+      "members": [
+        {
+          "name": "rotation",
+          "type": 2059,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "translation",
+          "type": 2025,
+          "offset": 48,
+          "flags": 34
+        }
+      ]
+    },
+    "1421": {
+      "name": "float",
+      "parent": 0,
+      "format": 1525253,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "2059": {
+      "name": "hkRotationf",
+      "parent": 1609,
+      "format": 3112,
+      "subtype": 0,
+      "size": 48,
+      "members": []
+    },
+    "1609": {
+      "name": "hkRotationImpl",
+      "parent": 0,
+      "format": 3112,
+      "subtype": 1421,
+      "size": 48,
+      "members": []
+    },
+    "2025": {
+      "name": "hkVector4f",
+      "parent": 0,
+      "format": 1064,
+      "subtype": 1421,
+      "size": 16,
+      "members": []
+    },
+    "2026": {
+      "name": "hkVector4",
+      "parent": 2025,
+      "format": 1064,
+      "subtype": 0,
+      "size": 16,
+      "members": []
+    },
+    "1689": {
+      "name": "hkUint64",
+      "parent": 1422,
+      "format": 65540,
+      "subtype": 0,
+      "size": 8,
+      "members": []
+    },
+    "1422": {
+      "name": "unsigned long long",
+      "parent": 0,
+      "format": 65540,
+      "subtype": 0,
+      "size": 8,
+      "members": []
+    },
+    "2624": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2869,
+      "size": 8,
+      "members": []
+    },
+    "2869": {
+      "name": "hclShape",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "type",
+          "type": 1427,
+          "offset": 24,
+          "flags": 33
+        }
+      ]
+    },
+    "2079": {
+      "name": "hkStringPtr",
+      "parent": 0,
+      "format": 131,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "stringAndFlag",
+          "type": 1433,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "1433": {
+      "name": "char*",
+      "parent": 0,
+      "format": 3,
+      "subtype": 0,
+      "size": 8,
+      "members": []
+    },
+    "2023": {
+      "name": "hkReal",
+      "parent": 1421,
+      "format": 1525253,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "1687": {
+      "name": "hkInt8",
+      "parent": 1431,
+      "format": 8708,
+      "subtype": 0,
+      "size": 1,
+      "members": []
+    },
+    "1431": {
+      "name": "signed char",
+      "parent": 0,
+      "format": 8708,
+      "subtype": 0,
+      "size": 1,
+      "members": []
+    },
+    "1675": {
+      "name": "hkBool",
+      "parent": 0,
+      "format": 8194,
+      "subtype": 0,
+      "size": 1,
+      "members": [
+        {
+          "name": "bool",
+          "type": 1419,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "1419": {
+      "name": "char",
+      "parent": 0,
+      "format": 8196,
+      "subtype": 0,
+      "size": 1,
+      "members": []
+    },
+    "2496": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2868,
+      "size": 8,
+      "members": []
+    },
+    "2433": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2500,
+      "size": 8,
+      "members": []
+    },
+    "2593": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2499,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2432,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2499": {
+      "name": "hkRefPtr",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2881,
+      "size": 8,
+      "members": [
+        {
+          "name": "ptr",
+          "type": 2371,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2881": {
+      "name": "hclClothData",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 152,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "simClothDatas",
+          "type": 2633,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "bufferDefinitions",
+          "type": 2632,
+          "offset": 48,
+          "flags": 32
+        },
+        {
+          "name": "transformSetDefinitions",
+          "type": 2631,
+          "offset": 64,
+          "flags": 32
+        },
+        {
+          "name": "operators",
+          "type": 2630,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "clothStateDatas",
+          "type": 2629,
+          "offset": 96,
+          "flags": 32
+        },
+        {
+          "name": "stateTransitions",
+          "type": 2628,
+          "offset": 112,
+          "flags": 32
+        },
+        {
+          "name": "actions",
+          "type": 2627,
+          "offset": 128,
+          "flags": 32
+        },
+        {
+          "name": "targetPlatform",
+          "type": 2626,
+          "offset": 144,
+          "flags": 32
+        }
+      ]
+    },
+    "2633": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2507,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2465,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2507": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2720,
+      "size": 8,
+      "members": []
+    },
+    "2720": {
+      "name": "hclSimClothData",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 736,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "simulationInfo",
+          "type": 2718,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "particleDatas",
+          "type": 2522,
+          "offset": 64,
+          "flags": 32
+        },
+        {
+          "name": "fixedParticles",
+          "type": 2988,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "doNormals",
+          "type": 1675,
+          "offset": 96,
+          "flags": 32
+        },
+        {
+          "name": "simOpIds",
+          "type": 3990,
+          "offset": 104,
+          "flags": 32
+        },
+        {
+          "name": "simClothPoses",
+          "type": 2521,
+          "offset": 120,
+          "flags": 32
+        },
+        {
+          "name": "staticConstraintSets",
+          "type": 2520,
+          "offset": 136,
+          "flags": 32
+        },
+        {
+          "name": "antiPinchConstraintSets",
+          "type": 2520,
+          "offset": 152,
+          "flags": 32
+        },
+        {
+          "name": "collidableTransformMap",
+          "type": 2716,
+          "offset": 168,
+          "flags": 32
+        },
+        {
+          "name": "perInstanceCollidables",
+          "type": 2519,
+          "offset": 208,
+          "flags": 32
+        },
+        {
+          "name": "maxParticleRadius",
+          "type": 2023,
+          "offset": 224,
+          "flags": 32
+        },
+        {
+          "name": "staticCollisionMasks",
+          "type": 4187,
+          "offset": 232,
+          "flags": 32
+        },
+        {
+          "name": "actions",
+          "type": 2627,
+          "offset": 248,
+          "flags": 32
+        },
+        {
+          "name": "totalMass",
+          "type": 2023,
+          "offset": 264,
+          "flags": 32
+        },
+        {
+          "name": "transferMotionData",
+          "type": 2715,
+          "offset": 268,
+          "flags": 32
+        },
+        {
+          "name": "transferMotionEnabled",
+          "type": 1675,
+          "offset": 316,
+          "flags": 32
+        },
+        {
+          "name": "landscapeCollisionEnabled",
+          "type": 1675,
+          "offset": 317,
+          "flags": 32
+        },
+        {
+          "name": "landscapeCollisionData",
+          "type": 2719,
+          "offset": 320,
+          "flags": 32
+        },
+        {
+          "name": "numLandscapeCollidableParticles",
+          "type": 1682,
+          "offset": 344,
+          "flags": 32
+        },
+        {
+          "name": "triangleIndices",
+          "type": 2988,
+          "offset": 352,
+          "flags": 32
+        },
+        {
+          "name": "triangleFlips",
+          "type": 4181,
+          "offset": 368,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionEnabled",
+          "type": 1675,
+          "offset": 384,
+          "flags": 32
+        },
+        {
+          "name": "perParticlePinchDetectionEnabledFlags",
+          "type": 3329,
+          "offset": 392,
+          "flags": 32
+        },
+        {
+          "name": "collidablePinchingDatas",
+          "type": 2518,
+          "offset": 408,
+          "flags": 32
+        },
+        {
+          "name": "minPinchedParticleIndex",
+          "type": 1683,
+          "offset": 424,
+          "flags": 32
+        },
+        {
+          "name": "maxPinchedParticleIndex",
+          "type": 1683,
+          "offset": 426,
+          "flags": 32
+        },
+        {
+          "name": "maxCollisionPairs",
+          "type": 1682,
+          "offset": 428,
+          "flags": 32
+        },
+        {
+          "name": "virtualCollisionPointsData",
+          "type": 2730,
+          "offset": 432,
+          "flags": 32
+        }
+      ]
+    },
+    "2718": {
+      "name": "hclSimClothData::OverridableSimulationInfo",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "gravity",
+          "type": 2026,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "globalDampingPerSecond",
+          "type": 2023,
+          "offset": 16,
+          "flags": 32
+        }
+      ]
+    },
+    "2522": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2717,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2383,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2717": {
+      "name": "hclSimClothData::ParticleData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 16,
+      "members": [
+        {
+          "name": "mass",
+          "type": 2023,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "invMass",
+          "type": 2023,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "radius",
+          "type": 2023,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "friction",
+          "type": 2023,
+          "offset": 12,
+          "flags": 32
+        }
+      ]
+    },
+    "2383": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2717,
+      "size": 8,
+      "members": []
+    },
+    "2988": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1683,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2915,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2915": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1683,
+      "size": 8,
+      "members": []
+    },
+    "3990": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1426,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3769,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "3769": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1426,
+      "size": 8,
+      "members": []
+    },
+    "2521": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2498,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2382,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2498": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2712,
+      "size": 8,
+      "members": []
+    },
+    "2712": {
+      "name": "hclSimClothPose",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 48,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "positions",
+          "type": 4689,
+          "offset": 32,
+          "flags": 32
+        }
+      ]
+    },
+    "4689": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2026,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 4653,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "4653": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2026,
+      "size": 8,
+      "members": []
+    },
+    "2382": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2498,
+      "size": 8,
+      "members": []
+    },
+    "2520": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2497,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2381,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2497": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2823,
+      "size": 8,
+      "members": []
+    },
+    "2823": {
+      "name": "hclConstraintSet",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 40,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "constraintId",
+          "type": 4751,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "type",
+          "type": 1426,
+          "offset": 36,
+          "flags": 35
+        }
+      ]
+    },
+    "4751": {
+      "name": "hkHandle",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "value",
+          "type": 1682,
+          "offset": 0,
+          "flags": 34
+        }
+      ]
+    },
+    "2381": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2497,
+      "size": 8,
+      "members": []
+    },
+    "2716": {
+      "name": "hclSimClothData::CollidableTransformMap",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 40,
+      "members": [
+        {
+          "name": "transformSetIndex",
+          "type": 1685,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "transformIndices",
+          "type": 4187,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "offsets",
+          "type": 3390,
+          "offset": 24,
+          "flags": 32
+        }
+      ]
+    },
+    "1685": {
+      "name": "hkInt32",
+      "parent": 1427,
+      "format": 33284,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "4187": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1682,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3887,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "3887": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1682,
+      "size": 8,
+      "members": []
+    },
+    "3390": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2053,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3177,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2053": {
+      "name": "hkMatrix4",
+      "parent": 2055,
+      "format": 4136,
+      "subtype": 0,
+      "size": 64,
+      "members": []
+    },
+    "2055": {
+      "name": "hkMatrix4f",
+      "parent": 3193,
+      "format": 4136,
+      "subtype": 0,
+      "size": 64,
+      "members": []
+    },
+    "3193": {
+      "name": "hkMatrix4Impl",
+      "parent": 0,
+      "format": 4136,
+      "subtype": 1421,
+      "size": 64,
+      "members": [
+        {
+          "name": "col0",
+          "type": 2025,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "col1",
+          "type": 2025,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "col2",
+          "type": 2025,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "col3",
+          "type": 2025,
+          "offset": 48,
+          "flags": 32
+        }
+      ]
+    },
+    "3177": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2053,
+      "size": 8,
+      "members": []
+    },
+    "2519": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2496,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2380,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2380": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2496,
+      "size": 8,
+      "members": []
+    },
+    "2627": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2501,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2459,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2501": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2893,
+      "size": 8,
+      "members": []
+    },
+    "2893": {
+      "name": "hclAction",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": []
+    },
+    "2459": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2501,
+      "size": 8,
+      "members": []
+    },
+    "2715": {
+      "name": "hclSimClothData::TransferMotionData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 48,
+      "members": [
+        {
+          "name": "transformSetIndex",
+          "type": 1682,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "transformIndex",
+          "type": 1682,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "transferTranslationMotion",
+          "type": 1675,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "minTranslationSpeed",
+          "type": 2023,
+          "offset": 12,
+          "flags": 32
+        },
+        {
+          "name": "maxTranslationSpeed",
+          "type": 2023,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "minTranslationBlend",
+          "type": 2023,
+          "offset": 20,
+          "flags": 32
+        },
+        {
+          "name": "maxTranslationBlend",
+          "type": 2023,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "transferRotationMotion",
+          "type": 1675,
+          "offset": 28,
+          "flags": 32
+        },
+        {
+          "name": "minRotationSpeed",
+          "type": 2023,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "maxRotationSpeed",
+          "type": 2023,
+          "offset": 36,
+          "flags": 32
+        },
+        {
+          "name": "minRotationBlend",
+          "type": 2023,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "maxRotationBlend",
+          "type": 2023,
+          "offset": 44,
+          "flags": 32
+        }
+      ]
+    },
+    "2719": {
+      "name": "hclSimClothData::LandscapeCollisionData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": [
+        {
+          "name": "landscapeRadius",
+          "type": 2023,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "enableStuckParticleDetection",
+          "type": 1675,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "stuckParticlesStretchFactorSq",
+          "type": 2023,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionEnabled",
+          "type": 1675,
+          "offset": 12,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionPriority",
+          "type": 1687,
+          "offset": 13,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionRadius",
+          "type": 2023,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "collisionTolerance",
+          "type": 2023,
+          "offset": 20,
+          "flags": 32
+        }
+      ]
+    },
+    "4181": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1684,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3881,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "1684": {
+      "name": "hkUint8",
+      "parent": 1430,
+      "format": 8196,
+      "subtype": 0,
+      "size": 1,
+      "members": []
+    },
+    "3881": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1684,
+      "size": 8,
+      "members": []
+    },
+    "3329": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1675,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3145,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "3145": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1675,
+      "size": 8,
+      "members": []
+    },
+    "2518": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2714,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2379,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2714": {
+      "name": "hclSimClothData::CollidablePinchingData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "pinchDetectionEnabled",
+          "type": 1675,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionPriority",
+          "type": 1687,
+          "offset": 1,
+          "flags": 32
+        },
+        {
+          "name": "pinchDetectionRadius",
+          "type": 2023,
+          "offset": 4,
+          "flags": 32
+        }
+      ]
+    },
+    "2379": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2714,
+      "size": 8,
+      "members": []
+    },
+    "2730": {
+      "name": "hclVirtualCollisionPointsData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 304,
+      "members": [
+        {
+          "name": "blocks",
+          "type": 2532,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "numVCPoints",
+          "type": 1683,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "landscapeParticlesBlockIndex",
+          "type": 2988,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "numLandscapeVCPoints",
+          "type": 1683,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "edgeBarycentricsDictionary",
+          "type": 4098,
+          "offset": 48,
+          "flags": 32
+        },
+        {
+          "name": "edgeDictionaryEntries",
+          "type": 2531,
+          "offset": 64,
+          "flags": 32
+        },
+        {
+          "name": "triangleBarycentricsDictionary",
+          "type": 2530,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "triangleDictionaryEntries",
+          "type": 2531,
+          "offset": 96,
+          "flags": 32
+        },
+        {
+          "name": "edges",
+          "type": 2529,
+          "offset": 112,
+          "flags": 32
+        },
+        {
+          "name": "edgeFans",
+          "type": 2528,
+          "offset": 128,
+          "flags": 32
+        },
+        {
+          "name": "triangles",
+          "type": 2527,
+          "offset": 144,
+          "flags": 32
+        },
+        {
+          "name": "triangleFans",
+          "type": 2526,
+          "offset": 160,
+          "flags": 32
+        },
+        {
+          "name": "edgesLandscape",
+          "type": 2529,
+          "offset": 176,
+          "flags": 32
+        },
+        {
+          "name": "edgeFansLandscape",
+          "type": 2525,
+          "offset": 192,
+          "flags": 32
+        },
+        {
+          "name": "trianglesLandscape",
+          "type": 2527,
+          "offset": 208,
+          "flags": 32
+        },
+        {
+          "name": "triangleFansLandscape",
+          "type": 2524,
+          "offset": 224,
+          "flags": 32
+        },
+        {
+          "name": "edgeFanIndices",
+          "type": 2988,
+          "offset": 240,
+          "flags": 32
+        },
+        {
+          "name": "triangleFanIndices",
+          "type": 2988,
+          "offset": 256,
+          "flags": 32
+        },
+        {
+          "name": "edgeFanIndicesLandscape",
+          "type": 2988,
+          "offset": 272,
+          "flags": 32
+        },
+        {
+          "name": "triangleFanIndicesLandscape",
+          "type": 2988,
+          "offset": 288,
+          "flags": 32
+        }
+      ]
+    },
+    "2532": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2729,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2392,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2729": {
+      "name": "hclVirtualCollisionPointsData::Block",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "safeDisplacementRadius",
+          "type": 2023,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "startingVCPIndex",
+          "type": 1683,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "numVCPs",
+          "type": 1684,
+          "offset": 6,
+          "flags": 32
+        }
+      ]
+    },
+    "2392": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2729,
+      "size": 8,
+      "members": []
+    },
+    "4098": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2023,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3836,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "3836": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2023,
+      "size": 8,
+      "members": []
+    },
+    "2531": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2728,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2391,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2728": {
+      "name": "hclVirtualCollisionPointsData::BarycentricDictionaryEntry",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "startingBarycentricIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "numBarycentrics",
+          "type": 1684,
+          "offset": 2,
+          "flags": 32
+        }
+      ]
+    },
+    "2391": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2728,
+      "size": 8,
+      "members": []
+    },
+    "2530": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2721,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2390,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2721": {
+      "name": "hclVirtualCollisionPointsData::BarycentricPair",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "u",
+          "type": 2023,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "v",
+          "type": 2023,
+          "offset": 4,
+          "flags": 32
+        }
+      ]
+    },
+    "2390": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2721,
+      "size": 8,
+      "members": []
+    },
+    "2529": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2724,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2389,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2724": {
+      "name": "hclVirtualCollisionPointsData::EdgeFanSection",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "oppositeRealParticleIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "barycentricDictionaryIndex",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        }
+      ]
+    },
+    "2389": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2724,
+      "size": 8,
+      "members": []
+    },
+    "2528": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2723,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2388,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2723": {
+      "name": "hclVirtualCollisionPointsData::EdgeFan",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 6,
+      "members": [
+        {
+          "name": "realParticleIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "edgeStartIndex",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "numEdges",
+          "type": 1684,
+          "offset": 4,
+          "flags": 32
+        }
+      ]
+    },
+    "2388": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2723,
+      "size": 8,
+      "members": []
+    },
+    "2527": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2727,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2387,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2727": {
+      "name": "hclVirtualCollisionPointsData::TriangleFanSection",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 6,
+      "members": [
+        {
+          "name": "oppositeRealParticleIndices",
+          "type": 2523,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "barycentricDictionaryIndex",
+          "type": 1683,
+          "offset": 4,
+          "flags": 32
+        }
+      ]
+    },
+    "2523": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 552,
+      "subtype": 1683,
+      "size": 4,
+      "members": []
+    },
+    "2387": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2727,
+      "size": 8,
+      "members": []
+    },
+    "2526": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2726,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2386,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2726": {
+      "name": "hclVirtualCollisionPointsData::TriangleFan",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 6,
+      "members": [
+        {
+          "name": "realParticleIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "vcpStartIndex",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "numTriangles",
+          "type": 1684,
+          "offset": 4,
+          "flags": 32
+        }
+      ]
+    },
+    "2386": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2726,
+      "size": 8,
+      "members": []
+    },
+    "2525": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2722,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2385,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2722": {
+      "name": "hclVirtualCollisionPointsData::EdgeFanLandscape",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "realParticleIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "edgeStartIndex",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "vcpStartIndex",
+          "type": 1683,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "numEdges",
+          "type": 1684,
+          "offset": 6,
+          "flags": 32
+        }
+      ]
+    },
+    "2385": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2722,
+      "size": 8,
+      "members": []
+    },
+    "2524": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2725,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2384,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2725": {
+      "name": "hclVirtualCollisionPointsData::TriangleFanLandscape",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "realParticleIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "triangleStartIndex",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "vcpStartIndex",
+          "type": 1683,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "numTriangles",
+          "type": 1684,
+          "offset": 6,
+          "flags": 32
+        }
+      ]
+    },
+    "2384": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2725,
+      "size": 8,
+      "members": []
+    },
+    "2465": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2507,
+      "size": 8,
+      "members": []
+    },
+    "2632": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2506,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2464,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2506": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2887,
+      "size": 8,
+      "members": []
+    },
+    "2887": {
+      "name": "hclBufferDefinition",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 80,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "type",
+          "type": 1685,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "subType",
+          "type": 1685,
+          "offset": 36,
+          "flags": 32
+        },
+        {
+          "name": "numVertices",
+          "type": 1682,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "numTriangles",
+          "type": 1682,
+          "offset": 44,
+          "flags": 32
+        },
+        {
+          "name": "bufferLayout",
+          "type": 2886,
+          "offset": 48,
+          "flags": 32
+        }
+      ]
+    },
+    "2886": {
+      "name": "hclBufferLayout",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 26,
+      "members": [
+        {
+          "name": "elementsLayout",
+          "type": 2638,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "slots",
+          "type": 2637,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "numSlots",
+          "type": 1684,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "triangleFormat",
+          "type": 2636,
+          "offset": 25,
+          "flags": 32
+        }
+      ]
+    },
+    "2638": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 1064,
+      "subtype": 2883,
+      "size": 16,
+      "members": []
+    },
+    "2883": {
+      "name": "hclBufferLayout::BufferElement",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "vectorConversion",
+          "type": 2635,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "vectorSize",
+          "type": 1684,
+          "offset": 1,
+          "flags": 32
+        },
+        {
+          "name": "slotId",
+          "type": 1684,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "slotStart",
+          "type": 1684,
+          "offset": 3,
+          "flags": 32
+        }
+      ]
+    },
+    "2635": {
+      "name": "hkEnum",
+      "parent": 0,
+      "format": 8196,
+      "subtype": 0,
+      "size": 1,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1684,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2637": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 1064,
+      "subtype": 2882,
+      "size": 8,
+      "members": []
+    },
+    "2882": {
+      "name": "hclBufferLayout::Slot",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 2,
+      "members": [
+        {
+          "name": "flags",
+          "type": 2634,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "stride",
+          "type": 1684,
+          "offset": 1,
+          "flags": 32
+        }
+      ]
+    },
+    "2634": {
+      "name": "hkEnum",
+      "parent": 0,
+      "format": 8196,
+      "subtype": 0,
+      "size": 1,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1684,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2636": {
+      "name": "hkEnum",
+      "parent": 0,
+      "format": 8196,
+      "subtype": 0,
+      "size": 1,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1684,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2464": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2506,
+      "size": 8,
+      "members": []
+    },
+    "2631": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2505,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2463,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2505": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2699,
+      "size": 8,
+      "members": []
+    },
+    "2699": {
+      "name": "hclTransformSetDefinition",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 40,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "type",
+          "type": 1685,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "numTransforms",
+          "type": 1682,
+          "offset": 36,
+          "flags": 32
+        }
+      ]
+    },
+    "2463": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2505,
+      "size": 8,
+      "members": []
+    },
+    "2630": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2504,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2462,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2504": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2733,
+      "size": 8,
+      "members": []
+    },
+    "2733": {
+      "name": "hclOperator",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 72,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "operatorID",
+          "type": 1426,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "type",
+          "type": 1426,
+          "offset": 36,
+          "flags": 33
+        },
+        {
+          "name": "usedBuffers",
+          "type": 2534,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "usedTransformSets",
+          "type": 2533,
+          "offset": 56,
+          "flags": 32
+        }
+      ]
+    },
+    "2534": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2703,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2394,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2703": {
+      "name": "hclClothState::BufferAccess",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 16,
+      "members": [
+        {
+          "name": "bufferIndex",
+          "type": 1682,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "bufferUsage",
+          "type": 2889,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "shadowBufferIndex",
+          "type": 1682,
+          "offset": 12,
+          "flags": 32
+        }
+      ]
+    },
+    "2889": {
+      "name": "hclBufferUsage",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 5,
+      "members": [
+        {
+          "name": "perComponentFlags",
+          "type": 2639,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "trianglesRead",
+          "type": 1675,
+          "offset": 4,
+          "flags": 32
+        }
+      ]
+    },
+    "2639": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 1064,
+      "subtype": 1684,
+      "size": 4,
+      "members": []
+    },
+    "2394": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2703,
+      "size": 8,
+      "members": []
+    },
+    "2533": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2702,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2393,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2702": {
+      "name": "hclClothState::TransformSetAccess",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "transformSetIndex",
+          "type": 1682,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "transformSetUsage",
+          "type": 2701,
+          "offset": 8,
+          "flags": 32
+        }
+      ]
+    },
+    "2701": {
+      "name": "hclTransformSetUsage",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": [
+        {
+          "name": "perComponentFlags",
+          "type": 2509,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "perComponentTransformTrackers",
+          "type": 2508,
+          "offset": 8,
+          "flags": 32
+        }
+      ]
+    },
+    "2509": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 552,
+      "subtype": 1684,
+      "size": 2,
+      "members": []
+    },
+    "2508": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2700,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2372,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2700": {
+      "name": "hclTransformSetUsage::TransformTracker",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 72,
+      "members": [
+        {
+          "name": "read",
+          "type": 2092,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "readBeforeWrite",
+          "type": 2092,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "written",
+          "type": 2092,
+          "offset": 48,
+          "flags": 32
+        }
+      ]
+    },
+    "2092": {
+      "name": "hkBitField",
+      "parent": 1622,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": []
+    },
+    "1622": {
+      "name": "hkBitFieldBase",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1511,
+          "offset": 0,
+          "flags": 34
+        }
+      ]
+    },
+    "1511": {
+      "name": "hkBitFieldStorage",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 24,
+      "members": [
+        {
+          "name": "words",
+          "type": 4187,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "numBits",
+          "type": 1427,
+          "offset": 16,
+          "flags": 32
+        }
+      ]
+    },
+    "2372": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2700,
+      "size": 8,
+      "members": []
+    },
+    "2393": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2702,
+      "size": 8,
+      "members": []
+    },
+    "2462": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2504,
+      "size": 8,
+      "members": []
+    },
+    "2629": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2503,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2461,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2503": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2704,
+      "size": 8,
+      "members": []
+    },
+    "2704": {
+      "name": "hclClothState",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 104,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "operators",
+          "type": 4187,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "usedBuffers",
+          "type": 2534,
+          "offset": 48,
+          "flags": 32
+        },
+        {
+          "name": "usedTransformSets",
+          "type": 2533,
+          "offset": 64,
+          "flags": 32
+        },
+        {
+          "name": "usedSimCloths",
+          "type": 4187,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "dependencyGraph",
+          "type": 2510,
+          "offset": 96,
+          "flags": 32
+        }
+      ]
+    },
+    "2510": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2711,
+      "size": 8,
+      "members": []
+    },
+    "2711": {
+      "name": "hclStateDependencyGraph",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 96,
+      "members": [
+        {
+          "name": "branches",
+          "type": 2517,
+          "offset": 24,
+          "flags": 36
+        },
+        {
+          "name": "rootBranchIds",
+          "type": 4664,
+          "offset": 40,
+          "flags": 36
+        },
+        {
+          "name": "children",
+          "type": 4198,
+          "offset": 56,
+          "flags": 36
+        },
+        {
+          "name": "parents",
+          "type": 4198,
+          "offset": 72,
+          "flags": 36
+        },
+        {
+          "name": "multiThreadable",
+          "type": 1675,
+          "offset": 88,
+          "flags": 36
+        }
+      ]
+    },
+    "2517": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2710,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2378,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2710": {
+      "name": "hclStateDependencyGraph::Branch",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 56,
+      "members": [
+        {
+          "name": "branchId",
+          "type": 1427,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "stateOperatorIndices",
+          "type": 4664,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "parentBranches",
+          "type": 4664,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "childBranches",
+          "type": 4664,
+          "offset": 40,
+          "flags": 32
+        }
+      ]
+    },
+    "4664": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1427,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 4636,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "4636": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1427,
+      "size": 8,
+      "members": []
+    },
+    "2378": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2710,
+      "size": 8,
+      "members": []
+    },
+    "4198": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 4664,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3892,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "3892": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 4664,
+      "size": 8,
+      "members": []
+    },
+    "2461": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2503,
+      "size": 8,
+      "members": []
+    },
+    "2628": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2502,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2460,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2502": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2709,
+      "size": 8,
+      "members": []
+    },
+    "2709": {
+      "name": "hclStateTransition",
+      "parent": 2005,
+      "format": 7,
+      "subtype": 0,
+      "size": 80,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "stateIds",
+          "type": 4187,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "stateTransitionData",
+          "type": 2516,
+          "offset": 48,
+          "flags": 32
+        },
+        {
+          "name": "simClothTransitionConstraints",
+          "type": 2515,
+          "offset": 64,
+          "flags": 32
+        }
+      ]
+    },
+    "2516": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2705,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2377,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2705": {
+      "name": "hclStateTransition::StateTransitionData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 40,
+      "members": [
+        {
+          "name": "simClothTransitionData",
+          "type": 2512,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "blendOpTransitionData",
+          "type": 2511,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "simulatedState",
+          "type": 1675,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "emptyState",
+          "type": 1675,
+          "offset": 33,
+          "flags": 32
+        }
+      ]
+    },
+    "2512": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2707,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2374,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2707": {
+      "name": "hclStateTransition::SimClothTransitionData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "isSimulated",
+          "type": 1675,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "transitionConstraints",
+          "type": 2514,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "transitionType",
+          "type": 1682,
+          "offset": 24,
+          "flags": 32
+        }
+      ]
+    },
+    "2514": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 4751,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2375,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2375": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 4751,
+      "size": 8,
+      "members": []
+    },
+    "2374": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2707,
+      "size": 8,
+      "members": []
+    },
+    "2511": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2706,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2373,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2706": {
+      "name": "hclStateTransition::BlendOpTransitionData",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 48,
+      "members": [
+        {
+          "name": "bufferASimCloths",
+          "type": 4664,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "bufferBSimCloths",
+          "type": 4664,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "transitionType",
+          "type": 2513,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "blendWeightType",
+          "type": 2816,
+          "offset": 36,
+          "flags": 32
+        },
+        {
+          "name": "blendOperatorId",
+          "type": 1426,
+          "offset": 40,
+          "flags": 32
+        }
+      ]
+    },
+    "2513": {
+      "name": "hkEnum",
+      "parent": 0,
+      "format": 32772,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1682,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2816": {
+      "name": "hclBlendSomeVerticesOperator::BlendWeightType",
+      "parent": 0,
+      "format": 33284,
+      "subtype": 0,
+      "size": 4,
+      "members": []
+    },
+    "2373": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2706,
+      "size": 8,
+      "members": []
+    },
+    "2377": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2705,
+      "size": 8,
+      "members": []
+    },
+    "2515": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2514,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2376,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2376": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2514,
+      "size": 8,
+      "members": []
+    },
+    "2460": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2502,
+      "size": 8,
+      "members": []
+    },
+    "2626": {
+      "name": "hkEnum",
+      "parent": 0,
+      "format": 32772,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1682,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2371": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2881,
+      "size": 8,
+      "members": []
+    },
+    "2432": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2499,
+      "size": 8,
+      "members": []
+    },
+    "2747": {
+      "name": "hclObjectSpaceSkinPNTOperator",
+      "parent": 2750,
+      "format": 7,
+      "subtype": 0,
+      "size": 296,
+      "members": [
+        {
+          "name": "localPNTs",
+          "type": 2542,
+          "offset": 264,
+          "flags": 32
+        },
+        {
+          "name": "localUnpackedPNTs",
+          "type": 2541,
+          "offset": 280,
+          "flags": 32
+        }
+      ]
+    },
+    "2750": {
+      "name": "hclObjectSpaceSkinOperator",
+      "parent": 2733,
+      "format": 7,
+      "subtype": 0,
+      "size": 264,
+      "members": [
+        {
+          "name": "boneFromSkinMeshTransforms",
+          "type": 3390,
+          "offset": 72,
+          "flags": 32
+        },
+        {
+          "name": "transformSubset",
+          "type": 2988,
+          "offset": 88,
+          "flags": 32
+        },
+        {
+          "name": "outputBufferIndex",
+          "type": 1682,
+          "offset": 104,
+          "flags": 32
+        },
+        {
+          "name": "transformSetIndex",
+          "type": 1682,
+          "offset": 108,
+          "flags": 32
+        },
+        {
+          "name": "objectSpaceDeformer",
+          "type": 2783,
+          "offset": 112,
+          "flags": 32
+        }
+      ]
+    },
+    "2783": {
+      "name": "hclObjectSpaceDeformer",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 152,
+      "members": [
+        {
+          "name": "eightBlendEntries",
+          "type": 2570,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "sevenBlendEntries",
+          "type": 2569,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "sixBlendEntries",
+          "type": 2568,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "fiveBlendEntries",
+          "type": 2567,
+          "offset": 48,
+          "flags": 32
+        },
+        {
+          "name": "fourBlendEntries",
+          "type": 2566,
+          "offset": 64,
+          "flags": 32
+        },
+        {
+          "name": "threeBlendEntries",
+          "type": 2565,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "twoBlendEntries",
+          "type": 2564,
+          "offset": 96,
+          "flags": 32
+        },
+        {
+          "name": "oneBlendEntries",
+          "type": 2563,
+          "offset": 112,
+          "flags": 32
+        },
+        {
+          "name": "controlBytes",
+          "type": 4181,
+          "offset": 128,
+          "flags": 32
+        },
+        {
+          "name": "startVertexIndex",
+          "type": 1683,
+          "offset": 144,
+          "flags": 32
+        },
+        {
+          "name": "endVertexIndex",
+          "type": 1683,
+          "offset": 146,
+          "flags": 32
+        },
+        {
+          "name": "partialWrite",
+          "type": 1675,
+          "offset": 148,
+          "flags": 32
+        }
+      ]
+    },
+    "2570": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2782,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2418,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2782": {
+      "name": "hclObjectSpaceDeformer::EightBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 544,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2562,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "boneWeights",
+          "type": 2562,
+          "offset": 288,
+          "flags": 32
+        }
+      ]
+    },
+    "2618": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 4136,
+      "subtype": 1683,
+      "size": 32,
+      "members": []
+    },
+    "2562": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 32808,
+      "subtype": 1683,
+      "size": 256,
+      "members": []
+    },
+    "2418": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2782,
+      "size": 8,
+      "members": []
+    },
+    "2569": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2781,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2417,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2781": {
+      "name": "hclObjectSpaceDeformer::SevenBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 480,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2561,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "boneWeights",
+          "type": 2561,
+          "offset": 256,
+          "flags": 32
+        }
+      ]
+    },
+    "2561": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 28712,
+      "subtype": 1683,
+      "size": 224,
+      "members": []
+    },
+    "2417": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2781,
+      "size": 8,
+      "members": []
+    },
+    "2568": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2780,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2416,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2780": {
+      "name": "hclObjectSpaceDeformer::SixBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 416,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2560,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "boneWeights",
+          "type": 2560,
+          "offset": 224,
+          "flags": 32
+        }
+      ]
+    },
+    "2560": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 24616,
+      "subtype": 1683,
+      "size": 192,
+      "members": []
+    },
+    "2416": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2780,
+      "size": 8,
+      "members": []
+    },
+    "2567": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2779,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2415,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2779": {
+      "name": "hclObjectSpaceDeformer::FiveBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 352,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2559,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "boneWeights",
+          "type": 2559,
+          "offset": 192,
+          "flags": 32
+        }
+      ]
+    },
+    "2559": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 20520,
+      "subtype": 1683,
+      "size": 160,
+      "members": []
+    },
+    "2415": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2779,
+      "size": 8,
+      "members": []
+    },
+    "2566": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2778,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2414,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2778": {
+      "name": "hclObjectSpaceDeformer::FourBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 224,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2558,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "boneWeights",
+          "type": 2557,
+          "offset": 160,
+          "flags": 32
+        }
+      ]
+    },
+    "2558": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 16424,
+      "subtype": 1683,
+      "size": 128,
+      "members": []
+    },
+    "2557": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 16424,
+      "subtype": 1684,
+      "size": 64,
+      "members": []
+    },
+    "2414": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2778,
+      "size": 8,
+      "members": []
+    },
+    "2565": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2777,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2413,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2777": {
+      "name": "hclObjectSpaceDeformer::ThreeBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 176,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2556,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "boneWeights",
+          "type": 2555,
+          "offset": 128,
+          "flags": 32
+        }
+      ]
+    },
+    "2556": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 12328,
+      "subtype": 1683,
+      "size": 96,
+      "members": []
+    },
+    "2555": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 12328,
+      "subtype": 1684,
+      "size": 48,
+      "members": []
+    },
+    "2413": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2777,
+      "size": 8,
+      "members": []
+    },
+    "2564": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2776,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2412,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2776": {
+      "name": "hclObjectSpaceDeformer::TwoBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 128,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2554,
+          "offset": 32,
+          "flags": 32
+        },
+        {
+          "name": "boneWeights",
+          "type": 2553,
+          "offset": 96,
+          "flags": 32
+        }
+      ]
+    },
+    "2554": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 8232,
+      "subtype": 1683,
+      "size": 64,
+      "members": []
+    },
+    "2553": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 8232,
+      "subtype": 1684,
+      "size": 32,
+      "members": []
+    },
+    "2412": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2776,
+      "size": 8,
+      "members": []
+    },
+    "2563": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2775,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2411,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2775": {
+      "name": "hclObjectSpaceDeformer::OneBlendEntryBlock",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 64,
+      "members": [
+        {
+          "name": "vertexIndices",
+          "type": 2618,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "boneIndices",
+          "type": 2618,
+          "offset": 32,
+          "flags": 32
+        }
+      ]
+    },
+    "2411": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2775,
+      "size": 8,
+      "members": []
+    },
+    "2542": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2772,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2402,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2772": {
+      "name": "hclObjectSpaceDeformer::LocalBlockPNT",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 384,
+      "members": [
+        {
+          "name": "localPosition",
+          "type": 2571,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "localNormal",
+          "type": 2571,
+          "offset": 128,
+          "flags": 32
+        },
+        {
+          "name": "localTangent",
+          "type": 2571,
+          "offset": 256,
+          "flags": 32
+        }
+      ]
+    },
+    "2571": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 4136,
+      "subtype": 2036,
+      "size": 128,
+      "members": []
+    },
+    "2036": {
+      "name": "hkPackedVector3",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 8,
+      "members": [
+        {
+          "name": "values",
+          "type": 1602,
+          "offset": 0,
+          "flags": 32
+        }
+      ]
+    },
+    "1602": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 1064,
+      "subtype": 1686,
+      "size": 8,
+      "members": []
+    },
+    "1686": {
+      "name": "hkInt16",
+      "parent": 1429,
+      "format": 16900,
+      "subtype": 0,
+      "size": 2,
+      "members": []
+    },
+    "1429": {
+      "name": "short",
+      "parent": 0,
+      "format": 16900,
+      "subtype": 0,
+      "size": 2,
+      "members": []
+    },
+    "2402": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2772,
+      "size": 8,
+      "members": []
+    },
+    "2541": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2768,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2401,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2768": {
+      "name": "hclObjectSpaceDeformer::LocalBlockUnpackedPNT",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 768,
+      "members": [
+        {
+          "name": "localPosition",
+          "type": 2595,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "localNormal",
+          "type": 2595,
+          "offset": 256,
+          "flags": 32
+        },
+        {
+          "name": "localTangent",
+          "type": 2595,
+          "offset": 512,
+          "flags": 32
+        }
+      ]
+    },
+    "2595": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 4136,
+      "subtype": 2026,
+      "size": 256,
+      "members": []
+    },
+    "2401": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2768,
+      "size": 8,
+      "members": []
+    },
+    "2759": {
+      "name": "hclMoveParticlesOperator",
+      "parent": 2733,
+      "format": 7,
+      "subtype": 0,
+      "size": 96,
+      "members": [
+        {
+          "name": "vertexParticlePairs",
+          "type": 2548,
+          "offset": 72,
+          "flags": 32
+        },
+        {
+          "name": "simClothIndex",
+          "type": 1682,
+          "offset": 88,
+          "flags": 32
+        },
+        {
+          "name": "refBufferIdx",
+          "type": 1682,
+          "offset": 92,
+          "flags": 32
+        }
+      ]
+    },
+    "2548": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2758,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2407,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2758": {
+      "name": "hclMoveParticlesOperator::VertexParticlePair",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "vertexIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "particleIndex",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        }
+      ]
+    },
+    "2407": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2758,
+      "size": 8,
+      "members": []
+    },
+    "2744": {
+      "name": "hclSimulateOperator",
+      "parent": 2733,
+      "format": 7,
+      "subtype": 0,
+      "size": 96,
+      "members": [
+        {
+          "name": "simClothIndex",
+          "type": 1682,
+          "offset": 72,
+          "flags": 32
+        },
+        {
+          "name": "simulateOpConfigs",
+          "type": 2538,
+          "offset": 80,
+          "flags": 32
+        }
+      ]
+    },
+    "2538": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2743,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2398,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2743": {
+      "name": "hclSimulateOperator::Config",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 48,
+      "members": [
+        {
+          "name": "name",
+          "type": 2079,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "constraintExecution",
+          "type": 4684,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "instanceCollidablesUsed",
+          "type": 3329,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "subSteps",
+          "type": 1684,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "numberOfSolveIterations",
+          "type": 1684,
+          "offset": 41,
+          "flags": 32
+        },
+        {
+          "name": "useAllInstanceCollidables",
+          "type": 1675,
+          "offset": 42,
+          "flags": 32
+        },
+        {
+          "name": "adaptConstraintStiffness",
+          "type": 1675,
+          "offset": 43,
+          "flags": 32
+        }
+      ]
+    },
+    "4684": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1685,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 4648,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "4648": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1685,
+      "size": 8,
+      "members": []
+    },
+    "2398": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2743,
+      "size": 8,
+      "members": []
+    },
+    "2737": {
+      "name": "hclCopyVerticesOperator",
+      "parent": 2733,
+      "format": 7,
+      "subtype": 0,
+      "size": 96,
+      "members": [
+        {
+          "name": "inputBufferIdx",
+          "type": 1682,
+          "offset": 72,
+          "flags": 32
+        },
+        {
+          "name": "outputBufferIdx",
+          "type": 1682,
+          "offset": 76,
+          "flags": 32
+        },
+        {
+          "name": "numberOfVertices",
+          "type": 1682,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "startVertexIn",
+          "type": 1682,
+          "offset": 84,
+          "flags": 32
+        },
+        {
+          "name": "startVertexOut",
+          "type": 1682,
+          "offset": 88,
+          "flags": 32
+        },
+        {
+          "name": "copyNormals",
+          "type": 1675,
+          "offset": 92,
+          "flags": 32
+        }
+      ]
+    },
+    "2736": {
+      "name": "hclGatherAllVerticesOperator",
+      "parent": 2733,
+      "format": 7,
+      "subtype": 0,
+      "size": 104,
+      "members": [
+        {
+          "name": "vertexInputFromVertexOutput",
+          "type": 3398,
+          "offset": 72,
+          "flags": 32
+        },
+        {
+          "name": "inputBufferIdx",
+          "type": 1682,
+          "offset": 88,
+          "flags": 32
+        },
+        {
+          "name": "outputBufferIdx",
+          "type": 1682,
+          "offset": 92,
+          "flags": 32
+        },
+        {
+          "name": "gatherNormals",
+          "type": 1675,
+          "offset": 96,
+          "flags": 32
+        },
+        {
+          "name": "partialGather",
+          "type": 1675,
+          "offset": 97,
+          "flags": 32
+        }
+      ]
+    },
+    "3398": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 1686,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 3182,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "3182": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 1686,
+      "size": 8,
+      "members": []
+    },
+    "2739": {
+      "name": "hclUpdateSomeVertexFramesOperator",
+      "parent": 2733,
+      "format": 7,
+      "subtype": 0,
+      "size": 232,
+      "members": [
+        {
+          "name": "involvedTriangles",
+          "type": 2536,
+          "offset": 72,
+          "flags": 32
+        },
+        {
+          "name": "involvedVertices",
+          "type": 2988,
+          "offset": 88,
+          "flags": 32
+        },
+        {
+          "name": "selectionVertexToInvolvedVertex",
+          "type": 2988,
+          "offset": 104,
+          "flags": 32
+        },
+        {
+          "name": "involvedVertexToNormalID",
+          "type": 2988,
+          "offset": 120,
+          "flags": 32
+        },
+        {
+          "name": "triangleFlips",
+          "type": 4181,
+          "offset": 136,
+          "flags": 32
+        },
+        {
+          "name": "referenceVertices",
+          "type": 2988,
+          "offset": 152,
+          "flags": 32
+        },
+        {
+          "name": "tangentEdgeCosAngle",
+          "type": 4098,
+          "offset": 168,
+          "flags": 32
+        },
+        {
+          "name": "tangentEdgeSinAngle",
+          "type": 4098,
+          "offset": 184,
+          "flags": 32
+        },
+        {
+          "name": "biTangentFlip",
+          "type": 4098,
+          "offset": 200,
+          "flags": 32
+        },
+        {
+          "name": "bufferIdx",
+          "type": 1682,
+          "offset": 216,
+          "flags": 32
+        },
+        {
+          "name": "numUniqueNormalIDs",
+          "type": 1682,
+          "offset": 220,
+          "flags": 32
+        },
+        {
+          "name": "updateNormals",
+          "type": 1675,
+          "offset": 224,
+          "flags": 32
+        },
+        {
+          "name": "updateTangents",
+          "type": 1675,
+          "offset": 225,
+          "flags": 32
+        },
+        {
+          "name": "updateBiTangents",
+          "type": 1675,
+          "offset": 226,
+          "flags": 32
+        }
+      ]
+    },
+    "2536": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2738,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2396,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2738": {
+      "name": "hclUpdateSomeVertexFramesOperator::Triangle",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 6,
+      "members": [
+        {
+          "name": "indices",
+          "type": 4128,
+          "offset": 0,
+          "flags": 32
+        }
+      ]
+    },
+    "4128": {
+      "name": "T[N]",
+      "parent": 0,
+      "format": 808,
+      "subtype": 1683,
+      "size": 6,
+      "members": []
+    },
+    "2396": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2738,
+      "size": 8,
+      "members": []
+    },
+    "2752": {
+      "name": "hclObjectSpaceMeshMeshDeformPOperator",
+      "parent": 2757,
+      "format": 7,
+      "subtype": 0,
+      "size": 312,
+      "members": [
+        {
+          "name": "localPs",
+          "type": 2540,
+          "offset": 280,
+          "flags": 32
+        },
+        {
+          "name": "localUnpackedPs",
+          "type": 2539,
+          "offset": 296,
+          "flags": 32
+        }
+      ]
+    },
+    "2757": {
+      "name": "hclObjectSpaceMeshMeshDeformOperator",
+      "parent": 2733,
+      "format": 7,
+      "subtype": 0,
+      "size": 280,
+      "members": [
+        {
+          "name": "inputBufferIdx",
+          "type": 1682,
+          "offset": 72,
+          "flags": 32
+        },
+        {
+          "name": "outputBufferIdx",
+          "type": 1682,
+          "offset": 76,
+          "flags": 32
+        },
+        {
+          "name": "scaleNormalBehaviour",
+          "type": 2547,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "inputTrianglesSubset",
+          "type": 2988,
+          "offset": 88,
+          "flags": 32
+        },
+        {
+          "name": "triangleFromMeshTransforms",
+          "type": 3390,
+          "offset": 104,
+          "flags": 32
+        },
+        {
+          "name": "objectSpaceDeformer",
+          "type": 2783,
+          "offset": 120,
+          "flags": 32
+        },
+        {
+          "name": "customSkinDeform",
+          "type": 1675,
+          "offset": 272,
+          "flags": 32
+        }
+      ]
+    },
+    "2547": {
+      "name": "hkEnum",
+      "parent": 0,
+      "format": 32772,
+      "subtype": 0,
+      "size": 4,
+      "members": [
+        {
+          "name": "storage",
+          "type": 1682,
+          "offset": 0,
+          "flags": 36
+        }
+      ]
+    },
+    "2540": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2774,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2400,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2774": {
+      "name": "hclObjectSpaceDeformer::LocalBlockP",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 128,
+      "members": [
+        {
+          "name": "localPosition",
+          "type": 2571,
+          "offset": 0,
+          "flags": 32
+        }
+      ]
+    },
+    "2400": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2774,
+      "size": 8,
+      "members": []
+    },
+    "2539": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2770,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2399,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2770": {
+      "name": "hclObjectSpaceDeformer::LocalBlockUnpackedP",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 256,
+      "members": [
+        {
+          "name": "localPosition",
+          "type": 2595,
+          "offset": 0,
+          "flags": 32
+        }
+      ]
+    },
+    "2399": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2770,
+      "size": 8,
+      "members": []
+    },
+    "2845": {
+      "name": "hclStandardLinkConstraintSet",
+      "parent": 2823,
+      "format": 7,
+      "subtype": 0,
+      "size": 56,
+      "members": [
+        {
+          "name": "links",
+          "type": 2608,
+          "offset": 40,
+          "flags": 32
+        }
+      ]
+    },
+    "2608": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2844,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2446,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2844": {
+      "name": "hclStandardLinkConstraintSet::Link",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 12,
+      "members": [
+        {
+          "name": "particleA",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "particleB",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "restLength",
+          "type": 2023,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "stiffness",
+          "type": 2023,
+          "offset": 8,
+          "flags": 32
+        }
+      ]
+    },
+    "2446": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2844,
+      "size": 8,
+      "members": []
+    },
+    "2840": {
+      "name": "hclStretchLinkConstraintSet",
+      "parent": 2823,
+      "format": 7,
+      "subtype": 0,
+      "size": 56,
+      "members": [
+        {
+          "name": "links",
+          "type": 2605,
+          "offset": 40,
+          "flags": 32
+        }
+      ]
+    },
+    "2605": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2839,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2443,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2839": {
+      "name": "hclStretchLinkConstraintSet::Link",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 12,
+      "members": [
+        {
+          "name": "particleA",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "particleB",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "restLength",
+          "type": 2023,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "stiffness",
+          "type": 2023,
+          "offset": 8,
+          "flags": 32
+        }
+      ]
+    },
+    "2443": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2839,
+      "size": 8,
+      "members": []
+    },
+    "2860": {
+      "name": "hclBendStiffnessConstraintSet",
+      "parent": 2823,
+      "format": 7,
+      "subtype": 0,
+      "size": 64,
+      "members": [
+        {
+          "name": "links",
+          "type": 2617,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "maxRestPoseHeightSq",
+          "type": 2023,
+          "offset": 56,
+          "flags": 32
+        },
+        {
+          "name": "clampBendStiffness",
+          "type": 1675,
+          "offset": 60,
+          "flags": 32
+        },
+        {
+          "name": "useRestPoseConfig",
+          "type": 1675,
+          "offset": 61,
+          "flags": 32
+        }
+      ]
+    },
+    "2617": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2859,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2454,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2859": {
+      "name": "hclBendStiffnessConstraintSet::Link",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "weightA",
+          "type": 2023,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "weightB",
+          "type": 2023,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "weightC",
+          "type": 2023,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "weightD",
+          "type": 2023,
+          "offset": 12,
+          "flags": 32
+        },
+        {
+          "name": "bendStiffness",
+          "type": 2023,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "restCurvature",
+          "type": 2023,
+          "offset": 20,
+          "flags": 32
+        },
+        {
+          "name": "particleA",
+          "type": 1683,
+          "offset": 24,
+          "flags": 32
+        },
+        {
+          "name": "particleB",
+          "type": 1683,
+          "offset": 26,
+          "flags": 32
+        },
+        {
+          "name": "particleC",
+          "type": 1683,
+          "offset": 28,
+          "flags": 32
+        },
+        {
+          "name": "particleD",
+          "type": 1683,
+          "offset": 30,
+          "flags": 32
+        }
+      ]
+    },
+    "2454": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2859,
+      "size": 8,
+      "members": []
+    },
+    "2833": {
+      "name": "hclTransitionConstraintSet",
+      "parent": 2823,
+      "format": 7,
+      "subtype": 0,
+      "size": 80,
+      "members": [
+        {
+          "name": "perParticleData",
+          "type": 2602,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "toAnimPeriod",
+          "type": 2023,
+          "offset": 56,
+          "flags": 32
+        },
+        {
+          "name": "toAnimPlusDelayPeriod",
+          "type": 2023,
+          "offset": 60,
+          "flags": 32
+        },
+        {
+          "name": "toSimPeriod",
+          "type": 2023,
+          "offset": 64,
+          "flags": 32
+        },
+        {
+          "name": "toSimPlusDelayPeriod",
+          "type": 2023,
+          "offset": 68,
+          "flags": 32
+        },
+        {
+          "name": "referenceMeshBufferIdx",
+          "type": 1682,
+          "offset": 72,
+          "flags": 32
+        }
+      ]
+    },
+    "2602": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 2832,
+      "size": 16,
+      "members": [
+        {
+          "name": "m_data",
+          "type": 2440,
+          "offset": 0,
+          "flags": 34
+        },
+        {
+          "name": "m_size",
+          "type": 1427,
+          "offset": 8,
+          "flags": 34
+        },
+        {
+          "name": "m_capacityAndFlags",
+          "type": 1427,
+          "offset": 12,
+          "flags": 34
+        }
+      ]
+    },
+    "2832": {
+      "name": "hclTransitionConstraintSet::PerParticle",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 16,
+      "members": [
+        {
+          "name": "particleIndex",
+          "type": 1683,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "referenceVertex",
+          "type": 1683,
+          "offset": 2,
+          "flags": 32
+        },
+        {
+          "name": "toAnimDelay",
+          "type": 2023,
+          "offset": 4,
+          "flags": 32
+        },
+        {
+          "name": "toSimDelay",
+          "type": 2023,
+          "offset": 8,
+          "flags": 32
+        },
+        {
+          "name": "toSimMaxDistance",
+          "type": 2023,
+          "offset": 12,
+          "flags": 32
+        }
+      ]
+    },
+    "2440": {
+      "name": "T*",
+      "parent": 0,
+      "format": 6,
+      "subtype": 2832,
+      "size": 8,
+      "members": []
+    },
+    "2877": {
+      "name": "hclCapsuleShape",
+      "parent": 2869,
+      "format": 7,
+      "subtype": 0,
+      "size": 96,
+      "members": [
+        {
+          "name": "start",
+          "type": 2026,
+          "offset": 32,
+          "flags": 34
+        },
+        {
+          "name": "end",
+          "type": 2026,
+          "offset": 48,
+          "flags": 34
+        },
+        {
+          "name": "dir",
+          "type": 2026,
+          "offset": 64,
+          "flags": 34
+        },
+        {
+          "name": "radius",
+          "type": 2023,
+          "offset": 80,
+          "flags": 34
+        },
+        {
+          "name": "capLenSqrdInv",
+          "type": 2023,
+          "offset": 84,
+          "flags": 34
+        }
+      ]
+    },
+    "2871": {
+      "name": "hclTaperedCapsuleShape",
+      "parent": 2869,
+      "format": 7,
+      "subtype": 0,
+      "size": 176,
+      "members": [
+        {
+          "name": "small",
+          "type": 2026,
+          "offset": 32,
+          "flags": 34
+        },
+        {
+          "name": "big",
+          "type": 2026,
+          "offset": 48,
+          "flags": 34
+        },
+        {
+          "name": "coneApex",
+          "type": 2026,
+          "offset": 64,
+          "flags": 34
+        },
+        {
+          "name": "coneAxis",
+          "type": 2026,
+          "offset": 80,
+          "flags": 34
+        },
+        {
+          "name": "lVec",
+          "type": 2026,
+          "offset": 96,
+          "flags": 34
+        },
+        {
+          "name": "dVec",
+          "type": 2026,
+          "offset": 112,
+          "flags": 34
+        },
+        {
+          "name": "tanThetaVecNeg",
+          "type": 2026,
+          "offset": 128,
+          "flags": 34
+        },
+        {
+          "name": "smallRadius",
+          "type": 2023,
+          "offset": 144,
+          "flags": 34
+        },
+        {
+          "name": "bigRadius",
+          "type": 2023,
+          "offset": 148,
+          "flags": 34
+        },
+        {
+          "name": "l",
+          "type": 2023,
+          "offset": 152,
+          "flags": 34
+        },
+        {
+          "name": "d",
+          "type": 2023,
+          "offset": 156,
+          "flags": 34
+        },
+        {
+          "name": "cosTheta",
+          "type": 2023,
+          "offset": 160,
+          "flags": 34
+        },
+        {
+          "name": "sinTheta",
+          "type": 2023,
+          "offset": 164,
+          "flags": 34
+        },
+        {
+          "name": "tanTheta",
+          "type": 2023,
+          "offset": 168,
+          "flags": 34
+        },
+        {
+          "name": "tanThetaSqr",
+          "type": 2023,
+          "offset": 172,
+          "flags": 34
+        }
+      ]
+    },
+    "2873": {
+      "name": "hclPlaneShape",
+      "parent": 2869,
+      "format": 7,
+      "subtype": 0,
+      "size": 48,
+      "members": [
+        {
+          "name": "planeEquation",
+          "type": 2026,
+          "offset": 32,
+          "flags": 34
+        }
+      ]
+    }
+  }
+}

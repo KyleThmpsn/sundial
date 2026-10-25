@@ -87,20 +87,6 @@ fn scope(definition: &UnlockDefinition, value: bool) -> &'static str {
     }
 }
 
-#[cfg(test)]
-fn entries(catalog: &Catalog, value: bool) -> Vec<Entry> {
-    let definitions = if value {
-        catalog.unlock_value_definitions()
-    } else {
-        catalog.unlock_flag_definitions()
-    };
-    definitions
-        .iter()
-        .enumerate()
-        .map(|(index, definition)| entry(catalog, index, value, definition))
-        .collect()
-}
-
 fn entry(catalog: &Catalog, index: usize, value: bool, definition: &UnlockDefinition) -> Entry {
     let label = labels::unlock(catalog, index, value);
     let named = label.named;
@@ -247,7 +233,7 @@ fn draw_entries(
     progression_toolbar(ui, |ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.query)
-                .hint_text("Search content or ID…")
+                .hint_text("Search Content or ID…")
                 .desired_width(200.0),
         );
         egui::ComboBox::from_id_salt("unlock_names")
@@ -516,19 +502,19 @@ fn override_cell(
         |ui| {
             ui.add_enabled_ui(!context.read_only, |ui| {
                 ui.push_id(("add_content_override", value, row.index), |ui| {
-                    ui.menu_button("Add Override", |ui| {
+                    crate::ui::sticky_menu_button(ui, "Add Override", |ui| {
                         ui.label("No saved value. Choose an account override.");
                         if value {
                             ui.add(egui::DragValue::new(context.override_value));
                             if ui.button("Save Override").clicked() {
                                 requested = Some(Edit::Override(*context.override_value));
-                                ui.close_menu();
+                                ui.close();
                             }
                         } else {
                             for (number, label) in [(2, "Set"), (1, "Force Clear")] {
                                 if ui.button(label).clicked() {
                                     requested = Some(Edit::Override(number));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         }
@@ -678,6 +664,3 @@ fn draw_entry(
     }
     changed
 }
-
-#[cfg(test)]
-mod tests;

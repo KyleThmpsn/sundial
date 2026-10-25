@@ -2,6 +2,18 @@
 use super::*;
 
 impl PackageAuthoringApp {
+    pub(super) fn activity_dirty(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        {
+            self.activity_editor
+                .as_ref()
+                .is_some_and(super::activity_view::Editor::dirty)
+        }
+        #[cfg(not(feature = "d2-model-importer"))]
+        {
+            false
+        }
+    }
     /// Persistent storage belongs to the desktop open action, not UI construction.
     pub(super) fn initialize_storage(&mut self) {
         if self.recipe_library.is_some() {
@@ -14,13 +26,15 @@ impl PackageAuthoringApp {
         log.enable_file();
         log.push(LogEntry::info("Opening recipe library"));
         let mut recipe_entries = Vec::new();
+        let mut map_entries = Vec::new();
         let mut enabled_recipe_paths = BTreeSet::new();
         let backup_preferences = match ParhelionPreferences::load_default() {
             Ok(preferences) => preferences,
             Err(error) => {
                 log.push(LogEntry::error(format!(
-                    "Could not load Parhelion backup preferences. Using defaults: {error}"
+                    "Could not load Parhelion preferences. Using defaults: {error}"
                 )));
+                self.preferences_error = Some(error);
                 ParhelionPreferences::default()
             }
         };
@@ -37,7 +51,8 @@ impl PackageAuthoringApp {
                             )));
                         }
                         recipe_entries = scan.entries;
-                        match library.enabled_paths(&recipe_entries) {
+                        map_entries = scan.maps;
+                        match enabled_paths(&library, &recipe_entries, &map_entries) {
                             Ok(enabled) => enabled_recipe_paths = enabled,
                             Err(error) => log.push(LogEntry::error(format!(
                                 "Recipe selection state could not be loaded: {error}"
@@ -58,57 +73,379 @@ impl PackageAuthoringApp {
 
         self.recipe_library = recipe_library;
         self.recipe_entries = recipe_entries;
+        self.map_entries = map_entries;
         self.library_state.refresh_metadata(&self.recipe_entries);
         self.enabled_recipe_paths = enabled_recipe_paths;
         self.limit_package_backups = backup_preferences.limit_package_backups;
-        self.show_technical_build = backup_preferences.show_technical_build;
         self.package_backup_retention = backup_preferences.package_backup_retention;
         self.backup_recipe_snapshots = backup_preferences.backup_recipe_snapshots;
+        self.show_preview_fps = backup_preferences.show_preview_fps;
+        self.play_preview_animations = backup_preferences.play_preview_animations;
+        self.load_preview_models = backup_preferences.load_preview_models;
+        self.ability_notice_dismissed = backup_preferences.ability_notice_dismissed;
         self.log = log;
     }
 
+    #[cfg(test)]
     pub(super) fn batch_request(&self) -> Result<BatchBuildRequest, String> {
-        if self.current_recipe_is_in_build()
-            && let Some((_, error)) = &self.invalid_weapon_name
+        self.build_inputs().request()
+    }
+
+    /// What a build reads from the window. The recipes load on the build's own thread, because a
+    /// full read restores every embedded model and held the window for seconds.
+    pub(super) fn build_inputs(&self) -> BuildInputs {
+        BuildInputs {
+            invalid_name: self
+                .invalid_weapon_name
+                .as_ref()
+                .map(|(_, error)| error.clone()),
+            activity_dirty: self.activity_dirty(),
+            open: self.recipe_path.clone().map(|path| OpenRecipe {
+                path,
+                recipe: self.recipe.clone(),
+                baseline: self.recipe_baseline.clone(),
+            }),
+            enabled: self.enabled_recipe_paths.clone(),
+            map_paths: self
+                .map_entries
+                .iter()
+                .map(|map| map.path.clone())
+                .collect(),
+            catalog: self.catalog.clone(),
+            library: self.recipe_library.clone(),
+            library_items: self
+                .recipe_entries
+                .iter()
+                .map(|entry| LibraryItem {
+                    hash: entry.identity_hash,
+                    name: entry.name.clone(),
+                    path: entry.path.clone(),
+                })
+                .collect(),
+            stock_weapons: self
+                .donor_summaries
+                .iter()
+                .map(|donor| donor.hash)
+                .collect(),
+            package_directory: self.packages.clone(),
+            staging_root: PathBuf::from(self.staging.trim()),
+            ignore_installed: self.ignore_installed,
+        }
+    }
+
+    /// A build waits for the catalog its checks read.
+    pub(super) fn build_ready(&self) -> Result<(), String> {
+        if self.catalog.is_none()
+            || self.catalog_receiver.is_some()
+            || self.catalog_worker.is_some()
+            || self.catalog_reload_pending
+        {
+            return Err("Wait for the weapon catalog to finish loading".to_owned());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> Result<BatchBuildSnapshot, String> {
+        self.build_ready()?;
+        BatchBuildSnapshot::new(self.batch_request()?)
+    }
+}
+
+/// What a build reads from the window, so its recipes load and are checked away from it.
+pub(super) struct BuildInputs {
+    invalid_name: Option<String>,
+    activity_dirty: bool,
+    open: Option<OpenRecipe>,
+    /// The recipes and maps the build includes.
+    enabled: BTreeSet<PathBuf>,
+    /// Every listed map's path, which tells the enabled maps from the recipes.
+    map_paths: BTreeSet<PathBuf>,
+    catalog: Option<InvestmentCatalog>,
+    library: Option<RecipeLibrary>,
+    library_items: Vec<LibraryItem>,
+    stock_weapons: BTreeSet<u32>,
+    package_directory: PathBuf,
+    staging_root: PathBuf,
+    ignore_installed: bool,
+}
+
+/// The recipe open in the window, which builds as edited while its file still matches.
+struct OpenRecipe {
+    path: PathBuf,
+    recipe: WeaponRecipe,
+    baseline: WeaponRecipe,
+}
+
+/// A library recipe's item, for a recipe whose donor is another library weapon.
+struct LibraryItem {
+    hash: u32,
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+enum RecipeRead {
+    Build,
+    Listing,
+}
+
+impl RecipeRead {
+    fn load(self, path: &Path) -> Result<WeaponRecipe, crate::recipe::RecipeError> {
+        match self {
+            Self::Build => WeaponRecipe::load_json(path),
+            Self::Listing => WeaponRecipe::load_listing(path),
+        }
+    }
+}
+
+impl BuildInputs {
+    /// Progress uses the selected name without restoring embedded assets just to label a read.
+    pub(super) fn recipe_name(&self, path: &Path) -> String {
+        self.open
+            .as_ref()
+            .filter(|open| open.path == path)
+            .map(|open| open.recipe.name.as_str())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                self.library_items
+                    .iter()
+                    .find(|item| item.path == path)
+                    .map(|item| item.name.as_str())
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                path.file_name().and_then(|name| name.to_str()).map_or_else(
+                    || path.display().to_string(),
+                    |name| name.trim_end_matches(".parhelion.json").to_owned(),
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn request(&self) -> Result<BatchBuildRequest, String> {
+        self.request_reporting(&mut |_, _, _| {})
+    }
+
+    /// As [`Self::request`], calling `progress` with each selected recipe's file, how many were
+    /// read before it and how many there are, as it starts reading the file. A recipe that embeds
+    /// an imported model can be hundreds of megabytes, so a build reports each one.
+    pub(super) fn request_reporting(
+        &self,
+        progress: &mut dyn FnMut(&Path, usize, usize),
+    ) -> Result<BatchBuildRequest, String> {
+        Ok(BatchBuildRequest {
+            package_directory: self.package_directory.clone(),
+            staging_root: self.staging_root.clone(),
+            ignore_installed_authored_overlays: self.ignore_installed,
+            recipes: self.recipes(RecipeRead::Build, progress)?,
+            maps: crate::map::load_selected(
+                self.enabled
+                    .intersection(&self.map_paths)
+                    .map(PathBuf::as_path),
+            )
+            .map_err(|error| error.to_string())?,
+        })
+    }
+
+    /// The removal warning needs identities and socket dependencies, not restored assets.
+    /// The build still rereads complete recipes and checks the open draft against disk.
+    pub(super) fn included_item_hashes(&self) -> Result<BTreeSet<u32>, String> {
+        self.recipes(RecipeRead::Listing, &mut |_, _, _| {})?
+            .iter()
+            .map(|recipe| {
+                recipe
+                    .identity
+                    .item_hash
+                    .parse_u32()
+                    .map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
+    fn recipes(
+        &self,
+        read: RecipeRead,
+        progress: &mut dyn FnMut(&Path, usize, usize),
+    ) -> Result<Vec<WeaponRecipe>, String> {
+        if self.activity_dirty {
+            return Err("Save or close the activity editor before building.".into());
+        }
+        if self
+            .open
+            .as_ref()
+            .is_some_and(|open| self.enabled.contains(&open.path))
+            && let Some(error) = &self.invalid_name
         {
             return Err(error.clone());
         }
-        let mut recipes = Vec::with_capacity(self.enabled_recipe_paths.len());
-        for path in &self.enabled_recipe_paths {
-            let mut recipe = if self.recipe_path.as_ref() == Some(path) {
+        let paths = self.enabled.difference(&self.map_paths).collect::<Vec<_>>();
+        let mut recipes = self.read_all(&paths, read, progress)?;
+        if let Some(library) = &self.library {
+            let included = recipes
+                .iter()
+                .map(|recipe| {
+                    recipe
+                        .identity
+                        .item_hash
+                        .parse_u32()
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            let mut referenced = recipes
+                .iter()
+                .flat_map(|recipe| &recipe.overrides.socket_columns)
+                .flatten()
+                .flat_map(|column| &column.choices)
+                .map(|hash| hash.parse_u32().map_err(|error| error.to_string()))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            referenced.retain(|hash| {
+                !included.contains(hash)
+                    && !self
+                        .catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.item_definition_tag(*hash))
+                        .is_some_and(crate::package_profile::is_stock_item_definition)
+            });
+            // Shader recipes cannot contain sockets, so these dependencies have no further
+            // socket dependencies. Keep one copy even when several items select the shader.
+            for entry in library.shader_entries(&referenced)? {
+                let recipe = self.recipe(&entry.path, read)?;
+                if recipe.kind != ItemKind::Shader
+                    || recipe.identity.item_hash.parse_u32().ok() != Some(entry.identity_hash)
+                {
+                    return Err(format!(
+                        "Shader recipe {} changed identity while preparing the build. Select the shader again.",
+                        entry.path.display()
+                    ));
+                }
+                recipes.push(recipe);
+            }
+        }
+        Ok(recipes)
+    }
+
+    /// Reads `paths` on up to four threads, in their order. `progress` sees each file as a thread
+    /// starts it. An error stops further reads, and the first error in order is returned.
+    fn read_all(
+        &self,
+        paths: &[&PathBuf],
+        read: RecipeRead,
+        progress: &mut dyn FnMut(&Path, usize, usize),
+    ) -> Result<Vec<WeaponRecipe>, String> {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        enum Event {
+            Started(usize),
+            Read(usize, Box<Result<WeaponRecipe, String>>),
+        }
+        let total = paths.len();
+        let workers = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .clamp(1, 4)
+            .min(total);
+        if workers <= 1 {
+            return paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    progress(path, index, total);
+                    self.recipe(path, read)
+                })
+                .collect();
+        }
+        let next = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let mut results = (0..total).map(|_| None).collect::<Vec<_>>();
+        std::thread::scope(|scope| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            for _ in 0..workers {
+                let sender = sender.clone();
+                let (next, stop) = (&next, &stop);
+                scope.spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = paths.get(index) else {
+                            break;
+                        };
+                        if sender.send(Event::Started(index)).is_err() {
+                            break;
+                        }
+                        let result = self.recipe(path, read);
+                        if result.is_err() {
+                            stop.store(true, Ordering::Relaxed);
+                        }
+                        if sender.send(Event::Read(index, Box::new(result))).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(sender);
+            let mut completed = 0;
+            for event in receiver {
+                match event {
+                    Event::Started(index) => progress(paths[index], completed, total),
+                    Event::Read(index, result) => {
+                        completed += 1;
+                        results[index] = Some(*result);
+                    }
+                }
+            }
+        });
+        // Reads are claimed in order, so every recipe before a failed one was read, and those
+        // never claimed come after it.
+        let mut recipes = Vec::with_capacity(total);
+        for result in results {
+            match result {
+                Some(result) => recipes.push(result?),
+                None => break,
+            }
+        }
+        Ok(recipes)
+    }
+
+    /// Explicit items and required shaders use the same draft and concurrent-change checks.
+    fn recipe(&self, path: &Path, read: RecipeRead) -> Result<WeaponRecipe, String> {
+        let mut recipe = match &self.open {
+            // This advisory check uses current draft choices. The actual build below performs
+            // the full saved-content comparison, including the imported graph content pins.
+            Some(open) if open.path == path && matches!(read, RecipeRead::Listing) => {
+                let recipe = open.recipe.clone();
+                #[cfg(feature = "d2-model-importer")]
+                let recipe = {
+                    let mut recipe = recipe;
+                    recipe.overrides.imported_graph = None;
+                    recipe
+                };
+                recipe
+            }
+            Some(open) if open.path == path => {
+                if let Some(error) = &self.invalid_name {
+                    return Err(error.clone());
+                }
                 let saved = WeaponRecipe::load_json(path).map_err(|error| {
                     format!(
                         "Could not check included recipe {}: {error}",
                         path.display()
                     )
                 })?;
-                if !saved.same_saved_content(&self.recipe_baseline) {
+                if !saved.same_saved_content(&open.baseline) {
                     return Err(format!(
                         "{} changed on disk after you opened it. Reopen it before building. Export any unsaved draft first.",
-                        self.recipe.name
+                        open.recipe.name
                     ));
                 }
-                self.recipe.clone()
-            } else {
-                WeaponRecipe::load_json(path).map_err(|error| {
-                    format!("Could not load included recipe {}: {error}", path.display())
-                })?
-            };
-            if let Some(catalog) = self.catalog.as_ref() {
-                custom_perks::repair_socket_picks(
-                    self.recipe_library.as_ref(),
-                    catalog,
-                    &mut recipe,
-                )?;
+                open.recipe.clone()
             }
-            recipes.push(self.rebase_library_donor(recipe)?);
+            _ => read.load(path).map_err(|error| {
+                format!("Could not load included recipe {}: {error}", path.display())
+            })?,
+        };
+        if let Some(catalog) = self.catalog.as_ref() {
+            custom_perks::repair_socket_picks(self.library.as_ref(), catalog, &mut recipe)?;
         }
-        Ok(BatchBuildRequest {
-            package_directory: self.packages.clone(),
-            staging_root: PathBuf::from(self.staging.trim()),
-            ignore_installed_authored_overlays: self.ignore_installed,
-            recipes,
-        })
+        self.rebase(recipe, read)
     }
 
     /// Rebuilds a recipe whose donor is a weapon from the library on that weapon's own recipe.
@@ -117,10 +454,7 @@ impl PackageAuthoringApp {
     /// so it cannot serve as a donor as it is. Its recipe can: the result keeps this recipe's
     /// identity and settings on top of the base recipe's stock donor and changes. A base that
     /// itself builds on a library weapon is followed the same way.
-    pub(super) fn rebase_library_donor(
-        &self,
-        recipe: WeaponRecipe,
-    ) -> Result<WeaponRecipe, String> {
+    fn rebase(&self, recipe: WeaponRecipe, read: RecipeRead) -> Result<WeaponRecipe, String> {
         let mut current = recipe;
         let mut seen = Vec::new();
         loop {
@@ -130,18 +464,18 @@ impl PackageAuthoringApp {
             // An installed weapon is always itself. Authored identities are derived hashes and
             // nothing stops one from matching a real item, so the game's own tables win rather
             // than a recipe quietly building on something the reader never chose.
-            if self.donor_summaries.iter().any(|stock| stock.hash == donor) {
+            if self.stock_weapons.contains(&donor) {
                 return Ok(current);
             }
             let Some(entry) = self
-                .recipe_entries
+                .library_items
                 .iter()
-                .find(|entry| entry.identity_hash == donor && entry.identity_hash != 0)
+                .find(|entry| entry.hash == donor && entry.hash != 0)
             else {
                 return Ok(current);
             };
             if seen.contains(&donor)
-                || entry.identity_hash == current.identity.item_hash.parse_u32().unwrap_or_default()
+                || entry.hash == current.identity.item_hash.parse_u32().unwrap_or_default()
             {
                 return Err(format!(
                     "{} builds on itself through {}. Choose a stock weapon as its donor.",
@@ -149,7 +483,7 @@ impl PackageAuthoringApp {
                 ));
             }
             seen.push(donor);
-            let base = WeaponRecipe::load_json(&entry.path).map_err(|error| {
+            let base = read.load(&entry.path).map_err(|error| {
                 format!(
                     "{} builds on {}, whose recipe could not be loaded: {error}",
                     current.name, entry.name
@@ -163,18 +497,9 @@ impl PackageAuthoringApp {
             })?;
         }
     }
+}
 
-    pub(super) fn snapshot(&self) -> Result<BatchBuildSnapshot, String> {
-        if self.catalog.is_none()
-            || self.catalog_receiver.is_some()
-            || self.catalog_worker.is_some()
-            || self.catalog_reload_pending
-        {
-            return Err("Wait for the weapon catalog to finish loading".to_owned());
-        }
-        BatchBuildSnapshot::new(self.batch_request()?)
-    }
-
+impl PackageAuthoringApp {
     pub(super) fn save_edits_for_build(&mut self) -> Result<(), String> {
         if let Some((_, error)) = &self.invalid_weapon_name {
             return Err(error.clone());
@@ -194,35 +519,13 @@ impl PackageAuthoringApp {
         if !self.recipe_requires_initial_save && self.recipe == self.recipe_baseline {
             return Ok(());
         }
-        let library = self
-            .recipe_library
-            .as_ref()
-            .ok_or("The recipe library is unavailable. Current edits could not be saved")?;
-        let path = match self
+        let existing = self
             .recipe_path
-            .as_ref()
-            .filter(|path| path.starts_with(library.root()))
-        {
-            Some(path) => {
-                library.save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe)?;
-                path.clone()
-            }
-            None => library.save_new(&self.recipe)?,
-        };
-        self.recipe_path = Some(path.clone());
-        self.recipe_requires_initial_save = false;
-        self.recipe_dirty = false;
-        self.recipe_baseline.clone_from(&self.recipe);
-        self.observed_recipe.clone_from(&self.recipe);
-        self.advance_recipe_revision();
-        self.log.push(LogEntry::info(format!(
-            "Saved current edits before building: {}",
-            path.display()
-        )));
-        // Saving the open draft must not change which recipes the user selected for this build.
-        let selected = self.enabled_recipe_paths.clone();
-        self.refresh_recipe_library();
-        self.enabled_recipe_paths = selected;
+            .as_deref()
+            .filter(|_| self.recipe_saves_in_place());
+        let path = self.write_recipe(existing)?;
+        let message = format!("Saved current edits before building: {}", path.display());
+        self.accept_saved_recipe(path, message);
         Ok(())
     }
 
@@ -257,6 +560,85 @@ impl PackageAuthoringApp {
         self.recipe_revision = self.recipe_revision.wrapping_add(1);
     }
 
+    /// Records what changed since the last frame as an undo step. Changes from one continuing drag
+    /// or one focused text field join the same step. Discard Changes is an ordinary step.
+    pub(super) fn record_recipe_history(&mut self, ctx: &egui::Context) {
+        if self.recipe != self.recorded_recipe {
+            let before = std::mem::replace(&mut self.recorded_recipe, self.recipe.clone());
+            let pins = std::mem::replace(&mut self.recorded_pins, self.behavior_pins.clone());
+            self.recipe_history.record((before, pins), ctx);
+        } else if self.recorded_pins != self.behavior_pins {
+            self.recorded_pins.clone_from(&self.behavior_pins);
+        }
+    }
+
+    /// History belongs to the open recipe. Opening, creating, importing or duplicating a recipe
+    /// starts it again, while saving keeps it, as perk documents do.
+    pub(super) fn reset_recipe_history(&mut self) {
+        self.recipe_history = Default::default();
+        self.recorded_recipe.clone_from(&self.recipe);
+        self.recorded_pins.clone_from(&self.behavior_pins);
+    }
+
+    /// Whether a build, install or library job, or an open perk edit, holds the recipe still.
+    pub(super) fn recipe_editing_locked(&self) -> bool {
+        self.build_receiver.is_some()
+            || self.library_state.busy()
+            || self.install_receiver.is_some()
+            || self.perk_workbench.editing()
+    }
+
+    pub(super) fn recipe_history_available(&self, redo: bool) -> bool {
+        !self.recipe_editing_locked() && self.recipe_history.available(redo)
+    }
+
+    pub(super) fn restore_recipe_history(&mut self, ctx: &egui::Context, redo: bool) {
+        if self.recipe_editing_locked() {
+            return;
+        }
+        self.record_recipe_history(ctx);
+        let mut state = (self.recipe.clone(), self.behavior_pins.clone());
+        if !self.recipe_history.restore(&mut state, redo) {
+            return;
+        }
+        (self.recipe, self.behavior_pins) = state;
+        self.recorded_recipe.clone_from(&self.recipe);
+        self.recorded_pins.clone_from(&self.behavior_pins);
+        // A name still being corrected belongs to the state left behind.
+        self.invalid_weapon_name = None;
+        self.barrel_controls.invalidate();
+        self.runtime_donors.invalidate();
+        self.synchronize_recipe_dirty();
+    }
+
+    /// Ctrl+Z undoes and Ctrl+Y or Ctrl+Shift+Z redoes while the pointer is over the editor
+    /// rather than a window. A focused text field keeps the keys for its own undo.
+    pub(super) fn recipe_history_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input()
+            || ctx.memory(|memory| memory.top_modal_layer().is_some())
+            || egui::Popup::is_any_open(ctx)
+        {
+            return;
+        }
+        let over_editor = ctx
+            .input(|input| input.pointer.latest_pos())
+            .and_then(|pointer| ctx.layer_id_at(pointer))
+            .is_none_or(|layer| layer.order == egui::Order::Background);
+        if !over_editor {
+            return;
+        }
+        if ctx.input_mut(|input| {
+            input.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::Z,
+            ) || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+        }) {
+            self.restore_recipe_history(ctx, true);
+        } else if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+            self.restore_recipe_history(ctx, false);
+        }
+    }
+
     pub(super) fn discard_recipe_changes(&mut self) {
         self.recipe = self.recipe_baseline.clone();
         self.advance_recipe_revision();
@@ -268,6 +650,12 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn request_recipe_action(&mut self, action: PendingRecipeAction) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        if matches!(action, PendingRecipeAction::Close) && self.activity_dirty() {
+            self.confirm_activity_close();
+            return false;
+        }
+        self.pending_recipe_error = None;
         if self.recipe_dirty {
             self.pending_recipe_action = Some(action);
             false
@@ -279,6 +667,15 @@ impl PackageAuthoringApp {
     pub(super) fn execute_recipe_action(&mut self, action: PendingRecipeAction) -> bool {
         match action {
             PendingRecipeAction::Close => {
+                // The hosted app stays alive while its window is closed. An
+                // approved discard must also clear the draft before reopening.
+                if self.recipe_dirty {
+                    if self.recipe_path.is_some() {
+                        self.discard_recipe_changes();
+                    } else {
+                        self.start_new_recipe(self.recipe.kind);
+                    }
+                }
                 self.close_approved = true;
                 false
             }
@@ -293,6 +690,9 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn open_recipe_path(&mut self, path: &Path) -> bool {
+        // The preview and source card of an imported recipe share one hashed check per opening.
+        #[cfg(feature = "d2-model-importer")]
+        parhelion_import::forget_opened();
         match WeaponRecipe::load_json(path) {
             Ok(recipe) => {
                 self.recipe = recipe;
@@ -302,6 +702,7 @@ impl PackageAuthoringApp {
                 self.recipe_path = Some(path.to_path_buf());
                 self.recipe_requires_initial_save = false;
                 self.recipe_dirty = false;
+                self.reset_recipe_history();
                 self.clear_dependent_picker_queries();
                 self.scroll_recipe_to_top = true;
                 self.invalidate_results();
@@ -342,6 +743,7 @@ impl PackageAuthoringApp {
         self.recipe_path = None;
         self.recipe_requires_initial_save = true;
         self.recipe_dirty = true;
+        self.reset_recipe_history();
         self.clear_dependent_picker_queries();
         self.scroll_recipe_to_top = true;
         self.invalidate_results();
@@ -364,7 +766,7 @@ impl PackageAuthoringApp {
         self.recipe_path = None;
         self.recipe_requires_initial_save = false;
         self.recipe_dirty = false;
-        self.advanced_gameplay_page = AdvancedGameplayPage::Runtime;
+        self.reset_recipe_history();
         self.clear_dependent_picker_queries();
         self.scroll_recipe_to_top = true;
         self.invalidate_results();
@@ -372,6 +774,7 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn refresh_recipe_library(&mut self) {
+        self.installed.request();
         self.perk_workbench.saved_weapons_changed();
         let Some(library) = self.recipe_library.as_ref() else {
             return;
@@ -379,8 +782,9 @@ impl PackageAuthoringApp {
         match library.scan() {
             Ok(scan) => {
                 self.recipe_entries = scan.entries;
+                self.map_entries = scan.maps;
                 self.library_state.refresh_metadata(&self.recipe_entries);
-                match library.enabled_paths(&self.recipe_entries) {
+                match enabled_paths(library, &self.recipe_entries, &self.map_entries) {
                     Ok(enabled) => self.enabled_recipe_paths = enabled,
                     Err(error) => self.log.push(LogEntry::error(format!(
                         "Recipe selection state could not be loaded: {error}"
@@ -407,64 +811,77 @@ impl PackageAuthoringApp {
 
     /// Saves the open recipe the way the toolbar's save button does.
     pub(super) fn save_open_recipe(&mut self) {
-        if self.recipe_saves_in_place() {
-            self.save_library_recipe();
-        } else {
-            self.save_recipe_copy();
+        if let Err(error) = self.try_save_open_recipe() {
+            self.log.push(LogEntry::error(error));
         }
     }
 
     pub(super) fn save_library_recipe(&mut self) {
-        if let Some((_, error)) = &self.invalid_weapon_name {
+        let result = self
+            .recipe_path
+            .clone()
+            .ok_or_else(|| "Open a saved recipe before saving changes".to_owned())
+            .and_then(|path| self.save_recipe_at(Some(&path)));
+        if let Err(error) = result {
             self.log.push(LogEntry::error(error));
-            return;
-        }
-        let Some(library) = self.recipe_library.as_ref() else {
-            return;
-        };
-        let Some(path) = self.recipe_path.as_ref() else {
-            return;
-        };
-        match library.save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe) {
-            Ok(()) => {
-                let message = format!("Saved recipe {}", path.display());
-                self.recipe_requires_initial_save = false;
-                self.recipe_dirty = false;
-                self.recipe_baseline = self.recipe.clone();
-                self.advance_recipe_revision();
-                self.log.push(LogEntry::info(message));
-                self.refresh_recipe_library();
-            }
-            Err(error) => self.log.push(LogEntry::error(format!(
-                "Could not save recipe {}: {error}",
-                path.display()
-            ))),
         }
     }
 
     pub(super) fn save_recipe_copy(&mut self) {
-        if let Some((_, error)) = &self.invalid_weapon_name {
+        if let Err(error) = self.save_recipe_at(None) {
             self.log.push(LogEntry::error(error));
-            return;
         }
-        let Some(library) = self.recipe_library.as_ref() else {
-            return;
-        };
-        match library.save_new(&self.recipe) {
-            Ok(path) => {
-                self.recipe_requires_initial_save = false;
-                self.recipe_path = Some(path.clone());
-                self.recipe_dirty = false;
-                self.recipe_baseline = self.recipe.clone();
-                self.advance_recipe_revision();
-                self.log.push(LogEntry::info(format!(
-                    "Saved recipe copy {}",
-                    path.display()
-                )));
-                self.refresh_recipe_library();
+    }
+
+    pub(super) fn try_save_open_recipe(&mut self) -> Result<(), String> {
+        let existing = self
+            .recipe_path
+            .clone()
+            .filter(|_| self.recipe_saves_in_place());
+        self.save_recipe_at(existing.as_deref())
+    }
+
+    fn save_recipe_at(&mut self, existing: Option<&Path>) -> Result<(), String> {
+        let path = self.write_recipe(existing)?;
+        let message = format!("Saved recipe {}", path.display());
+        self.accept_saved_recipe(path, message);
+        Ok(())
+    }
+
+    /// Validate and persist before accepting a new baseline or continuing navigation.
+    fn write_recipe(&self, existing: Option<&Path>) -> Result<PathBuf, String> {
+        if let Some((_, error)) = &self.invalid_weapon_name {
+            return Err(error.clone());
+        }
+        let library = self
+            .recipe_library
+            .as_ref()
+            .ok_or("The recipe library is unavailable. Current edits could not be saved")?;
+        match existing {
+            Some(path) => {
+                library
+                    .save_existing_if_unchanged(path, &self.recipe_baseline, &self.recipe)
+                    .map_err(|error| {
+                        format!("Could not save recipe {}: {error}", path.display())
+                    })?;
+                Ok(path.to_owned())
             }
-            Err(error) => self.log.push(LogEntry::error(error)),
+            None => library.save_new(&self.recipe),
         }
+    }
+
+    fn accept_saved_recipe(&mut self, path: PathBuf, message: String) {
+        self.recipe_path = Some(path);
+        self.recipe_requires_initial_save = false;
+        self.recipe_dirty = false;
+        self.recipe_baseline.clone_from(&self.recipe);
+        self.observed_recipe.clone_from(&self.recipe);
+        self.advance_recipe_revision();
+        self.log.push(LogEntry::info(message));
+        // Saving must not change the recipes selected for the next build.
+        let selected = std::mem::take(&mut self.enabled_recipe_paths);
+        self.refresh_recipe_library();
+        self.enabled_recipe_paths = selected;
     }
 
     pub(super) fn import_recipe(&mut self) -> bool {
@@ -487,6 +904,7 @@ impl PackageAuthoringApp {
                 self.advance_recipe_revision();
                 self.recipe_path = Some(destination.clone());
                 self.recipe_dirty = false;
+                self.reset_recipe_history();
                 self.clear_dependent_picker_queries();
                 self.scroll_recipe_to_top = true;
                 self.invalidate_results();
@@ -569,4 +987,15 @@ impl PackageAuthoringApp {
         }
         library.export(&self.recipe, path)
     }
+}
+
+/// The recipes and maps of the library that a build includes.
+fn enabled_paths(
+    library: &RecipeLibrary,
+    entries: &[RecipeLibraryEntry],
+    maps: &[crate::recipe_library::MapLibraryEntry],
+) -> Result<BTreeSet<PathBuf>, String> {
+    let mut enabled = library.enabled_paths(entries)?;
+    enabled.extend(library.enabled_map_paths(maps)?);
+    Ok(enabled)
 }

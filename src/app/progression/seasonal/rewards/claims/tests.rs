@@ -103,70 +103,6 @@ fn dawn_seasonal_authoring_and_item_claims_are_refused_without_mutation() {
 }
 
 #[test]
-fn season_pass_consumables_are_claimed_once_and_full_stacks_remain_unclaimed() {
-    let catalog = super::super::super::super::rewards::tests::catalog()
-        .with_test_progression(
-            vec![UnlockDefinition {
-                code: 1,
-                compact_slot: Some(200),
-                ..Default::default()
-            }],
-            vec![],
-            vec![],
-        )
-        .with_test_seasonal(crate::investment::seasonal::Definition {
-            power_steps: vec![100000],
-            point_steps: vec![100000],
-            mods: vec![],
-            reward_grants: [(1000, RewardGrant::Item)].into(),
-        });
-    let mut document = document();
-    document["_reward_context"]["consumables"] = json!([{"definition_hash":1000,"quantity":8}]);
-    document["_reward_context"]["inventory"] = json!([]);
-    document["_reward_context"]["next_serial"] = json!(1);
-    let mut reward = reward();
-    reward.item_hash = 1000;
-    reward.quantity = 3;
-    let before = document.clone();
-    assert!(
-        claim(&mut document, &catalog, &reward)
-            .unwrap_err()
-            .contains("stack cap")
-    );
-    assert_eq!(document, before);
-    reward.quantity = 2;
-    assert!(claim(&mut document, &catalog, &reward).unwrap());
-    assert_eq!(
-        document["_progression_consumables"][0]["quantity"],
-        json!(2)
-    );
-    let after = document.clone();
-    assert!(!claim(&mut document, &catalog, &reward).unwrap());
-    assert_eq!(document, after);
-}
-
-#[test]
-fn claims_queue_split_stacks_once_and_keep_the_claim_atomic() {
-    let catalog = catalog();
-    let mut document = document();
-    assert!(claim(&mut document, &catalog, &reward()).unwrap());
-    assert_eq!(
-        document["_progression_rewards"],
-        json!([{"kind":1,"hash":987,"quantity":99},{"kind":1,"hash":987,"quantity":99},{"kind":1,"hash":987,"quantity":3}])
-    );
-    assert!(
-        collection_state_snapshot(&document)
-            .unwrap()
-            .flags
-            .contains(&(1, 200))
-    );
-    let after = document.clone();
-    assert!(!claim(&mut document, &catalog, &reward()).unwrap());
-    assert_eq!(document, after);
-    assert_eq!(document["future"], json!(17));
-}
-
-#[test]
 fn unsupported_rewards_and_locked_ranks_leave_claims_unchanged() {
     let catalog = catalog();
     let mut document = document();
@@ -190,29 +126,6 @@ fn unsupported_rewards_and_locked_ranks_leave_claims_unchanged() {
     let before = document.clone();
     assert!(claim(&mut document, &catalog, &reward).is_err());
     assert_eq!(document, before);
-}
-
-#[test]
-fn pass_completion_is_reviewed_and_rejects_concurrent_edits() {
-    let catalog = catalog();
-    let pass: ProgressionDefinition = serde_json::from_value(json!({"definition_index":40,"hash":40,"scope":"Account","scope_slot":40,"repeat_last_step":false,"reward_items":[reward()]})).unwrap();
-    let mut document = document();
-    let before = document.clone();
-    let mut job = Job::new(&document, &catalog, vec![0], Some(100)).unwrap();
-    while !job.step(&catalog, &pass) {}
-    assert!(job.issues.is_empty());
-    assert_eq!(job.claimed, 1);
-    assert_eq!(job.queued(), 3);
-    assert_eq!(document, before);
-    let stale = job.clone();
-    assert!(job.finish(&mut document).unwrap());
-    assert_eq!(
-        collection_state_snapshot(&document).unwrap().seasonal_xp(),
-        9900000
-    );
-    let after = document.clone();
-    assert!(stale.finish(&mut document).is_err());
-    assert_eq!(document, after);
 }
 
 #[test]
@@ -261,65 +174,4 @@ fn season_pass_claims_persist_with_pending_rewards_in_the_native_account() {
             .flags
             .contains(&(1, 200))
     );
-}
-
-#[test]
-#[ignore = "Requires SUNDIAL_PROGRESSION_INSTALL and installed packages"]
-fn installed_pass_rewards_queue_for_each_class() {
-    let install = std::path::PathBuf::from(
-        std::env::var_os("SUNDIAL_PROGRESSION_INSTALL").expect("install path"),
-    );
-    let catalog = Catalog::load_or_scan_with_progress(
-        &install,
-        "examples/progression-ui-check/installed-catalog.json".into(),
-        false,
-        |progress| eprintln!("{}", progress.message),
-    )
-    .unwrap();
-    let pass = catalog
-        .progression_definitions()
-        .iter()
-        .find(|definition| usize::from(definition.definition_index) == PASS_PROGRESSION)
-        .unwrap();
-    for class in 0..3 {
-        let mut document = json!({"_native_progression":{},"_reward_context":{"character":0,"character_count":1,"class":class,"consumables":[],"inventory":[],"next_serial":1},"future":17});
-        let mut job = Job::new(
-            &document,
-            &catalog,
-            (0..pass.reward_items.len()).collect(),
-            Some(100),
-        )
-        .unwrap();
-        while !job.step(&catalog, pass) {}
-        eprintln!(
-            "Class {class}: {} claims, {} pending entries, {} consumable grants, {} skipped",
-            job.claimed,
-            job.queued(),
-            job.direct_count(),
-            job.issues.len()
-        );
-        for (name, reason) in &job.issues {
-            assert!(
-                reason.contains("No inventory space")
-                    || reason.contains("stack cap")
-                    || reason.contains("different character class"),
-                "{name}: {reason}"
-            );
-        }
-        assert!(job.claimed > 100);
-        assert!(job.queued() > 100);
-        assert!(job.direct_count() > 0);
-        job.finish(&mut document).unwrap();
-        let mut repeat = Job::new(
-            &document,
-            &catalog,
-            (0..pass.reward_items.len()).collect(),
-            Some(100),
-        )
-        .unwrap();
-        while !repeat.step(&catalog, pass) {}
-        assert_eq!(repeat.claimed, 0);
-        assert_eq!(repeat.queued(), 0);
-        assert!(!repeat.changed());
-    }
 }

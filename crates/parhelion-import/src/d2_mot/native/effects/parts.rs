@@ -72,7 +72,7 @@ pub(super) fn refresh(g: &mut Graph, draws: &Draws) -> Result<()> {
 
 /// A source part's attachment slot: selector, position, assignment, models and
 /// whether the slot is a source art region.
-type Group = (u64, usize, u32, BTreeSet<String>, bool);
+type Group = (u64, Vec<usize>, u32, BTreeSet<String>, bool);
 
 /// Promote source parts an older graph already split with donor slots into the
 /// new source array.
@@ -110,6 +110,15 @@ fn promote(g: &mut Graph, source_parts: &[Value], regions: &BTreeSet<u64>) -> Re
         );
         part["assignment"] = json!(tag(&matches[0]["assignment"])?);
         part["source_region"] = json!(true);
+        part["positions"] = json!(
+            matches[0]["placements"]
+                .as_array()
+                .context("source placements")?
+                .iter()
+                .filter(|p| p["selector"] == part["selector"])
+                .map(|p| number(&p["position"]))
+                .collect::<Result<BTreeSet<_>>>()?
+        );
     }
     Ok(())
 }
@@ -164,19 +173,27 @@ fn slot(
             ))
         })
         .collect::<BTreeSet<_>>();
-    if slots.len() != 1 {
+    let Some(&(selector, position)) = slots.first() else {
+        return Ok(None);
+    };
+    // One assignment can occur repeatedly in a source region. It owns one
+    // model and channel bank, with every original alternative pointing to it.
+    // Placements spanning unrelated selectors still require composition.
+    if slots.len() != 1
+        && (!regions.contains(&selector) || slots.iter().any(|(other, _)| *other != selector))
+    {
         return Ok(None);
     }
-    let (selector, position) = *slots.first().context("source slot")?;
     // Selector zero is the weapon body. Keep it on the chosen marker host,
     // including swords whose native body and marker-bearing slots differ.
     if selector == 0 {
         return Ok(None);
     }
+    let native_selector = crate::d2_mot::artwork::native_selector(selector)?;
     let candidates = parents
         .iter()
         .filter(|parent| {
-            parent["placement"]["selector"].as_u64() == Some(selector)
+            parent["placement"]["selector"].as_u64() == Some(native_selector)
                 && parent["placement"]["position"].as_u64() == Some(position as u64)
         })
         .collect::<Vec<_>>();
@@ -196,7 +213,7 @@ fn slot(
     }
     Ok(Some((
         selector,
-        position,
+        slots.into_iter().map(|(_, position)| position).collect(),
         assignment,
         models,
         source_region,
@@ -222,6 +239,7 @@ fn write_nodes(
         node["symbol"] = json!(symbol);
         node["file"] = json!(format!("{symbol}.bin"));
         if name == "model" {
+            node["model"] = json!(true);
             node["patches"] = json!(patches);
         }
         for patch in node["patches"].as_array_mut().context("part patches")? {
@@ -260,6 +278,19 @@ pub(super) fn separate(
     source: &Value,
     prepared: &Path,
 ) -> Result<()> {
+    if let Some(entity) = source["independent_art_entity"].as_str() {
+        ensure!(
+            source["models"]
+                .as_array()
+                .context("independent art models")?
+                .iter()
+                .all(|model| model["entity"] == entity),
+            "Independent art view mixes entities"
+        );
+        // Gear already converts each art entity independently. Its complete class/body
+        // layout is registered after assembly, without weapon attachment heuristics.
+        return Ok(());
+    }
     // Older exports have no placement provenance. They remain assembled until
     // re-exported, rather than guessing placement from asset ordering.
     let Some(source_parts) = source["art_parts"].as_array() else {
@@ -274,12 +305,16 @@ pub(super) fn separate(
     let mut assigned = BTreeSet::new();
     let mut groups = Vec::new();
     let regions = variants::regions(source)?;
+    let native_regions = regions
+        .iter()
+        .map(|&selector| crate::d2_mot::artwork::native_selector(selector))
+        .collect::<Result<BTreeSet<_>>>()?;
     promote(g, source_parts, &regions)?;
     if let Some(kept) = g.manifest["kept_parts"].as_array_mut() {
         kept.retain(|part| {
             !part["placement"]["selector"]
                 .as_u64()
-                .is_some_and(|selector| regions.contains(&selector))
+                .is_some_and(|selector| native_regions.contains(&selector))
         });
     }
     g.manifest["source_art_regions"] = json!({"selectors":regions,"selection":"native region stat with source-ordered alternatives","gameplay_verified":false});
@@ -288,7 +323,7 @@ pub(super) fn separate(
             tag(&parent["assignment"]).ok().map(u64::from) == Some(host)
                 && parent["placement"]["selector"]
                     .as_u64()
-                    .is_some_and(|s| regions.contains(&s))
+                    .is_some_and(|s| native_regions.contains(&s))
         }),
         "source alternatives cannot replace the assembled body's art region"
     );
@@ -357,9 +392,10 @@ pub(super) fn separate(
         );
     }
     let mut selected_count = 0;
-    for (index, (selector, position, assignment, models, source_region)) in
+    for (index, (selector, positions, assignment, models, source_region)) in
         groups.into_iter().enumerate()
     {
+        let position = *positions.first().context("source part positions")?;
         let prefix = format!("part-{}", first_index + index);
         let names = core
             .iter()
@@ -371,13 +407,9 @@ pub(super) fn separate(
             )))
             .collect::<BTreeMap<_, _>>();
         let mut selected = draws.clone();
-        for (stage, records) in selected.records.iter_mut().enumerate() {
-            records.retain(|(_, symbol)| models.contains(&draws.sources[symbol]));
-            put(
-                &mut selected.header,
-                0x108 + stage * 2,
-                &(if records.is_empty() { -1i16 } else { 139i16 }).to_le_bytes(),
-            )?;
+        for stage in 0..23 {
+            selected.records[stage].retain(|(_, symbol)| models.contains(&draws.sources[symbol]));
+            selected.layout(stage)?;
         }
         let (bytes, patches, count) = selected.model()?;
         ensure!(count > 0, "independent source attachment has no draws");
@@ -390,19 +422,15 @@ pub(super) fn separate(
         );
         description.push(
             json!({"assignment":assignment,"key":art_key,"selector":selector,
-            "position":position,"source_region":source_region,"source_models":models,"parent":names["parent"],
+            "position":position,"positions":positions,"source_region":source_region,"source_models":models,"parent":names["parent"],
             "entity":names["entity"],"owner":names["owner"],"model":names["model"],
             "draw_count":count,"gameplay_verified":false}),
         );
     }
     let mut main = draws.clone();
-    for (stage, records) in main.records.iter_mut().enumerate() {
-        records.retain(|(_, symbol)| !assigned.contains(&draws.sources[symbol]));
-        put(
-            &mut main.header,
-            0x108 + stage * 2,
-            &(if records.is_empty() { -1i16 } else { 139i16 }).to_le_bytes(),
-        )?;
+    for stage in 0..23 {
+        main.records[stage].retain(|(_, symbol)| !assigned.contains(&draws.sources[symbol]));
+        main.layout(stage)?;
     }
     let (bytes, patches, count) = main.model()?;
     ensure!(
@@ -418,7 +446,7 @@ pub(super) fn separate(
         kept.retain(|part| {
             !part["placement"]["selector"]
                 .as_u64()
-                .is_some_and(|s| regions.contains(&s))
+                .is_some_and(|s| native_regions.contains(&s))
         });
     }
     g.manifest["source_art_regions"] = json!({"selectors":regions,"selection":"native region stat with source-ordered alternatives","gameplay_verified":false});

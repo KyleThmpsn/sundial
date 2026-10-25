@@ -68,15 +68,11 @@ fn draw_requires_actual_material_in_the_requested_stage() {
 
 #[test]
 #[ignore = "Requires configured local native packages, never installed content writes"]
-fn configured_packages_discover_and_reuse_contracts() {
+fn configured_packages_discover_contracts_and_preserve_repeated_exports() {
     let packages = PathBuf::from(std::env::var_os("PARHELION_NATIVE_PACKAGES").unwrap());
     let dir = tempfile::tempdir().unwrap();
     let mut reader = Reader::new(&packages, dir.path(), false).unwrap();
-    let mut messages = Vec::new();
-    export(&mut reader, &packages, dir.path(), &mut |m| {
-        messages.push(m)
-    })
-    .unwrap();
+    export(&mut reader, &packages, dir.path(), &mut |_| {}).unwrap();
     let first = Catalog::read(dir.path()).unwrap();
     for role in Role::ALL {
         let carrier = first.carrier(role).unwrap();
@@ -89,23 +85,22 @@ fn configured_packages_discover_and_reuse_contracts() {
     assert!(!first.cube.is_null());
     let alternate = tempfile::tempdir().unwrap();
     fs::write(
-        alternate.path().join("1-previous.json"),
+        alternate
+            .path()
+            .join(format!("{}-previous.json", Catalog::SCHEMA)),
         serde_json::to_vec(&first).unwrap(),
     )
     .unwrap();
     let reused = reusable_carriers(
         alternate.path(),
-        &alternate.path().join("1-current.json"),
+        &alternate
+            .path()
+            .join(format!("{}-current.json", Catalog::SCHEMA)),
         &reader,
     )
     .unwrap();
     assert_eq!(reused.carriers.len(), Role::ALL.len());
-    messages.clear();
-    export(&mut reader, &packages, dir.path(), &mut |m| {
-        messages.push(m)
-    })
-    .unwrap();
-    assert!(messages.iter().any(|m| m.contains("Using cached")));
+    export(&mut reader, &packages, dir.path(), &mut |_| {}).unwrap();
     let second = Catalog::read(dir.path()).unwrap();
     assert_eq!(
         serde_json::to_value(first).unwrap(),

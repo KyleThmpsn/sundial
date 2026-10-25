@@ -1,11 +1,18 @@
 use crate::catalog::{Catalog, ItemDef};
-use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-const SOCKET_AND_GEAR_TYPE_WARNING: &str = "Shows only plugs that match the socket and gear type. A few plugs may not work, or cause the item to behave unexpectedly.";
+const SOCKET_AND_GEAR_TYPE_WARNING: &str = "Shows only plugs that match the socket and item subtype. A few plugs may not work, or cause the item to behave unexpectedly.";
 const MATCHING_SOCKET_WARNING: &str = "Use caution: these plugs match the socket type but are not known to be supported by this item. Incompatible choices may prevent the item or loadout from working correctly.";
-const GEAR_TYPE_WARNING: &str = "High risk: this exposes plugs used anywhere on the same broad gear type, not just this socket. Incompatible choices may prevent the item or loadout from working correctly.";
+const GEAR_TYPE_WARNING: &str = "High risk: this exposes plugs used anywhere on this item subtype, not just this socket. Incompatible choices may prevent the item or loadout from working correctly.";
+const GEAR_KIND_WARNING: &str = "High risk: this exposes plugs used anywhere on this item type, every weapon or every armor piece, not just this socket. Incompatible choices may prevent the item or loadout from working correctly.";
 const ANY_PLUG_WARNING: &str = "High risk: this exposes every discovered plug for every socket. Incompatible choices may prevent Sunrise/Destiny 2 from loading or cause instability.";
+
+/// How strongly a plug picker flags a scope beside its warning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Risk {
+    Caution,
+    High,
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,15 +22,17 @@ pub enum PlugSelectionMode {
     SocketAndGearType,
     MatchingSocketType,
     GearType,
+    GearKind,
     AnyPlug,
 }
 
 impl PlugSelectionMode {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Supported,
         Self::SocketAndGearType,
         Self::MatchingSocketType,
         Self::GearType,
+        Self::GearKind,
         Self::AnyPlug,
     ];
 
@@ -31,11 +40,90 @@ impl PlugSelectionMode {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Supported => "Compatible",
-            Self::SocketAndGearType => "Socket + Gear Type",
+            Self::SocketAndGearType => "Socket + Item Subtype",
             Self::MatchingSocketType => "Socket Type",
-            Self::GearType => "Gear Type",
+            Self::GearType => "Item Subtype",
+            Self::GearKind => "Item Type",
             Self::AnyPlug => "All",
         }
+    }
+
+    /// What the scope offers for one socket, for its hover in a plug picker.
+    #[must_use]
+    pub const fn hint(self) -> &'static str {
+        match self {
+            Self::Supported => "Plugs this item allows in this socket",
+            Self::SocketAndGearType => "Plugs this socket takes on this kind of item",
+            Self::MatchingSocketType => "Plugs this socket type takes on any item",
+            Self::GearType => "Any plug this kind of item uses, in any socket",
+            Self::GearKind => "Any plug every weapon or every armor piece uses",
+            Self::AnyPlug => "Every plug. Some can stop the item from loading",
+        }
+    }
+
+    /// The warning a plug picker shows beside this scope, with how strongly it flags it. The
+    /// compatible scope has none.
+    #[must_use]
+    pub(crate) const fn warning(self) -> Option<(Risk, &'static str)> {
+        match self {
+            Self::Supported => None,
+            Self::SocketAndGearType => Some((Risk::Caution, SOCKET_AND_GEAR_TYPE_WARNING)),
+            Self::MatchingSocketType => Some((Risk::Caution, MATCHING_SOCKET_WARNING)),
+            Self::GearType => Some((Risk::High, GEAR_TYPE_WARNING)),
+            Self::GearKind => Some((Risk::High, GEAR_KIND_WARNING)),
+            Self::AnyPlug => Some((Risk::High, ANY_PLUG_WARNING)),
+        }
+    }
+
+    /// The label in the words of what is being picked for, as Dawn names them: for Chroma
+    /// Rush's barrel socket, Chroma Rush Barrels, Auto Rifle Barrels, All Barrels, Auto Rifles,
+    /// All Weapons, All. `socket_label` is the socket's name, or empty.
+    #[must_use]
+    pub(crate) fn contextual_label(self, item: &ItemDef, socket_label: &str) -> String {
+        let subtype = crate::catalog::item_subtype_label(item);
+        let sockets = if socket_label.trim().is_empty() {
+            "Plugs".to_owned()
+        } else {
+            plural(socket_label.trim())
+        };
+        match self {
+            Self::Supported => {
+                let name = item.name.trim();
+                if name.is_empty() {
+                    "Compatible".to_owned()
+                } else {
+                    format!("{name} {sockets}")
+                }
+            }
+            Self::SocketAndGearType => format!("{subtype} {sockets}"),
+            Self::MatchingSocketType => format!("All {sockets}"),
+            Self::GearType => plural(&subtype),
+            Self::GearKind => match crate::catalog::item_type_label(item) {
+                "Weapon" => "All Weapons".to_owned(),
+                "Armor" => "All Armor".to_owned(),
+                _ => "All Items".to_owned(),
+            },
+            Self::AnyPlug => "All".to_owned(),
+        }
+    }
+}
+
+/// A display name made plural: Barrel to Barrels, Battery to Batteries. Names that already end
+/// in s, such as Gauntlets, and the uncountable Armor stay as they are.
+fn plural(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with('s') || lower.ends_with("armor") {
+        name.to_owned()
+    } else if lower.ends_with('y')
+        && !lower.ends_with("ay")
+        && !lower.ends_with("ey")
+        && !lower.ends_with("oy")
+    {
+        format!("{}ies", &name[..name.len() - 1])
+    } else if lower.ends_with('x') || lower.ends_with("ch") || lower.ends_with("sh") {
+        format!("{name}es")
+    } else {
+        format!("{name}s")
     }
 }
 
@@ -84,24 +172,11 @@ pub(crate) fn candidates_for_socket_type<'a>(
         } else {
             catalog.gear_type_options(item, socket_index)
         }),
+        PlugSelectionMode::GearKind => Cow::Owned(if socket_type_override.is_some() {
+            catalog.gear_kind_options_for_type(item, socket_type)
+        } else {
+            catalog.gear_kind_options(item, socket_index)
+        }),
         PlugSelectionMode::AnyPlug => Cow::Borrowed(catalog.all_plug_options()),
-    }
-}
-
-pub(crate) fn draw_plug_selection_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
-    match mode {
-        PlugSelectionMode::Supported => {}
-        PlugSelectionMode::SocketAndGearType => {
-            ui.colored_label(ui.visuals().warn_fg_color, SOCKET_AND_GEAR_TYPE_WARNING);
-        }
-        PlugSelectionMode::MatchingSocketType => {
-            ui.colored_label(ui.visuals().warn_fg_color, MATCHING_SOCKET_WARNING);
-        }
-        PlugSelectionMode::GearType => {
-            ui.colored_label(ui.visuals().error_fg_color, GEAR_TYPE_WARNING);
-        }
-        PlugSelectionMode::AnyPlug => {
-            ui.colored_label(ui.visuals().error_fg_color, ANY_PLUG_WARNING);
-        }
     }
 }

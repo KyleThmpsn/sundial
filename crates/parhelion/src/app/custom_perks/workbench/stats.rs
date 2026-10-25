@@ -25,7 +25,7 @@ impl Workbench {
             .map(InvestmentCatalog::perk_stat_choices)
             .unwrap_or_default();
         stats.sort_by_cached_key(|stat| stat.name.to_lowercase());
-        let mut table = crate::app::stat_editor::table::Table::new(ui, false, false);
+        let mut table = crate::app::stat_editor::table::Table::new(ui);
         table.name = table.name.min(200.0);
         let mut remove = None;
         if !recipe.stats.is_empty() {
@@ -42,8 +42,7 @@ impl Workbench {
                         ui,
                         table.name,
                         egui::Label::new(&name).truncate().halign(egui::Align::LEFT),
-                    )
-                    .on_hover_text(&name);
+                    );
                     // A perk stores a delta, not a weapon's absolute value. Do not apply
                     // the weapon display curve or its range to a negative bonus.
                     let response = table.value(ui, &mut stat.value, None, true);
@@ -60,7 +59,7 @@ impl Workbench {
                                 .clicked()
                             {
                                 stat.value = original.value;
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     }
@@ -82,33 +81,63 @@ impl Workbench {
             recipe.stats.retain(|stat| stat.definition_index != index);
         }
         ui.add_enabled_ui(recipe.stats.len() < 16, |ui| {
-            if let Some(index) = pickers::popup(
+            if let Some(index) = pickers::browser_with_toolbar(
                 ui,
                 "add-perk-stat",
                 "+ Add Stat",
+                "Add Stat",
                 &mut self.stat_query,
-                |ui, query, reset, height| {
+                |ui, query, opened, _| {
+                    let changed = ui
+                        .horizontal(|ui| {
+                            let width = (ui.available_width() - pickers::CLEAR_WIDTH).max(160.0);
+                            sundial::ui::catalog::search(ui, query, opened, width, "Search Stats")
+                        })
+                        .inner;
+                    let words = query.trim().to_lowercase();
                     let choices = stats
                         .iter()
                         .filter(|choice| {
-                            pickers::matches(query, &choice.name)
+                            pickers::matches(&words, &choice.name)
                                 && !recipe
                                     .stats
                                     .iter()
                                     .any(|stat| stat.definition_index == choice.definition_index)
                         })
                         .collect::<Vec<_>>();
-                    pickers::results(
+                    let keys = choices
+                        .iter()
+                        .map(|choice| u64::from(choice.definition_index))
+                        .collect::<Vec<_>>();
+                    pickers::BrowserList {
+                        keys: &keys,
+                        // The result count takes a line above the list.
+                        height: (ui.available_height() - 24.0).max(160.0),
+                        reset: opened || changed,
+                        row_height: crate::app::style::list_row_height(ui),
+                        select: None,
+                    }
+                    .draw_activating(
                         ui,
-                        "perk-stat-results",
-                        choices.len(),
-                        height,
-                        reset,
-                        crate::app::style::list_row_height(ui),
-                        |ui, index| {
-                            crate::app::style::list_row(ui, false, &choices[index].name)
-                                .clicked()
-                                .then_some(choices[index].definition_index)
+                        |ui, index, selected| {
+                            crate::app::style::list_row(ui, selected, &choices[index].name)
+                        },
+                        |ui, index, activated| {
+                            let choice = choices[index];
+                            ui.heading(&choice.name);
+                            // A double-click adds the stat, as Add Stat does.
+                            let add = ui.add(crate::app::style::primary(ui, "Add Stat")).clicked()
+                                || activated;
+                            if let Some(stock) = source_stats
+                                .iter()
+                                .find(|stat| stat.definition_index == choice.definition_index)
+                            {
+                                ui.label(
+                                    egui::RichText::new(format!("Stock Bonus {:+}", stock.value))
+                                        .color(crate::app::style::secondary(ui.visuals())),
+                                );
+                            }
+                            add.then_some(choice.definition_index)
                         },
                     )
                 },

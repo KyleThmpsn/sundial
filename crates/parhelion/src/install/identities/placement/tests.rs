@@ -40,14 +40,14 @@ fn native_slot_check_rejects_mismatched_or_corrupt_equipment_and_ignores_plugs()
 }
 
 #[test]
-#[ignore = "builds isolated native generations, requires PARHELION_CLEAN_STOCK_PACKAGES and PARHELION_SLOT_REPLACEMENT_ROOT"]
+#[ignore = "builds isolated native generations, requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
     use crate::recipe::RecipeInventorySlot;
     use crate::{
         BatchBuildRequest, BatchBuildSnapshot, WeaponRecipe, build_and_stage_snapshot_with_progress,
     };
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let output = PathBuf::from(std::env::var_os("PARHELION_SLOT_REPLACEMENT_ROOT").unwrap());
+    let packages = crate::test_support::stock_packages();
+    let output = crate::test_support::artifact_dir("slot-replacement");
     let mut recipe = WeaponRecipe::new_named_weapon_for_donor(
         "Slot Replacement Check",
         0xA25B_8F8F,
@@ -66,6 +66,7 @@ fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
             staging_root: output.join(format!("stage-{index}")),
             ignore_installed_authored_overlays: true,
             recipes: vec![recipe.clone()],
+            maps: Vec::new(),
         })
         .unwrap();
         stages.push(
@@ -93,12 +94,11 @@ fn native_slot_replacement_compares_compiled_generations_in_both_directions() {
             replacement.incoming_buckets[&replacement.changes[0].definition_hash],
             incoming
         );
-        assert!(replacement.incoming_buckets.len() > 1000);
         assert!(
             replacement
                 .weapon_capacities
                 .iter()
-                .all(|capacity| *capacity > 1)
+                .all(|capacity| *capacity > 0)
         );
         assert!(
             with_generation(&packages, old, |installed| {

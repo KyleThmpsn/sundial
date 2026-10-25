@@ -1,10 +1,11 @@
-//! Account unlock synchronization. The app supplies JSON save and backup policy.
+//! Account unlock synchronization. The app supplies process checks and JSON save policy.
 use crate::catalog::UnlockDefinition;
 use std::path::{Path, PathBuf};
 pub(crate) fn synchronize_authored_collection_unlocks_at(
     settings_path: &Path,
     unlocks: &[(usize, u8, u16)],
     save: impl FnOnce(&Path, &serde_json::Value, &serde_json::Value) -> Result<PathBuf, String>,
+    mut require_closed: impl FnMut() -> Result<(), String>,
 ) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
     let original = crate::persistence::json_document::load_workspace_json(settings_path)?;
     let database_path = crate::persistence::investment_path(settings_path);
@@ -24,7 +25,7 @@ pub(crate) fn synchronize_authored_collection_unlocks_at(
                 None
             } else {
                 Some(
-                    sqlite_account::save_document(&mut document)
+                    sqlite_account::save_document_checked(&mut document, &mut require_closed)
                         .map_err(|e| e.to_string())?
                         .backup,
                 )
@@ -32,7 +33,13 @@ pub(crate) fn synchronize_authored_collection_unlocks_at(
             return Ok((database_path, backup, changed));
         }
     }
-    synchronize_loaded_authored_collection_unlocks(settings_path, original, unlocks, save)
+    synchronize_loaded_authored_collection_unlocks(
+        settings_path,
+        original,
+        unlocks,
+        save,
+        require_closed,
+    )
 }
 
 fn apply_native_authored_unlocks(
@@ -69,6 +76,7 @@ fn synchronize_loaded_authored_collection_unlocks(
     original: serde_json::Value,
     unlocks: &[(usize, u8, u16)],
     save: impl FnOnce(&Path, &serde_json::Value, &serde_json::Value) -> Result<PathBuf, String>,
+    mut require_closed: impl FnMut() -> Result<(), String>,
 ) -> Result<(PathBuf, Option<PathBuf>, usize), String> {
     let (document, changed) = authored_unlock_changes(original.clone(), unlocks)?;
     let backup = if changed == 0 {
@@ -77,6 +85,7 @@ fn synchronize_loaded_authored_collection_unlocks(
         // Refuse to overwrite edits made by Sunrise, Sundial, or the user while the authored
         // package installation was finishing.
         crate::persistence::json_document::verify_unchanged(settings_path, &original)?;
+        require_closed()?;
         Some(save(settings_path, &document, &original)?)
     };
     Ok((settings_path.to_path_buf(), backup, changed))
@@ -89,8 +98,9 @@ fn authored_unlock_changes(
     let mut document = original;
     let mut changed = 0usize;
     for &(definition_index, bank, slot) in unlocks {
-        if bank == crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK
-            && usize::from(slot) >= crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY
+        if bank == crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK
+            && usize::from(slot)
+                >= crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY
         {
             return Err(format!(
                 "Authored unlock definition {definition_index} uses account slot {slot}, beyond the extended Shadowkeep account-flag region"

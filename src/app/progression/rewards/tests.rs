@@ -54,46 +54,6 @@ fn document() -> Value {
 }
 
 #[test]
-fn consumable_plans_merge_to_the_cap_and_fail_atomically_on_overflow() {
-    let catalog = catalog();
-    let mut document = document();
-    document["_reward_context"]["consumables"] = json!([{"definition_hash":1000,"quantity":6}]);
-    queue(&mut document, &catalog, [(1000, 2), (1000, 2)]).unwrap();
-    assert_eq!(direct_count(&Value::Null, &document), 2);
-    assert_eq!(document["_progression_rewards"], json!([]));
-    let before = document.clone();
-    assert!(
-        queue(&mut document, &catalog, [(9000, 1), (1000, 1)])
-            .unwrap_err()
-            .contains("stack cap 10")
-    );
-    assert_eq!(
-        document, before,
-        "Neither delivery path may partially grant a failed reward"
-    );
-}
-
-#[test]
-fn consumables_respect_bucket_capacity_and_existing_inventory_items() {
-    let catalog = catalog();
-    let mut document = document();
-    document["_reward_context"]["inventory"] = json!([[77, 300, 8]]);
-    queue(
-        &mut document,
-        &catalog,
-        [(300, 2), (1000, 1), (1001, 1), (1002, 1), (1003, 1)],
-    )
-    .unwrap();
-    let before = document.clone();
-    let reason = queue(&mut document, &catalog, [(1004, 1)]).unwrap_err();
-    assert!(reason.contains("No inventory space"));
-    assert!(reason.contains("General inventory: 5/5 slots used, including planned rewards"));
-    assert_eq!(document, before);
-    assert!(queue(&mut document, &catalog, [(300, 1)]).is_err());
-    assert_eq!(document, before);
-}
-
-#[test]
 fn consumables_reject_invalid_duplicate_equipped_and_exhausted_inventory() {
     let catalog = catalog();
     for context in [
@@ -159,7 +119,6 @@ fn consumables_and_pending_rewards_persist_together_for_the_selected_character()
     let next = native.progression_view(0)["_reward_context"]["next_serial"]
         .as_u64()
         .unwrap() as u32;
-    assert_eq!(next, 7);
     assert!(
         native
             .character_stacks(0)

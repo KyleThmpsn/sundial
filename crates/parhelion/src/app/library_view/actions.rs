@@ -10,6 +10,8 @@ pub(super) enum LibraryAction {
     ExportAll,
     ExportSelected,
     Entry(PathBuf, EntryAction),
+    #[cfg(feature = "d2-model-importer")]
+    OpenActivity(PathBuf),
 }
 
 #[derive(Clone, Copy)]
@@ -38,7 +40,7 @@ pub(super) fn entry_menu(
     ] {
         if ui.button(label).clicked() {
             action = Some(choice);
-            ui.close_menu();
+            ui.close();
         }
     }
     ui.separator();
@@ -48,7 +50,7 @@ pub(super) fn entry_menu(
     ] {
         if ui.button(label).clicked() {
             action = Some(choice);
-            ui.close_menu();
+            ui.close();
         }
     }
     if entry.bundled {
@@ -59,13 +61,13 @@ pub(super) fn entry_menu(
             .clicked()
         {
             action = Some(EntryAction::Restore);
-            ui.close_menu();
+            ui.close();
         }
     }
     ui.separator();
     if ui.button("Delete…").clicked() {
         action = Some(EntryAction::Delete);
-        ui.close_menu();
+        ui.close();
     }
     action
 }
@@ -73,6 +75,8 @@ pub(super) fn entry_menu(
 impl PackageAuthoringApp {
     pub(super) fn apply_library_action(&mut self, ctx: &egui::Context, action: LibraryAction) {
         match action {
+            #[cfg(feature = "d2-model-importer")]
+            LibraryAction::OpenActivity(path) => self.open_activity(&path),
             LibraryAction::Import => {
                 self.import_library_files(ctx);
             }

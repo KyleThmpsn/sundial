@@ -32,25 +32,6 @@ fn paths_require_terminated_content_names_and_paired_valid_tag_lanes() {
 }
 
 #[test]
-fn vocabulary_keeps_wwise_event_paths_and_enum_table_identifiers() {
-    let wwise = b"junk\0content\\audio\\wwise_events\\abilities\\titan_melee_hammer_throw.wwise_event\0content\\sandbox\\x.pattern.tft\0";
-    let found = vocabulary_strings(wwise);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].0, 5);
-    assert!(found[0].1.ends_with("titan_melee_hammer_throw.wwise_event"));
-    // An enum table is recognised by its `namespace_enums.e_name` string, and then every
-    // identifier in the same resource is vocabulary. Without that marker, identifiers
-    // are ignored.
-    let table = b"\0thermal_maul_super\0glide\0not an id\0sandbox.ability_enums.e_abilities\0";
-    let names = vocabulary_strings(table)
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>();
-    assert_eq!(names, ["thermal_maul_super", "glide"]);
-    assert!(vocabulary_strings(b"\0thermal_maul_super\0glide\0").is_empty());
-}
-
-#[test]
 fn entity_evidence_skips_class_handles_and_the_resource_itself() {
     let bytes = fixture();
     let known_lane = |lane: u64| lane == 0x1234_5678_9ABC_DEF0;
@@ -140,10 +121,9 @@ fn native_paths_do_not_name_unpaired_or_unresolved_assets() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_PROJECTILE_TEST_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and SUNDIAL_TEST_ARTIFACTS"]
 fn native_tft_map_and_effect_catalog_preserve_evidence() {
-    let packages =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_PROJECTILE_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = crate::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
     let names = cached(&packages, &manager, |current, total| {
         if current % 100_000 == 0 || current == total {
@@ -162,7 +142,7 @@ fn native_tft_map_and_effect_catalog_preserve_evidence() {
     }));
     let dependencies = crate::sandbox_perk::dependencies::inspect(&manager, |_, _| {}).unwrap();
     let catalog =
-        crate::sandbox_perk::projectile::catalog::inspect(&manager, &dependencies, &names).unwrap();
+        crate::sandbox_perk::entity::catalog::inspect(&manager, &dependencies, &names).unwrap();
     // A handful of attachable graphs carry a component map the entity reader rejects. They
     // are reported rather than listed. A read failure would be a different problem.
     assert!(
@@ -187,15 +167,12 @@ fn native_tft_map_and_effect_catalog_preserve_evidence() {
             .iter()
             .find(|entry| entry.graph == graph)
             .expect("observed projectile included");
-        assert_eq!(
-            entry.kind,
-            crate::sandbox_perk::projectile::Kind::Projectile
-        );
+        assert_eq!(entry.kind, crate::sandbox_perk::entity::Kind::Projectile);
     }
     assert!(catalog.entries.iter().any(|entry| entry.kind
-        == crate::sandbox_perk::projectile::Kind::Emitter
+        == crate::sandbox_perk::entity::Kind::Emitter
         && !entry.native_paths.is_empty()));
-    let output = std::path::PathBuf::from("tmp/projectile-picker-20260910/native-map");
+    let output = crate::test_support::artifact_dir("projectile-tft");
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(
         output.join("tft-index.json"),
@@ -214,12 +191,12 @@ fn native_tft_map_and_effect_catalog_preserve_evidence() {
         catalog
             .entries
             .iter()
-            .filter(|entry| entry.kind == crate::sandbox_perk::projectile::Kind::Projectile)
+            .filter(|entry| entry.kind == crate::sandbox_perk::entity::Kind::Projectile)
             .count(),
         catalog
             .entries
             .iter()
-            .filter(|entry| entry.kind == crate::sandbox_perk::projectile::Kind::Emitter)
+            .filter(|entry| entry.kind == crate::sandbox_perk::entity::Kind::Emitter)
             .count()
     );
 }

@@ -148,7 +148,7 @@ impl UpdateCheck {
         self.check_error = None;
         self.receiver = Some(receiver);
         thread::spawn(move || {
-            let result = crate::http::get(LATEST_RELEASE_URL, MAX_RESPONSE_BYTES)
+            let result = crate::system::http::get(LATEST_RELEASE_URL, MAX_RESPONSE_BYTES)
                 .and_then(|body| release::parse(&body, env!("CARGO_PKG_VERSION")));
             let _ = sender.send(result);
             ctx.request_repaint();

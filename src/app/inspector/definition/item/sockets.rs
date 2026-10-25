@@ -102,7 +102,7 @@ pub(super) fn draw_hash_item_sockets(
                                             || !socket.sources.is_empty()
                                             || default_hash.is_some()
                                     }),
-                                    egui::SelectableLabel::new(
+                                    egui::Button::selectable(
                                         current_socket == Some(socket_index),
                                         socket_label,
                                     ),

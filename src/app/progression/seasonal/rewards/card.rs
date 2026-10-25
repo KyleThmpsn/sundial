@@ -184,7 +184,7 @@ pub(super) fn draw(
     );
     text.halign = egui::Align::Center;
     text.wrap.max_rows = 3;
-    let galley = ui.fonts(|fonts| fonts.layout_job(text));
+    let galley = ui.fonts_mut(|fonts| fonts.layout_job(text));
     ui.painter().galley(
         egui::pos2(rect.center().x, rect.top() + 68.0),
         galley,
@@ -205,14 +205,30 @@ pub(super) fn draw(
             inspector::draw_catalog_hash_link(ui, catalog, flag.hash, "Inspect Claim State");
         }
     });
+    let note = format!(
+        "Rank {} · Quantity {}\n{}",
+        reward.definition.rewarded_at_progression_level,
+        reward.definition.quantity,
+        reward.status.help()
+    );
+    if catalog
+        .item_package_metadata(reward.definition.item_hash)
+        .is_some()
+    {
+        return crate::app::item_editor::authored_item_tooltip(
+            response,
+            catalog,
+            reward.definition.item_hash,
+            crate::app::item_editor::AuthoredTooltip {
+                note: Some(&note),
+                ..Default::default()
+            },
+        );
+    }
     response.on_hover_ui(|ui| {
         ui.set_max_width(300.0);
-        crate::ui_help::tooltip_title(ui, name);
-        ui.label(format!(
-            "Rank {} · Quantity {}",
-            reward.definition.rewarded_at_progression_level, reward.definition.quantity
-        ));
-        ui.label(reward.status.help());
+        crate::ui::help::tooltip_title(ui, name);
+        ui.label(note);
     })
 }
 

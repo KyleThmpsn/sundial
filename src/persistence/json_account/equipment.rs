@@ -1,6 +1,6 @@
 //! Lossless JSON equipment inspection and targeted record updates.
 use super::{JsonAccountError, JsonCharacterAdapter};
-use crate::account_contract::WEAPON_SLOTS;
+use crate::account::contract::WEAPON_SLOTS;
 use crate::hash::{format_hash_hex, parse_hash_hex, parse_unsigned_value};
 use serde_json::Value;
 use sundial_account as account_domain;
@@ -290,7 +290,7 @@ fn compact_json_text(value: &Value) -> String {
 }
 
 pub(crate) fn equipment_slot_label(slot: &str) -> &str {
-    crate::account_contract::ALL_EQUIPMENT_SLOTS
+    crate::account::contract::ALL_EQUIPMENT_SLOTS
         .iter()
         .find_map(|(name, label, _)| (*name == slot).then_some(*label))
         .unwrap_or(slot)
@@ -584,7 +584,7 @@ pub(crate) fn equip_definition(
     {
         return Err(format!("Unknown equipment slot: {slot}"));
     }
-    if !crate::account_contract::definition_available(
+    if !crate::account::contract::definition_available(
         definition_hash,
         super::inventory::schema_mode(document).supports_emote_collection(),
     ) {

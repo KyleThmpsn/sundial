@@ -4,9 +4,9 @@ pub(crate) mod compatibility;
 pub(crate) mod swap;
 
 use sundial::package_authoring::{
+    entity::graft_weapon_component_bindings_or_rewire,
     open_shadowkeep_package_manager,
-    weapon_entity::graft_weapon_component_bindings_or_rewire,
-    weapon_runtime::{
+    runtime::{
         WeaponRuntimeEntitySource, WeaponRuntimeGraph,
         load_weapon_runtime_entity_at_pattern_index_with_manager,
         load_weapon_runtime_entity_with_manager, load_weapon_runtime_graph_for_entity,
@@ -75,7 +75,7 @@ pub(crate) fn load_effective_runtime_entity(
     load_effective_runtime_entity_reporting(manager, key).map(|(pattern, _)| pattern)
 }
 
-fn load_effective_runtime_entity_reporting(
+pub(crate) fn load_effective_runtime_entity_reporting(
     manager: &sundial::package_authoring::PackageManager,
     key: &RuntimeGraphKey,
 ) -> Result<(WeaponRuntimeEntitySource, bool), String> {
@@ -139,16 +139,15 @@ fn load_effective_runtime_entity_reporting(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sundial::package_authoring::weapon_entity::{
+    use sundial::package_authoring::entity::{
         WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, graft_weapon_component_bindings,
         weapon_component_bindings,
     };
 
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
     fn mountaintop_translator_is_rewired_where_pairing_refuses_it() {
-        let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must point to clean Shadowkeep packages");
+        let packages = crate::test_support::stock_packages();
         let manager = open_shadowkeep_package_manager(Path::new(&packages)).unwrap();
         let mut baseline =
             load_weapon_runtime_entity_at_pattern_index_with_manager(&manager, 370).unwrap();

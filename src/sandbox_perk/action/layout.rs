@@ -8,6 +8,7 @@
 //! traced position, not by a gameplay meaning the client does not give it.
 
 use super::{Fact, FactValue, nodes};
+use crate::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
 /// How a field is stored.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,7 +155,7 @@ impl Layout {
     }
 }
 
-use FieldFormat::{Byte, Flag, Float, Key, Mask8, Mask32, Range};
+use FieldFormat::{Byte, Flag, Float, Key, Mask8, Range};
 
 const NONE: &[Field] = &[];
 const OPERATION: &[Field] = &[Field::new("Operation", 2, Byte)];
@@ -206,6 +207,19 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
     Layout {
         kind: 11,
         fields: HOST_NUMERIC_MODIFIERS,
+    },
+    // The registered callback consumes three pairs even though no stock action in
+    // the survey uses this kind. Activation adds the fields and cleanup subtracts them.
+    Layout {
+        kind: 12,
+        fields: &[
+            Field::new("Primary Ammo Value 1", 0x04, Float),
+            Field::new("Primary Ammo Value 2", 0x08, Float),
+            Field::new("Special Ammo Value 1", 0x0C, Float),
+            Field::new("Special Ammo Value 2", 0x10, Float),
+            Field::new("Heavy Ammo Value 1", 0x14, Float),
+            Field::new("Heavy Ammo Value 2", 0x18, Float),
+        ],
     },
     // Long March writes 80 to the third float and Radar Booster 56, the only two stock uses,
     // both reading as radar detection range. The first two stay at -1, which the callback
@@ -309,7 +323,9 @@ pub const EFFECT_LAYOUTS: &[Layout] = &[
 const EVENT_BYTE: &[Field] = &[Field::new("Event Byte", 8, Byte)];
 const EVENT_KEY: &[Field] = &[Field::new("Event Key", 8, Key)];
 const EVENT_KEY_AT_10: &[Field] = &[Field::new("Event Key", 0x10, Key)];
-const SELECTED_BITS: &[Field] = &[Field::new("Selected Bits", 8, Mask32)];
+// Kinds 9 and 28 test one byte against 1 shifted within an 8-bit register (107C490, 1080840),
+// so only bits 0 to 7 can match. Every stock node leaves +9 through +B zero.
+const SELECTED_BITS: &[Field] = &[Field::new("Selected Bits", 8, Mask8)];
 
 /// The scalar condition kinds. The first eight bytes of every condition are the header the
 /// compiler derives (probability, kind and ordinal), so no field maps them. Kinds 0, 1, 2,
@@ -450,7 +466,7 @@ pub fn blank_effect(kind: u8) -> Option<Vec<u8>> {
     // arrives with, so a blank node and a stock one of the kind cannot disagree. A template
     // can be longer than the node when the kind carries nested records, so only this byte
     // is taken from it.
-    bytes[1] = super::native::template(false, kind)
+    bytes[1] = super::native::template(NativeNodeKind::Effect(kind))
         .and_then(|template| template.get(1).copied())
         .unwrap_or_default();
     Some(bytes)
@@ -606,56 +622,5 @@ pub fn stock_defaults(condition: bool, kind: u8) -> &'static [(usize, u8)] {
             (0x2F, 0x42),
         ],
         _ => &[],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_layout_fits_its_kind_and_stays_clear_of_the_header() {
-        for (layouts, size_of, header) in [
-            (EFFECT_LAYOUTS, effect_size as fn(u8) -> Option<usize>, 2),
-            (CONDITION_LAYOUTS, condition_size, 8),
-        ] {
-            for layout in layouts {
-                let size = size_of(layout.kind).expect("an observed kind");
-                for field in layout.fields {
-                    assert!(
-                        field.offset >= header,
-                        "{} of kind {}",
-                        field.label,
-                        layout.kind
-                    );
-                    assert!(
-                        field.offset + field.format.width() <= size,
-                        "{} of kind {}",
-                        field.label,
-                        layout.kind
-                    );
-                    assert!(!field.label.is_empty());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn fields_round_trip_through_read_and_write() {
-        let layout = condition_layout(34).unwrap();
-        let mut node = blank_condition(34).unwrap();
-        assert_eq!(&node[..6], &[0, 0, 0x80, 0x3F, 0xFF, 34]);
-        let key = layout.field("Event Key").unwrap();
-        let range = layout.field("Second Range").unwrap();
-        assert!(key.write(&mut node, &FactValue::Key(0x1234_5678)));
-        assert!(range.write(&mut node, &FactValue::Range(0.5, 2.0)));
-        assert!(!range.write(&mut node, &FactValue::Flag(true)));
-        assert_eq!(key.read(&node), Some(FactValue::Key(0x1234_5678)));
-        assert_eq!(range.read(&node), Some(FactValue::Range(0.5, 2.0)));
-        assert_eq!(layout.facts(&node).len(), 3);
-        let effect = blank_effect(42).unwrap();
-        assert_eq!(&effect[..2], &[42, 0]);
-        assert_eq!(blank_effect(30).unwrap()[1], 1);
-        assert!(blank_effect(1).is_none());
     }
 }

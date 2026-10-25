@@ -221,6 +221,26 @@ impl Catalog {
     /// Case-insensitive, and every word must match. Ranked exact name, prefix, word prefix,
     /// substring, then kind order (items first), name, hash. Empty query returns nothing.
     pub(crate) fn search_definitions(&self, query: &str, limit: usize) -> Vec<DefinitionSearchHit> {
+        self.search_entries(query, limit, |_| true)
+    }
+
+    /// [`Self::search_definitions`] without items and plugs.
+    pub(crate) fn search_non_item_definitions(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Vec<DefinitionSearchHit> {
+        self.search_entries(query, limit, |source| {
+            !matches!(source, Source::Item | Source::PackageItem)
+        })
+    }
+
+    fn search_entries(
+        &self,
+        query: &str,
+        limit: usize,
+        keep: impl Fn(Source) -> bool,
+    ) -> Vec<DefinitionSearchHit> {
         let words = query
             .split_whitespace()
             .map(str::to_lowercase)
@@ -236,7 +256,9 @@ impl Catalog {
         let mut matches = entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| words.iter().all(|word| entry.lower.contains(word.as_str())))
+            .filter(|(_, entry)| {
+                keep(entry.source) && words.iter().all(|word| entry.lower.contains(word.as_str()))
+            })
             .map(|(position, entry)| (rank(&entry.lower, &phrase, &words), position))
             .collect::<Vec<_>>();
         let order = |left: &(u8, usize), right: &(u8, usize)| -> Ordering {

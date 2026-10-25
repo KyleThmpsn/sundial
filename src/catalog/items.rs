@@ -6,17 +6,22 @@ mod ammo;
 mod damage;
 mod descriptions;
 mod inventory;
-pub(crate) use inventory::{inventory_bucket_capacity, weapon_bucket_capacities};
+pub(crate) use inventory::{
+    character_row_class, inventory_bucket_capacity, weapon_bucket_capacities,
+};
 mod investment;
 mod perks;
 mod quality;
 mod scan;
+pub(crate) use scan::translation_dye_rows;
 mod sockets;
 
 #[cfg(test)]
 pub(crate) use abilities::AttunementChoice;
-pub(in crate::catalog) use abilities::scan_ability_displays;
 pub(crate) use abilities::{AbilityChoice, AbilityOptions};
+pub(in crate::catalog) use abilities::{
+    scan_ability_displays, scan_ability_entities, scan_ability_rows,
+};
 pub(crate) use ammo::ItemWeaponAmmoType;
 pub(in crate::catalog) use ammo::item_weapon_ammo_type;
 pub(crate) use damage::is_weapon_bucket;
@@ -40,11 +45,10 @@ pub(in crate::catalog) use quality::{item_power_cap, scan_power_cap_definitions}
 pub(in crate::catalog) use scan::{ItemScan, ItemScanContext, scan_items};
 pub(crate) use sockets::SocketDef;
 pub(in crate::catalog) use sockets::{
-    GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
-    intern_socket_pools, sort_plug_options,
+    GearKind, SocketCarriers, build_gear_type_options, build_socket_type_carriers,
+    build_socket_type_options, format_plug_label, intern_socket_pools, sort_plug_options,
 };
-#[cfg(test)]
-pub(in crate::catalog) use sockets::{SocketOptionSource, SocketOptionSourceKind};
+pub(crate) use sockets::{item_subtype_label, item_type_label};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ItemDef {
@@ -130,8 +134,15 @@ pub(crate) struct ItemPackageMetadata {
     pub string_definition_tag: Option<u32>,
     #[serde(default)]
     pub stat_group_index: Option<u16>,
+    /// The damage type the item's strings give it, in the native damage enum. A subclass shows
+    /// it beside its name.
+    #[serde(default)]
+    pub display_damage_type: Option<u8>,
     #[serde(default)]
     pub icon_container_tag: Option<u32>,
+    /// The container the strings' second icon row names: an emblem's nameplate.
+    #[serde(default)]
+    pub secondary_icon_container_tag: Option<u32>,
     #[serde(default)]
     pub plug_category_hash: Option<u64>,
     #[serde(default)]
@@ -196,27 +207,4 @@ pub(crate) struct ItemRenderOverride {
     pub stage: u8,
     pub key: i8,
     pub value: u16,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{AbilityOptions, ItemDef, is_authorable_weapon_item};
-
-    #[test]
-    fn weapon_ornaments_are_not_authoring_donors() {
-        let mut item = ItemDef {
-            hash: 1,
-            name: "Test".to_owned(),
-            type_name: "Auto Rifle".to_owned(),
-            bucket_hash: 1_498_876_634,
-            class_type: 0,
-            default_plugs: Vec::new(),
-            sockets: Vec::new(),
-            abilities: AbilityOptions::default(),
-        };
-        assert!(is_authorable_weapon_item(&item));
-
-        item.type_name = " Weapon Ornament ".to_owned();
-        assert!(!is_authorable_weapon_item(&item));
-    }
 }

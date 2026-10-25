@@ -1,14 +1,28 @@
 //! Guided backup restoration holds one write lock from comparison through commit.
 use super::*;
 
+#[cfg(test)]
 pub(in super::super) fn restore(path: &Path, expected: &[u8], backup: &Path) -> Result<(), String> {
-    restore_snapshot(path, expected, &read(backup)?)
+    restore_checked(path, expected, backup, || Ok(()))
 }
 
+pub(in super::super) fn restore_checked(
+    path: &Path,
+    expected: &[u8],
+    backup: &Path,
+    require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    restore_snapshot(path, expected, &read(backup)?, require_closed)
+}
+
+/// Replaces every row and the schema with `updated`, refused when the database no longer matches
+/// `expected`. `require_closed` runs last, just before the commit, since a game started while
+/// the tables were rewritten has loaded the account this would replace.
 pub(in super::super) fn restore_snapshot(
     path: &Path,
     expected: &[u8],
     updated: &[u8],
+    mut require_closed: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let after: Snapshot = serde_json::from_slice(updated).map_err(err)?;
     let mut db = open(path, true)?;
@@ -24,6 +38,14 @@ pub(in super::super) fn restore_snapshot(
             "The investment database changed after its recovery snapshot. Reload before restoring"
                 .into(),
         );
+    }
+    // Guided recovery can repair an unreadable format, but cannot upgrade or downgrade
+    // either supported account format. Migration belongs to Sunrise.
+    if matches!(before.version, 2 | 3) && before.version != after.version {
+        return Err(format!(
+            "Cannot restore schema {} over schema {}. Restore a matching account backup",
+            after.version, before.version
+        ));
     }
     if before.schema != after.schema {
         replace_schema(&tx, &before, &after)?;
@@ -45,6 +67,7 @@ pub(in super::super) fn restore_snapshot(
             "The restored database did not match its backup. The database was not changed".into(),
         );
     }
+    require_closed()?;
     tx.commit().map_err(err)
 }
 

@@ -32,13 +32,21 @@ pub struct ValueContract {
 // Multikill Clip scale by it over their 5 and 3 stacks, so it reads as the stack count.
 // Selector 1 complements the ammunition accessor against its limit, and its stock users all
 // describe the magazine running low: Under Pressure, High-Impact Reserves and SUROS Legacy.
-// Selector 2 is the same accessor's current value. The three stat slots (3 to 5) and the
-// mapped property (12) have no established meaning and no named stock user, so they are left
-// out of the choices. A stored one is preserved and reads by its number.
+// Selector 2 is the same accessor's current value. F04AF1..F04AFB sends selectors 3 to 5 to
+// one case, F04BBF, which resolves the stat provider through the cache handle at source +158
+// (EC690E stores it) and reads the record at source +160 + (selector - 3) * 0x30. The loadout
+// producer installs those records as Intellect, Discipline and Strength in that order, each a
+// tier contribution chosen from the stat's 0 to 100 value, and the nine hidden stat passive
+// entries read them through 3E44 +50. The mapped property (12) has no established meaning and
+// no named stock user, so it is left out of the choices. A stored one is preserved and reads by
+// its number.
 const COMMON_INPUTS: &[(u8, &str)] = &[
     (0, "Stacks"),
     (1, "Rounds Missing from Magazine"),
     (2, "Rounds in Magazine"),
+    (3, "Intellect"),
+    (4, "Discipline"),
+    (5, "Strength"),
     (6, "Nearby Enemies"),
     (7, "Nearby Allies"),
     (8, "Other Fireteam Members"),
@@ -46,6 +54,16 @@ const COMMON_INPUTS: &[(u8, &str)] = &[
     (10, "Defeated Fireteam Members"),
     (11, "Target's Value"),
     (255, "None"),
+];
+
+/// The objects EC0AA0 resolves a target byte to. 0 is the owner's own object (+2C) and 1 the
+/// linked actor (EC06E0). With an event, ECD110 reads 2 and 3 from the event's +10 and +14,
+/// whose stock users name them below. Without one, EC0B4F..EC0B57 return -1 for anything but 0.
+const TARGETS: &[(u8, &str)] = &[
+    (0, "This Item"),
+    (1, "You"),
+    (2, "Triggering Weapon"),
+    (3, "Other Combatant"),
 ];
 
 /// This does not infer selector meanings from a field's numeric representation.
@@ -115,12 +133,25 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // of the Sky on the ally a Noble Round reaches.
         (0x80803E44..=0x80803E46, 2) => {
             result.description = "Who receives the attachment. This Item is the weapon or armor carrying the perk. Triggering Weapon is the weapon a draw, reload or aiming event comes from, such as the Sidearm an armor perk buffs when you draw it. Other Combatant is the enemy you hit or killed, or the one who hit you.";
-            result.choices = &[
-                (0, "This Item"),
-                (1, "You"),
-                (2, "Triggering Weapon"),
-                (3, "Other Combatant"),
-            ];
+            result.choices = TARGETS;
+        }
+        // Kind 48's activation, 108CB70, resolves +2, +3 and +4 through the same EC0AA0. It
+        // returns before running the script when the first or second is -1 (108CC0C,
+        // 108CC19), which any value but 0 or 1 gives without an event. 108CC95 adds the first
+        // to the runner's recipients, and the second and third travel as its context words.
+        (0x80802D0A, 2..=4) => {
+            result.description = match field.offset {
+                2 => {
+                    "Who the script is run for. Triggering Weapon and Other Combatant come from the event that started the effect, such as a kill, and stop the script when there is none."
+                }
+                3 => {
+                    "A second object the script can read. Triggering Weapon and Other Combatant come from the event that started the effect, and stop the script when there is none."
+                }
+                _ => {
+                    "A third object the script can read. Triggering Weapon and Other Combatant come from the event that started the effect, and pass nothing when there is none."
+                }
+            };
+            result.choices = TARGETS;
         }
         // 108B605..108B7E7 tests only empty versus nonempty, not the key's identity.
         (0x80803E45, 0x18) => {
@@ -156,7 +187,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             result.choices = &[(0, "Remove Contribution"), (1, "Add Contribution")];
         }
         (0x80803E44, 0x50) | (0x80803E4D, 0x48) | (0x80802F18, 0x38) | (0x808029EC, 0x6B) => {
-            result.description = "What drives the value. Stacks is the number this effect keeps, usually its stack count. Nearby counts use the game's enemy and ally distances. Fireteam counts exclude you and ignore distance, and the defeated count includes members who are unavailable. None uses the action's default.";
+            result.description = "What drives the value. Stacks is the number this effect keeps, usually its stack count. Intellect, Discipline and Strength read that stat's tier, as the hidden stat passives do. Nearby counts use the game's enemy and ally distances. Fireteam counts exclude you and ignore distance, and the defeated count includes members who are unavailable. None uses the action's default.";
             result.choices = COMMON_INPUTS;
         }
         // 107FC20 passes these pairs to inclusive range checks, not multiply/add.
@@ -182,6 +213,15 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // CBD0C0 magazine capacity. These are weapon slots, not ammo categories.
         (0x80803DCE | 0x80803DCC, 0x9C..=0xB0) => {
             result.description = "Inclusive magazine bounds for this weapon slot. The value is ammunition divided by magazine capacity. 0 means empty and 1 means full. The range 0 to 1 bypasses the check. A missing weapon supplies 0. This does not select Primary, Special or Heavy ammunition types.";
+        }
+        // 107FC20 inverts its own result when +F8 is set. A nested condition's checker,
+        // 1080690, runs that on the predicate first and then requires the nested condition.
+        (0x80803DCE, 0xF8) => {
+            result.description = "Passes when these checks fail, and fails when they pass.";
+        }
+        (0x80803DCC, 0xF8) => {
+            result.description =
+                "Inverts only this predicate's checks. The nested condition must still pass.";
         }
         (0x80803DCE | 0x80803DCC, 0xB4 | 0xB8) => {
             result.description = "Inclusive bounds on a separate global numeric value. Its gameplay meaning remains unresolved. These are minimum and maximum values, not a factor and an added term.";
@@ -236,9 +276,10 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
         // Auto Rifle, Pulse Rifle, Scout Rifle, Sidearm and Submachine Gun Scavengers sit on
         // 1; the Fusion Rifle, Grenade Launcher, Shotgun and Sniper Rifle Scavengers, which
         // all read "Special ammo", sit on 2; and the Rocket Launcher, Sword and Machine Gun
-        // Scavengers, with Lead from Gold, sit on 4.
+        // Scavengers, with Lead from Gold, sit on 4. The checker 107C760 skips this test when
+        // the byte is zero (107C767..107C76D), so no bits set accepts any ammunition.
         (0x80803DFB, 9) => {
-            result.description = "Which ammunition the pickup carried. Each bit is named by a stock perk that sets it alone, and a value with several bits accepts any of those types.";
+            result.description = "Which ammunition the pickup carried. Each bit is named by a stock perk that sets it alone, and a value with several bits accepts any of those types. With none set, any ammunition passes.";
             result.choices = &[(1, "Primary"), (2, "Special"), (4, "Heavy")];
             result.bitmask = true;
         }
@@ -430,6 +471,12 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             ];
             result.bitmask = true;
         }
+        // Kind 28 tests its byte against 1 shifted by the event's first integer (1080840). Its
+        // two stock nodes set 0x08 and 0x3C, and what that integer counts is not established.
+        (0x80803DE0, 8) => {
+            result.description = "Which bits the event's index may select. The event selects one bit, and only bits 0 to 7 can match.";
+            result.bitmask = true;
+        }
         // A one-byte damage type record nested in kill, damage and accumulator conditions.
         // Its numbering is kind 6's: Crystalline Transistor ("Kinetic precision kills") sets
         // 0, the Solar grenade disruption perk sets 1, Transfusion Matrix ("Arc melee
@@ -581,6 +628,15 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
                     "Seconds to retain a successful contribution. Positive values schedule the hold path. Zero does not schedule it."
                 }
                 (0x80803E06, 0) => "Seconds this requirement stays met after it passes.",
+                // ECB010 arms the hold when the predicate passes with none running and cancels
+                // it when it fails. ED0880 counts it down in game seconds and passes on reaching
+                // zero, once. 1080DF0 fails the direct check while the hold is positive.
+                (0x80803DCE, 0xE0) => {
+                    "Seconds these checks must keep passing before this passes. Failing restarts the wait, and it passes again only after failing. 0 checks at once."
+                }
+                // 1080690 fails a nested condition's predicate outright through 1080DF0 when
+                // its hold is positive, and no stock nested condition sets one.
+                (0x80803DCC, 0xE0) => "Leave at 0. Any positive value makes this check fail.",
                 (0x80803E3B, 4) => "Seconds added to eligible running timers, limited by Up To.",
                 (0x80803E3B, 8) => {
                     "Maximum duration in seconds after extending eligible running timers."

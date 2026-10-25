@@ -2,6 +2,8 @@
 use super::*;
 use sundial::package_authoring::sandbox_perk::program::Asset;
 
+mod hud;
+
 /// One Properties entry point for action and condition settings.
 pub(super) struct Panel {
     id: egui::Id,
@@ -9,12 +11,17 @@ pub(super) struct Panel {
 }
 
 impl Panel {
-    pub fn new(ui: &egui::Ui, scope: impl std::hash::Hash) -> Self {
+    pub fn new(ui: &egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug) -> Self {
         let id = ui.make_persistent_id(("properties", scope));
         Self {
             id,
             open: ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false)),
         }
+    }
+
+    pub fn reveal(&mut self, ui: &egui::Ui) {
+        self.open = true;
+        ui.data_mut(|data| data.insert_temp(self.id, true));
     }
 
     /// The switch in an item's menu. The panel opens under the item, so the header carries
@@ -28,7 +35,7 @@ impl Panel {
         if ui.button(label).clicked() {
             self.open = !self.open;
             ui.data_mut(|data| data.insert_temp(self.id, self.open));
-            ui.close_menu();
+            ui.close();
         }
     }
 
@@ -125,7 +132,7 @@ pub(super) fn row_with<R>(
                     Emphasis::Plain => egui::RichText::new(label),
                     Emphasis::Weak => egui::RichText::new(label).weak(),
                 };
-                let response = ui.add(egui::Label::new(text).halign(halign).truncate());
+                let response = ui.add(crate::app::style::cut_label(ui, text).halign(halign));
                 let hover = match (label, hint) {
                     ("", hint) => hint.to_owned(),
                     (label, "") => label.to_owned(),
@@ -159,6 +166,31 @@ impl Workbench {
     }
 }
 
+/// A combo over `choices`, showing the current value's name, or its number when none names it.
+/// Returns a new choice.
+fn choice(
+    ui: &mut egui::Ui,
+    salt: &str,
+    choices: &[(i64, &'static str)],
+    current: i64,
+) -> Option<i64> {
+    let text = choices
+        .iter()
+        .find(|(value, _)| *value == current)
+        .map_or_else(|| current.to_string(), |(_, name)| (*name).to_owned());
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            for (value, name) in choices {
+                if ui.selectable_label(*value == current, *name).clicked() {
+                    picked = Some(*value);
+                }
+            }
+        });
+    picked
+}
+
 /// Component editing keeps the existing checked asset editor and draft flow.
 pub(super) fn edit_object(ui: &mut egui::Ui, asset: &Asset) -> bool {
     ui.add_enabled(
@@ -172,13 +204,14 @@ pub(super) fn edit_object(ui: &mut egui::Ui, asset: &Asset) -> bool {
 #[derive(Default)]
 pub(super) struct Properties {
     packages: PathBuf,
-    source: Option<Arc<projectile::catalog::Catalog>>,
+    source: Option<Arc<entity::catalog::Catalog>>,
     graphs: BTreeMap<u32, Result<Arc<PrivatePerkRuntimeGraph>, String>>,
     pending: Option<(u32, Receiver<Result<PrivatePerkRuntimeGraph, String>>)>,
     /// Summaries of recent assets' property changes.
     changes: Vec<Changes>,
     /// Text typed into an asset's value rows and not yet parsed, by asset.
     text: BTreeMap<u32, BTreeMap<(WeaponRuntimeFieldLocator, u8), String>>,
+    hud: hud::HudStatuses,
 }
 
 /// One asset's property change lines, read from a loaded graph and the asset's values.
@@ -220,6 +253,88 @@ impl Properties {
             self.pending = Some((tag, receiver));
         }
         ui.ctx().request_repaint_after(Duration::from_millis(100));
+    }
+
+    /// Change Weapon Properties' attachment: `tag` with every modifier row neutral, once its
+    /// rows are read. Until then, or when they could not be, why not.
+    pub fn neutral_attachment(&mut self, ui: &egui::Ui, tag: u32) -> Result<Asset, &'static str> {
+        if !self.packages.is_dir() {
+            return Err("Its rows need the game's packages.");
+        }
+        let graph = match self.graphs.get(&tag) {
+            Some(Ok(graph)) => graph.clone(),
+            Some(Err(_)) => return Err("Its rows could not be read."),
+            None => {
+                self.request(ui, tag);
+                return Err("Its rows are still being read.");
+            }
+        };
+        let values =
+            parameters::modifiers::neutral(&graph).map_err(|_| "Its rows could not be written.")?;
+        let path = self
+            .source
+            .as_ref()
+            .and_then(|catalog| catalog.entries.iter().find(|entry| entry.graph == tag))
+            .and_then(|entry| entry.native_paths.first().cloned())
+            .unwrap_or_default();
+        Ok(Asset {
+            graph: tag,
+            path,
+            values,
+            ..Asset::default()
+        })
+    }
+
+    /// The Damage Type tile of a projectile asset: the damage type every damage profile its
+    /// private copy's graphs name deals, its own first.
+    pub fn damage_type(&self, ui: &mut egui::Ui, asset: &mut Asset) {
+        use sundial::package_authoring::sandbox_perk::program::DamageMode;
+        const TYPES: [(DamageMode, &str); 4] = [
+            (DamageMode::Kinetic, "Kinetic"),
+            (DamageMode::Arc, "Arc"),
+            (DamageMode::Solar, "Solar"),
+            (DamageMode::Void, "Void"),
+        ];
+        if matches!(asset.graph, 0 | u32::MAX) {
+            return;
+        }
+        let current = asset.damage_type;
+        let label = |choice: Option<DamageMode>| {
+            choice
+                .and_then(|choice| TYPES.iter().find(|(each, _)| *each == choice))
+                .map_or("Original", |(_, label)| label)
+        };
+        let (picked, reset) = crate::app::style::tiles(ui, |ui, width| {
+            crate::app::style::stock_tile(
+                ui,
+                (width, ("projectile-damage-type", asset.graph)),
+                ("Damage Type", "Changes its damage, not its colors"),
+                current.map(|_| "Original"),
+                |ui| {
+                    let mut choice = current;
+                    let response =
+                        egui::ComboBox::from_id_salt(("projectile-damage-type", asset.graph))
+                            .selected_text(label(current))
+                            .width(width)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                crate::app::workbench_style(ui);
+                                ui.selectable_value(&mut choice, None, "Original");
+                                for (each, name) in TYPES {
+                                    ui.selectable_value(&mut choice, Some(each), name);
+                                }
+                            })
+                            .response;
+                    let _ = crate::app::style::named_control(response, "Damage Type");
+                    (choice != current).then_some(choice)
+                },
+            )
+        });
+        if let Some(choice) = picked {
+            asset.damage_type = choice;
+        } else if reset {
+            asset.damage_type = None;
+        }
     }
 
     pub fn movement(&mut self, ui: &mut egui::Ui, asset: &mut Asset) {
@@ -284,7 +399,7 @@ impl Properties {
             }
         }
     }
-    pub fn sync(&mut self, packages: &Path, source: Option<&Arc<projectile::catalog::Catalog>>) {
+    pub fn sync(&mut self, packages: &Path, source: Option<&Arc<entity::catalog::Catalog>>) {
         let same_source = match (&self.source, source) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
@@ -297,7 +412,9 @@ impl Properties {
             self.pending = None;
             self.changes.clear();
             self.text.clear();
+            self.hud = hud::HudStatuses::default();
         }
+        self.hud.poll();
         if let Some((tag, receiver)) = &self.pending {
             let result = match receiver.try_recv() {
                 Ok(result) => Some(result),
@@ -313,9 +430,9 @@ impl Properties {
         }
     }
 
-    /// Whether a property read is still going.
+    /// Whether a property or HUD status read is still going.
     pub fn busy(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.hud.busy()
     }
 
     pub fn remember(&mut self, tag: u32, graph: Arc<PrivatePerkRuntimeGraph>) {
@@ -374,6 +491,137 @@ impl Properties {
         .inner
     }
 
+    /// The attachment's length, a tile at `width` beside the action's Lifetime. Nothing while
+    /// the asset has no length or its properties are still being read.
+    pub fn length_tile(&mut self, ui: &mut egui::Ui, width: f32, asset: &mut Asset) {
+        if matches!(asset.graph, 0 | u32::MAX) {
+            return;
+        }
+        let graph = match self.graphs.get(&asset.graph) {
+            Some(Ok(graph)) => graph.clone(),
+            Some(Err(_)) => return,
+            None => {
+                self.request(ui, asset.graph);
+                return;
+            }
+        };
+        let lengths = parameters::effect_length::discover(&graph);
+        if lengths.is_empty() {
+            return;
+        }
+        let id = ui.id().with(("attachment-length-error", asset.graph));
+        for length in &lengths {
+            if let Some(result) =
+                parameters::effect_length::draw(ui, width, &graph, length, &mut asset.values)
+            {
+                ui.ctx().data_mut(|data| data.insert_temp(id, result.err()));
+            }
+        }
+        if let Some(error) = ui
+            .ctx()
+            .data(|data| data.get_temp::<Option<String>>(id))
+            .flatten()
+        {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+    }
+
+    /// Rows added to an attachment's modifiers, under its table: one more record each, with
+    /// the table's columns, then Add Row. Only an attachment with modifier records takes rows.
+    fn added_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        asset: &mut Asset,
+        graph: &PrivatePerkRuntimeGraph,
+    ) {
+        use sundial::package_authoring::{
+            runtime::modifiers,
+            sandbox_perk::{entity::modifiers as records, program::ModifierRow},
+        };
+        if graph
+            .graphs
+            .iter()
+            .all(|(_, graph)| records::discover(graph).is_empty())
+        {
+            return;
+        }
+        let components =
+            modifiers::field_meaning(modifiers::SETTINGS_SCHEMA, modifiers::COMPONENT_OFFSET)
+                .map_or(&[][..], |meaning| meaning.choices);
+        let abilities = modifiers::field_meaning(modifiers::SETTINGS_SCHEMA, 0x48)
+            .map_or(&[][..], |meaning| meaning.choices);
+        let operations: &[(i64, &str)] = &[
+            (modifiers::OPERATION_ADD, "Add"),
+            (modifiers::OPERATION_MULTIPLY, "Multiply"),
+        ];
+        let mut remove = None;
+        if !asset.rows.is_empty() {
+            ui.add_space(4.0);
+            ui.strong("Added Rows");
+        }
+        for (index, row) in asset.rows.iter_mut().enumerate() {
+            ui.push_id(("added-row", asset.graph, index), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(component) =
+                        choice(ui, "component", components, i64::from(row.component))
+                    {
+                        row.component = component as u8;
+                        row.input = modifiers::input_choices(component)
+                            .first()
+                            .map_or(0, |(input, _)| *input as i16);
+                    }
+                    if i64::from(row.component) == modifiers::ABILITIES_COMPONENT
+                        && let Some(ability) =
+                            choice(ui, "ability", abilities, i64::from(row.ability))
+                    {
+                        row.ability = ability as i16;
+                    }
+                    let inputs = modifiers::input_choices(i64::from(row.component));
+                    if inputs.is_empty() {
+                        let mut input = i64::from(row.input);
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut input)
+                                    .range(0..=255)
+                                    .clamp_existing_to_range(false),
+                            )
+                            .changed()
+                        {
+                            row.input = input as i16;
+                        }
+                    } else if let Some(input) = choice(ui, "input", inputs, i64::from(row.input)) {
+                        row.input = input as i16;
+                    }
+                    if let Some(operation) =
+                        choice(ui, "operation", operations, i64::from(row.operation))
+                    {
+                        row.operation = operation as u8;
+                    }
+                    let mut amount = row.amount();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut amount)
+                                .speed(0.05)
+                                .max_decimals(3),
+                        )
+                        .changed()
+                    {
+                        row.set_amount(amount);
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(index);
+                    }
+                });
+            });
+        }
+        if let Some(index) = remove {
+            asset.rows.remove(index);
+        }
+        if ui.button("Add Row").clicked() {
+            asset.rows.push(ModifierRow::neutral());
+        }
+    }
+
     /// The asset's named values as rows, then a summary of the changes those rows do not show.
     /// An untouched asset reads quietly, since its rows are extra.
     pub fn values(&mut self, ui: &mut egui::Ui, asset: &mut Asset) {
@@ -397,6 +645,7 @@ impl Properties {
             }
         };
         let named = self.card_values(ui, asset, &graph);
+        self.added_rows(ui, asset, &graph);
         if asset.values.is_empty() {
             return;
         }
@@ -420,70 +669,5 @@ impl Properties {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn retry_reopens_a_failed_load_and_keeps_other_cached_results() {
-        let ctx = egui::Context::default();
-        let mut properties = Properties::default();
-        properties
-            .graphs
-            .insert(10, Err("Temporary read failure".into()));
-        properties.graphs.insert(20, Err("Separate failure".into()));
-        let mut asset = Asset {
-            graph: 10,
-            ..Default::default()
-        };
-        let frame = |properties: &mut Properties, asset: &mut Asset, events| {
-            ctx.run(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| properties.movement(ui, asset));
-                },
-            )
-        };
-        let output = frame(&mut properties, &mut asset, vec![]);
-        let position = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Retry" => {
-                    Some(text.pos + text.galley.size() * 0.5)
-                }
-                _ => None,
-            })
-            .unwrap();
-        for pressed in [true, false] {
-            frame(
-                &mut properties,
-                &mut asset,
-                vec![
-                    egui::Event::PointerMoved(position),
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    },
-                ],
-            );
-        }
-        assert!(!properties.graphs.contains_key(&10));
-        assert!(properties.graphs.contains_key(&20));
-        let (sender, receiver) = std::sync::mpsc::channel();
-        sender
-            .send(Ok(super::super::parameters::tests::fixture()))
-            .unwrap();
-        properties.pending = Some((10, receiver));
-        properties.sync(Path::new(""), None);
-        assert!(properties.graphs[&10].is_ok());
-        assert!(properties.graphs[&20].is_err());
     }
 }

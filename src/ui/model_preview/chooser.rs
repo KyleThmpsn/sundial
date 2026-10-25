@@ -1,7 +1,5 @@
 //! Reversible appearance browsing. Only the explicit use action returns a selection.
 use super::*;
-#[cfg(test)]
-mod tests;
 
 pub fn show<T>(
     ui: &mut egui::Ui,
@@ -17,7 +15,7 @@ pub fn show<T>(
     let mut open = opened || ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     let mut picked = None;
     if open {
-        let screen = ui.ctx().screen_rect();
+        let screen = ui.ctx().content_rect();
         let size = egui::vec2(
             (screen.width() - 32.0).min(640.0),
             (screen.height() - 48.0).min(680.0),

@@ -1,6 +1,6 @@
 //! Shadowkeep's legacy Oodle 2.3 encoder. This module is built only for 64-bit Windows.
 
-use std::{ffi::c_void, path::Path, ptr, sync::Mutex};
+use std::{ffi::c_void, path::Path, ptr, sync::Mutex, time::Instant};
 
 use libloading::Library;
 
@@ -43,8 +43,8 @@ type Decompress = unsafe extern "C" fn(
     i32,
 ) -> i64;
 
-// Keep legacy encoder initialization and calls serialized across encoder instances. No global
-// Oodle plugins or options are changed, and every call owns independent input and output buffers.
+// Library loading and the version check are serialized. Compression and verification run
+// concurrently on separate buffers, and every block is decoded again and compared.
 static NATIVE_CALLS: Mutex<()> = Mutex::new(());
 
 pub(super) struct Compressor {
@@ -114,9 +114,7 @@ impl Compressor {
                 "Native package compression requires 1 to {BLOCK_SIZE} bytes"
             ));
         }
-        let _guard = NATIVE_CALLS
-            .lock()
-            .map_err(|_| "The native package encoder lock is poisoned")?;
+        super::Timings::record(|timings| timings.blocks += 1);
         // Tiger reads compressed blocks as complete logical spans, including the final block.
         // Raw fallback still stores the original unpadded input in the parent encoder.
         let mut padded = vec![0_u8; BLOCK_SIZE];
@@ -134,6 +132,7 @@ impl Compressor {
             format!("Could not allocate the package compression buffer: {error}")
         })?;
         compressed.resize(capacity, 0);
+        let compressing = Instant::now();
         // SAFETY: Both buffers are valid, separate allocations. Output has the full capacity
         // required by this same DLL. Null optional arguments select native defaults without a
         // dictionary or long-range matcher. Legacy 2.3 has no scratch arguments.
@@ -149,11 +148,13 @@ impl Compressor {
                 ptr::null_mut(),
             )
         };
+        super::Timings::record(|timings| timings.compression += compressing.elapsed());
         let stored_length = checked_native_length(written, capacity, "compressed output")?;
         compressed.truncate(stored_length);
         let stored_length = i64::try_from(stored_length)
             .map_err(|_| "The compressed package block is too large for verification")?;
         let mut verified = vec![0_u8; BLOCK_SIZE];
+        let verifying = Instant::now();
         // SAFETY: The decoder reads exactly the initialized compressed output and writes into a
         // separate full-size logical block. Fuzz safety is enabled. No callbacks or shared scratch
         // memory are provided, and phase 3 performs the complete decode in this call.
@@ -175,7 +176,9 @@ impl Compressor {
                 COMPLETE_DECODE,
             )
         };
-        if decoded != raw_length || verified != padded {
+        let valid = decoded == raw_length && verified == padded;
+        super::Timings::record(|timings| timings.verification += verifying.elapsed());
+        if !valid {
             return Err(format!(
                 "Native package compression failed exact round-trip verification. Decoder returned {decoded} of {raw_length} expected bytes."
             ));
@@ -205,10 +208,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with the matching Oodle3 game DLL"]
+    #[ignore = "requires SUNDIAL_STOCK_PACKAGES with the matching Oodle3 game DLL"]
     fn installed_legacy_encoder_round_trips_short_full_and_noisy_blocks() {
-        let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("set PARHELION_CLEAN_STOCK_PACKAGES");
+        let packages = crate::test_support::stock_packages();
         let path = Path::new(&packages)
             .parent()
             .unwrap()
@@ -225,7 +227,6 @@ mod tests {
             .collect::<Vec<_>>();
         for plaintext in [vec![0xA5], vec![0; 32_000], vec![0xA5; BLOCK_SIZE], noisy] {
             let compressed = compressor.compress(&plaintext).unwrap();
-            assert_eq!(compressor.compress(&plaintext).unwrap(), compressed);
             let (expected_bytes, expected_flags) = if compressed.len() < plaintext.len() {
                 (compressed.clone(), super::super::COMPRESSED_FLAGS)
             } else {

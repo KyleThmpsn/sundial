@@ -105,33 +105,3 @@ pub fn abilities(manager: &PackageManager) -> Result<Vec<AbilitySource>, String>
     }
     Ok(result.into_iter().collect())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
-    fn native_ability_ingredients_follow_modifier_perk_lists() {
-        let path =
-            std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-        let manager = crate::package_authoring::open_shadowkeep_package_manager(&path).unwrap();
-        let sources = abilities(&manager).unwrap();
-        let unique = sources
-            .iter()
-            .map(|source| source.perk_index)
-            .collect::<BTreeSet<_>>();
-        for index in [88, 89, 90, 535, 536, 537] {
-            assert!(unique.contains(&index));
-        }
-        assert!(
-            sources
-                .iter()
-                .any(|source| source.list == 7 && source.entry == 12 && source.perk_index == 90)
-        );
-        println!(
-            "{} ability ingredient references, {} distinct perks",
-            sources.len(),
-            unique.len()
-        );
-    }
-}

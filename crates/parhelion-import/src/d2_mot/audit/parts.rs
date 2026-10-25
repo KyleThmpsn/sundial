@@ -23,7 +23,9 @@ pub(super) fn audit(
     for part in graph["source_parts"].as_array().into_iter().flatten() {
         let assignment = u32::try_from(part["assignment"].as_u64().context("part assignment")?)?;
         let key = u32::try_from(part["key"].as_u64().context("part key")?)?;
-        let selector = part["selector"].as_u64().context("part selector")?;
+        let selector = crate::d2_mot::artwork::native_selector(
+            part["selector"].as_u64().context("part selector")?,
+        )?;
         let position = usize::try_from(part["position"].as_u64().context("part position")?)?;
         ensure!(
             part["source_region"] == true

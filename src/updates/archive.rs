@@ -37,7 +37,8 @@ fn extract_zip(
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
         // Archive names select a member, never a filesystem destination.
-        if entry.name().replace('\\', "/") != member {
+        let name = entry.name().map_err(|error| error.to_string())?;
+        if name.replace('\\', "/") != member {
             continue;
         }
         if found || entry.is_dir() || entry.is_symlink() || entry.encrypted() {

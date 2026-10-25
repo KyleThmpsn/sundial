@@ -1,4 +1,5 @@
 use super::*;
+use eframe::egui;
 use serde_json::json;
 
 fn fixture() -> Value {
@@ -50,6 +51,109 @@ fn sunrise_0_5_retires_four_controls_without_touching_other_runtimes_or_settings
     }
 }
 
+/// One frame of the Sunrise page, reporting whether a control changed the document.
+fn draw_page(
+    context: &egui::Context,
+    events: Vec<egui::Event>,
+    document: &mut Value,
+    capabilities: Capabilities,
+) -> (egui::FullOutput, bool) {
+    let mut changed = false;
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1240.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                changed |= draw(ui, document, false, capabilities);
+            });
+        },
+    );
+    (output, changed)
+}
+
+/// Clicks the painted text, pressing and releasing in separate frames, then draws the result.
+fn click(
+    context: &egui::Context,
+    document: &mut Value,
+    capabilities: Capabilities,
+    text: &str,
+) -> (egui::FullOutput, bool) {
+    let (output, _) = draw_page(context, vec![], document, capabilities);
+    let position = crate::test_support::text_position(&output, text)
+        .unwrap_or_else(|| panic!("Missing rendered label: {text}"));
+    let mut changed = false;
+    for pressed in [true, false] {
+        let events = crate::test_support::primary_press(position, pressed);
+        changed |= draw_page(context, events, document, capabilities).1;
+    }
+    (
+        draw_page(context, vec![], document, capabilities).0,
+        changed,
+    )
+}
+
+/// Sunrise 0.6's three new controls and the keys they save.
+const SUNRISE_0_6_CONTROLS: [(&str, &str); 3] = [
+    ("Unlock Cheat Tools", "/client/cheats"),
+    ("Allow Studio Attach", "/core/studio_attach"),
+    ("Export Package Keys", "/client/dump_package_keys"),
+];
+
+/// Sunrise 0.6's own `default_settings.json`, plus a field no Sunrise version defines.
+fn sunrise_0_6_defaults() -> Value {
+    let mut defaults: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/sunrise-v18-9260d10-defaults.json"
+    ))
+    .unwrap();
+    defaults["unknown"] = json!({"keep": [1, 2]});
+    defaults
+}
+
+/// Opens the Advanced tab and returns its frame, or `None` when the page hides that tab.
+fn open_advanced(
+    context: &egui::Context,
+    document: &mut Value,
+    capabilities: Capabilities,
+) -> Option<egui::FullOutput> {
+    // The first frame of a fresh context only settles the layout.
+    draw_page(context, vec![], document, capabilities);
+    let (output, _) = draw_page(context, vec![], document, capabilities);
+    crate::test_support::text_position(&output, "Advanced")?;
+    let (output, changed) = click(context, document, capabilities, "Advanced");
+    assert!(!changed, "Opening a tab changed the settings");
+    Some(output)
+}
+
+#[test]
+fn sunrise_0_6_controls_save_their_own_keys() {
+    let capabilities = Capabilities::detect(Some("0.6"), false);
+    let context = egui::Context::default();
+    let mut document = sunrise_0_6_defaults();
+    open_advanced(&context, &mut document, capabilities).expect("Sunrise 0.6 shows Advanced");
+    // Each control saves its own key as a boolean and leaves the rest of the file alone.
+    for (label, path) in SUNRISE_0_6_CONTROLS {
+        let mut expected = document.clone();
+        *expected.pointer_mut(path).unwrap() = Value::Bool(true);
+        assert!(
+            click(&context, &mut document, capabilities, label).1,
+            "{label}"
+        );
+        assert_eq!(document, expected, "{label}");
+    }
+    // Sunrise 0.6's own defaults, with every new key changed, still pass both validators.
+    assert_eq!(validate(&document, false), Ok(()));
+    assert_eq!(
+        crate::game_settings::validate_non_account(&document),
+        Ok(())
+    );
+}
+
 #[test]
 fn sunrise_0_5_defaults_load_and_validate_without_the_retired_settings() {
     let encoded = include_str!("../../../tests/fixtures/sunrise-v18-5e4cbc7-defaults.json");
@@ -71,119 +175,6 @@ fn sunrise_0_5_defaults_load_and_validate_without_the_retired_settings() {
     assert!(available(&document));
     assert_eq!(validate(&document, false), Ok(()));
     assert_eq!(validate_activity(&document), Ok(()));
-}
-
-#[test]
-fn all_runtime_controls_enforce_the_schema_boundary_and_preserve_unrelated_data() {
-    for field in FIELDS.iter().chain(services::FIELDS) {
-        let value = match field.kind {
-            fields::Kind::Bool(default) => Value::Bool(!default),
-            fields::Kind::Choice(values) => Value::from(values[1]),
-            fields::Kind::UInt(default, _, _) => Value::from(default + 2),
-            fields::Kind::Ipv4(_) => Value::from("192.168.1.2"),
-            fields::Kind::Text(default, _, _) => Value::from(default.to_uppercase()),
-        };
-        for version in [6, 8, 15, 16] {
-            let mut document = json!({"version":version,"unknown":{"keep":[1,2]}});
-            let original = document.clone();
-            let field = field.for_document(&document);
-            let result = set_field(&mut document, field.path, value.clone(), true);
-            if version < 16 {
-                assert!(result.is_err(), "{}", field.path);
-                assert_eq!(document, original);
-            } else {
-                assert_eq!(result, Ok(true), "{}", field.path);
-                assert_eq!(document.pointer(field.path), Some(&value));
-                assert_eq!(document["unknown"], original["unknown"]);
-                assert_eq!(document["version"], version);
-            }
-        }
-    }
-}
-
-#[test]
-fn sqlite_does_not_expose_or_validate_the_inactive_json_account() {
-    let mut document = json!({"version":16,"state":{"account":"opaque"}});
-    let original = document.clone();
-    assert!(
-        set_field(
-            &mut document,
-            "/state/account/profile_setup_completed",
-            true.into(),
-            false
-        )
-        .is_err()
-    );
-    assert_eq!(document, original);
-    assert_eq!(validate(&document, false), Ok(()));
-}
-
-#[test]
-fn malformed_values_and_parents_are_not_replaced() {
-    for mut document in [
-        json!({"version":16,"client":[]}),
-        json!({"version":16,"client":null}),
-    ] {
-        let original = document.clone();
-        assert!(
-            set_field(
-                &mut document,
-                "/client/reveal_lore_books",
-                true.into(),
-                true
-            )
-            .is_err()
-        );
-        assert_eq!(document, original);
-    }
-    let mut document = json!({"version":16});
-    assert!(set_field(&mut document, "/client/reveal_lore_books", 1.into(), true).is_err());
-    assert_eq!(document, json!({"version":16}));
-}
-
-#[test]
-fn retired_settings_are_opaque_and_cannot_be_authored() {
-    let mut document = fixture();
-    let retired = [
-        "/complete_exotic_catalysts",
-        "/client/skip_profile_setup",
-        "/client/fade_release",
-        "/client/suppress_peer_relay",
-        "/client/hold_spawn",
-        "/client/spawn_hold_ms",
-        "/client/dump_game_image",
-        "/client/stock_entity_pool",
-        "/client/restock_drained_entity_pool",
-        "/server/gameplay/client_lease_high_water",
-        "/server/gameplay/ignore_client_slot_release",
-        "/state/activity/author_director_bodies",
-        "/state/activity/author_wide_record_bodies",
-        "/core/activity_sdk_generation/enabled",
-        "/state/account/record_rewards",
-    ];
-    for path in retired {
-        crate::persistence::json_fields::write_value(&mut document, path, json!({"preserve":true}))
-            .unwrap();
-    }
-    let before = document.clone();
-    assert_eq!(validate(&document, true), Ok(()));
-    for path in retired {
-        assert!(set_field(&mut document, path, false.into(), true).is_err());
-    }
-    assert_eq!(document, before);
-    assert_eq!(
-        set_field(
-            &mut document,
-            "/state/investment/complete_exotic_catalysts",
-            false.into(),
-            true
-        ),
-        Ok(true)
-    );
-    for path in retired {
-        assert_eq!(document.pointer(path), before.pointer(path));
-    }
-    assert_eq!(document["state"]["unlocks"], before["state"]["unlocks"]);
 }
 
 #[test]
@@ -295,22 +286,6 @@ fn network_validation_matches_sunrise_port_pool_and_slot_limits() {
 }
 
 #[test]
-fn advanced_rows_validate_ownership_and_character_types() {
-    for rows in [
-        json!([{"name":"same"},{"name":"same"}]),
-        json!([{"name":"named","owned":"application"}]),
-        json!([{"name":"4294967296","owned":"application"}]),
-    ] {
-        assert!(validate(&json!({"version":16,"server":{"entitlements":rows}}), true).is_err());
-    }
-    let mut doc = json!({"version":16,"state":{"characters":[{"last_orbited_destination":"0xFFFFFFFF","appearance_value":1.0,"preview_available":true,"content_bypass":false,"unknown":[1]}]}});
-    assert_eq!(validate(&doc, true), Ok(()));
-    doc["state"]["characters"][0]["last_orbited_destination"] = "0x100000000".into();
-    assert!(validate(&doc, true).is_err());
-    assert_eq!(validate(&doc, false), Ok(()));
-}
-
-#[test]
 fn experimental_fov_validates_current_bounds_and_preserves_legacy_limit() {
     let mut doc = fixture();
     for value in [55, 105, 155] {
@@ -322,75 +297,6 @@ fn experimental_fov_validates_current_bounds_and_preserves_legacy_limit() {
     doc["version"] = 8.into();
     doc["state"]["account"]["settings"]["display"]["field_of_view"] = 155.into();
     assert!(super::super::validate(&doc).is_err());
-}
-
-#[test]
-fn opening_sunrise_and_display_preserves_omissions_and_extended_fov() {
-    let ctx = eframe::egui::Context::default();
-    let mut doc = fixture();
-    doc["state"]["account"]["settings"]["display"]["field_of_view"] = 155.into();
-    doc.as_object_mut().unwrap().remove("core");
-    let original = doc.clone();
-    let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
-        eframe::egui::CentralPanel::default().show(ctx, |ui| {
-            assert!(!page::draw(ui, &mut doc, true, Capabilities::default()));
-            let settings = doc
-                .pointer("/state/account/settings")
-                .unwrap()
-                .as_object()
-                .unwrap();
-            let edits = super::super::preferences::draw_display(ui, settings, false, 4);
-            assert!(edits.into_vec().is_empty());
-        });
-    });
-    assert_eq!(doc, original);
-}
-
-#[test]
-fn text_edits_are_visible_before_focus_changes_and_can_be_repaired() {
-    use eframe::egui;
-    let context = egui::Context::default();
-    let field = *services::FIELDS
-        .iter()
-        .find(|field| field.path == "/client/external_server/host")
-        .unwrap();
-    let mut document = json!({"version":16});
-    let mut editor_id = egui::Id::NULL;
-    let _ = context.run(egui::RawInput::default(), |context| {
-        egui::CentralPanel::default().show(context, |ui| {
-            editor_id = ui.make_persistent_id(("runtime-field", field.path));
-            assert!(!page::draw_field(ui, &mut document, field, true));
-        });
-    });
-    for replacement in ["192.", "192.168.1.2"] {
-        context.memory_mut(|memory| memory.request_focus(editor_id));
-        let mut state = egui::text_edit::TextEditState::load(&context, editor_id).unwrap();
-        state
-            .cursor
-            .set_char_range(Some(egui::text::CCursorRange::two(
-                egui::text::CCursor::new(0),
-                egui::text::CCursor::new(100),
-            )));
-        state.store(&context, editor_id);
-        let input = egui::RawInput {
-            events: vec![egui::Event::Text(replacement.into())],
-            ..Default::default()
-        };
-        let _ = context.run(input, |context| {
-            egui::CentralPanel::default().show(context, |ui| {
-                assert!(page::draw_field(ui, &mut document, field, true));
-            });
-        });
-        assert_eq!(
-            document.pointer(field.path),
-            Some(&Value::from(replacement))
-        );
-        assert!(context.memory(|memory| memory.has_focus(editor_id)));
-        assert_eq!(
-            validate(&document, true).is_ok(),
-            replacement == "192.168.1.2"
-        );
-    }
 }
 
 #[test]

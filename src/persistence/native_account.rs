@@ -13,13 +13,17 @@ use sundial_account::{
 };
 
 pub(crate) trait NativeAccountDocument {
-    /// The file name to name in a message the user reads.
+    /// Account filename used in diagnostic messages.
     const LABEL: &'static str;
 
     fn profile(&self) -> &ProfileState;
     fn profile_mut(&mut self) -> &mut ProfileState;
     fn characters(&self) -> &CharacterState;
     fn characters_mut(&mut self) -> &mut CharacterState;
+    /// Whether race and gender can change without invalidating saved appearance data.
+    fn appearance_editable(&self, _index: usize) -> bool {
+        true
+    }
     fn settings(&self) -> &AccountSettingsState;
     fn settings_mut(&mut self) -> &mut AccountSettingsState;
 
@@ -50,8 +54,7 @@ pub(crate) trait NativeAccountDocument {
 
     /// Abilities a format stores per item rather than per character.
     ///
-    /// Dawn keeps abilities only on the character row, so its adapter reports none and never
-    /// pretends to round-trip a value it cannot store.
+    /// Dawn stores abilities on the character row and reports no per-item selection.
     fn persisted_item_abilities(&self, id: EntityId) -> Option<CharacterAbilities>;
     fn set_persisted_item_abilities(&mut self, id: EntityId, abilities: CharacterAbilities);
 
@@ -69,6 +72,9 @@ pub(crate) trait NativeAccountDocument {
 /// Dispatch holds each document in a box, so the boxed form is a document too.
 impl<T: NativeAccountDocument> NativeAccountDocument for Box<T> {
     const LABEL: &'static str = T::LABEL;
+    fn appearance_editable(&self, index: usize) -> bool {
+        (**self).appearance_editable(index)
+    }
 
     fn profile(&self) -> &ProfileState {
         (**self).profile()

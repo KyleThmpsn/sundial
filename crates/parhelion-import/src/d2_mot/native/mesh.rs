@@ -71,7 +71,7 @@ pub fn load_part(
     let mut h = Payload(fs::read(path.join("model.unlinked.bin"))?);
     let mut a = Payload(fs::read(path.join("attributes.bin"))?);
     let mut error = 0f64;
-    ensure!(a.0.len() % 24 == 0, "attribute stride differs");
+    ensure!(a.0.len().is_multiple_of(24), "attribute stride differs");
     for at in (0..a.0.len()).step_by(24) {
         for axis in 0..2 {
             let uv = a.i16(at + axis * 2)? as f64 / 32767.0 * h.f32(0x70 + axis * 4)? as f64

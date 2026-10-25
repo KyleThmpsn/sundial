@@ -71,7 +71,12 @@ pub(crate) fn grant_authored_items(
             .map_err(String::from)?
             .backup
     } else {
-        document.save_account()?.backup().to_path_buf()
+        document
+            .save_account(|| {
+                crate::app::settings::require_game_closed(crate::app::platform::destiny_is_running())
+            })?
+            .backup()
+            .to_path_buf()
     });
     Ok(report)
 }

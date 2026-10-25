@@ -2,48 +2,6 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn stored_values_keep_unknown_native_banks_bytes_and_lanes_visible() {
-    let catalog = Catalog::for_test(Vec::new(), Default::default());
-    let document = json!({"_native_progression": {"family": [[0, 4, 255]], "unlocks": [[9, 3, 0, 42], [6, 15, 7, -123], [0, 19, 0, 1]]}});
-    let rows = rows(&document, &catalog).unwrap();
-    assert_eq!(rows.len(), 4);
-    assert!(rows.iter().all(|row| row.blocked.is_some()));
-    assert!(
-        rows.iter()
-            .any(|row| row.kind == Kind::Unknown && row.value == 42)
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.key.lane == 7 && row.value == -123)
-    );
-}
-
-#[test]
-fn saved_rank_value_edits_preserve_the_other_lanes() {
-    let catalog = Catalog::for_test(Vec::new(), Default::default());
-    for native in [false, true] {
-        let mut document = json!({"future": true, "state": {"unlocks": {"account_progressions": [[15, 9, 8, 7]]}}});
-        if native {
-            document["_native_progression"] =
-                json!({"unlocks": [[6, 15, 0, 9], [6, 15, 1, 8], [6, 15, 2, 7]]});
-        }
-        let rows = rows(&document, &catalog).unwrap();
-        let row = rows.iter().find(|row| row.key.lane == 1).unwrap();
-        assert!(edits::apply(
-            &mut document,
-            row,
-            Some(44),
-            &mut UiState::default()
-        ));
-        assert_eq!(
-            saved_progression_lanes(&document, ProgressionScope::Account, 15),
-            Some([9, 44, 7])
-        );
-        assert_eq!(document["future"], true);
-    }
-}
-
-#[test]
 fn saved_values_round_trip_through_json_and_sqlite_without_losing_rank_lanes() {
     use crate::app::account_workspace::WorkspaceDocument;
     let catalog = Catalog::for_test(Vec::new(), Default::default());

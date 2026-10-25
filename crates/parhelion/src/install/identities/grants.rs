@@ -1,6 +1,6 @@
 //! Native bucket facts for the authored items an install adds to the account.
 use super::*;
-use crate::weapon::subclass;
+use crate::subclass::{native, tables};
 use std::collections::HashMap;
 use sundial::package_authoring::account::{
     AuthoredGrantReport, AuthoredGrantTarget, AuthoredItemGrant, grant_authored_items,
@@ -8,7 +8,7 @@ use sundial::package_authoring::account::{
 use sundial::package_authoring::stock_subclass_list_classes;
 
 /// The stack an authored shader arrives as, within its own stack limit.
-const SHADER_STACK: i32 = 777;
+pub(crate) const SHADER_STACK: i32 = 777;
 
 /// An authored item the install adds to the account, as the manifest records it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,12 +17,15 @@ pub(in crate::install) struct GrantedItem {
     pub(in crate::install) definition_tag: TagHash,
     /// The class of the characters that receive it, or `None` for a profile stack.
     pub(in crate::install) class_type: Option<u8>,
+    /// A subclass every class's characters receive, equipped only on `class_type`'s.
+    pub(in crate::install) every_class: bool,
 }
 
 /// The authored subclasses and shaders an installed generation holds, read from its native
-/// item tables, so no manifest is needed. A subclass names its class through its socket-entry
-/// list, as the catalog reads it: every list keeps its base's class-base entry, whose pool
-/// differs by class, so the stock list sharing that pool names the class.
+/// item tables, so no manifest is needed. A subclass goes to the class its equip condition
+/// names. One without a condition goes to every class and is equipped on its base's class,
+/// which its socket-entry list names, as the catalog reads it: every list keeps its base's
+/// class-base entry, whose pool differs by class, so the stock list sharing that pool names it.
 pub(in crate::install) fn installed_grants(
     target: &Path,
     hashes: &BTreeSet<u32>,
@@ -36,24 +39,34 @@ pub(in crate::install) fn installed_grants(
                 continue;
             }
             let (definition, kind) = tables.definition(hash, definition_tag)?;
-            let class_type = match kind {
+            // Equip conditions persist the class choice even when the manifest is unavailable.
+            let (class_type, every_class) = match kind {
                 Some(crate::ItemKind::Subclass) => {
-                    Some(subclass_class(&tables, &mut pools, hash, &definition)?)
+                    match sundial::package_authoring::investment_schema::subclass_equipment_class(
+                        &definition,
+                    ) {
+                        Ok(Some(class)) => (Some(class), false),
+                        condition => (
+                            Some(subclass_class(&tables, &mut pools, hash, &definition)?),
+                            condition.is_ok(),
+                        ),
+                    }
                 }
-                Some(crate::ItemKind::Shader) => None,
+                Some(crate::ItemKind::Shader) => (None, false),
                 _ => continue,
             };
             grants.push(GrantedItem {
                 item_hash: hash,
                 definition_tag,
                 class_type,
+                every_class,
             });
         }
         Ok(grants)
     })
 }
 
-/// The class an installed subclass is for: the class of the stock list whose class-base pool
+/// The class of an installed subclass's base: the class of the stock list whose class-base pool
 /// its list keeps. The stock pools are read once, on the first subclass.
 fn subclass_class(
     tables: &Tables<'_>,
@@ -143,13 +156,13 @@ impl<'a> Tables<'a> {
 
     /// The pool of the class-base entry in the socket-entry list at `index`.
     fn list_class_base_pool(&self, index: u16) -> Result<u32, String> {
-        let tag = subclass::list_tag(&self.lists, index).map_err(|e| e.to_string())?;
-        subclass::class_base_pool(&self.read(tag)?).map_err(|e| e.to_string())
+        let tag = tables::list_tag(&self.lists, index).map_err(|e| e.to_string())?;
+        native::class_base_pool(&self.read(tag)?).map_err(|e| e.to_string())
     }
 
     /// The pool of the class-base entry in a subclass definition's socket-entry list.
     fn class_base_pool(&self, definition: &[u8]) -> Result<u32, String> {
-        let index = subclass::list_index(definition).map_err(|e| e.to_string())?;
+        let index = native::list_index(definition).map_err(|e| e.to_string())?;
         self.list_class_base_pool(index)
     }
 
@@ -192,38 +205,45 @@ pub(in crate::install) fn grant_items(
                 .copied()
                 .ok_or_else(|| format!("Item 0x{hash:08X} has no inventory bucket"))
         };
-        // A character equips the project's first subclass for its class.
+        // A character equips the project's first subclass for its class. A subclass for every
+        // class reaches the other classes' characters too, unequipped, since another class
+        // using it is untested.
         let mut equipping = BTreeSet::new();
-        let grants = items
-            .iter()
-            .map(|item| {
-                let payload = definition(item.item_hash, item.definition_tag)?;
-                let target = match item.class_type {
-                    Some(class_type) => AuthoredGrantTarget::Class {
-                        class_type,
-                        equip: equipping.insert(class_type),
-                    },
-                    None => {
-                        let limit = read_u32(&payload, ITEM_MAX_STACK_SIZE_OFFSET)
-                            .map_err(|e| e.to_string())?;
-                        let limit = i32::try_from(limit).unwrap_or(i32::MAX);
-                        AuthoredGrantTarget::Profile(SHADER_STACK.min(limit).max(1))
-                    }
-                };
-                let bucket = bucket(&payload, item.item_hash)?;
-                Ok(AuthoredItemGrant {
-                    item_hash: item.item_hash,
-                    bucket,
-                    capacity: sundial::package_authoring::inventory_bucket_capacity(
-                        manager,
-                        &root,
-                        bucket,
-                        item.class_type.is_none(),
-                    )?,
-                    target,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let mut grants = Vec::new();
+        for item in items {
+            let payload = definition(item.item_hash, item.definition_tag)?;
+            let targets = match item.class_type {
+                Some(class_type) if item.every_class => (0..3)
+                    .map(|class| AuthoredGrantTarget::Class {
+                        class_type: class,
+                        equip: class == class_type && equipping.insert(class),
+                    })
+                    .collect(),
+                Some(class_type) => vec![AuthoredGrantTarget::Class {
+                    class_type,
+                    equip: equipping.insert(class_type),
+                }],
+                None => {
+                    let limit = read_u32(&payload, ITEM_MAX_STACK_SIZE_OFFSET)
+                        .map_err(|e| e.to_string())?;
+                    let limit = i32::try_from(limit).unwrap_or(i32::MAX);
+                    vec![AuthoredGrantTarget::Profile(SHADER_STACK.min(limit).max(1))]
+                }
+            };
+            let bucket = bucket(&payload, item.item_hash)?;
+            let capacity = sundial::package_authoring::inventory_bucket_capacity(
+                manager,
+                &root,
+                bucket,
+                item.class_type.is_none(),
+            )?;
+            grants.extend(targets.into_iter().map(|target| AuthoredItemGrant {
+                item_hash: item.item_hash,
+                bucket,
+                capacity,
+                target,
+            }));
+        }
         // The account's other definitions, each read once and only when counted.
         let mut tags: Option<BTreeMap<u32, TagHash>> = None;
         let mut known = HashMap::<u32, Option<u8>>::new();
@@ -254,32 +274,4 @@ fn definition_tags(table: &[u8]) -> Result<BTreeMap<u32, TagHash>, String> {
             ))
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The installed generation's authored subclasses and shaders, read from the install alone,
-    /// with every subclass naming its class. Reads the install and writes nothing.
-    #[test]
-    #[ignore = "requires PARHELION_WORKBENCH_INSTALL"]
-    fn installed_subclasses_name_their_class() {
-        let install = std::path::PathBuf::from(
-            std::env::var_os("PARHELION_WORKBENCH_INSTALL").expect("PARHELION_WORKBENCH_INSTALL"),
-        );
-        let packages = install.join("packages");
-        let (hashes, _) = super::super::installed_identities(&packages).unwrap();
-        let grants = installed_grants(&packages, &hashes).unwrap();
-        for grant in &grants {
-            eprintln!(
-                "0x{:08X} {} class {:?}",
-                grant.item_hash, grant.definition_tag, grant.class_type
-            );
-        }
-        assert!(
-            grants.iter().any(|grant| grant.class_type.is_some()),
-            "the install holds no authored subclass"
-        );
-    }
 }

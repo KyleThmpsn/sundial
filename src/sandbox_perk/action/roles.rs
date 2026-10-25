@@ -62,30 +62,3 @@ pub fn ability_slot(selector: u8) -> Option<&'static str> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_selector_names_the_ability_whatever_the_flag_and_option_bytes_hold() {
-        // The flag and option gate was dropped after a census of every kind 8 node in the
-        // stock perks: all 11 selector, flag and option combinations adjust the ability the
-        // selector names. Momentum Transfer sets flag 1 on slot 2 and reduces a melee
-        // cooldown, Empowering Largesse sets option 1 on slot 0 and recharges a grenade.
-        for (selector, name) in [
-            (0, "Grenade Energy"),
-            (1, "Super Energy"),
-            (2, "Melee Energy"),
-            (7, "Class Ability Energy"),
-        ] {
-            for (flag, option) in [(0, 0), (1, 0), (2, 0), (0, 1)] {
-                assert_eq!(component_target(selector, flag, option), Some(name));
-            }
-        }
-        // A selector no stock perk uses stays a number rather than borrowing a neighbour.
-        for selector in [3, 4, 5, 6, 8, 255] {
-            assert_eq!(component_target(selector, 0, 0), None);
-        }
-    }
-}

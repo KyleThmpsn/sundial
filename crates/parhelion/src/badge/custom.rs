@@ -1,5 +1,5 @@
 use super::*;
-use crate::weapon::WeaponCloneSpec;
+use crate::item::WeaponCloneSpec;
 use std::collections::BTreeMap;
 
 pub(crate) fn append_custom_badges(
@@ -33,7 +33,7 @@ pub(crate) fn append_custom_badges(
         let objective_start = array_at(&graph.objectives, 8)?.0;
         if node_start + 4 > crate::collection::NODE_CAPACITY
             || record_start + 4 > 4096
-            || objective_start + 1 >= u16::MAX as usize
+            || objective_start + 4 >= u16::MAX as usize
         {
             return Err(invalid(
                 "Custom badges exceed the native table index capacity",
@@ -68,13 +68,23 @@ pub(crate) fn append_custom_badges(
             &layout,
         )?;
         for member in members {
-            append_parents(collectibles, member.authored_collectible_index, node_start)?;
+            append_parents(
+                collectibles,
+                member.authored_collectible_index,
+                node_start,
+                member.classes,
+            )?;
         }
     }
     Ok(graph)
 }
 
-fn append_parents(data: &mut Vec<u8>, index: usize, node_start: usize) -> AuthoringResult<()> {
+fn append_parents(
+    data: &mut Vec<u8>,
+    index: usize,
+    node_start: usize,
+    classes: crate::collection::Classes,
+) -> AuthoringResult<()> {
     use crate::progression::{COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET, COLLECTIBLE_ROW_SIZE};
     let (count, _, rows, _) = array_at(data, 8)?;
     if index >= count {
@@ -91,23 +101,24 @@ fn append_parents(data: &mut Vec<u8>, index: usize, node_start: usize) -> Author
     let mut parents = (0..count)
         .map(|i| read_u16(data, rows + i * 2))
         .collect::<AuthoringResult<Vec<_>>>()?;
-    parents.extend((1..=3).map(|i| (node_start + i) as u16));
+    parents.extend(
+        classes
+            .iter()
+            .map(|class| (node_start + 1 + usize::from(class)) as u16),
+    );
     if parents.iter().copied().collect::<BTreeSet<_>>().len() != parents.len() {
         return Err(invalid(
             "Custom badge membership duplicates a collectible parent",
         ));
     }
-    while data.len() % 16 != 0 {
-        data.push(0);
-    }
-    let header = data.len();
+    let header = begin_array_block(data);
     data.extend_from_slice(&(parents.len() as u64).to_le_bytes());
     data.extend_from_slice(&class.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     for parent in &parents {
         data.extend_from_slice(&parent.to_le_bytes());
     }
-    while (data.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(data.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         data.push(0);
     }
     data.extend_from_slice(&NESTED_ARRAY_TRAILER);

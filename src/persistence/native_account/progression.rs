@@ -42,7 +42,7 @@ impl Progression {
         definition_index: u16,
         slot: u16,
     ) -> Result<bool, String> {
-        if usize::from(slot) >= crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY {
+        if usize::from(slot) >= crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY {
             return Err("The account claim flag is outside the supported bank".to_owned());
         }
         let changed = !self.account_flag_is_set(definition_index, slot);

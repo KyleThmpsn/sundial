@@ -23,6 +23,8 @@ pub(super) fn apply(
     files::copy_new(&plan.target, &backup)?;
     files::verify(&backup, &plan.old_digest)?;
     files::write_new(&directory.join("replacement-started"), b"1")?;
+    // The previous executable and the marker are on disk before the executable is replaced.
+    files::sync_directory(directory)?;
     let replaced = replace_checked(&payload, &plan.target, &plan.old_digest);
     let result = match replaced {
         Ok(()) => launch(),

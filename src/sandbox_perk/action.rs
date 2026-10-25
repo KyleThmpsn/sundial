@@ -380,18 +380,6 @@ impl DecodedAction {
             support
         }
     }
-
-    /// Distinct entity graphs and patterns the action references.
-    #[must_use]
-    pub fn referenced_tags(&self) -> Vec<u32> {
-        let mut tags = self
-            .effects()
-            .filter_map(|effect| effect.referenced_tag)
-            .collect::<Vec<_>>();
-        tags.sort_unstable();
-        tags.dedup();
-        tags
-    }
 }
 
 fn collect_conditions<'a>(list: &'a [DecodedCondition], out: &mut Vec<&'a DecodedCondition>) {
@@ -572,7 +560,7 @@ fn node_class(payload: &[u8], node: usize) -> Result<u32, String> {
 pub fn decode_condition_node(payload: &[u8]) -> Result<DecodedCondition, String> {
     let kind = bytes_at::<8>(payload, 0)?[5];
     let class = nodes::condition(kind)
-        .filter(|entry| entry.observed())
+        .filter(|entry| entry.has_layout())
         .ok_or_else(|| format!("Condition kind {kind} has no recovered native layout."))?
         .class;
     // Standalone nodes omit the allocation's preceding class tag. Relative pointers
@@ -733,7 +721,7 @@ fn validate_node(
 ) -> Result<u32, String> {
     let class = node_class(payload, node)?;
     let entry = entry.ok_or_else(|| format!("{family} kind {kind} is not registered"))?;
-    if !entry.observed() {
+    if !entry.has_layout() {
         return Err(format!(
             "{family} kind {kind} has no recovered native layout"
         ));

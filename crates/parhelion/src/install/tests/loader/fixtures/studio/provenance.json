@@ -1,0 +1,14 @@
+{
+  "producer": "SunriseStudio PackageWriter, MergeSidecarFormat and ModManifest",
+  "revision": "007dd7a6f10164243369350e63c42168229c35ab",
+  "recipe": "WriteNew with two ASCII stock entries in 058c, set signature AABBCCDDEEFF0011 and generation 3, update inherited block generation and metadata SHA1. WritePatch changes entry 1 for disjoint and entry 0 for overlap. Opaque sidecars bind to the emitted metadata digest. WriteNew adds synthetic 0aaa. No game data.",
+  "files": {
+    "disjoint/w64_investment_globals_client_058c_4.merge": "6D8265661618E585C9BE9B499C893966BE16DEBE7720393D0F52357AD666FB75",
+    "disjoint/w64_investment_globals_client_058c_4.pkg": "451AAD6C8F6D6333E8448C04F18587D032DEBCD2EC6C0E36C804D14A0C4B0A15",
+    "mod.json": "BA94189A3F9AC27CAD69E728E9CE27877A1C0C004DCB0CBD5BBA880457402A73",
+    "overlap/w64_investment_globals_client_058c_4.merge": "615247F747706BF6B2F38167FDA928EFF8A12523D12EAE53358ABF0948C13E02",
+    "overlap/w64_investment_globals_client_058c_4.pkg": "75D240E5AB17B1C9FB7178445887E2517E4DBCF7E970E1AEEB289B7191052DC3",
+    "w64_investment_globals_client_058c_3.pkg": "5B79724B247B7AEF0A5334212F4D6BFA8042245C77062DE94B6B34FEBC023847",
+    "w64_sunrise_0aaa_0.pkg": "00F97948B2EB394044EC25F0865DA96EBC56043C1FF5428A01B021DBC32C4199"
+  }
+}

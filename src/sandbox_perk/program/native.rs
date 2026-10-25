@@ -2,7 +2,7 @@
 use super::{Asset, Program};
 use crate::sandbox_perk::action::{
     self,
-    native::{Graph, schema},
+    native::{Graph, fields, schema},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -13,9 +13,34 @@ mod tests;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProgram {
+    #[serde(deserialize_with = "read_graph")]
     pub graph: Graph,
     /// Component edits belong to their referenced entity, independently of node ordering.
     pub assets: Vec<Asset>,
+}
+
+/// Earlier authored data stored zero for optional attachment fields. Repair only that
+/// representation in complete saved recipe and draft rows. Native package reads remain
+/// byte exact in `Graph::read`, and explicit nonzero values are retained.
+fn read_graph<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Graph, D::Error> {
+    let mut graph = Graph::deserialize(deserializer)?;
+    for block in &mut graph.blocks {
+        if !matches!(block.class, 0x8080_3E45 | 0x8080_3E47)
+            || block.count.unwrap_or(1).checked_mul(64) != Some(block.bytes.len())
+        {
+            continue;
+        }
+        for row in block.bytes.chunks_exact_mut(64) {
+            for at in [0x10, 0x18, 0x1C, 0x30] {
+                if let Some(empty) = fields::optional_empty(block.class, at)
+                    && row[at..at + 4] == [0; 4]
+                {
+                    row[at..at + 4].copy_from_slice(&empty.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(graph)
 }
 
 /// A source-independent readiness failure, located in execution order.
@@ -52,11 +77,17 @@ pub(super) fn entity_reference(class: u32, bytes: &[u8]) -> Result<Option<u32>, 
 
 impl NativeProgram {
     pub fn authoring_issue(&self) -> Result<Option<NativeIssue>, String> {
+        Ok(self.authoring_issues()?.into_iter().next())
+    }
+
+    /// Every readiness failure in execution order, so an earlier failure cannot hide others.
+    pub fn authoring_issues(&self) -> Result<Vec<NativeIssue>, String> {
         let decoded = action::decode(&self.graph.emit()?)?;
+        let mut issues = Vec::new();
         for (group, behavior) in decoded.groups.iter().enumerate() {
             for (action, effect) in behavior.effects.iter().rev().enumerate() {
                 if let Err(message) = entity_reference(effect.class, &effect.native) {
-                    return Ok(Some(NativeIssue {
+                    issues.push(NativeIssue {
                         group,
                         action,
                         field: if effect.class == 0x80803E12 {
@@ -65,11 +96,11 @@ impl NativeProgram {
                             "Object"
                         },
                         message,
-                    }));
+                    });
                 }
             }
         }
-        Ok(None)
+        Ok(issues)
     }
 
     pub fn empty() -> Self {
@@ -94,7 +125,9 @@ impl NativeProgram {
     /// Existing entries for other resource slots are retained while still referenced.
     pub fn sync_assets(&mut self) -> Result<(), String> {
         let resources = self.resources()?;
-        self.assets.retain(|asset| resources.contains(&asset.graph));
+        // A script's graph stays while an effect still runs the script.
+        self.assets
+            .retain(|asset| resources.contains(&asset.script.unwrap_or(asset.graph)));
         let graph = Graph::read(&self.graph.emit()?, 0, action::ACTION_ROOT_CLASS)?;
         for block in &graph.blocks {
             let offset = if block.class == 0x80803E42 {
@@ -110,7 +143,10 @@ impl NativeProgram {
             if let Some(offset) = offset {
                 let graph = crate::package_payload::u32_at(&block.bytes, offset)?;
                 if !matches!(graph, 0 | u32::MAX)
-                    && !self.assets.iter().any(|asset| asset.graph == graph)
+                    && !self
+                        .assets
+                        .iter()
+                        .any(|asset| asset.graph == graph && asset.script.is_none())
                 {
                     self.assets.push(Asset {
                         graph,
@@ -147,9 +183,14 @@ impl NativeProgram {
         let resources = self.resources()?;
         let mut used = BTreeSet::new();
         for asset in &self.assets {
+            // A script's graph is referenced through the script, which an effect must run. That
+            // the script names the graph is checked against the packages when the action compiles.
             if matches!(asset.graph, 0 | u32::MAX)
-                || !resources.contains(&asset.graph)
-                || !used.insert(asset.graph)
+                || asset
+                    .script
+                    .is_some_and(|script| matches!(script, 0 | u32::MAX))
+                || !resources.contains(&asset.script.unwrap_or(asset.graph))
+                || !used.insert((asset.graph, asset.script))
             {
                 return Err("Program component edits need a unique, referenced entity.".into());
             }

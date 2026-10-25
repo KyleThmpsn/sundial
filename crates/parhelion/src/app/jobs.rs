@@ -2,6 +2,11 @@
 use super::*;
 use sundial::package_authoring::account::{AuthoredGrantReport, AuthoredProfileSyncReport};
 
+/// How long an install or uninstall waits for model previews to finish reading packages.
+pub(super) const PREVIEW_READ_WAIT: Duration = Duration::from_secs(60);
+pub(super) const PREVIEW_READ_BUSY: &str =
+    "A model preview is still reading packages. Close it and try again";
+
 #[cfg(test)]
 mod tests;
 
@@ -13,18 +18,38 @@ pub(super) struct RuntimeGraphJob {
 }
 
 impl PackageAuthoringApp {
+    /// The build the installation review and install act on: a kept build under review to restore,
+    /// else the latest build.
+    pub(super) fn install_candidate(&self) -> Option<&BuildReport> {
+        self.restore
+            .as_ref()
+            .or_else(|| self.latest_build.as_ref()?.as_ref().ok())
+    }
+
     pub(super) fn start_replacement_review(&mut self) {
         self.replacement_review = None;
         self.replacement_receiver = None;
-        let Some(Ok(build)) = &self.latest_build else {
+        self.replacement_status = build_status::InstallStatus::default();
+        let Some(build) = self.install_candidate() else {
             return;
         };
         let staged = build.run_directory.clone();
         let target = self.packages.clone();
         let (sender, receiver) = mpsc::channel();
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        let started = Instant::now();
         thread::spawn(move || {
-            let _ = sender.send(crate::install::preview_replacement(&target, &staged));
+            let result =
+                crate::install::preview_replacement_with_progress(&target, &staged, |progress| {
+                    let _ = progress_sender.send((progress, started.elapsed()));
+                });
+            let _ = sender.send(result);
         });
+        self.replacement_status = build_status::InstallStatus {
+            receiver: Some(progress_receiver),
+            started: Some(started),
+            ..Default::default()
+        };
         self.replacement_receiver = Some(receiver);
     }
 
@@ -32,13 +57,26 @@ impl PackageAuthoringApp {
         let Some(receiver) = &self.replacement_receiver else {
             return;
         };
+        self.replacement_status.poll(&mut self.log);
         match receiver.try_recv() {
             Ok(result) => {
+                self.replacement_status.poll(&mut self.log);
+                self.replacement_status.finish();
+                self.replacement_status.activity.push(
+                    self.replacement_status.elapsed,
+                    if result.is_ok() {
+                        "Account Review Complete"
+                    } else {
+                        "Account Review Failed"
+                    }
+                    .into(),
+                );
                 self.replacement_review = Some(result);
                 self.replacement_receiver = None;
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
+                self.replacement_status.finish();
                 self.replacement_review = Some(Err(
                     "Account review stopped unexpectedly. Review the installation again.".into(),
                 ));
@@ -173,12 +211,21 @@ impl PackageAuthoringApp {
                 .find(|donor| donor.hash == item_hash)
                 .and_then(|donor| donor.weapon_translation_group)
         };
+        // Animations from the base weapon's family keep its rig, as the build does.
+        let keeps_base_rig = self
+            .recipe
+            .overrides
+            .animation_donor
+            .as_ref()
+            .and_then(|donor| donor.item_hash.parse_u32().ok())
+            .is_some_and(|hash| group(hash).is_some() && group(hash) == group(fallback_item_hash));
         let appearance_rig = self
             .recipe
             .presentation_donor
             .as_ref()
             .and_then(|donor| donor.item_hash.parse_u32().ok())
             .filter(|hash| *hash != 0 && group(*hash) != group(fallback_item_hash))
+            .filter(|_| !keeps_base_rig)
             .map(|hash| {
                 (
                     self.donor_summaries
@@ -315,6 +362,9 @@ impl PackageAuthoringApp {
         self.donor_summaries = catalog.weapon_donors();
         // Only stock subclasses can be a base or an ability source, not ones a build installed.
         self.subclasses = catalog.subclasses(crate::package_profile::is_stock_item_definition);
+        // On a Specific Ability names every stock ability by the nodes that equip it.
+        super::custom_perks::workbench::remember_abilities(&self.subclasses);
+        super::ability_names::remember(&self.subclasses, catalog.ability_rows());
         self.gear_donors = ItemKind::ALL
             .into_iter()
             .filter(|kind| !kind.is_weapon())
@@ -366,6 +416,17 @@ impl PackageAuthoringApp {
         {
             return;
         }
+        // A mod's base is its perk's template plug, so a new mod starts with a perk.
+        if self.recipe.kind == ItemKind::Mod {
+            if self.bind_default_mod() {
+                if !self.recipe_dirty && self.recipe_path.is_none() {
+                    self.recipe_baseline = self.recipe.clone();
+                    self.reset_recipe_history();
+                }
+                self.advance_recipe_revision();
+            }
+            return;
+        }
         let Some(catalog) = self.catalog.as_ref() else {
             return;
         };
@@ -399,20 +460,20 @@ impl PackageAuthoringApp {
             self.recipe.set_donor(hash, name);
             if !self.recipe_dirty && self.recipe_path.is_none() {
                 self.recipe_baseline = self.recipe.clone();
+                self.reset_recipe_history();
             }
             self.advance_recipe_revision();
         }
     }
 
     pub(super) fn start_build(&mut self) {
-        let snapshot = match self.save_edits_for_build().and_then(|()| self.snapshot()) {
-            Ok(snapshot) => snapshot,
+        let inputs = match self
+            .save_edits_for_build()
+            .and_then(|()| self.build_ready())
+        {
+            Ok(()) => self.build_inputs(),
             Err(error) => {
-                self.latest_build = Some(Err(error.clone()));
-                self.build_blocker = None;
-                self.build_status_open = true;
-                self.log
-                    .push(LogEntry::error(format!("Build blocked: {error}")));
+                self.block_build(error);
                 return;
             }
         };
@@ -426,9 +487,36 @@ impl PackageAuthoringApp {
         self.build_activity = build_status::Activity::default();
         self.install_status = build_status::InstallStatus::default();
         thread::spawn(move || {
+            // Loading and checking the included recipes reads each embedded model in full, which
+            // can take a while, so each recipe is reported as its file is read.
+            let snapshot = inputs
+                .request_reporting(&mut |path, index, total| {
+                    let name = inputs.recipe_name(path);
+                    let _ = sender.send(BuildWorkerEvent::Progress(
+                        TimedBuildProgress::from_progress(
+                            BuildProgress::artifact(
+                                BuildPhase::InspectingSource,
+                                format!("Reading recipe {name}"),
+                                index,
+                                total,
+                            ),
+                            started,
+                        ),
+                    ));
+                })
+                .and_then(BatchBuildSnapshot::new);
+            // The window releases package access by dropping its catalog, so this copy goes first.
+            drop(inputs);
+            let snapshot = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let _ = sender.send(BuildWorkerEvent::Blocked(error));
+                    return;
+                }
+            };
             let result = build_and_stage_snapshot_reporting(&snapshot, |progress| {
                 let _ = sender.send(BuildWorkerEvent::Progress(
-                    TimedBuildProgress::from_progress(progress, started.elapsed()),
+                    TimedBuildProgress::from_progress(progress, started),
                 ));
             });
             let _ = sender.send(BuildWorkerEvent::Finished {
@@ -442,12 +530,15 @@ impl PackageAuthoringApp {
             completed: 0,
             total: 2,
             elapsed: Duration::ZERO,
+            activity: None,
         });
         self.latest_build = None;
+        self.restore = None;
         self.build_blocker = None;
         self.latest_install = None;
         self.replacement_review = None;
         self.replacement_receiver = None;
+        self.replacement_status = build_status::InstallStatus::default();
         self.build_status_open = true;
         self.build_dialog_step = BuildDialogStep::Build;
         self.build_receiver = Some(receiver);
@@ -475,34 +566,23 @@ impl PackageAuthoringApp {
                 }
             };
             match event {
+                BuildWorkerEvent::Blocked(error) => {
+                    self.build_progress = None;
+                    self.build_started = None;
+                    self.build_receiver = None;
+                    self.block_build(error);
+                    return;
+                }
                 BuildWorkerEvent::Progress(progress) => {
-                    let message = build_status::progress_message(
-                        progress.phase.label(),
-                        progress.current_artifact.as_deref(),
-                        progress.completed,
-                        progress.total,
-                    );
-                    let changed = self.build_progress.as_ref().is_none_or(|previous| {
-                        previous.phase != progress.phase
-                            || previous.current_artifact != progress.current_artifact
-                            || previous.completed != progress.completed
-                            || previous.total != progress.total
-                    });
-                    if changed {
-                        let same_operation = self.build_progress.as_ref().is_some_and(|previous| {
-                            previous.phase == progress.phase
-                                && previous.current_artifact == progress.current_artifact
-                                && previous.total == progress.total
-                                && previous.completed <= progress.completed
-                        });
-                        if same_operation {
-                            self.build_activity.update_last(progress.elapsed, message);
-                        } else {
-                            self.build_activity.push(progress.elapsed, message.clone());
-                            self.log.push(LogEntry::info(message));
-                        }
+                    if let Some(message) = self.build_activity.build(&progress) {
+                        self.log.push(LogEntry::info(message));
                     }
-                    self.build_progress = Some(progress);
+                    if !matches!(
+                        progress.activity,
+                        Some(crate::workflow::BuildActivity::Diagnostic(_))
+                    ) {
+                        self.build_progress = Some(progress);
+                    }
                 }
                 BuildWorkerEvent::Finished {
                     result: Ok(report),
@@ -514,6 +594,7 @@ impl PackageAuthoringApp {
                         completed: 1,
                         total: 1,
                         elapsed,
+                        activity: None,
                     });
                     self.log.push(LogEntry::info(format!(
                         "Build complete: {}",
@@ -555,6 +636,15 @@ impl PackageAuthoringApp {
         }
     }
 
+    /// No build ran: the error shows where the build's result would.
+    pub(super) fn block_build(&mut self, error: String) {
+        self.log
+            .push(LogEntry::error(format!("Build blocked: {error}")));
+        self.latest_build = Some(Err(error));
+        self.build_blocker = None;
+        self.build_status_open = true;
+    }
+
     pub(super) fn build_elapsed(&self, now: Instant) -> Duration {
         self.build_started.map_or_else(
             || {
@@ -592,7 +682,9 @@ impl PackageAuthoringApp {
             return;
         }
         self.perk_workbench.stop_optional_reads();
-        if self.runtime_graph_job.is_some()
+        if self.installed.busy()
+            || self.build_check.busy()
+            || self.runtime_graph_job.is_some()
             || self.runtime_donors.busy()
             || self.runtime_dependencies.busy()
             || self.perk_workbench.busy()
@@ -609,7 +701,7 @@ impl PackageAuthoringApp {
             ));
             return;
         }
-        let Some(Ok(build)) = self.latest_build.as_ref() else {
+        let Some(build) = self.install_candidate() else {
             self.log
                 .push(LogEntry::error("Build & Stage before installing"));
             return;
@@ -635,6 +727,12 @@ impl PackageAuthoringApp {
             ..Default::default()
         };
         thread::spawn(move || {
+            // Model previews pause once the install starts, but a read already running keeps
+            // package files open until it returns, so the install waits for it.
+            if !sundial::ui::model_preview::wait_for_package_reads(PREVIEW_READ_WAIT) {
+                let _ = sender.send(Err(PREVIEW_READ_BUSY.to_owned()));
+                return;
+            }
             let mut request =
                 InstallRequest::new(staged_run_directory, target_packages_directory, backup_root);
             request.limit_package_backups = limit_package_backups;
@@ -730,9 +828,13 @@ impl PackageAuthoringApp {
 
     /// Runs the install's account step again for the installed generation, in a worker.
     pub(super) fn start_account_resync(&mut self) {
-        if self.account_resync_receiver.is_some() || self.install_receiver.is_some() {
+        if self.account_resync_receiver.is_some()
+            || self.install_receiver.is_some()
+            || self.uninstall.open
+        {
             return;
         }
+        self.account_resync.begin();
         let target = self.packages.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -759,7 +861,10 @@ impl PackageAuthoringApp {
             }
         };
         self.account_resync_receiver = None;
-        match result {
+        // A disconnected worker can also have written part of the account. The
+        // host refreshes only when it is safe to replace its current document.
+        self.account_changed = true;
+        match &result {
             Ok(report) => {
                 self.log.push(LogEntry::info(format!(
                     "Resynced the account from the installed packages: {} authored unlocks",
@@ -773,6 +878,46 @@ impl PackageAuthoringApp {
                     .push(LogEntry::error(format!("Account resync failed: {error}")));
             }
         }
+        self.account_resync.finish(result);
+    }
+
+    /// Logs what an install retired, kept, pruned and shared with other mods.
+    fn log_install_housekeeping(&mut self, report: &InstallReport) {
+        if let Some(backup) = &report.retired_mod_backup {
+            self.log.push(LogEntry::info(format!(
+                "Moved your Sunrise 0.6 build out of the mod folder, which this runtime doesn't load, so the two never load together. Its backup is in {}",
+                backup.display()
+            )));
+        }
+        if let Some(warning) = &report.kept_build_warning {
+            self.log.push(LogEntry::error(warning.as_str()));
+        }
+        if !report.pruned_backup_directories.is_empty() {
+            self.log.push(LogEntry::info(format!(
+                "Removed {} old automatic package {}",
+                report.pruned_backup_directories.len(),
+                if report.pruned_backup_directories.len() == 1 {
+                    "backup"
+                } else {
+                    "backups"
+                }
+            )));
+        }
+        if let Some(error) = &report.backup_prune_warning {
+            self.log.push(LogEntry::error(format!(
+                "Packages installed, but old backups could not be removed: {error}"
+            )));
+        }
+        for overlap in &report.mod_overlaps {
+            self.log.push(LogEntry::info(overlap.as_str()));
+        }
+        for member in &report.mods {
+            self.log.push(LogEntry::info(format!(
+                "{}: {}",
+                member.name,
+                member.status.label()
+            )));
+        }
     }
 
     pub(super) fn poll_install(&mut self) {
@@ -784,6 +929,7 @@ impl PackageAuthoringApp {
         let mut installed = false;
         match receiver.try_recv() {
             Ok(Ok(report)) => {
+                self.installed.request();
                 if let Some(path) = &report.cleaned_account {
                     self.log.push(LogEntry::info(format!(
                         "Applied the reviewed account changes to {}. Original account and packages are backed up in {} (excluded from automatic pruning)",
@@ -810,18 +956,22 @@ impl PackageAuthoringApp {
                         }
                     },
                 );
-                let header_cache_status = if report.invalidated_package_header_caches.is_empty() {
-                    "no client package-header cache was present".to_owned()
-                } else {
-                    format!(
-                        "{} client package-header cache(s) invalidated",
-                        report.invalidated_package_header_caches.len()
-                    )
+                let header_cache_status = match report.invalidated_package_header_caches.len() {
+                    0 => "no client package-header cache was present".to_owned(),
+                    1 => "1 client package-header cache invalidated".to_owned(),
+                    count => format!("{count} client package-header caches invalidated"),
                 };
                 self.log.push(LogEntry::info(format!(
-                    "Installed {} authored packages to {}. Backup: {}. {}. {}",
-                    report.artifacts.len(),
-                    report.target_packages_directory.display(),
+                    "Installed {} to {}. Backup: {}. {}. {}",
+                    match report.artifacts.len() {
+                        1 => "1 authored package".to_owned(),
+                        count => format!("{count} authored packages"),
+                    },
+                    report
+                        .mod_directory
+                        .as_deref()
+                        .unwrap_or(&report.target_packages_directory)
+                        .display(),
                     report.backup_directory.display(),
                     cache_status,
                     header_cache_status,
@@ -833,27 +983,15 @@ impl PackageAuthoringApp {
                     )));
                 }
                 if !report.removed_obsolete_packages.is_empty() {
+                    let count = report.removed_obsolete_packages.len();
                     self.log.push(LogEntry::info(format!(
-                        "Removed {} obsolete authored runtime package(s). Originals are in the installation backup",
-                        report.removed_obsolete_packages.len()
+                        "Removed {count} obsolete authored runtime {}. Originals are in the \
+                         installation backup",
+                        if count == 1 { "package" } else { "packages" }
                     )));
                 }
-                if !report.pruned_backup_directories.is_empty() {
-                    self.log.push(LogEntry::info(format!(
-                        "Removed {} old automatic package {}",
-                        report.pruned_backup_directories.len(),
-                        if report.pruned_backup_directories.len() == 1 {
-                            "backup"
-                        } else {
-                            "backups"
-                        }
-                    )));
-                }
-                if let Some(error) = &report.backup_prune_warning {
-                    self.log.push(LogEntry::error(format!(
-                        "Packages installed, but old backups could not be removed: {error}"
-                    )));
-                }
+                self.log_install_housekeeping(&report);
+                self.restore = None;
                 self.latest_install = Some(Ok(report));
                 self.install_receiver = None;
                 finished = true;

@@ -73,12 +73,9 @@ impl NativeFixture {
 }
 
 fn configured_packages() -> PathBuf {
-    PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-            .expect("PARHELION_CLEAN_STOCK_PACKAGES must identify a Shadowkeep install"),
-    )
-    .canonicalize()
-    .unwrap()
+    crate::test_support::stock_packages()
+        .canonicalize()
+        .unwrap()
 }
 
 fn raw_template(payloads: &[Vec<u8>]) -> Vec<u8> {
@@ -91,7 +88,8 @@ fn raw_template(payloads: &[Vec<u8>]) -> Vec<u8> {
         .map(|bytes| bytes.len().div_ceil(BLOCK_SIZE))
         .sum();
     let mut bytes =
-        build_standalone_package_skeleton(SOURCE_PACKAGE_ID, &prefixes, block_count, &[]).unwrap();
+        build_standalone_package_skeleton(SOURCE_PACKAGE_ID, &prefixes, block_count, &[], &[])
+            .unwrap();
     let layout = PackageLayout::parse(&bytes).unwrap();
     let trailer = layout.opaque_trailer(&bytes).unwrap().to_vec();
     bytes.truncate(layout.opaque_trailer_offset);
@@ -215,7 +213,7 @@ fn assert_entry_flags(
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
 fn native_standalone_compression_round_trips_mixed_blocks_and_reduces_size() {
     let fixture = NativeFixture::new();
     let payloads = vec![
@@ -275,7 +273,7 @@ fn native_standalone_compression_round_trips_mixed_blocks_and_reduces_size() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES and its native Oodle3 DLL, writes temporary packages only"]
 fn native_overlay_compression_preserves_originals_and_round_trips_new_blocks() {
     let fixture = NativeFixture::new();
     let replacement = compressible(BLOCK_SIZE * 2 + TAIL_SIZE);
@@ -415,7 +413,7 @@ fn stored_payload_size(bytes: &[u8], layout: &PackageLayout) -> usize {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with an installed asset package, writes a temporary copy only"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES with an installed asset package, writes a temporary copy only"]
 fn native_installed_asset_compressed_copy_round_trips_without_source_changes() {
     let fixture = NativeFixture::new();
     let packages = configured_packages();
@@ -436,6 +434,11 @@ fn native_installed_asset_compressed_copy_round_trips_without_source_changes() {
     let blocks = (0..layout.block_count)
         .map(|index| source.get_block(index).unwrap().as_ref().to_vec())
         .collect::<Vec<_>>();
+    assert!(
+        !payloads.is_empty(),
+        "configured asset package has no entries"
+    );
+    assert!(!blocks.is_empty(), "configured asset package has no blocks");
     let after = rebuild_asset_copy(&before, &layout, &blocks, &encoder);
     let copy_path = fixture.native_packages.join(path.file_name().unwrap());
     let mut copy_file = OpenOptions::new()

@@ -2,12 +2,12 @@
 use crate::package_runtime::reader::PackageManager;
 use crate::{
     package_runtime::tft,
-    sandbox_perk::{dependencies, ingredients, program::properties, projectile},
+    sandbox_perk::{dependencies, entity, ingredients, program::properties},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 mod assets;
 pub use assets::{AssetChoice, technical_name};
@@ -19,7 +19,7 @@ pub use crate::package_runtime::labels;
 
 pub struct Catalog {
     pub names: Arc<tft::Index>,
-    pub effects: Arc<projectile::catalog::Catalog>,
+    pub effects: Arc<entity::catalog::Catalog>,
     pub asset_choices: Vec<AssetChoice>,
     pub perks: Arc<dependencies::Index>,
     pub perk_assets: Vec<dependencies::content::PerkAssets>,
@@ -32,33 +32,84 @@ pub struct Catalog {
 
 /// Property keys can become usable even when the later discovery scan fails.
 pub enum DiscoveryEvent {
+    Phase(Phase),
     Progress(usize, usize),
     Keys(Result<Arc<properties::KeyIndex>, String>),
     Labels(Result<Arc<labels::Registry>, String>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Packages,
+    Labels,
+    PropertyKeys,
+    NativePaths,
+    Perks,
+    Objects,
+    Abilities,
+    Assembly,
+}
+impl Phase {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Packages => "Opening Packages",
+            Self::Labels => "Reading Labels",
+            Self::PropertyKeys => "Reading Property Keys",
+            Self::NativePaths => "Reading Native Paths",
+            Self::Perks => "Reading Perk Programs",
+            Self::Objects => "Reading Objects and Components",
+            Self::Abilities => "Reading Abilities",
+            Self::Assembly => "Assembling the Catalog",
+        }
+    }
+}
+
 /// Composes the existing caches. Worker lifetime and cancellation remain with the caller.
-pub fn discover(
+pub fn discover(packages: &Path, report: impl FnMut(DiscoveryEvent)) -> Result<Catalog, String> {
+    discover_cancellable(packages, &AtomicBool::new(false), report)
+}
+
+pub fn discover_cancellable(
     packages: &Path,
+    cancel: &AtomicBool,
     mut report: impl FnMut(DiscoveryEvent),
 ) -> Result<Catalog, String> {
+    use crate::package_runtime::check_cancelled;
+    check_cancelled(cancel)?;
+    report(DiscoveryEvent::Phase(Phase::Packages));
     let existing_keys = properties::cached_only(packages).ok().flatten();
     let keys_ready = existing_keys.is_some();
     if let Some(keys) = existing_keys {
         report(DiscoveryEvent::Keys(Ok(keys)));
     }
     let manager = open_packages(packages)?;
+    check_cancelled(cancel)?;
+    report(DiscoveryEvent::Phase(Phase::Labels));
     report(DiscoveryEvent::Labels(
         labels::Registry::load(&manager).map(Arc::new),
     ));
     if !keys_ready {
-        report(DiscoveryEvent::Keys(properties::cached(packages, &manager)));
+        report(DiscoveryEvent::Phase(Phase::PropertyKeys));
+        check_cancelled(cancel)?;
+        let keys = properties::cached_cancellable(packages, &manager, cancel);
+        check_cancelled(cancel)?;
+        report(DiscoveryEvent::Keys(keys));
     }
-    let names = tft::cached(packages, &manager, |current, total| {
+    report(DiscoveryEvent::Phase(Phase::NativePaths));
+    check_cancelled(cancel)?;
+    let names = tft::cached_cancellable(packages, &manager, cancel, |current, total| {
         report(DiscoveryEvent::Progress(current, total))
     })?;
-    let perks = dependencies::cached(packages, &manager, |_, _| {})?;
-    let effects = projectile::catalog::cached(packages, &manager)?;
+    report(DiscoveryEvent::Phase(Phase::Perks));
+    check_cancelled(cancel)?;
+    let perks = dependencies::cached_cancellable(packages, &manager, cancel, |current, total| {
+        report(DiscoveryEvent::Progress(current, total))
+    })?;
+    report(DiscoveryEvent::Phase(Phase::Objects));
+    check_cancelled(cancel)?;
+    let effects = entity::catalog::cached_cancellable(packages, &manager, cancel)?;
+    report(DiscoveryEvent::Phase(Phase::Assembly));
+    check_cancelled(cancel)?;
     let asset_choices = assets::asset_choices(&effects);
     let pattern_items = effects
         .entries
@@ -66,7 +117,11 @@ pub fn discover(
         .flat_map(|entry| entry.contexts.iter().filter_map(|context| context.item))
         .collect();
     let perk_assets = dependencies::content::map(&perks, &names);
+    report(DiscoveryEvent::Phase(Phase::Abilities));
+    check_cancelled(cancel)?;
     let abilities = ingredients::abilities(&manager)?;
+    report(DiscoveryEvent::Phase(Phase::Assembly));
+    check_cancelled(cancel)?;
     let perk_search = perk_assets
         .iter()
         .filter_map(|assets| {
@@ -83,6 +138,7 @@ pub fn discover(
         })
         .collect();
     let scripts = Arc::new(scripts::choices(&names));
+    check_cancelled(cancel)?;
     Ok(Catalog {
         scripts,
         names,

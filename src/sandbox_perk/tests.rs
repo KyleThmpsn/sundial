@@ -403,7 +403,7 @@ fn runtime_map_writers_grow_auxiliary_storage_at_word_boundary() {
     validate_sandbox_perk_runtime_map(&payload).unwrap();
     let outputs = [
         insert_sandbox_perk_runtime_assignment(&payload, 33, 0x81234568).unwrap(),
-        crate::weapon_entity::append_weapon_entity_assignment(payload, 33, 0x81234568).unwrap(),
+        crate::entity::append_weapon_entity_assignment(payload, 33, 0x81234568).unwrap(),
     ];
     for output in outputs {
         let layout = runtime_map_layout(&output).unwrap();
@@ -459,10 +459,10 @@ fn action_graph_candidates_reject_bad_action_size() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with a clean Shadowkeep package directory"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES with a clean Shadowkeep package directory"]
 fn clean_stock_perk_actions_prove_raw_aligned_tag_scans_are_unsafe() {
-    let packages = env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must name a clean package directory");
+    let packages = env::var_os("SUNDIAL_STOCK_PACKAGES")
+        .expect("SUNDIAL_STOCK_PACKAGES must name a clean package directory");
     let install = Path::new(&packages)
         .parent()
         .expect("clean packages need an install root");

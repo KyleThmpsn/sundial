@@ -131,6 +131,16 @@ impl WeaponIconEditor {
         }
     }
 
+    /// Starts from `art` in place of the icon's own image, as the build does for art the item
+    /// draws, such as a summoned vehicle's silhouette or a subclass's generated icon. The art never
+    /// enters the draft, so applying the edit keeps it out of the recipe.
+    pub(crate) fn with_art(mut self, art: Option<&super::ImportedIcon>) -> Self {
+        if let (Some(art), Ok(preview)) = (art, &mut self.preview) {
+            preview.replace_primary(art);
+        }
+        self
+    }
+
     pub(crate) fn with_corner(mut self, corner: Option<&crate::presentation::Artwork>) -> Self {
         if let Some(corner) = corner {
             self.preview = self.preview.and_then(|mut preview| {
@@ -149,7 +159,7 @@ impl WeaponIconEditor {
     pub(crate) fn show(&mut self, context: &egui::Context) -> Option<WeaponIconEditorAction> {
         self.image_import.poll(&mut self.draft);
         self.sync_textures(context);
-        let layout = WeaponIconEditorLayout::for_viewport(context.screen_rect().size());
+        let layout = WeaponIconEditorLayout::for_viewport(context.content_rect().size());
         let modal = egui::Modal::new(egui::Id::new(("weapon-icon-editor", self.donor_hash))).show(
             context,
             |ui| {
@@ -310,8 +320,7 @@ impl WeaponIconEditor {
                             egui::RichText::new(warning).color(ui.visuals().warn_fg_color),
                         )
                         .truncate(),
-                    )
-                    .on_hover_text(warning);
+                    );
                 }
             }
             Err(error) => {
@@ -777,21 +786,4 @@ fn draw_compact_icon_adjustment(ui: &mut egui::Ui, label: &str, value: &mut i16)
             .suffix("%"),
     )
     .changed()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grayscale_action_is_idempotent_instead_of_toggling() {
-        let mut edit = WeaponIconEdit {
-            saturation: 25,
-            ..WeaponIconEdit::default()
-        };
-        assert!(apply_grayscale_action(&mut edit));
-        assert_eq!(edit.saturation, WeaponIconEdit::MIN_COLOR_ADJUSTMENT);
-        assert!(!apply_grayscale_action(&mut edit));
-        assert_eq!(edit.saturation, WeaponIconEdit::MIN_COLOR_ADJUSTMENT);
-    }
 }

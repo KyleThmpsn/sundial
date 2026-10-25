@@ -1,13 +1,15 @@
-//! Shadowkeep's uniform quantized clip codec (80808F71) and static pose codec
-//! (80808F6F). Layout verified against the chicken's native idle, 80BC90D2.
-//! Spline codecs, animation graphs, root motion and runtime IK are not evaluated.
+//! Shadowkeep skeletal clips and shared position/normal deformation.
+//! The stored tracks play at a preview cadence of 30 Hz. Animation graphs, root-motion
+//! controllers and runtime IK are not evaluated.
 //!
 //! An object's bank lists every clip it can play. A clip identifies itself only by the FNV-1
 //! hash of its name at 0x120, never by the name, so `clips` labels the hashes it knows and
 //! numbers the rest.
 use super::*;
+mod codec;
 mod pose;
-use pose::Transform;
+use codec::decode;
+pub(super) use pose::Transform;
 
 pub(crate) struct Weights {
     pub values: [u8; 4],
@@ -23,12 +25,192 @@ pub(crate) struct Animation {
     poses: Vec<Vec<Transform>>,
 }
 
+/// One composed owner keeps its own local bone numbering.
+pub(crate) struct Rig {
+    pub vertices: std::ops::Range<usize>,
+    pub animation: Animation,
+}
+
+/// One sampled skeleton, shared by the software renderer, GPU and posed export.
+pub(crate) struct Deformed {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub tangents: Vec<[f32; 4]>,
+    /// The single root's full change from its bind pose, used to follow the camera target.
+    root: Transform,
+    /// Stored root trajectory retained in verification receipts. Geometry keeps this motion.
+    #[cfg(test)]
+    pub root_translation: [f32; 3],
+}
+
+impl Deformed {
+    pub(super) fn stored(model: &Model) -> Self {
+        Self {
+            positions: model.vertices.clone(),
+            normals: model.normals.clone(),
+            tangents: model.tangents.clone(),
+            root: Transform::identity(),
+            #[cfg(test)]
+            root_translation: [0.0; 3],
+        }
+    }
+    pub fn framing_center(&self, bind_center: [f32; 3]) -> [f32; 3] {
+        self.root.point(bind_center)
+    }
+}
+
 impl Animation {
+    /// Small per-frame palette for GPU skinning. Vertex weights remain resident on the GPU.
+    pub(super) fn palette(&self, seconds: f32) -> (Vec<[f32; 4]>, Transform) {
+        let skin: Vec<_> = self
+            .world(self.looped_seconds(seconds))
+            .iter()
+            .zip(&self.inverse)
+            .map(|(world, inverse)| world.compose(*inverse))
+            .collect();
+        let root = if !self.parents.iter().skip(1).any(Option::is_none) {
+            skin.first().copied().unwrap_or_else(Transform::identity)
+        } else {
+            Transform::identity()
+        };
+        let rows = skin
+            .into_iter()
+            .flat_map(|t| {
+                [
+                    t.rotation,
+                    [
+                        t.translation[0],
+                        t.translation[1],
+                        t.translation[2],
+                        t.scale,
+                    ],
+                ]
+            })
+            .collect();
+        (rows, root)
+    }
+
+    pub(super) fn bone_count(&self) -> usize {
+        self.parents.len()
+    }
+
     pub fn duration(&self) -> f32 {
         (self.frames - 1) as f32 / self.fps
     }
 
+    pub fn looped_seconds(&self, seconds: f32) -> f32 {
+        let duration = self.duration();
+        if !seconds.is_finite() || duration <= 0.0 {
+            0.0
+        } else if (0.0..=duration).contains(&seconds) {
+            // A paused timeline can select its final frame. The playing UI advances and
+            // wraps its clock separately, while continuous material clocks still loop here.
+            seconds
+        } else {
+            seconds.rem_euclid(duration)
+        }
+    }
+
+    #[cfg(test)]
     pub fn vertices(&self, model: &Model, seconds: f32) -> Vec<[f32; 3]> {
+        self.sample(model, seconds).positions
+    }
+
+    pub fn sample(&self, model: &Model, seconds: f32) -> Deformed {
+        self.sample_from(model, seconds, None)
+    }
+
+    pub(super) fn sample_from(
+        &self,
+        model: &Model,
+        seconds: f32,
+        stored: Option<&Deformed>,
+    ) -> Deformed {
+        let mut result = Deformed::stored(model);
+        if let Some(stored) = stored {
+            result.positions.clone_from(&stored.positions);
+            result.normals.clone_from(&stored.normals);
+            result.tangents.clone_from(&stored.tangents);
+        }
+        self.apply(model, seconds, 0..model.vertices.len(), &mut result, true);
+        result
+    }
+
+    pub(super) fn apply(
+        &self,
+        model: &Model,
+        seconds: f32,
+        vertices: std::ops::Range<usize>,
+        result: &mut Deformed,
+        follow_root: bool,
+    ) {
+        let world = self.world(seconds);
+        let skin: Vec<_> = world
+            .iter()
+            .zip(&self.inverse)
+            .map(|(a, b)| a.compose(*b))
+            .collect();
+        let single_root = !self.parents.iter().skip(1).any(Option::is_none);
+        let root = if single_root && follow_root {
+            skin[0]
+        } else {
+            Transform::identity()
+        };
+        #[cfg(test)]
+        let root_translation = if !single_root || !follow_root {
+            [0.0; 3]
+        } else {
+            self.inverse[0].inverse().map_or([0.0; 3], |bind| {
+                std::array::from_fn(|axis| world[0].translation[axis] - bind.translation[axis])
+            })
+        };
+        for index in vertices {
+            let Some(weights) = model.weights.get(index).and_then(Option::as_ref) else {
+                continue;
+            };
+            let total: u32 = weights.values.iter().map(|v| u32::from(*v)).sum();
+            if total == 0 {
+                continue;
+            }
+            let blend = |transform: &dyn Fn(Transform) -> [f32; 3]| {
+                let mut value = [0.0; 3];
+                for (&bone, &weight) in weights.bones.iter().zip(&weights.values) {
+                    if weight == 0 {
+                        continue;
+                    }
+                    let point = transform(skin[bone as usize]);
+                    for axis in 0..3 {
+                        value[axis] += point[axis] * f32::from(weight) / total as f32;
+                    }
+                }
+                value
+            };
+            let point = result.positions[index];
+            result.positions[index] = blend(&|t| t.point(point));
+            if let Some(normal) = result.normals.get_mut(index) {
+                let original = *normal;
+                *normal =
+                    shader::normal::normalize(blend(&|t| t.normal(original))).unwrap_or([0.0; 3]);
+            }
+            if let Some(tangent) = result.tangents.get_mut(index) {
+                let original = [tangent[0], tangent[1], tangent[2]];
+                let direction = shader::normal::normalize(blend(&|t| {
+                    t.normal(original).map(|v| v * t.scale * t.scale)
+                }))
+                .unwrap_or([0.0; 3]);
+                tangent[..3].copy_from_slice(&direction);
+            }
+        }
+        if follow_root {
+            result.root = root;
+            #[cfg(test)]
+            {
+                result.root_translation = root_translation;
+            }
+        }
+    }
+
+    fn world(&self, seconds: f32) -> Vec<Transform> {
         let frame = if seconds.is_finite() {
             seconds.clamp(0.0, self.duration()) * self.fps
         } else {
@@ -41,34 +223,25 @@ impl Animation {
             let local = self.poses[first][bone].lerp(self.poses[next][bone], frame.fract());
             world.push(parent.map_or(local, |p| world[p].compose(local)));
         }
-        let skin: Vec<_> = world
-            .iter()
-            .zip(&self.inverse)
-            .map(|(a, b)| a.compose(*b))
-            .collect();
-        model
-            .vertices
-            .iter()
-            .zip(&model.weights)
-            .map(|(point, weights)| {
-                let Some(weights) = weights else {
-                    return *point;
-                };
-                let mut result = [0.0; 3];
-                let total: u32 = weights.values.iter().map(|v| *v as u32).sum();
-                if total == 0 {
-                    return *point;
+        world
+    }
+
+    pub(super) fn world_matrices(&self, seconds: f32) -> Vec<[f32; 16]> {
+        self.world(seconds)
+            .into_iter()
+            .map(|transform| {
+                let mut matrix = [0.; 16];
+                for column in 0..3 {
+                    let mut axis = [0.; 3];
+                    axis[column] = 1.;
+                    let direction = transform
+                        .normal(axis)
+                        .map(|v| v * transform.scale * transform.scale);
+                    matrix[column * 4..column * 4 + 3].copy_from_slice(&direction);
                 }
-                for (&bone, &weight) in weights.bones.iter().zip(&weights.values) {
-                    if weight == 0 {
-                        continue;
-                    }
-                    let transformed = skin[bone as usize].point(*point);
-                    for axis in 0..3 {
-                        result[axis] += transformed[axis] * weight as f32 / total as f32;
-                    }
-                }
-                result
+                matrix[12..15].copy_from_slice(&transform.translation);
+                matrix[15] = 1.;
+                matrix
             })
             .collect()
     }
@@ -90,38 +263,40 @@ pub(super) fn load(
     resources: &[Vec<u8>],
     model: &Model,
 ) -> Result<Option<Animation>, String> {
-    let Some(bank) = bank(manager, resources, Some(model))? else {
+    let Some(bank) = bank(manager, resources)? else {
         return Ok(None);
     };
     let mut budget = Budget::default();
-    let mut clip = None;
+    let mut failure = None;
     for &tag in &bank.tags {
         let Some(read) = budget.read(manager, tag) else {
             return Err(OVER_BUDGET.into());
         };
-        let bytes = read?;
+        let Ok(bytes) = read else {
+            continue;
+        };
         // Native FNV-1 identifier for "idle", not a guessed first animation.
-        if u32_at(&bytes, 0x120)? == IDLE_NAME {
-            clip = Some((tag, bytes));
-            break;
+        if u32_at(&bytes, 0x120).ok() == Some(IDLE_NAME) {
+            match decode(tag, &bytes, bank.skeleton, bank.data).and_then(|animation| {
+                skinned(model, &animation)?;
+                Ok(animation)
+            }) {
+                Ok(animation) => return Ok(Some(animation)),
+                Err(error) => failure = Some(error),
+            }
         }
     }
-    let Some((tag, bytes)) = clip else {
-        return Err("No native idle clip was found in this animation bank.".into());
-    };
-    let animation = decode(tag, &bytes, bank.skeleton, bank.data)?;
-    skinned(model, &animation)?;
-    Ok(Some(animation))
+    Err(failure.unwrap_or_else(|| "No native idle clip was found in this animation bank.".into()))
 }
 
 /// Every clip the object exposes, in a stable order. The default clip, when one exists, is
 /// first; the rest keep the bank's own order.
 ///
-/// A clip the preview cannot decode, because of its codec or its skeleton remap, is left out
+/// A clip the preview cannot decode, because of its codec or its bone maps, is left out
 /// rather than failing the walk, so one unsupported clip does not hide the others. An object
 /// with no skeleton, no bank or an unreadable one enumerates as nothing to choose from.
 pub(crate) fn clips(manager: &PackageManager, resources: &[Vec<u8>]) -> Vec<Clip> {
-    let Ok(Some(bank)) = bank(manager, resources, None) else {
+    let Ok(Some(bank)) = bank(manager, resources) else {
         return Vec::new();
     };
     let mut budget = Budget::default();
@@ -160,7 +335,7 @@ pub(crate) fn load_clip(
     model: &Model,
     tag: u32,
 ) -> Result<Animation, String> {
-    let Some(bank) = bank(manager, resources, Some(model))? else {
+    let Some(bank) = bank(manager, resources)? else {
         return Err("This object has no animation skeleton.".into());
     };
     if !bank.tags.contains(&tag) {
@@ -171,10 +346,7 @@ pub(crate) fn load_clip(
         return Err(OVER_BUDGET.into());
     };
     let bytes = read?;
-    // `decode` names the idle clip because the default path is the one that reports it. A clip
-    // the caller chose is not that clip, so the same reason is given without the word.
-    let animation = decode(tag, &bytes, bank.skeleton, bank.data)
-        .map_err(|error| error.replace("This idle clip uses", "This clip uses"))?;
+    let animation = decode(tag, &bytes, bank.skeleton, bank.data)?;
     skinned(model, &animation)?;
     Ok(animation)
 }
@@ -193,12 +365,10 @@ struct Bank<'a> {
     tags: Vec<u32>,
 }
 
-/// Locates the animation bank. `model` is checked only for a caller that means to play a clip
-/// on it, because enumerating what an object carries does not need one.
+/// Locates the animation bank within one entity owner's resources.
 fn bank<'a>(
     manager: &PackageManager,
     resources: &'a [Vec<u8>],
-    model: Option<&Model>,
 ) -> Result<Option<Bank<'a>>, String> {
     let Some((skeleton, data)) = component(resources, 0x8080_8546)? else {
         return Ok(None);
@@ -206,9 +376,6 @@ fn bank<'a>(
     let Some((definition, definition_data)) = component(resources, 0x8080_344B)? else {
         return Err("This skeleton has no supported animation bank.".into());
     };
-    if model.is_some_and(|model| model.tags.len() != 1) {
-        return Err("Animation for objects with multiple models is not supported yet.".into());
-    }
     let bytes = checked(
         manager,
         u32_at(definition, definition_data + 0x90)?,
@@ -225,15 +392,22 @@ fn bank<'a>(
     }))
 }
 
-/// The first resource carrying a component of `class`, with the offset of its data.
+/// One unambiguous component of `class`, with the offset of its data.
 fn component(resources: &[Vec<u8>], class: u32) -> Result<Option<(&[u8], usize)>, String> {
+    let mut found = None;
     for bytes in resources {
         let data = pointer(bytes, 0x18)?;
         if data >= 4 && u32_at(bytes, data - 4)? == class {
-            return Ok(Some((bytes.as_slice(), data)));
+            if found.is_some_and(|(previous, _)| previous != bytes.as_slice()) {
+                return Err(
+                    "This animation owner has multiple conflicting skeleton or bank definitions."
+                        .into(),
+                );
+            }
+            found = Some((bytes.as_slice(), data));
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 /// The read budget for one walk over a bank, so a large bank cannot stall the preview.
@@ -301,150 +475,7 @@ fn float(bytes: &[u8], offset: usize) -> Result<f32, String> {
     Ok(value)
 }
 
-fn indices(bytes: &[u8], offset: usize, bones: usize) -> Result<Vec<usize>, String> {
-    let (count, rows) = array(bytes, offset, 0x8080_000A, 2, bones)?;
-    let result = (0..count)
-        .map(|i| u16_at(bytes, rows + i * 2).map(usize::from))
-        .collect::<Result<Vec<_>, _>>()?;
-    if result.iter().any(|&v| v >= bones) || result.iter().collect::<BTreeSet<_>>().len() != count {
-        return Err("Animation has an invalid bone map.".into());
-    }
-    Ok(result)
-}
-
-fn decode(tag: u32, bytes: &[u8], skeleton: &[u8], data: usize) -> Result<Animation, String> {
-    if u64_at(bytes, 0)? != bytes.len() as u64 {
-        return Err("Animation resource is truncated.".into());
-    }
-    let (bones, hierarchy) = array(skeleton, data + 0x80, 0x8080_8A08, 16, 256)?;
-    if bones == 0 {
-        return Err("Animation skeleton is empty.".into());
-    }
-    let (count, inverse_rows) = array(skeleton, data + 0xA0, 0x8080_9F75, 32, 256)?;
-    if count != bones {
-        return Err("Animation skeleton has mismatched transforms.".into());
-    }
-    let mut parents = Vec::new();
-    let mut inverse = Vec::new();
-    for i in 0..bones {
-        let parent = i32_at(skeleton, hierarchy + i * 16 + 4)?;
-        if parent < -1 || parent >= i as i32 {
-            return Err("Animation skeleton has an invalid hierarchy.".into());
-        }
-        parents.push((parent >= 0).then_some(parent as usize));
-        inverse.push(Transform::read(skeleton, inverse_rows + i * 32)?);
-    }
-    let mapping = indices(bytes, 0xA8, bones)?;
-    if mapping != (0..bones).collect::<Vec<_>>() {
-        return Err("This animation uses an unsupported skeleton remap.".into());
-    }
-    let static_rot = indices(bytes, 0xB8, bones)?;
-    let static_pos = indices(bytes, 0xC8, bones)?;
-    let animated_rot = indices(bytes, 0xE8, bones)?;
-    let animated_pos = indices(bytes, 0xF8, bones)?;
-    for (a, b) in [(&static_rot, &animated_rot), (&static_pos, &animated_pos)] {
-        if a.len() + b.len() != bones || a.iter().chain(b).collect::<BTreeSet<_>>().len() != bones {
-            return Err("Animation tracks do not cover the skeleton exactly once.".into());
-        }
-    }
-    let frames = usize::from(u16_at(bytes, 0x13C)?);
-    let fps = u32_at(bytes, 0xA4)? as f32;
-    if !(2..=3600).contains(&frames) || !(1.0..=120.0).contains(&fps) || frames * bones > 250_000 {
-        return Err("Animation exceeds the preview frame budget.".into());
-    }
-    let fixed = pointer(bytes, 0x10)?;
-    let dynamic = pointer(bytes, 0x18)?;
-    if fixed < 4
-        || dynamic < 4
-        || u32_at(bytes, fixed - 4)? != 0x8080_8F6F
-        || u32_at(bytes, dynamic - 4)? != 0x8080_8F71
-    {
-        return Err("This idle clip uses an animation codec that is not supported yet.".into());
-    }
-    if u16_at(bytes, fixed)? != 3
-        || u16_at(bytes, dynamic)? != 2
-        || u16_at(bytes, dynamic + 2)? != 0
-        || u16_at(bytes, 0x13E)? as usize != bones
-        || u16_at(bytes, fixed + 2)? as usize != bones
-        || u16_at(bytes, fixed + 4)? as usize != static_rot.len()
-        || u16_at(bytes, fixed + 6)? as usize != static_pos.len()
-        || u16_at(bytes, dynamic + 4)? as usize != animated_rot.len()
-        || u16_at(bytes, dynamic + 6)? as usize != animated_pos.len()
-        || u32_at(bytes, dynamic + 0x10)? as usize != frames
-    {
-        return Err("Animation codec counts do not match the clip.".into());
-    }
-    let words = bones + static_rot.len() * 4 + static_pos.len() * 3;
-    let (count, samples) = array(bytes, fixed + 0x38, 0x8080_000A, 2, words)?;
-    if count != words {
-        return Err("Invalid static animation sample count.".into());
-    }
-    // The initial supported layout has constant unit bone scale.
-    if (float(bytes, fixed + 0x14)? - 1.0).abs() > 0.0001
-        || (0..bones).any(|i| u16_at(bytes, samples + i * 2) != Ok(0))
-    {
-        return Err("Animated bone scaling is not supported yet.".into());
-    }
-    let mut bind = vec![Transform::identity(); bones];
-    let mut offset = samples + bones * 2;
-    for &bone in &static_rot {
-        for axis in 0..4 {
-            bind[bone].rotation[axis] =
-                u16_at(bytes, offset + axis * 2)? as f32 / 65535.0 * 2.0 - 1.0;
-        }
-        bind[bone].normalize()?;
-        offset += 8;
-    }
-    for &bone in &static_pos {
-        for axis in 0..3 {
-            bind[bone].translation[axis] = u16_at(bytes, offset + axis * 2)? as f32 / 65535.0
-                * float(bytes, fixed + 0x1C + axis * 4)?
-                + float(bytes, fixed + 0x28 + axis * 4)?;
-        }
-        offset += 6;
-    }
-    let channels = animated_rot.len() * 4 + animated_pos.len() * 3;
-    let (count, samples) = array(bytes, dynamic + 0x18, 0x8080_000A, 2, channels * frames)?;
-    let (scale_count, scales) = array(bytes, dynamic + 0x28, 0x8080_000F, 4, channels)?;
-    let (bias_count, biases) = array(bytes, dynamic + 0x38, 0x8080_000F, 4, channels)?;
-    if count != channels * frames || scale_count != channels || bias_count != channels {
-        return Err("Invalid animated sample counts.".into());
-    }
-    let mut poses = vec![bind; frames];
-    let mut channel = 0;
-    let mut sample = 0;
-    for (indices, width) in [(&animated_rot, 4), (&animated_pos, 3)] {
-        for &bone in indices {
-            for pose in &mut poses {
-                for axis in 0..width {
-                    let value = u16_at(bytes, samples + (sample + axis) * 2)? as f32 / 65535.0
-                        * float(bytes, scales + (channel + axis) * 4)?
-                        + float(bytes, biases + (channel + axis) * 4)?;
-                    if width == 4 {
-                        pose[bone].rotation[axis] = value;
-                    } else {
-                        pose[bone].translation[axis] = value;
-                    }
-                }
-                sample += width;
-            }
-            channel += width;
-        }
-    }
-    for pose in &mut poses {
-        for transform in pose {
-            transform.normalize()?;
-        }
-    }
-    Ok(Animation {
-        tag,
-        frames,
-        fps,
-        parents,
-        inverse,
-        poses,
-    })
-}
-
+#[cfg(test)]
+mod corpus;
 #[cfg(test)]
 mod tests;

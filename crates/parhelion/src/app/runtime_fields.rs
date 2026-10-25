@@ -1,9 +1,12 @@
 //! Focused runtime fields controls; recipe mutation occurs on user actions.
 use super::*;
-use sundial::package_authoring::weapon_runtime::{WeaponRuntimeOwner, WeaponRuntimeRoot};
+use sundial::package_authoring::runtime::{WeaponRuntimeOwner, WeaponRuntimeRoot};
 
+mod panel;
 #[cfg(test)]
 mod tests;
+
+pub(super) use panel::{ValuePanel, draw_page_value_panel, draw_value_panel};
 
 pub(super) fn draw_runtime_value_override_field(
     ui: &mut egui::Ui,
@@ -16,12 +19,8 @@ pub(super) fn draw_runtime_value_override_field(
         .position(|value| value.locator == field.locator);
     if !runtime_field_is_editable(field) {
         ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::Label::new(&field.path_label)
-                    .selectable(true)
-                    .truncate(),
-            )
-            .on_hover_text(runtime_field_tooltip(field));
+            ui.add(crate::app::style::cut_label(ui, &field.path_label).selectable(true))
+                .on_hover_text(runtime_field_tooltip(field));
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 "This saved field cannot be written.",
@@ -65,9 +64,7 @@ pub(super) fn draw_runtime_value_override_field(
                     |ui| {
                         ui.set_min_width(label_width);
                         ui.add(
-                            egui::Label::new(&field.path_label)
-                                .selectable(true)
-                                .truncate(),
+                            crate::app::style::cut_label(ui, &field.path_label).selectable(true),
                         )
                         .on_hover_text(runtime_field_tooltip(field));
                     },
@@ -85,12 +82,8 @@ pub(super) fn draw_runtime_value_override_field(
             });
         }
         RuntimeEditorLayout::Stacked => {
-            ui.add(
-                egui::Label::new(&field.path_label)
-                    .selectable(true)
-                    .truncate(),
-            )
-            .on_hover_text(runtime_field_tooltip(field));
+            ui.add(crate::app::style::cut_label(ui, &field.path_label).selectable(true))
+                .on_hover_text(runtime_field_tooltip(field));
             ui.horizontal_wrapped(|ui| {
                 next_value = draw_runtime_value_editor(
                     ui,
@@ -125,7 +118,7 @@ pub(super) fn draw_runtime_value_override_field(
     }
 }
 
-pub(super) use sundial::package_authoring::weapon_runtime::presentation::kind_label as runtime_value_kind_label;
+pub(super) use sundial::package_authoring::runtime::presentation::kind_label as runtime_value_kind_label;
 
 pub(super) fn draw_runtime_value_editor(
     ui: &mut egui::Ui,
@@ -172,8 +165,8 @@ fn draw_runtime_value_editor_contents(
     text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
     choices: Option<&'static [(i64, &'static str)]>,
 ) -> Option<WeaponRuntimeValue> {
-    let meaning = sundial::package_authoring::weapon_runtime::modifiers::field_meaning(
-        locator.type_handle,
+    let meaning = sundial::package_authoring::runtime::modifiers::field_meaning(
+        locator.type_handle.get(),
         locator.value_offset,
     );
     let help = meaning.as_ref().map_or("", |meaning| meaning.help);
@@ -238,14 +231,14 @@ fn draw_runtime_value_editor_contents(
             WeaponRuntimeValueKind::SignedInteger { bits: 64 },
             WeaponRuntimeValue::Signed(current),
         ) => {
-            let text = text_state
-                .entry((locator.clone(), 0))
-                .or_insert_with(|| current.to_string());
+            let key = (locator.clone(), 0);
+            let mut text = box_text(text_state, &key, || current.to_string());
             let response = ui.add(
-                egui::TextEdit::singleline(text)
+                egui::TextEdit::singleline(&mut text)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(184.0_f32.min(ui.available_width())),
             );
+            keep_typed(text_state, &key, &text, &response);
             let parsed = text.trim().parse::<i64>().ok();
             if parsed.is_none() {
                 ui.colored_label(
@@ -276,14 +269,14 @@ fn draw_runtime_value_editor_contents(
             | WeaponRuntimeValueKind::BitFlags { bits: 64 },
             WeaponRuntimeValue::Unsigned(current),
         ) => {
-            let text = text_state
-                .entry((locator.clone(), 0))
-                .or_insert_with(|| current.to_string());
+            let key = (locator.clone(), 0);
+            let mut text = box_text(text_state, &key, || current.to_string());
             let response = ui.add(
-                egui::TextEdit::singleline(text)
+                egui::TextEdit::singleline(&mut text)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(184.0_f32.min(ui.available_width())),
             );
+            keep_typed(text_state, &key, &text, &response);
             let parsed = text.trim().parse::<u64>().ok();
             ui.monospace(format!("0x{:X}", parsed.unwrap_or(*current)));
             if parsed.is_none() {
@@ -298,10 +291,27 @@ fn draw_runtime_value_editor_contents(
                 .flatten()
                 .map(WeaponRuntimeValue::Unsigned)
         }
+        (WeaponRuntimeValueKind::BitFlags { .. }, WeaponRuntimeValue::Unsigned(current)) => {
+            // A flag word reads in hex, as its bits are written, so one control carries it
+            // instead of a count beside its hex reading.
+            let mut value = *current;
+            let maximum = kind.unsigned_maximum().unwrap_or(u64::MAX);
+            let changed = ui
+                .add(
+                    egui::DragValue::new(&mut value)
+                        .range(0..=maximum)
+                        .clamp_existing_to_range(false)
+                        .speed(1)
+                        .custom_formatter(|value, _| format!("0x{:X}", value as u64))
+                        .custom_parser(|text| {
+                            parse_runtime_hex_u64(text).map(|value| value as f64)
+                        }),
+                )
+                .changed();
+            changed.then_some(WeaponRuntimeValue::Unsigned(value))
+        }
         (
-            WeaponRuntimeValueKind::UnsignedInteger { .. }
-            | WeaponRuntimeValueKind::Enum { .. }
-            | WeaponRuntimeValueKind::BitFlags { .. },
+            WeaponRuntimeValueKind::UnsignedInteger { .. } | WeaponRuntimeValueKind::Enum { .. },
             WeaponRuntimeValue::Unsigned(current),
         ) => {
             let mut value = *current;
@@ -314,15 +324,15 @@ fn draw_runtime_value_editor_contents(
         }
         (WeaponRuntimeValueKind::HexIdentifier { bits }, WeaponRuntimeValue::Unsigned(current)) => {
             let width = usize::from(*bits / 4);
-            let text = text_state
-                .entry((locator.clone(), 0))
-                .or_insert_with(|| format!("0x{current:0width$X}"));
+            let key = (locator.clone(), 0);
+            let mut text = box_text(text_state, &key, || format!("0x{current:0width$X}"));
             let response = ui.add(
-                egui::TextEdit::singleline(text)
+                egui::TextEdit::singleline(&mut text)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(150.0),
             );
-            let parsed = parse_runtime_hex_u64(text)
+            keep_typed(text_state, &key, &text, &response);
+            let parsed = parse_runtime_hex_u64(&text)
                 .filter(|value| *value <= kind.unsigned_maximum().unwrap_or(u64::MAX));
             if parsed.is_none() {
                 ui.colored_label(
@@ -341,19 +351,20 @@ fn draw_runtime_value_editor_contents(
         }
         (WeaponRuntimeValueKind::Float32, WeaponRuntimeValue::Float32Bits(current)) => {
             let edited_bits = draw_runtime_float_decimal(ui, *current);
-            let text = text_state
-                .entry((locator.clone(), 0))
-                .or_insert_with(|| format!("0x{current:08X}"));
+            let key = (locator.clone(), 0);
+            let mut text = box_text(text_state, &key, || format!("0x{current:08X}"));
             if let Some(bits) = edited_bits {
-                *text = format!("0x{bits:08X}");
+                text = format!("0x{bits:08X}");
+                text_state.remove(&key);
             }
             let response = ui.add(
-                egui::TextEdit::singleline(text)
+                egui::TextEdit::singleline(&mut text)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(98.0),
             );
+            keep_typed(text_state, &key, &text, &response);
             response.clone().on_hover_text("Exact IEEE-754 bits.");
-            let parsed = parse_runtime_hex_u64(text).and_then(|bits| u32::try_from(bits).ok());
+            let parsed = parse_runtime_hex_u64(&text).and_then(|bits| u32::try_from(bits).ok());
             if parsed.is_none() {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
@@ -379,30 +390,32 @@ fn draw_runtime_value_editor_contents(
                     for (index, current_bits) in bits.iter_mut().enumerate() {
                         ui.monospace(["X", "Y", "Z", "W"][index]);
                         let edited_bits = draw_runtime_float_decimal(ui, *current_bits);
-                        let text = text_state
-                            .entry((locator.clone(), u8::try_from(index).unwrap_or(0)))
-                            .or_insert_with(|| format!("0x{:08X}", *current_bits));
+                        let key = (locator.clone(), u8::try_from(index).unwrap_or(0));
+                        let mut text =
+                            box_text(text_state, &key, || format!("0x{:08X}", *current_bits));
                         if let Some(edited_bits) = edited_bits {
                             *current_bits = edited_bits;
-                            *text = format!("0x{:08X}", *current_bits);
+                            text = format!("0x{:08X}", *current_bits);
+                            text_state.remove(&key);
                             changed = true;
                         }
                         let response = ui.add(
-                            egui::TextEdit::singleline(text)
+                            egui::TextEdit::singleline(&mut text)
                                 .font(egui::TextStyle::Monospace)
                                 .desired_width(98.0),
                         );
+                        keep_typed(text_state, &key, &text, &response);
                         response
                             .clone()
                             .on_hover_text("Exact IEEE-754 bits written to the package");
                         let parsed =
-                            parse_runtime_hex_u64(text).and_then(|bits| u32::try_from(bits).ok());
+                            parse_runtime_hex_u64(&text).and_then(|bits| u32::try_from(bits).ok());
                         invalid_bits |= parsed.is_none();
-                        if response.changed() {
-                            if let Some(parsed) = parsed {
-                                *current_bits = parsed;
-                                changed = true;
-                            }
+                        if response.changed()
+                            && let Some(parsed) = parsed
+                        {
+                            *current_bits = parsed;
+                            changed = true;
                         }
                         ui.end_row();
                     }
@@ -416,16 +429,16 @@ fn draw_runtime_value_editor_contents(
             changed.then_some(WeaponRuntimeValue::Vector4Float32Bits(bits))
         }
         (WeaponRuntimeValueKind::FixedBytes { size }, WeaponRuntimeValue::Bytes(current)) => {
-            let text = text_state
-                .entry((locator.clone(), 0))
-                .or_insert_with(|| format_runtime_bytes(current));
+            let key = (locator.clone(), 0);
+            let mut text = box_text(text_state, &key, || format_runtime_bytes(current));
             let response = ui.add(
-                egui::TextEdit::singleline(text)
+                egui::TextEdit::singleline(&mut text)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(ui.available_width().clamp(0.0, 720.0)),
             );
+            keep_typed(text_state, &key, &text, &response);
             let parsed =
-                parse_runtime_hex_bytes(text, usize::try_from(*size).unwrap_or(usize::MAX));
+                parse_runtime_hex_bytes(&text, usize::try_from(*size).unwrap_or(usize::MAX));
             if parsed.is_none() {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
@@ -442,6 +455,28 @@ fn draw_runtime_value_editor_contents(
             ui.colored_label(ui.visuals().error_fg_color, "Type mismatch.");
             None
         }
+    }
+}
+
+/// What a field's text box shows: the text typed into it, else `shown`. Drawing stores nothing,
+/// so only typing marks a field as changed and offers its reset.
+fn box_text(
+    text_state: &BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    key: &(WeaponRuntimeFieldLocator, u8),
+    shown: impl FnOnce() -> String,
+) -> String {
+    text_state.get(key).cloned().unwrap_or_else(shown)
+}
+
+/// Keeps what was typed into a field's text box, invalid text included, until it is reset.
+fn keep_typed(
+    text_state: &mut BTreeMap<(WeaponRuntimeFieldLocator, u8), String>,
+    key: &(WeaponRuntimeFieldLocator, u8),
+    text: &str,
+    response: &egui::Response,
+) {
+    if response.changed() {
+        text_state.insert(key.clone(), text.to_owned());
     }
 }
 
@@ -489,18 +524,19 @@ fn draw_runtime_double(
             .on_hover_text("Non-finite donor value. Edit the exact IEEE-754 bits to change it.");
         false
     };
-    let text = text_state
-        .entry((locator.clone(), 0))
-        .or_insert_with(|| format!("0x{current:016X}"));
+    let key = (locator.clone(), 0);
+    let mut text = box_text(text_state, &key, || format!("0x{current:016X}"));
     if edited && value.is_finite() {
-        *text = format!("0x{:016X}", value.to_bits());
+        text = format!("0x{:016X}", value.to_bits());
+        text_state.remove(&key);
     }
     let response = ui.add(
-        egui::TextEdit::singleline(text)
+        egui::TextEdit::singleline(&mut text)
             .font(egui::TextStyle::Monospace)
             .desired_width(154.0),
     );
-    let parsed = parse_runtime_hex_u64(text);
+    keep_typed(text_state, &key, &text, &response);
+    let parsed = parse_runtime_hex_u64(&text);
     if parsed.is_none() {
         ui.colored_label(
             ui.visuals().error_fg_color,
@@ -570,7 +606,7 @@ pub(super) fn private_perk_runtime_field_is_visible(
         })
 }
 
-use sundial::package_authoring::weapon_runtime::presentation::field_tooltip as runtime_field_tooltip;
+use sundial::package_authoring::runtime::presentation::field_tooltip as runtime_field_tooltip;
 
 pub(super) fn parse_runtime_hex_u64(value: &str) -> Option<u64> {
     let digits = value
@@ -607,7 +643,7 @@ pub(super) fn parse_runtime_hex_bytes(value: &str, expected_size: usize) -> Opti
 pub(super) fn valid_hex_patch_text(value: &str) -> bool {
     let digits = normalized_hex_bytes(value);
     !digits.is_empty()
-        && digits.len() % 2 == 0
+        && digits.len().is_multiple_of(2)
         && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

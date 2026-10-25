@@ -28,6 +28,21 @@ pub(crate) fn icon(
     })
 }
 
+/// The texture an icon shows, once it has loaded.
+pub(crate) fn texture(
+    ctx: &egui::Context,
+    catalog: &InvestmentCatalog,
+    icon: &Icon,
+) -> Option<egui::TextureHandle> {
+    match icon {
+        Icon::Texture { tag } => tag
+            .parse_u32()
+            .ok()
+            .and_then(|tag| catalog.texture_icon(ctx, tag)),
+        Icon::Image { image, .. } => Some(image_texture(ctx, image)),
+    }
+}
+
 fn image_texture(
     ctx: &egui::Context,
     image: &crate::icon_edit::ImportedIcon,
@@ -59,6 +74,3 @@ fn image_texture(
         texture
     })
 }
-
-#[cfg(test)]
-mod tests;

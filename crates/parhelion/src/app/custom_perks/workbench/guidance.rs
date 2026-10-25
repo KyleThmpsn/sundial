@@ -38,11 +38,6 @@ impl Purpose {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn allows(self, behavior: Option<&Behavior>) -> bool {
-        self == Self::All || self.allows_search(behavior.map(behavior_search).as_deref())
-    }
-
     /// Whether a behavior passes, given its `behavior_search` text, or `None` when there is
     /// no behavior.
     pub(super) fn allows_search(self, search: Option<&str>) -> bool {
@@ -319,12 +314,6 @@ pub(super) fn filters(
         pickers::name_combo(ui, "behavior-editing", "Editing Support");
     });
     before != (*purpose, *editing)
-}
-
-/// Summarize routing and retained lifetime without inventing an asset's gameplay effect.
-#[cfg(test)]
-pub(super) fn summary(program: &Program, keys: Option<&KeyCatalog>) -> String {
-    summary_with_assets(program, keys, None)
 }
 
 /// A native program's reading, with each object or effect it references named where the

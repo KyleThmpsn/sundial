@@ -84,16 +84,20 @@ impl PackageAuthoringApp {
             return;
         };
         let mut dismiss = false;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !self.library_state.busy() {
-                dismiss = ui.small_button("Dismiss").clicked();
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                if self.library_state.busy() {
-                    ui.spinner();
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+        // One row. A right-to-left layout straight in the window takes all its remaining height
+        // and centers the notice in it, which pushed the search and the list past the bottom.
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.library_state.busy() {
+                    dismiss = ui.small_button("Dismiss").clicked();
                 }
-                ui.add(egui::Label::new(message).wrap());
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    if self.library_state.busy() {
+                        ui.spinner();
+                        ui.ctx().request_repaint_after(Duration::from_millis(100));
+                    }
+                    ui.add(egui::Label::new(message).wrap());
+                });
             });
         });
         if !self.library_state.errors.is_empty() {

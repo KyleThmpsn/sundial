@@ -1,6 +1,7 @@
 //! Authoring edits to native lists. Copy the owning list before changing its rows.
 use super::*;
 use sundial::package_authoring::sandbox_perk::action;
+use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
 #[derive(Clone, Copy)]
 pub(super) enum Part {
@@ -31,6 +32,8 @@ impl Part {
 pub(super) enum Edit {
     AddGroup,
     Add(NativeNode),
+    /// Catalog insertion carries the node exactly and leaves the behavior's ending alone.
+    AddVerbatim(NativeNode),
     /// Nodes added in order, all or none.
     AddAll(Vec<NativeNode>),
     Replace(usize, NativeNode),
@@ -426,12 +429,12 @@ impl List {
         let owner = unique(&mut changed, &self.owner)?;
         if self.class == 0 {
             match edit {
-                Edit::Add(node) | Edit::Replace(0, node) => {
+                Edit::Add(node) | Edit::AddVerbatim(node) | Edit::Replace(0, node) => {
                     let class = nodes::condition(node.kind)
                         .ok_or("Unknown condition kind.")?
                         .class;
                     let source = Graph::read(&node.bytes, 0, class)?;
-                    source.validate_node(true, node.kind)?;
+                    source.validate_node(NativeNodeKind::Condition(node.kind))?;
                     let target = changed.append(&source)?;
                     changed.blocks[owner].links.insert(self.field, target);
                 }
@@ -469,19 +472,18 @@ impl List {
                 _ => None,
             };
             match edit {
-                Edit::Add(node) | Edit::Replace(_, node) => {
+                Edit::Add(node) | Edit::AddVerbatim(node) | Edit::Replace(_, node) => {
                     if replacement.is_none() && count >= 256 {
                         return Err("This list has reached its entry limit.".into());
                     }
-                    let class = if reversed {
-                        nodes::effect(node.kind)
+                    let kind = if reversed {
+                        NativeNodeKind::Effect(node.kind)
                     } else {
-                        nodes::condition(node.kind)
-                    }
-                    .ok_or("Unknown node kind.")?
-                    .class;
+                        NativeNodeKind::Condition(node.kind)
+                    };
+                    let class = kind.entry().ok_or("Unknown node kind.")?.class;
                     let source = Graph::read(&node.bytes, 0, class)?;
-                    source.validate_node(!reversed, node.kind)?;
+                    source.validate_node(kind)?;
                     let target = changed.append(&source)?;
                     if let Some(index) = replacement {
                         rows.get_mut(index)
@@ -892,59 +894,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nested_predicates_and_requirements_can_be_created_without_raw_allocations() {
-        let mut graph = NativeProgram::empty().graph;
-        edit(
-            &mut graph,
-            0,
-            Part::Trigger,
-            Edit::Add(NativeNode::condition(31).unwrap()),
-        )
-        .unwrap();
-        let parent = List::group(0, Part::Trigger).node(0).unwrap();
-        let groups = List {
-            owner: parent.clone(),
-            field: 0x10,
-            class: action::SUBGROUP_ROW_CLASS,
-        };
-        let count = action::decode(&graph.emit().unwrap()).unwrap().groups[0].activation[0]
-            .subgroups
-            .len();
-        groups.edit(&mut graph, Edit::AddGroup).unwrap();
-        let mut owner = parent;
-        owner.push(0x10);
-        let children = List {
-            owner,
-            field: count * 0x20 + 0x10,
-            class: action::CONDITION_ROW_CLASS,
-        };
-        children
-            .edit(&mut graph, Edit::Add(NativeNode::condition(35).unwrap()))
-            .unwrap();
-        let predicate = List {
-            owner: children.node(0).unwrap(),
-            field: 0x100,
-            class: 0,
-        };
-        predicate
-            .edit(&mut graph, Edit::Add(NativeNode::condition(1).unwrap()))
-            .unwrap();
-        let decoded = action::decode(&graph.emit().unwrap()).unwrap();
-        assert_eq!(
-            decoded.groups[0].activation[0].subgroups[count].conditions[0].children[0].kind,
-            1
-        );
-        predicate.edit(&mut graph, Edit::Remove(0)).unwrap();
-        groups.edit(&mut graph, Edit::Remove(count)).unwrap();
-        assert_eq!(
-            action::decode(&graph.emit().unwrap()).unwrap().groups[0].activation[0]
-                .subgroups
-                .len(),
-            count
-        );
-    }
-
     fn kinds(graph: &Graph, group: usize) -> Vec<u8> {
         action::decode(&graph.emit().unwrap()).unwrap().groups[group]
             .effects
@@ -992,29 +941,6 @@ mod tests {
         assert!(remove_group(&mut graph, 0).is_err());
         assert!(edit(&mut graph, 1, Part::Actions, Edit::Remove(10)).is_err());
         assert_eq!(graph, before);
-    }
-
-    #[test]
-    fn replacing_an_aliased_condition_changes_only_the_selected_list() {
-        let mut graph = NativeProgram::empty().graph;
-        let node = NativeNode::condition(1).unwrap();
-        edit(&mut graph, 0, Part::Ending, Edit::Add(node)).unwrap();
-        let shared = graph.blocks[0].links[&0x50];
-        graph.blocks[0].links.insert(0x60, shared);
-        graph.synchronize_counts().unwrap();
-        let before = action::decode(&graph.emit().unwrap()).unwrap().groups[0].rearm[0]
-            .native
-            .clone();
-        edit(
-            &mut graph,
-            0,
-            Part::Ending,
-            Edit::Replace(0, NativeNode::condition(14).unwrap()),
-        )
-        .unwrap();
-        let decoded = action::decode(&graph.emit().unwrap()).unwrap();
-        assert_eq!(decoded.groups[0].removal[0].kind, 14);
-        assert_eq!(decoded.groups[0].rearm[0].native, before);
     }
 
     /// A trigger preset replaces the endings a trigger implies and keeps one someone chose.

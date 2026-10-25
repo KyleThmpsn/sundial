@@ -5,8 +5,8 @@ mod unlocks;
 pub(crate) use unlocks::Unlock;
 
 use crate::{
-    investment_localization::{LocalizedStringCache, resolve_string},
-    investment_schema::*,
+    investment::localization::{LocalizedStringCache, resolve_string},
+    investment::schema::*,
     package_payload::{array_at, u16_at, u32_at},
     package_runtime::resolve_live_named_tag,
 };

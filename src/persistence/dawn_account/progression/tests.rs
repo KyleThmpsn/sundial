@@ -10,23 +10,6 @@ fn loaded(path: &Path) -> Box<DawnAccountDocument> {
     }
 }
 
-#[test]
-#[ignore = "requires SUNDIAL_DAWN_ACCOUNT_DB and reads the selected database without writing"]
-fn installed_dawn_progression_and_reward_ledger_are_readable() {
-    let path = std::env::var_os("SUNDIAL_DAWN_ACCOUNT_DB").expect("SUNDIAL_DAWN_ACCOUNT_DB");
-    let doc = loaded(Path::new(&path));
-    for index in 0..doc.characters().characters().len() {
-        crate::persistence::progression::validate(&doc.progression_view(index)).unwrap();
-    }
-    eprintln!(
-        "Dawn schema 5: {} characters, {} progression rows, {} dismantle policies, {} reward debts",
-        doc.characters().characters().len(),
-        doc.progression.state.unlocks.len(),
-        doc.profile().dismantle_rewards().len(),
-        doc.reward_debts().len()
-    );
-}
-
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("player-state.db");

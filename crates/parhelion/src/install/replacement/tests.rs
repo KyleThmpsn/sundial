@@ -136,13 +136,14 @@ fn unchanged_definitions_need_no_account_and_unreferenced_removals_guard_concurr
 fn socket_layout_changes_use_each_generations_count_and_require_exact_review() {
     let old = BTreeMap::from([(100, vec![Some(300); 8]), (200, vec![None; 9])]);
     let incoming = BTreeMap::from([(100, vec![Some(400); 9]), (200, vec![Some(500); 9])]);
-    let changes = socket_changes(old, incoming).unwrap();
+    let changes = socket_changes(&old, &incoming, &BTreeSet::new(), &[]).unwrap();
     assert_eq!(
         changes,
         vec![AuthoredSocketChange {
             definition_hash: 100,
             previous_socket_count: 8,
             default_plugs: vec![Some(400); 9],
+            replaced_defaults: (0..8).map(|lane| (lane, 300)).collect(),
         }]
     );
     let root = tempfile::tempdir().unwrap();
@@ -174,15 +175,19 @@ fn socket_layout_changes_use_each_generations_count_and_require_exact_review() {
 }
 
 #[test]
-#[ignore = "read-only native comparison; requires PARHELION_LIFECYCLE_SOURCE_PACKAGES and PARHELION_TEST_STAGED_RUN"]
+#[ignore = "read-only native comparison; requires SUNDIAL_INSTALL and PARHELION_TEST_STAGED_RUN"]
 fn staged_identity_reader_matches_installed_generation() {
-    let target = PathBuf::from(std::env::var_os("PARHELION_LIFECYCLE_SOURCE_PACKAGES").unwrap());
+    let target = crate::test_support::install().join("packages");
     let staged = PathBuf::from(std::env::var_os("PARHELION_TEST_STAGED_RUN").unwrap());
     let (hashes, unlocks) = identities::generation_identities(&target, &staged).unwrap();
     let socket_defaults = identities::generation_socket_defaults(&target, &staged, &hashes)
         .expect("every retained weapon and private plug must expose valid native socket metadata");
     let manifest: ManifestDocument =
         serde_json::from_slice(&fs::read(staged.join(MANIFEST_FILE_NAME)).unwrap()).unwrap();
+    assert!(
+        !manifest.project.weapons.is_empty(),
+        "configured generation has no weapons"
+    );
     for weapon in &manifest.project.weapons {
         assert!(hashes.contains(&weapon.item.hash.get()));
         assert!(!socket_defaults[&weapon.item.hash.get()].is_empty());
@@ -191,5 +196,4 @@ fn staged_identity_reader_matches_installed_generation() {
         unlocks,
         validate_manifest_unlocks(&manifest.project).unwrap()
     );
-    assert!(hashes.len() >= manifest.project.weapons.len());
 }

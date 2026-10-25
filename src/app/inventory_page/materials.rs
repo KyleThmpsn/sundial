@@ -34,7 +34,7 @@ impl SundialApp {
                             .searches
                             .entry("character-material-picker".into())
                             .or_default();
-                        ui.add(egui::TextEdit::singleline(query).hint_text("Search materials"));
+                        ui.add(egui::TextEdit::singleline(query).hint_text("Search Materials"));
                         let Ok(items) = &items else {
                             return;
                         };
@@ -83,7 +83,7 @@ impl SundialApp {
                                 .clicked()
                             {
                                 edit = Some(Edit::Add(hash));
-                                ui.close_menu();
+                                ui.close();
                             }
                         }
                         if count == 0 {

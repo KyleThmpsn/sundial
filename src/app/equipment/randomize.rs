@@ -296,7 +296,7 @@ pub(in crate::app) fn draw_menu(
                 .clicked()
             {
                 request = Some(Request::Item);
-                ui.close_menu();
+                ui.close();
             }
             if ui
                 .add_enabled(inventory_editable, egui::Button::new("Randomize Loadout…"))
@@ -308,7 +308,7 @@ pub(in crate::app) fn draw_menu(
                 .clicked()
             {
                 request = Some(Request::Loadout);
-                ui.close_menu();
+                ui.close();
             }
         });
     });

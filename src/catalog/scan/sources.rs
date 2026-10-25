@@ -1,5 +1,5 @@
 //! Checked native roots and aligned item/string table inputs.
-use crate::investment_schema::{
+use crate::investment::schema::{
     GLOBALS_ITEM_STRING_TABLE_SLOT, GLOBALS_LOCALIZED_STRING_INDEX_TABLE_SLOT,
     INVESTMENT_ROOT_CLASS, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE,
     ITEM_STRING_INDEX_ROW_CLASS, ROOT_ITEM_DEFINITION_TABLE_SLOT,
@@ -155,10 +155,12 @@ fn validate_item_tables(item_table: &[u8], string_map: &[u8]) -> Result<PairedIt
                 .ok_or("Installed item-string table extent overflowed")?,
         )
         .ok_or("Installed item-string table extent overflowed")?;
+    // The game reads the rows where the descriptor puts them, which need not end the entry. An
+    // installed mod's table can keep its stock bytes and hold a grown copy of the rows elsewhere.
     if item_row_class != ITEM_DEFINITION_INDEX_ROW_CLASS
         || string_row_class != ITEM_STRING_INDEX_ROW_CLASS
-        || item_rows_end != item_table.len()
-        || string_rows_end != string_map.len()
+        || item_rows_end > item_table.len()
+        || string_rows_end > string_map.len()
     {
         return Err(
             "The installed item and item-string tables have unexpected native layouts".into(),

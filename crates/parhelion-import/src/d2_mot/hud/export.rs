@@ -7,6 +7,40 @@ use serde_json::{Value, json};
 
 // The ammunition HUD table, distinct from the 100x100 equipment icon table.
 const TABLE: u32 = 0x80A9_E796;
+/// The size of Shadowkeep's HUD weapon art, which a recipe's HUD image takes.
+const WIDTH: u32 = 137;
+const HEIGHT: u32 = 76;
+
+/// The source HUD art decoded and, when its size differs, scaled to fit the native size whole,
+/// centred on transparency.
+fn fitted(image: &icon::Layer) -> Result<Vec<u8>> {
+    let rgba = icon::decode(image)?;
+    let (width, height) = (u32::from(image.width), u32::from(image.height));
+    if (width, height) == (WIDTH, HEIGHT) {
+        return Ok(rgba);
+    }
+    let source = image::RgbaImage::from_raw(width, height, rgba)
+        .context("source HUD art size differs from its pixels")?;
+    let scale = (f64::from(WIDTH) / f64::from(width)).min(f64::from(HEIGHT) / f64::from(height));
+    let (scaled_width, scaled_height) = (
+        ((f64::from(width) * scale).round() as u32).clamp(1, WIDTH),
+        ((f64::from(height) * scale).round() as u32).clamp(1, HEIGHT),
+    );
+    let scaled = image::imageops::resize(
+        &source,
+        scaled_width,
+        scaled_height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let mut canvas = image::RgbaImage::new(WIDTH, HEIGHT);
+    image::imageops::overlay(
+        &mut canvas,
+        &scaled,
+        i64::from((WIDTH - scaled_width) / 2),
+        i64::from((HEIGHT - scaled_height) / 2),
+    );
+    Ok(canvas.into_raw())
+}
 
 /// Resolve the selected content variant before reading its HUD override. An unset
 /// override uses the weapon family icon, as opposed to another variant's artwork.
@@ -115,12 +149,10 @@ pub fn export(reader: &mut Reader, report: &Value, rig: &Value) -> Result<Value>
     reader.tag(layer, Some(0x80803ECF))?;
     let texture = icon::layer_texture(reader, layer)?.context("source HUD layer is empty")?;
     let image = icon::read_texture(reader, texture)?;
-    ensure!(
-        matches!(image.format, 28 | 29) && (image.width, image.height) == (137, 76),
-        "unsupported source HUD texture layout"
-    );
-    super::save(&reader.output.join("hud-icon.png"), 137, 76, &image.data)?;
-    let result = json!({"table":format!("{TABLE:08X}"),"key":format!("{key:08X}"),"layer":format!("{layer:08X}"),"texture":format!("{texture:08X}"),"content_key":rig["content_key"],"family_fallback":selection != "variant_override","selection":selection,"path":"hud-icon.png","size":[137,76]});
+    let source = [image.width, image.height];
+    let rgba = fitted(&image)?;
+    super::save(&reader.output.join("hud-icon.png"), WIDTH, HEIGHT, &rgba)?;
+    let result = json!({"table":format!("{TABLE:08X}"),"key":format!("{key:08X}"),"layer":format!("{layer:08X}"),"texture":format!("{texture:08X}"),"content_key":rig["content_key"],"family_fallback":selection != "variant_override","selection":selection,"path":"hud-icon.png","size":[WIDTH,HEIGHT],"source_size":source,"source_format":image.format});
     write_json(&reader.output.join("hud.json"), &result)?;
     Ok(result)
 }

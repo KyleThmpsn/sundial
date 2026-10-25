@@ -1,6 +1,6 @@
 //! Readable backups with per-file ownership and legacy history retention.
 mod index;
-use crate::paths;
+use crate::system::paths;
 pub(crate) use index::create;
 use sha2::{Digest, Sha256};
 use std::{
@@ -44,7 +44,7 @@ pub(crate) fn source_directory(root: &Path, source: &Path) -> Result<PathBuf, St
             root.display()
         )
     })?;
-    let directory = resolved_root.join("sources").join(format!("{digest:x}"));
+    let directory = resolved_root.join("sources").join(hex::encode(digest));
     let resolved = paths::resolve_path_for_comparison(&directory).map_err(|error| {
         format!(
             "Could not resolve backup folder {}: {error}",
@@ -113,8 +113,7 @@ pub(crate) fn prune_automatic_backups(
         } else {
             continue;
         };
-        let bytes = fs::read(&path).map_err(|error| error.to_string())?;
-        if format!("{:x}", Sha256::digest(&bytes)) != record.sha256 {
+        if crate::storage::file_sha256(&path).map_err(|error| error.to_string())? != record.sha256 {
             continue;
         }
         destination.push(AutomaticBackup {
@@ -210,8 +209,9 @@ fn prune_automatic_backup_family(
     for backup in backups.into_iter().skip(keep) {
         if let Some(expected) = &backup.sha256 {
             index::checked_child(&store.root, &backup.file_name)?;
-            let bytes = fs::read(&backup.path).map_err(|error| error.to_string())?;
-            if format!("{:x}", Sha256::digest(&bytes)) != *expected {
+            if crate::storage::file_sha256(&backup.path).map_err(|error| error.to_string())?
+                != *expected
+            {
                 return Err("A backup changed during cleanup. It was left untouched".into());
             }
         }

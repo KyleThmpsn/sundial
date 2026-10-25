@@ -8,6 +8,18 @@ use super::{
 use eframe::egui;
 use serde_json::Value;
 
+fn choice_label(value: &str) -> &str {
+    match value {
+        "warn" => "Warning",
+        "error" => "Error",
+        "info" => "Info",
+        "debug" => "Debug",
+        "trace" => "Trace",
+        "off" => "Off",
+        _ => value,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab {
     #[default]
@@ -192,7 +204,13 @@ fn draw_group(
     {
         ui.push_id(field.path, |ui| {
             ui.add_enabled_ui(account_available || !field.account_owned(), |ui| {
-                changed |= draw_field(ui, document, field, account_available);
+                changed |= draw_field_with_trace(
+                    ui,
+                    document,
+                    field,
+                    account_available,
+                    capabilities.trace_logging(),
+                );
             })
             .response
             .on_disabled_hover_text("The active account is unavailable.");
@@ -201,11 +219,12 @@ fn draw_group(
     changed
 }
 
-pub(super) fn draw_field(
+fn draw_field_with_trace(
     ui: &mut egui::Ui,
     document: &mut Value,
     field: Field,
     account_available: bool,
+    trace_logging: bool,
 ) -> bool {
     let field = field.for_document(document);
     let mut value = match optional_value(document, field.path) {
@@ -240,7 +259,11 @@ pub(super) fn draw_field(
                 ui.label(field.label);
                 let mut number = value.as_u64().unwrap_or(min);
                 requested = ui
-                    .add(egui::DragValue::new(&mut number).range(min..=max))
+                    .add(
+                        egui::DragValue::new(&mut number)
+                            .range(min..=max)
+                            .clamp_existing_to_range(false),
+                    )
                     .changed();
                 value = Value::from(number);
             }
@@ -256,11 +279,21 @@ pub(super) fn draw_field(
                 ui.label(field.label).on_hover_text(field.help);
                 let mut selected = value.as_str().unwrap_or(choices[0]).to_owned();
                 egui::ComboBox::from_id_salt(field.path)
-                    .selected_text(&selected)
+                    .selected_text(choice_label(&selected))
                     .show_ui(ui, |ui| {
                         for choice in choices {
+                            if *choice == "trace"
+                                && !trace_logging
+                                && value.as_str() != Some("trace")
+                            {
+                                continue;
+                            }
                             requested |= ui
-                                .selectable_value(&mut selected, (*choice).to_owned(), *choice)
+                                .selectable_value(
+                                    &mut selected,
+                                    (*choice).to_owned(),
+                                    choice_label(choice),
+                                )
                                 .changed();
                         }
                     });
@@ -269,10 +302,10 @@ pub(super) fn draw_field(
                 }
             }
         }
-        crate::ui_help::info(ui, field.help);
+        crate::ui::help::info(ui, field.help);
         if document.pointer(field.path).is_none() {
             ui.label(egui::RichText::new("Using Default").small().weak())
-                .on_hover_text("No value is saved for this setting, so Sunrise uses its built-in default. Change this control to save your own value.");
+                .on_hover_text("Not saved. Sunrise uses its built-in default.");
         }
     });
     let error_id = ui.make_persistent_id(("runtime-error", field.path));
@@ -289,7 +322,9 @@ pub(super) fn draw_field(
                 ui.data_mut(|data| data.remove::<String>(error_id));
                 return changed;
             }
-            Err(error) => ui.data_mut(|data| data.insert_temp(error_id, error)),
+            Err(error) => ui.data_mut(|data| {
+                data.insert_temp(error_id, error);
+            }),
         }
     }
     if let Some(error) = ui.data_mut(|data| data.get_temp::<String>(error_id)) {

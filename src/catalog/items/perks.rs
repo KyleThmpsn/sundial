@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use tiger_pkg::TagHash;
 
 use crate::{
-    investment_schema::{
+    investment::schema::{
         GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, ITEM_SANDBOX_PERK_DESCRIPTOR_OFFSET,
         ITEM_SANDBOX_PERK_ROW_CLASS, ITEM_SANDBOX_PERK_ROW_SIZE,
         ROOT_SANDBOX_PERK_INDEX_TABLE_SLOT, investment_globals_table_tag,
@@ -166,10 +166,6 @@ pub(super) fn item_perk_indices(item: &[u8]) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use crate::package_runtime;
-
     use super::*;
 
     fn item_with_sandbox_perks(perks: &[(u16, [u8; 22])]) -> Vec<u8> {
@@ -269,25 +265,5 @@ mod tests {
                 .is_some(),
             "authored finished-perk rows must remain scannable"
         );
-    }
-
-    #[test]
-    #[ignore = "requires SUNDIAL_TEST_INSTALL pointing to the supported Shadowkeep build"]
-    fn supported_package_catalog_exposes_known_live_runtime_perk_rows() {
-        let install = PathBuf::from(std::env::var("SUNDIAL_TEST_INSTALL").unwrap());
-        let manager = package_runtime::open_shadowkeep_packages(&install).unwrap();
-        let globals_tag =
-            package_runtime::resolve_live_named_tag(&manager, "investment_globals", None).unwrap();
-        let globals = manager.read_tag(globals_tag).unwrap();
-        let root_tag = investment_globals_table_tag(&globals, 0).unwrap();
-        let root = manager.read_tag(TagHash(root_tag)).unwrap();
-        let active = scan_sandbox_perk_catalog(&manager, &root, &globals).unwrap();
-
-        assert!(active.len() >= SANDBOX_PERK_CATALOG_STOCK_COUNT);
-        // Hydraulic Boosters, Headseeker, Outlaw, the modern elemental
-        // markers, and Trench Barrel are package-proved live rows.
-        for index in [159, 380, 421, 449, 450, 451, 1_189] {
-            assert!(active[index], "sandbox-perk row {index} should be live");
-        }
     }
 }

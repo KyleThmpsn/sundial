@@ -1,32 +1,67 @@
 use super::*;
 use crate::app::style;
 use parhelion_import::d2_mot::service::{self, ScanProgress, Settings, Weapon};
+
+fn item_kind(item: &Weapon) -> ItemKind {
+    match item.family() {
+        service::Family::Weapon => ItemKind::Weapon,
+        service::Family::Armor => ItemKind::Armor,
+        service::Family::GhostShell => ItemKind::GhostShell,
+        service::Family::Ship => ItemKind::Ship,
+        service::Family::Sparrow => ItemKind::Sparrow,
+        service::Family::Shader => ItemKind::Shader,
+        service::Family::Emblem => ItemKind::Emblem,
+    }
+}
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+mod ability;
+mod batch;
 mod browser;
+mod d1_roi;
+mod filters;
 mod icons;
+mod melee;
 mod models;
-mod status;
+mod perks;
+mod refresh;
+mod sources;
 #[cfg(test)]
 mod tests;
+mod tools;
+use sources::{Origin, Shelf, Source};
 
 pub(super) struct Importer {
     pub open: bool,
     pub enabled: bool,
+    refresh: refresh::State,
     settings: Settings,
+    /// The shown source. The others keep their listings in `shelves`.
+    source: Source,
+    shelves: BTreeMap<Source, Shelf>,
+    /// Halo: Reach and Marathon sources of the shown rows, keyed like `weapons`.
+    origins: BTreeMap<u32, Origin>,
+    roi: Option<d1_roi::Inspected>,
     weapons: Vec<Weapon>,
     selected: BTreeSet<u32>,
+    /// Saved namespaces a library reimport keeps, keyed by source item, for the next import.
+    reimport: BTreeMap<u32, String>,
     browser: browser::Browser,
+    view_path: Option<PathBuf>,
     icons: icons::Icons,
     read_requested: bool,
     catalog_target: PathBuf,
     models: models::Picker,
+    perks: perks::Picker,
+    abilities: ability::Picker,
     receiver: Option<Receiver<Event>>,
     scan_progress: Option<ScanProgress>,
     scan_started: Option<Instant>,
     scan_error: Option<String>,
+    /// Rows the last read of the shown listing left out.
+    scan_warning: Option<String>,
     import_started: Option<Instant>,
     importing: Option<Progress>,
     notice: String,
@@ -34,6 +69,12 @@ pub(super) struct Importer {
     cancel: Arc<AtomicBool>,
     /// (donor count, weapon count) the no-donor set was computed for.
     donor_stamp: (usize, usize),
+    /// The shown source's outside tools. Cleared when a chosen path changes.
+    tools: Option<tools::Checked>,
+    /// Whether the Tools window is open.
+    tools_open: bool,
+    /// A running decompiler download or unpack.
+    fetching: Option<Receiver<Result<(), String>>>,
 }
 
 /// A running import: one slot per worker thread.
@@ -52,30 +93,58 @@ struct Outcome {
     cancelled: bool,
 }
 
+/// A listing, for Halo: Reach and Marathon each row's source, and a warning about rows the read
+/// left out.
+type Listing = (Vec<Weapon>, BTreeMap<u32, Origin>, Option<String>);
+
 enum Event {
+    RoiInspected(Box<Result<d1_roi::Inspected, String>>),
+    RoiExported(Result<PathBuf, String>),
     ScanProgress(ScanProgress),
-    Scanned(Result<Vec<Weapon>, String>),
+    /// A listing, for Halo: Reach and Marathon each row's source, and a warning about rows the
+    /// read left out.
+    Scanned(Result<Listing, String>),
     /// A step message for a worker slot; slot 0 when no import is running.
     Progress(usize, String),
     /// A worker slot started (`Some`) or finished (`None`) a weapon.
     Slot(usize, Option<String>),
     Done(usize),
     ModelPrepared(Box<models::Prepared>),
+    PerkPrepared(Box<perks::Prepared>),
+    AbilitiesListed(Box<ability::Listed>),
+    AbilityPrepared(Box<ability::Prepared>),
     Imported {
         paths: Vec<PathBuf>,
-        sources: Vec<u32>,
         errors: Vec<String>,
         cancelled: bool,
     },
 }
+
+/// The importer window's size when it first opens.
+const DEFAULT_SIZE: [f32; 2] = [980.0, 860.0];
 
 fn data_root() -> Result<PathBuf, String> {
     sundial::package_authoring::parhelion_data_directory()
         .ok_or_else(|| "Could not locate Sundial’s data folder".into())
 }
 
+const MISSING_TOOLS: &str = "Missing tools.";
+const CHECKING_TOOLS: &str = "Checking tools.";
+
 fn clock(seconds: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// A full-width bar in the warning tint, for what an importer window can't promise.
+fn warning_bar(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::NONE
+        .fill(ui.visuals().warn_fg_color.gamma_multiply(0.16))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .corner_radius(4)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.add(egui::Label::new(text).wrap());
+        });
 }
 
 fn plural(count: usize, one: &str, many: &str) -> String {
@@ -94,37 +163,53 @@ impl Default for Importer {
                 }
                 Err(error) => Err(error.to_string()),
             });
-        let (settings, mut notice) = match loaded {
+        let (settings, notice) = match loaded {
             Ok(settings) => (settings, String::new()),
             Err(error) => (Settings::default(), error),
         };
+        // Map builds find vgmstream through the same chosen paths.
+        parhelion_import::tools::configure(settings.tools(None));
         let mut browser = browser::Browser::default();
-        match status::load() {
-            Ok(records) => browser.records = records,
-            Err(error) => notice = error,
+        let view_path = data_root()
+            .ok()
+            .map(|root| root.join(Source::Modern.view_file()));
+        if let Some(path) = &view_path {
+            browser.apply_view(browser::View::load(path));
         }
-        browser.apply_view(browser::View::load());
         Self {
             open: false,
             enabled: settings.enabled,
+            refresh: refresh::State::default(),
             settings,
+            source: Source::Modern,
+            shelves: BTreeMap::new(),
+            origins: BTreeMap::new(),
+            roi: None,
             weapons: Vec::new(),
             selected: BTreeSet::new(),
+            reimport: BTreeMap::new(),
             browser,
+            view_path,
             icons: icons::Icons::default(),
             read_requested: false,
             catalog_target: PathBuf::new(),
             models: models::Picker::default(),
+            perks: perks::Picker::default(),
+            abilities: ability::Picker::default(),
             receiver: None,
             scan_progress: None,
             scan_started: None,
             scan_error: None,
+            scan_warning: None,
             import_started: None,
             importing: None,
             notice,
             outcome: None,
             cancel: Arc::new(AtomicBool::new(false)),
             donor_stamp: (usize::MAX, usize::MAX),
+            tools: None,
+            tools_open: false,
+            fetching: None,
         }
     }
 }
@@ -156,9 +241,11 @@ impl PackageAuthoringApp {
         if ui
             .add_enabled(
                 !self.importer.busy(),
-                egui::Checkbox::new(&mut self.importer.enabled, "D2 Model Importer"),
+                egui::Checkbox::new(&mut self.importer.enabled, "D2 Importer"),
             )
-            .on_hover_text("Enables Tools > D2 Importer in this upstream build.")
+            .on_hover_text(
+                "Import items from Destiny 1, Destiny 2, Halo: Reach and Marathon as recipes.",
+            )
             .changed()
         {
             if !self.importer.enabled {
@@ -172,6 +259,8 @@ impl PackageAuthoringApp {
 
     pub(super) fn draw_importer(&mut self, ctx: &egui::Context) {
         self.poll_importer();
+        self.importer.refresh.observe(&self.recipe_entries);
+        self.draw_import_refresh(ctx);
         if self.importer.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -181,51 +270,61 @@ impl PackageAuthoringApp {
             self.importer.save_view();
         }
         if closed {
+            if self.importer.abilities.close() {
+                self.importer.cancel.store(true, Ordering::Relaxed);
+            }
             return;
         }
+        self.check_importer_tools(ctx);
         self.importer.icons.poll(ctx);
-        let stamp = (self.donor_summaries.len(), self.importer.weapons.len());
+        let stamp = (
+            self.donor_summaries.len() + self.gear_donors.values().map(Vec::len).sum::<usize>(),
+            self.importer.weapons.len(),
+        );
         if self.importer.donor_stamp != stamp {
             self.importer.donor_stamp = stamp;
             self.importer.browser.no_donor = self.importer_no_donor();
+            self.importer.browser.dirty = true;
         }
         if !self.importer.busy() && self.importer.catalog_target != self.packages {
             self.importer.read_requested = false;
             self.importer.weapons.clear();
+            self.importer.scan_warning = None;
             self.importer.selected.clear();
             self.importer.browser.dirty = true;
             self.importer.browser.reset_scroll = true;
         }
         if !self.importer.read_requested
             && !self.importer.busy()
-            && self.importer.settings.modern_packages.is_some()
+            && self.importer.folder().is_some()
         {
             self.scan_importer(ctx, false);
         }
+        self.advance_import_refresh(ctx);
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("d2-importer"),
             egui::ViewportBuilder::default()
                 .with_title("D2 Importer")
-                .with_inner_size([980.0, 740.0])
+                .with_inner_size(DEFAULT_SIZE)
                 .with_min_inner_size([680.0, 520.0]),
-            |ctx, class| {
-                if ctx.input(|input| input.viewport().close_requested()) {
+            |ui, class| {
+                if ui.input(|input| input.viewport().close_requested()) {
                     self.importer.open = false;
                     self.importer.read_requested = false;
                 }
-                if class == egui::ViewportClass::Embedded {
+                if class == egui::ViewportClass::EmbeddedWindow {
                     let mut open = self.importer.open;
                     egui::Window::new("D2 Importer")
                         .open(&mut open)
-                        .default_size([980.0, 740.0])
+                        .default_size(DEFAULT_SIZE)
                         .resizable(true)
-                        .show(ctx, |ui| self.draw_importer_contents(ui));
+                        .show(ui, |ui| self.draw_importer_contents(ui));
                     self.importer.open = open;
                     if !open {
                         self.importer.read_requested = false;
                     }
                 } else {
-                    egui::CentralPanel::default().show(ctx, |ui| self.draw_importer_contents(ui));
+                    egui::CentralPanel::default().show(ui, |ui| self.draw_importer_contents(ui));
                 }
             },
         );
@@ -241,6 +340,7 @@ impl PackageAuthoringApp {
             {
                 Some(Ok(event)) => event,
                 Some(Err(TryRecvError::Disconnected)) => {
+                    self.importer.abilities.worker_stopped();
                     self.importer.receiver = None;
                     self.importer.scan_progress = None;
                     self.importer.scan_started = None;
@@ -252,6 +352,51 @@ impl PackageAuthoringApp {
                 _ => break,
             };
             match event {
+                Event::RoiInspected(result) => {
+                    self.importer.receiver = None;
+                    self.importer.scan_progress = None;
+                    self.importer.scan_started = None;
+                    self.importer.notice.clear();
+                    match *result {
+                        Ok(inspected) => {
+                            self.importer.weapons = inspected.rows();
+                            self.importer.browser.dirty = true;
+                            self.importer.donor_stamp = (0, 0);
+                            self.importer.roi = Some(inspected);
+                        }
+                        Err(error) => self.importer.scan_error = Some(error),
+                    }
+                }
+                Event::RoiExported(result) => {
+                    self.importer.receiver = None;
+                    self.importer.scan_progress = None;
+                    self.importer.scan_started = None;
+                    match result {
+                        Ok(path) => {
+                            self.importer.notice.clear();
+                            if let Some(roi) = self.importer.roi.as_mut() {
+                                roi.exported = Some(path);
+                            }
+                        }
+                        Err(error) => self.importer.notice = error,
+                    }
+                }
+                Event::AbilitiesListed(listed) => {
+                    self.importer.receiver = None;
+                    self.importer.import_started = None;
+                    self.finish_roi_abilities(*listed);
+                }
+                Event::AbilityPrepared(prepared) => {
+                    self.importer.receiver = None;
+                    self.importer.import_started = None;
+                    self.finish_roi_ability(*prepared);
+                }
+                Event::PerkPrepared(prepared) => {
+                    self.importer.receiver = None;
+                    self.importer.import_started = None;
+                    self.importer.importing = None;
+                    self.finish_imported_perk(*prepared);
+                }
                 Event::ModelPrepared(prepared) => {
                     self.importer.receiver = None;
                     self.importer.import_started = None;
@@ -290,28 +435,29 @@ impl PackageAuthoringApp {
                     self.importer.scan_progress = None;
                     self.importer.scan_started = None;
                     match result {
-                        Ok(mut weapons) => {
+                        Ok((mut weapons, origins, warning)) => {
                             let installed: BTreeSet<_> = self
                                 .donor_summaries
                                 .iter()
+                                .chain(self.gear_donors.values().flatten())
                                 .map(|donor| donor.hash)
                                 .collect();
+                            let modern = self.importer.source == Source::Modern;
                             for weapon in &mut weapons {
-                                weapon.dummy |=
-                                    sundial::package_authoring::is_dummy_item(weapon.hash);
+                                // Other sources key rows by their authored item already.
+                                weapon.dummy |= modern
+                                    && sundial::package_authoring::is_dummy_item(weapon.hash);
                                 weapon.present_in_native |= installed.contains(&weapon.hash)
-                                    || service::destination_hash(weapon.hash)
-                                        .is_ok_and(|hash| installed.contains(&hash));
+                                    || modern
+                                        && service::destination_hash(weapon.hash, &weapon.name)
+                                            .is_ok_and(|hash| installed.contains(&hash));
                             }
-                            let mut types = BTreeMap::new();
-                            for weapon in &weapons {
-                                *types.entry(weapon.weapon_type.clone()).or_insert(0) += 1;
-                            }
-                            self.importer.browser.types = types;
+                            self.importer.origins = origins;
                             self.importer.browser.dirty = true;
                             self.importer.browser.reset_scroll = true;
                             self.importer.browser.anchor = None;
                             self.importer.scan_error = None;
+                            self.importer.scan_warning = warning;
                             self.importer.notice.clear();
                             self.importer.weapons = weapons;
                             self.importer.selected.clear();
@@ -324,26 +470,10 @@ impl PackageAuthoringApp {
                 }
                 Event::Imported {
                     paths,
-                    sources,
-                    mut errors,
+                    errors,
                     cancelled,
                 } => {
                     self.importer.cancel.store(false, Ordering::Relaxed);
-                    if !sources.is_empty() {
-                        for source in sources {
-                            self.importer.browser.records.insert(
-                                source,
-                                status::Record {
-                                    working: false,
-                                    note: String::new(),
-                                },
-                            );
-                        }
-                        self.importer.browser.dirty = true;
-                        if let Err(error) = status::save(&self.importer.browser.records) {
-                            errors.push(format!("Could not save testing status: {error}"));
-                        }
-                    }
                     self.importer.receiver = None;
                     self.importer.importing = None;
                     self.importer.import_started = None;
@@ -365,10 +495,26 @@ impl PackageAuthoringApp {
     }
 
     /// Weapons the conversion would turn down before extracting anything: no installed native
-    /// weapon of their type and no profile donor present. Empty until the donor catalog loads.
+    /// weapon of their type, no base for their type and no profile donor present. Empty until
+    /// the donor catalog loads.
     fn importer_no_donor(&self) -> BTreeSet<u32> {
-        if self.donor_summaries.is_empty() {
+        if self.donor_summaries.is_empty() && self.gear_donors.values().all(Vec::is_empty) {
             return BTreeSet::new();
+        }
+        if !matches!(self.importer.source, Source::Modern | Source::Roi) {
+            let risky = self.risky_donors();
+            return self
+                .importer
+                .weapons
+                .iter()
+                .filter(|weapon| {
+                    self.importer
+                        .origins
+                        .get(&weapon.hash)
+                        .is_none_or(|origin| self.foreign_donor(origin, &risky).is_none())
+                })
+                .map(|weapon| weapon.hash)
+                .collect();
         }
         let types: BTreeSet<&str> = self
             .donor_summaries
@@ -384,8 +530,34 @@ impl PackageAuthoringApp {
             .weapons
             .iter()
             .filter(|weapon| {
+                if weapon.is_shader() {
+                    return self.gear_donors_for(ItemKind::Shader).is_empty();
+                }
+                if weapon.family() == service::Family::Emblem {
+                    return self.gear_donors_for(ItemKind::Emblem).is_empty();
+                }
+                if weapon.family().is_model_gear() {
+                    return !self.gear_donors_for(item_kind(weapon)).iter().any(|donor| {
+                        weapon.accepts_gear_donor(
+                            donor.bucket_hash,
+                            self.catalog
+                                .as_ref()
+                                .and_then(|catalog| catalog.item_class_type(donor.hash)),
+                        )
+                    });
+                }
+                if self.importer.source == Source::Roi {
+                    return !self.donor_summaries.iter().any(|donor| {
+                        donor.type_name == weapon.weapon_type
+                            && self
+                                .catalog
+                                .as_ref()
+                                .and_then(|catalog| catalog.item_definition_tag(donor.hash))
+                                .is_some_and(crate::package_profile::is_stock_item_definition)
+                    });
+                }
                 !types.contains(weapon.weapon_type.as_str())
-                    && !service::profile_donor(weapon.hash)
+                    && !service::type_base(&weapon.weapon_type)
                         .is_some_and(|hash| donors.contains(&hash))
             })
             .map(|weapon| weapon.hash)
@@ -399,21 +571,22 @@ impl PackageAuthoringApp {
     fn draw_importer_contents(&mut self, ui: &mut egui::Ui) {
         style::workbench_style(ui);
         let idle = self.importer_idle();
-        egui::TopBottomPanel::top("d2-importer-header")
+        self.importer.browser.refresh(&self.importer.weapons);
+        egui::Panel::top("d2-importer-header")
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
-            .show_inside(ui, |ui| self.draw_importer_header(ui, idle));
+            .show(ui, |ui| self.draw_importer_header(ui, idle));
         if !self.importer.weapons.is_empty()
             || self.importer.busy()
             || self.importer.outcome.is_some()
         {
-            egui::TopBottomPanel::bottom("d2-importer-actions")
+            egui::Panel::bottom("d2-importer-actions")
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
-                .show_inside(ui, |ui| self.draw_importer_footer(ui, idle));
+                .show(ui, |ui| self.draw_importer_footer(ui, idle));
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 6)))
-            .show_inside(ui, |ui| {
-                if self.importer.settings.modern_packages.is_none() {
+            .show(ui, |ui| {
+                if self.importer.folder().is_none() {
                     self.draw_importer_welcome(ui, idle);
                 } else if let Some(error) = self
                     .importer
@@ -425,11 +598,7 @@ impl PackageAuthoringApp {
                 } else if self.importer.scan_progress.is_some() {
                     ui.add_space(ui.available_height() * 0.3);
                     ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new("Reading weapon catalog")
-                                .heading()
-                                .weak(),
-                        );
+                        ui.label(egui::RichText::new("Reading Item Catalog").heading().weak());
                     });
                 } else {
                     self.draw_importer_toolbar(ui);
@@ -438,27 +607,34 @@ impl PackageAuthoringApp {
                     self.draw_importer_browser(ui, idle);
                 }
             });
+        self.draw_modern_perk_window(ui.ctx());
+        self.draw_roi_ability_window(ui.ctx());
+        self.draw_importer_tools_window(ui.ctx());
     }
 
     fn draw_importer_header(&mut self, ui: &mut egui::Ui, idle: bool) {
-        ui.horizontal(|ui| {
-            match &self.importer.settings.modern_packages {
-                Some(path) => {
-                    let shown = path.display().to_string();
-                    ui.add(egui::Label::new(&shown).truncate())
-                        .on_hover_text(shown);
-                }
-                None => {
-                    ui.label(egui::RichText::new("No folder chosen").weak());
-                }
-            }
+        warning_bar(
+            ui,
+            "Imports are a work in progress. Some sources translate better than others, and some \
+             items may not work as intended. Imports improve with each update.",
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            self.draw_source_tabs(ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(idle, |ui| {
-                    let has_source = self.importer.settings.modern_packages.is_some();
+                    let has_source = self.importer.folder().is_some();
+                    if self.importer.source == Source::Modern {
+                        self.draw_modern_perk_button(ui, has_source);
+                    }
+                    if self.importer.source == Source::Roi {
+                        self.draw_roi_ability_button(ui, has_source);
+                    }
                     if ui
                         .add_enabled(has_source, egui::Button::new("Refresh"))
                         .clicked()
                     {
+                        self.importer.tools = None;
                         self.scan_importer(ui.ctx(), true);
                     }
                     if ui
@@ -469,26 +645,41 @@ impl PackageAuthoringApp {
                         })
                         .clicked()
                     {
-                        self.choose_modern_folder(ui.ctx());
+                        self.choose_source_folder(ui.ctx());
+                    }
+                    self.draw_importer_tools_button(ui);
+                    if self.importer.source == Source::Roi {
+                        self.draw_roi_details(ui);
                     }
                 });
             });
         });
         let summary = self.importer_catalog_summary();
-        let blockers = self.importer_blockers();
-        if !summary.is_empty() || (!blockers.is_empty() && !self.importer.weapons.is_empty()) {
-            ui.horizontal_wrapped(|ui| {
+        if let Some(path) = self.importer.folder() {
+            let path = path.display().to_string();
+            ui.horizontal(|ui| {
                 if !summary.is_empty() {
-                    ui.label(egui::RichText::new(summary).weak());
+                    ui.label(egui::RichText::new(format!("{summary} ·")).weak());
                 }
-                if !blockers.is_empty() && !self.importer.weapons.is_empty() {
-                    ui.label(
-                        egui::RichText::new("Blocked:")
-                            .color(ui.visuals().warn_fg_color)
-                            .strong(),
-                    );
-                    ui.label(blockers.join(" "));
-                }
+                ui.add(egui::Label::new(egui::RichText::new(&path).weak()).truncate())
+                    .on_hover_text(&path);
+            });
+        }
+        self.draw_missing_tools(ui, idle);
+        // Missing tools show above with their own lines, and a check in progress only in the footer.
+        let blockers: Vec<_> = self
+            .importer_blockers()
+            .into_iter()
+            .filter(|blocker| ![MISSING_TOOLS, CHECKING_TOOLS].contains(blocker))
+            .collect();
+        if !blockers.is_empty() && !self.importer.weapons.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new("Blocked:")
+                        .color(ui.visuals().warn_fg_color)
+                        .strong(),
+                );
+                ui.label(blockers.join(" "));
             });
         }
         if !self.importer.notice.is_empty() && !self.importer.busy() {
@@ -516,6 +707,11 @@ impl PackageAuthoringApp {
                 }
             });
         }
+        if let Some(warning) = &self.importer.scan_warning
+            && !self.importer.weapons.is_empty()
+        {
+            style::warning(ui, warning);
+        }
     }
 
     fn importer_catalog_summary(&self) -> String {
@@ -527,16 +723,31 @@ impl PackageAuthoringApp {
             .iter()
             .filter(|weapon| weapon.present_in_native)
             .count();
-        let working = weapons
-            .iter()
-            .filter(|weapon| self.importer.browser.is_working(weapon.hash))
-            .count();
-        format!(
-            "{} · {} installed · {} working",
-            plural(weapons.len(), "weapon", "weapons"),
-            installed,
-            working
-        )
+        let count = ItemKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let count = weapons
+                    .iter()
+                    .filter(|item| item_kind(item) == kind)
+                    .count();
+                (count > 0).then(|| {
+                    // Reach vehicles import as Sparrows but list as what they are.
+                    let vehicle =
+                        self.importer.source == Source::Reach && kind == ItemKind::Sparrow;
+                    format!(
+                        "{count} {}",
+                        match (count == 1, vehicle) {
+                            (true, true) => "vehicle".to_owned(),
+                            (false, true) => "vehicles".to_owned(),
+                            (true, false) => kind.noun().to_owned(),
+                            (false, false) => kind.plural().to_lowercase(),
+                        }
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        format!("{count} · {installed} installed")
     }
 
     fn importer_blockers(&self) -> Vec<&'static str> {
@@ -544,11 +755,16 @@ impl PackageAuthoringApp {
         if self.recipe_library.is_none() {
             blockers.push("Recipe library unavailable.");
         }
-        if self.donor_summaries.is_empty() {
+        if self.donor_summaries.is_empty() && self.gear_donors.values().all(Vec::is_empty) {
             blockers.push("Catalog loading.");
         }
         if self.build_receiver.is_some() || self.install_receiver.is_some() {
             blockers.push("Build in progress.");
+        }
+        if self.importer.tools_checking() {
+            blockers.push(CHECKING_TOOLS);
+        } else if !self.importer.tools_ready() {
+            blockers.push(MISSING_TOOLS);
         }
         blockers
     }
@@ -556,13 +772,26 @@ impl PackageAuthoringApp {
     fn draw_importer_welcome(&mut self, ui: &mut egui::Ui, idle: bool) {
         ui.add_space(ui.available_height() * 0.25);
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new("No folder chosen").heading().weak());
+            ui.label(
+                egui::RichText::new("Choose a Source Folder")
+                    .heading()
+                    .weak(),
+            );
+            style::hint(ui, self.importer.source.welcome());
+            style::hint(
+                ui,
+                if self.importer.source == Source::Roi {
+                    "Only the Xbox One build is supported."
+                } else {
+                    "Imports become editable recipes in your library."
+                },
+            );
             ui.add_space(8.0);
             if ui
                 .add_enabled(idle, style::primary(ui, "Choose Folder…"))
                 .clicked()
             {
-                self.choose_modern_folder(ui.ctx());
+                self.choose_source_folder(ui.ctx());
             }
         });
     }
@@ -587,7 +816,7 @@ impl PackageAuthoringApp {
                 .add_enabled(idle, egui::Button::new("Change Folder…"))
                 .clicked()
             {
-                self.choose_modern_folder(ui.ctx());
+                self.choose_source_folder(ui.ctx());
             }
         });
     }
@@ -606,7 +835,6 @@ impl PackageAuthoringApp {
         let has_catalog = !self.importer.weapons.is_empty();
         let blockers = self.importer_blockers();
         let mut import = false;
-        let mut status_change = None;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(idle && has_catalog, |ui| {
                 ui.label(format!("{shown} shown · {selected} selected"));
@@ -626,29 +854,40 @@ impl PackageAuthoringApp {
                     self.importer.selected.extend(hashes);
                 }
                 if ui
-                    .add_enabled(selected > 0, egui::Button::new("Clear"))
+                    .add_enabled(selected > 0, egui::Button::new("Clear Selection"))
                     .clicked()
                 {
                     self.importer.selected.clear();
                     self.importer.browser.anchor = None;
                 }
-                ui.add_enabled_ui(selected > 0, |ui| {
-                    style::more_menu(ui, "Selection", |ui| {
-                        if ui.button("Mark Working").clicked() {
-                            status_change = Some(true);
-                            ui.close_menu();
-                        }
-                        if ui.button("Mark Not Tested").clicked() {
-                            status_change = Some(false);
-                            ui.close_menu();
-                        }
-                    });
-                });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = match importable {
                     0 => "Import".to_owned(),
-                    count => format!("Import {}", plural(count, "Weapon", "Weapons")),
+                    count if self.importer.source == Source::Reach => {
+                        let vehicles = self
+                            .importer
+                            .selected_weapons()
+                            .filter(|item| item_kind(item) == ItemKind::Sparrow)
+                            .count();
+                        format!(
+                            "Import {count} {}",
+                            match (vehicles, count == 1) {
+                                (0, true) => "Weapon",
+                                (0, false) => "Weapons",
+                                (_, true) => "Vehicle",
+                                (all, false) if all == count => "Vehicles",
+                                _ => "Items",
+                            }
+                        )
+                    }
+                    count => format!(
+                        "Import {count} {}",
+                        ItemKind::count_noun(
+                            self.importer.selected_weapons().map(item_kind),
+                            count
+                        )
+                    ),
                 };
                 let ready = idle && importable > 0 && blockers.is_empty();
                 let response = ui.add_enabled(ready, style::primary(ui, &label));
@@ -668,10 +907,6 @@ impl PackageAuthoringApp {
                 }
             });
         });
-        if let Some(working) = status_change {
-            let hashes: Vec<_> = self.importer.selected.iter().copied().collect();
-            self.set_import_status(&hashes, working);
-        }
         if import {
             self.import_selected(ui.ctx());
         }
@@ -692,24 +927,31 @@ impl PackageAuthoringApp {
                         weapons,
                     } => {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Reading weapons").strong());
+                            ui.label(egui::RichText::new(self.importer.reading_label()).strong());
                             if let Some(elapsed) = elapsed {
                                 ui.label(egui::RichText::new(clock(elapsed)).weak());
                             }
                         });
+                        // Other sources count their items only once the listing completes.
+                        let text = if self.importer.source == Source::Modern {
+                            format!("{completed} / {total} · {weapons} items")
+                        } else {
+                            format!("{completed} / {total}")
+                        };
                         ui.add(
                             egui::ProgressBar::new(completed as f32 / total.max(1) as f32)
-                                .text(format!("{completed} / {total} · {weapons} weapons")),
+                                .text(text),
                         );
                     }
                     phase => {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             ui.label(match phase {
-                                ScanProgress::CheckingCache => "Checking cache…",
-                                ScanProgress::OpeningModernPackages => "Opening packages…",
-                                ScanProgress::OpeningNativePackages => "Matching native weapons…",
-                                ScanProgress::SavingCatalog => "Saving catalog…",
+                                ScanProgress::CheckingCache => "Checking Cache…",
+                                ScanProgress::LoadingCachedItems => "Loading Cached Items…",
+                                ScanProgress::OpeningModernPackages => "Opening Packages…",
+                                ScanProgress::OpeningNativePackages => "Matching Native Items…",
+                                ScanProgress::SavingCatalog => "Saving Catalog…",
                                 ScanProgress::ReadingItems { .. } => unreachable!(),
                             });
                             if let Some(elapsed) = elapsed {
@@ -736,7 +978,7 @@ impl PackageAuthoringApp {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.importer.cancel.load(Ordering::Relaxed) {
-                            ui.label(egui::RichText::new("Stopping after current weapons…").weak());
+                            ui.label(egui::RichText::new("Cancelling…").weak());
                         } else if ui.button("Cancel").clicked() {
                             self.importer.cancel.store(true, Ordering::Relaxed);
                         }
@@ -774,7 +1016,7 @@ impl PackageAuthoringApp {
             };
             ui.horizontal(|ui| {
                 if outcome.cancelled {
-                    ui.label(egui::RichText::new("Stopped.").strong());
+                    ui.label(egui::RichText::new("Cancelled.").strong());
                 }
                 if outcome.added > 0 {
                     ui.label(
@@ -790,7 +1032,7 @@ impl PackageAuthoringApp {
                     ui.label(
                         egui::RichText::new(format!(
                             "{} failed.",
-                            plural(outcome.failures.len(), "weapon", "weapons")
+                            plural(outcome.failures.len(), "item", "items")
                         ))
                         .color(ui.visuals().error_fg_color)
                         .strong(),
@@ -820,34 +1062,15 @@ impl PackageAuthoringApp {
         }
     }
 
-    fn choose_modern_folder(&mut self, ctx: &egui::Context) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Modern Destiny 2 Build")
-            .pick_folder()
-        else {
-            return;
-        };
-        match service::packages_path(&path) {
-            Ok(path) => {
-                self.importer.settings.modern_packages = Some(path);
-                self.importer.weapons.clear();
-                self.importer.browser.dirty = true;
-                self.importer.browser.reset_scroll = true;
-                self.importer.browser.types.clear();
-                self.importer.browser.anchor = None;
-                self.importer.selected.clear();
-                self.importer.scan_error = None;
-                self.importer.outcome = None;
-                match self.importer.save() {
-                    Ok(()) => self.scan_importer(ctx, false),
-                    Err(error) => self.importer.notice = error,
-                }
-            }
-            Err(error) => self.importer.notice = error.to_string(),
-        }
-    }
-
     fn scan_importer(&mut self, ctx: &egui::Context, refresh: bool) {
+        if self.importer.source == Source::Roi {
+            self.scan_roi_source(ctx);
+            return;
+        }
+        if self.importer.source != Source::Modern {
+            self.scan_foreign(ctx, refresh);
+            return;
+        }
         let Some(modern) = self.importer.settings.modern_packages.clone() else {
             return;
         };
@@ -875,6 +1098,7 @@ impl PackageAuthoringApp {
                     ctx.request_repaint();
                 },
             )
+            .map(|weapons| (weapons, BTreeMap::new(), None))
             .map_err(|error| format!("{error:#}"));
             let _ = sender.send(Event::Scanned(result));
             ctx.request_repaint();
@@ -882,21 +1106,29 @@ impl PackageAuthoringApp {
     }
 
     fn import_selected(&mut self, ctx: &egui::Context) {
-        let existing: Vec<_> = self
-            .recipe_entries
-            .iter()
-            .map(|entry| (entry.path.clone(), entry.identity_hash))
-            .collect();
+        // Saved namespaces apply to this import only.
+        let reimport = std::mem::take(&mut self.importer.reimport);
+        if self.importer.source == Source::Roi {
+            self.import_roi_selected(ctx, &reimport);
+            return;
+        }
+        if self.importer.source != Source::Modern {
+            self.import_foreign(ctx, &reimport);
+            return;
+        }
         let Some(modern) = self.importer.settings.modern_packages.clone() else {
             return;
         };
-        let Some(library) = self.recipe_library.clone() else {
-            return;
-        };
         let Ok(root) = data_root() else { return };
-        let native = PathBuf::from(&self.packages);
-        let selected: Arc<Vec<Weapon>> =
-            Arc::new(self.importer.selected_weapons().cloned().collect());
+        let selected: Arc<Vec<Weapon>> = Arc::new(
+            self.importer
+                .selected_weapons()
+                .map(|weapon| Weapon {
+                    namespace: reimport.get(&weapon.hash).cloned(),
+                    ..weapon.clone()
+                })
+                .collect(),
+        );
         let risky_donors = self
             .catalog
             .as_ref()
@@ -910,102 +1142,127 @@ impl PackageAuthoringApp {
                 .and_then(|catalog| catalog.item_definition_tag(hash))
                 .is_none_or(crate::package_profile::is_stock_item_definition)
         };
+        let gear = [ItemKind::Armor,ItemKind::GhostShell,ItemKind::Ship,ItemKind::Sparrow].into_iter()
+                    .flat_map(|kind|self.gear_donors_for(kind)).filter(|donor|stock(donor.hash))
+                    .map(|donor|serde_json::json!({"hash":donor.hash,"name":donor.name,"bucket_hash":donor.bucket_hash,
+                        "class_type":self.catalog.as_ref().and_then(|catalog|catalog.item_class_type(donor.hash)),
+                        "collection_backed":donor.collection_backed})).collect::<Vec<_>>();
         let donors = Arc::new(
-            serde_json::json!({"weapons":self.donor_summaries.iter().filter(|donor| stock(donor.hash)).map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name,"weapon_type":donor.type_name,"present_in_native":true,"bucket_hash":donor.bucket_hash,"collection_backed":donor.collection_backed,"unrelated_collection_condition":risky_donors.contains(&donor.hash)})).collect::<Vec<_>>()}),
+            serde_json::json!({"weapons":self.donor_summaries.iter().filter(|donor| stock(donor.hash)).map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name,"weapon_type":donor.type_name,"present_in_native":true,"bucket_hash":donor.bucket_hash,"collection_backed":donor.collection_backed,"unrelated_collection_condition":risky_donors.contains(&donor.hash)})).collect::<Vec<_>>(),
+                "shaders":self.gear_donors_for(ItemKind::Shader).iter().filter(|donor| stock(donor.hash)).map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name})).collect::<Vec<_>>(),
+                "emblems":self.gear_donors_for(ItemKind::Emblem).iter().filter(|donor| stock(donor.hash)).map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name})).collect::<Vec<_>>(),
+                "gear":gear}),
         );
-        let workers = import_workers(selected.len());
+        let names = selected.iter().map(|weapon| weapon.name.clone()).collect();
+        self.run_import(ctx, names, move |index, native, progress| {
+            let weapon = &selected[index];
+            let folder = service::model_directory(&root.join("models"), &weapon.name, weapon.hash)?;
+            service::prepare_with_progress(weapon, &modern, native, &donors, &folder, progress)
+        });
+    }
+
+    /// Converts `names.len()` items on bounded workers and saves each prepared recipe into the
+    /// library, merging with an earlier import of the same item.
+    fn run_import(
+        &mut self,
+        ctx: &egui::Context,
+        names: Vec<String>,
+        prepare: impl Fn(usize, &Path, &mut dyn FnMut(String)) -> anyhow::Result<PathBuf>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        let existing: Vec<_> = self
+            .recipe_entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.identity_hash))
+            .collect();
+        let Some(library) = self.recipe_library.clone() else {
+            return;
+        };
+        let workers = import_workers(names.len());
         let (sender, receiver) = mpsc::channel();
         self.importer.receiver = Some(receiver);
         self.importer.outcome = None;
         self.importer.import_started = Some(Instant::now());
         self.importer.importing = Some(Progress {
-            total: selected.len(),
+            total: names.len(),
             done: 0,
             slots: vec![None; workers],
         });
         self.importer.notice.clear();
         self.importer.cancel.store(false, Ordering::Relaxed);
         let cancel = self.importer.cancel.clone();
+        let native = PathBuf::from(&self.packages);
         let ctx = ctx.clone();
         thread::spawn(move || {
-            // Each worker opens its own package readers and writes only inside the weapon's
-            // own model folder. The library save runs here, serially, so recipe file names
-            // are allocated one at a time.
-            let next = Arc::new(AtomicUsize::new(0));
-            let (results, finished) = mpsc::channel();
-            for slot in 0..workers {
-                let selected = selected.clone();
-                let donors = donors.clone();
-                let next = next.clone();
-                let cancel = cancel.clone();
-                let results = results.clone();
-                let sender = sender.clone();
-                let ctx = ctx.clone();
-                let (modern, native, root) = (modern.clone(), native.clone(), root.clone());
-                thread::spawn(move || {
-                    loop {
-                        if cancel.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(weapon) = selected.get(index) else {
-                            return;
-                        };
-                        let _ = sender.send(Event::Slot(slot, Some(weapon.name.clone())));
-                        ctx.request_repaint();
-                        let result = service::model_directory(
-                            &root.join("models"),
-                            &weapon.name,
-                            weapon.hash,
-                        )
-                        .map_err(|error| error.to_string())
-                        .and_then(|folder| {
-                            service::prepare_with_progress(
-                                weapon,
-                                &modern,
-                                &native,
-                                &donors,
-                                &folder,
-                                &mut |message| {
-                                    let _ = sender.send(Event::Progress(slot, message));
-                                    ctx.request_repaint();
-                                },
-                            )
-                            .map_err(|error| format!("{error:#}"))
-                        });
-                        let _ = sender.send(Event::Slot(slot, None));
-                        if results.send((index, result)).is_err() {
-                            return;
-                        }
-                    }
-                });
-            }
-            drop(results);
+            let source = match crate::workflow::PackageSource::stock(&native) {
+                Ok(source) => source,
+                Err(error) => {
+                    let _ = sender.send(Event::Imported {
+                        paths: Vec::new(),
+                        errors: vec![format!("Prepare native import source: {error}")],
+                        cancelled: cancel.load(Ordering::Relaxed),
+                    });
+                    ctx.request_repaint();
+                    return;
+                }
+            };
             let mut paths = Vec::new();
-            let mut sources = Vec::new();
             let mut errors = Vec::new();
             let mut done = 0;
-            while let Ok((index, result)) = finished.recv() {
-                let weapon = &selected[index];
-                let saved =
-                    result.and_then(|recipe| save_imported_recipe(&library, &existing, &recipe));
-                match saved {
-                    Ok(path) => {
-                        paths.push(path);
-                        sources.push(weapon.hash);
+            let report = batch::run(
+                names.len(),
+                workers,
+                &cancel,
+                |slot, index| {
+                    let _ = sender.send(Event::Slot(slot, Some(names[index].clone())));
+                    ctx.request_repaint();
+                    let result = parhelion_import::cancellation::run(cancel.clone(), || {
+                        prepare(index, source.path(), &mut |message| {
+                            let _ = sender.send(Event::Progress(slot, message));
+                            ctx.request_repaint();
+                        })
+                    });
+                    let result = match result {
+                        Ok(path) => Ok(Some(path)),
+                        Err(error) if parhelion_import::cancellation::is_cancelled(&error) => {
+                            Ok(None)
+                        }
+                        Err(error) => Err(format!("{error:#}")),
+                    };
+                    let _ = sender.send(Event::Slot(slot, None));
+                    result
+                },
+                |index, result| {
+                    let saved = result.and_then(|recipe| {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(None);
+                        }
+                        recipe
+                            .map(|recipe| save_imported_recipe(&library, &existing, &recipe))
+                            .transpose()
+                    });
+                    match saved {
+                        Ok(Some(path)) => {
+                            paths.push(path);
+                        }
+                        Ok(None) => {}
+                        Err(error) => errors.push(format!("{}: {error}", names[index])),
                     }
-                    Err(error) => errors.push(format!("{}: {error}", weapon.name)),
-                }
-                done += 1;
-                let _ = sender.send(Event::Done(done));
-                ctx.request_repaint();
+                    done += 1;
+                    let _ = sender.send(Event::Done(done));
+                    ctx.request_repaint();
+                },
+            );
+            debug_assert_eq!(done, report.completed);
+            if let Err(error) = source.finish(Ok(()), |warning| errors.push(warning)) {
+                errors.push(error);
             }
-            let cancelled = cancel.load(Ordering::Relaxed) && done < selected.len();
             let _ = sender.send(Event::Imported {
                 paths,
-                sources,
                 errors,
-                cancelled,
+                cancelled: report.cancelled,
             });
             ctx.request_repaint();
         });
@@ -1020,7 +1277,9 @@ fn import_workers(weapons: usize) -> usize {
 }
 
 /// Merges a converted recipe into an existing library entry for the same item, keeping the
-/// authored gameplay and narrative edits, or saves it as a new entry.
+/// authored gameplay and narrative edits, or saves it as a new entry. The perk sockets always
+/// come from the conversion, with the base they were built on, so the entry they replace is
+/// first kept in the library's backups whenever the merge changes them.
 fn save_imported_recipe(
     library: &RecipeLibrary,
     existing: &[(PathBuf, u32)],
@@ -1035,20 +1294,150 @@ fn save_imported_recipe(
         if baseline.identity.item_hash != recipe.identity.item_hash {
             continue;
         }
+        if baseline.kind != recipe.kind {
+            return Err("Reimport would change this recipe's item kind".into());
+        }
         let mut updated = baseline.clone();
+        // The conversion's socket layout replaces the saved one, so a converter fix reaches
+        // every reimported item. It names the sockets and plugs of the base it was built on,
+        // so a saved recipe on another base takes that base with it.
+        updated.overrides.socket_columns = recipe.overrides.socket_columns.clone();
+        updated.overrides.socket_plug_variants = recipe.overrides.socket_plug_variants.clone();
+        updated.overrides.base_sandbox_perks = recipe.overrides.base_sandbox_perks.clone();
+        if updated.donor.item_hash != recipe.donor.item_hash {
+            updated.donor = recipe.donor.clone();
+        }
+        // Only replace the exact generated source prefix. Other names are authored text.
+        if recipe.namespace.starts_with("parhelion.reach.")
+            && baseline.namespace == recipe.namespace
+            && baseline.name == format!("Reach {}", recipe.name)
+        {
+            updated.name = recipe.name.clone();
+        }
         updated.overrides.imported_graph = recipe.overrides.imported_graph.clone();
+        let generated_icon = match (
+            &baseline.overrides.imported_graph,
+            &baseline.overrides.icon_edit.imported_image,
+        ) {
+            (Some(graph), Some(image)) => parhelion_import::artwork::generated_image(
+                graph,
+                &serde_json::to_value(image).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| format!("Read generated inventory artwork: {error:#}"))?,
+            _ => false,
+        };
+        if updated.icon_donor.is_none()
+            && (updated.overrides.icon_edit.imported_image.is_none() || generated_icon)
+        {
+            updated.overrides.icon_edit.imported_image =
+                recipe.overrides.icon_edit.imported_image.clone();
+        }
         if let (Some(next), Some(previous)) = (
             &mut updated.overrides.imported_graph,
             &baseline.overrides.imported_graph,
         ) {
             next.attachments = previous.attachments.clone();
         }
-        updated.presentation_donor = recipe
-            .presentation_donor
-            .clone()
-            .or_else(|| Some(recipe.donor.clone()));
-        library.save_existing_if_unchanged(path, &baseline, &updated)?;
+        if !recipe.kind.is_weapon() {
+            updated.donor = recipe.donor.clone();
+            updated.presentation_donor = None;
+            if updated.overrides.rarity.is_none() {
+                updated.overrides.rarity = recipe.overrides.rarity;
+            }
+            if updated.overrides.nameplate.is_none() {
+                updated.overrides.nameplate = recipe.overrides.nameplate.clone();
+            }
+        } else {
+            updated.presentation_donor = recipe
+                .presentation_donor
+                .clone()
+                .or_else(|| Some(recipe.donor.clone()));
+            if updated.overrides.fired_graph.is_none() && updated.overrides.projectile.is_none() {
+                updated.overrides.fired_graph = recipe.overrides.fired_graph.clone();
+            }
+            melee::merge(&recipe, &mut updated)
+                .map_err(|error| format!("Import melee activation: {error:#}"))?;
+        }
+        keep_bundled_selection(&baseline, &mut updated);
+        validate_projectile_selection(&updated)?;
+        // Custom perks and socket edits live in the same fields as the generated layout, so
+        // taking the conversion's replaces them. The earlier entry stays recoverable.
+        let replaced = baseline.overrides.socket_columns != updated.overrides.socket_columns
+            || baseline.overrides.socket_plug_variants != updated.overrides.socket_plug_variants
+            || baseline.overrides.base_sandbox_perks != updated.overrides.base_sandbox_perks
+            || baseline.donor != updated.donor;
+        if replaced {
+            library.save_existing_with_backup(path, &baseline, &updated)?;
+        } else {
+            library.save_existing_if_unchanged(path, &baseline, &updated)?;
+        }
         return Ok(path.clone());
     }
+    validate_projectile_selection(&recipe)?;
     library.save_new(&recipe)
+}
+
+/// A saved selection of a projectile that the previous model carried as a byte for byte copy of a
+/// bundled preset fires the preset once the replacement model doesn't carry it. Projectile value
+/// edits and added behaviors keep the imported selection, since a preset takes neither.
+fn keep_bundled_selection(baseline: &WeaponRecipe, updated: &mut WeaponRecipe) {
+    let Some(root) = updated
+        .overrides
+        .fired_graph
+        .as_ref()
+        .and_then(|fired| fired.imported.clone())
+    else {
+        return;
+    };
+    let Some(previous) = &baseline.overrides.imported_graph else {
+        return;
+    };
+    if validate_projectile_selection(updated).is_ok()
+        || updated
+            .overrides
+            .projectile
+            .as_ref()
+            .is_some_and(|edits| !edits.values.is_empty())
+        || !updated.overrides.additional_behaviors.is_empty()
+    {
+        return;
+    }
+    if let Some(preset) = crate::weapon::projectile::bundled_copy(&previous.directory, &root) {
+        updated.overrides.fired_graph = Some(crate::weapon::behavior::FiredGraph {
+            bundled: Some(preset),
+            source_graph: 0,
+            imported: None,
+            patches: Vec::new(),
+            appends: Vec::new(),
+            particles: Vec::new(),
+        });
+    }
+}
+
+/// A model replacement cannot leave the saved firing selection without its private assets.
+fn validate_projectile_selection(recipe: &WeaponRecipe) -> Result<(), String> {
+    let Some(symbol) = recipe
+        .overrides
+        .fired_graph
+        .as_ref()
+        .and_then(|fired| fired.imported.as_deref())
+    else {
+        return Ok(());
+    };
+    let graph = recipe
+        .overrides
+        .imported_graph
+        .as_ref()
+        .ok_or("The selected imported projectile requires a prepared weapon graph")?;
+    graph
+        .validate(
+            recipe
+                .identity
+                .item_hash
+                .parse_u32()
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("Prepared projectile assets changed: {error:#}"))?;
+    crate::item::validate_imported_projectile(graph, symbol)
+        .map_err(|error| format!("This import cannot supply the selected projectile {symbol}: {error}. The recipe was not saved."))
 }

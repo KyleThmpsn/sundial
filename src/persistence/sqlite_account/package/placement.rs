@@ -36,7 +36,7 @@ pub(super) fn relocate(
                 });
         match location {
             0 => character.equipment.push((
-                crate::account_contract::ALL_EQUIPMENT_SLOTS
+                crate::account::contract::ALL_EQUIPMENT_SLOTS
                     .get(position)
                     .ok_or("An equipped item has an unsupported slot")?
                     .0
@@ -53,7 +53,7 @@ pub(super) fn relocate(
         replacement,
     )?;
     for movement in &moves {
-        let position = crate::account_contract::ALL_EQUIPMENT_SLOTS
+        let position = crate::account::contract::ALL_EQUIPMENT_SLOTS
             .iter()
             .position(|(slot, _, _)| *slot == movement.equipment_slot)
             .ok_or("An equipment move has an unsupported slot")?;

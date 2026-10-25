@@ -174,11 +174,25 @@ pub(super) fn draw_hash_item_package_reference_fields(
     if let Some(tag) = metadata.icon_container_tag {
         p.mono("Icon Container Tag", format_hash_hex(u64::from(tag)));
     }
+    // The strings' second icon row, an emblem's nameplate.
+    if let Some(tag) = metadata.secondary_icon_container_tag {
+        p.mono(
+            "Secondary Icon Container Tag",
+            format_hash_hex(u64::from(tag)),
+        );
+    }
     if let Some(category_hash) = metadata.plug_category_hash {
         p.hash("Plug Category", catalog, category_hash);
     }
     if let Some(slot) = metadata.equipment_slot {
-        p.mono("Native Equipment Slot ID", slot.to_string());
+        // Only the weapon slots are named.
+        let name = match crate::catalog::ItemWeaponInventorySlot::from_equipment_slot(slot) {
+            Some(crate::catalog::ItemWeaponInventorySlot::Kinetic) => " · Kinetic",
+            Some(crate::catalog::ItemWeaponInventorySlot::Energy) => " · Energy",
+            Some(crate::catalog::ItemWeaponInventorySlot::Power) => " · Power",
+            None => "",
+        };
+        p.mono("Native Equipment Slot ID", format!("{slot}{name}"));
     }
     if let Some(index) = metadata.socket_entry_list_index {
         p.mono("Socket Entry List Index", index.to_string());
@@ -205,6 +219,17 @@ pub(super) fn draw_hash_item_package_reference_fields(
     if let Some(index) = metadata.weapon_pattern_index {
         p.mono("Weapon Pattern Index", index.to_string());
     }
+    draw_hash_item_package_appearance_fields(p, metadata);
+    if let Some(indices) = material_requirement_set_indices {
+        material_requirement_set_rows(p, catalog, "Insertion Materials", indices.insertion);
+        material_requirement_set_rows(p, catalog, "Enabled Materials", indices.enabled);
+    }
+}
+
+fn draw_hash_item_package_appearance_fields(
+    p: &mut look::Properties<'_>,
+    metadata: &ItemPackageMetadata,
+) {
     let arrangements = ["Generic", "Titan", "Hunter", "Warlock"]
         .into_iter()
         .zip(metadata.art_arrangement_indices)
@@ -218,9 +243,5 @@ pub(super) fn draw_hash_item_package_reference_fields(
             "Active Material Override Count",
             metadata.render_overrides.len().to_string(),
         );
-    }
-    if let Some(indices) = material_requirement_set_indices {
-        material_requirement_set_rows(p, catalog, "Insertion Materials", indices.insertion);
-        material_requirement_set_rows(p, catalog, "Enabled Materials", indices.enabled);
     }
 }

@@ -13,7 +13,8 @@ use super::{Model, shader};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write};
 
-mod bake;
+pub(in crate::model_preview) mod bake;
+mod charts;
 
 const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
@@ -94,6 +95,14 @@ const TRIANGLES: u32 = 4;
 
 /// Encodes the model as a self-contained binary glTF (.glb).
 pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
+    glb_using(model, seconds, None)
+}
+
+pub(crate) fn glb_using(
+    model: &Model,
+    seconds: f32,
+    mut backend: Option<&mut dyn bake::Baker>,
+) -> Result<Vec<u8>, String> {
     if model.triangles.is_empty() || model.vertices.is_empty() {
         return Err("This model has no geometry to export".into());
     }
@@ -101,17 +110,14 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
         .triangles
         .iter()
         .flatten()
-        .any(|&corner| corner as usize >= model.vertices.len())
+        .any(|&corner| corner == u32::MAX || corner as usize >= model.vertices.len())
     {
-        return Err("This model has triangles that point outside its vertex list".into());
+        return Err("This model has triangle indices that glTF cannot represent".into());
     }
-    let posed = model
-        .animation
-        .as_ref()
-        .map(|animation| animation.vertices(model, seconds.rem_euclid(animation.duration())));
+    let posed = model.pose(seconds);
     let points: Vec<[f32; 3]> = posed
-        .as_deref()
-        .unwrap_or(&model.vertices)
+        .as_ref()
+        .map_or(model.vertices.as_slice(), |pose| pose.positions.as_slice())
         .iter()
         .copied()
         .map(upright)
@@ -122,23 +128,50 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
 
     let mut buffer = Buffer::default();
     let position = positions(&mut buffer, &points);
-    let normal = normals(&mut buffer, model);
+    let normal = normals(
+        &mut buffer,
+        points.len(),
+        posed
+            .as_ref()
+            .map_or(model.normals.as_slice(), |pose| pose.normals.as_slice()),
+    );
     let texcoord = texcoords(&mut buffer, model);
-    // Indices stay narrow while they can: a glB of a small part is often mailed around.
-    let short = points.len() <= usize::from(u16::MAX) + 1;
+    // glTF reserves the maximum index value for primitive restart, even for triangle lists.
+    let short = points.len() <= usize::from(u16::MAX);
 
     let dyes = shader::dyes(model, seconds);
+    let effect_frames = super::effects::frames(model, seconds);
     let mut plates: BTreeMap<bake::Plate, Vec<usize>> = BTreeMap::new();
     let mut flat = Vec::new();
     for triangle in 0..model.triangles.len() {
-        match bake::Plate::of(model, triangle) {
+        if super::effects::transparent(model, triangle) {
+            continue;
+        }
+        match bake::Plate::of(model, triangle, &effect_frames)
+            .map(|plate| plate.with_basis(charts::frames(model, posed.as_ref(), triangle).is_ok()))
+        {
             Some(plate) => plates.entry(plate).or_default().push(triangle),
             None => flat.push(triangle),
         }
     }
     let mut layers = Vec::new();
+    if plates.is_empty() && flat.is_empty() {
+        return Err("This model contains only transparent effects. Save an image to retain their appearance.".into());
+    }
+    let mut remaining_charts = bake::Budget::new(bake::chart_count(
+        model,
+        &dyes,
+        plates.values().flatten().copied(),
+    )?);
     for (plate, triangles) in &plates {
-        layers.extend(bake::bake(model, &dyes, *plate, triangles)?);
+        layers.extend(bake::bake(
+            model,
+            &dyes,
+            *plate,
+            triangles,
+            &mut remaining_charts,
+            &mut backend,
+        )?);
     }
     let encoded = encode_layers(&layers)?;
 
@@ -147,13 +180,24 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
     let mut materials = Vec::new();
     let mut strong = false;
     for (layer, images) in layers.iter().zip(encoded) {
-        let corners: Vec<u32> = layer
-            .triangles
-            .iter()
-            .flat_map(|&triangle| model.triangles[triangle])
-            .collect();
+        let primary = (layer.coordinates.is_none() && layer.normal.is_some())
+            .then(|| charts::primary(model, layer));
+        let (vertex_attributes, corners, short) =
+            if let Some(coordinates) = layer.coordinates.as_ref().or(primary.as_ref()) {
+                charts::vertices(&mut buffer, model, posed.as_ref(), layer, coordinates)?
+            } else {
+                (
+                    attributes(position, normal, texcoord),
+                    layer
+                        .triangles
+                        .iter()
+                        .flat_map(|&triangle| model.triangles[triangle])
+                        .collect(),
+                    short,
+                )
+            };
         primitives.push(json!({
-            "attributes": attributes(position, normal, texcoord),
+            "attributes": vertex_attributes,
             "indices": indices(&mut buffer, &corners, short),
             "material": materials.len(),
             "mode": TRIANGLES,
@@ -218,7 +262,50 @@ pub(crate) fn glb(model: &Model, seconds: f32) -> Result<Vec<u8>, String> {
         // only dimmer where the game drives emission past full scale.
         document["extensionsUsed"] = json!([EMISSIVE_STRENGTH]);
     }
+    metadata(&mut document, model, &plates, &layers);
     container(&document, &buffer.bin)
+}
+
+fn metadata(
+    document: &mut Value,
+    model: &Model,
+    plates: &BTreeMap<bake::Plate, Vec<usize>>,
+    layers: &[bake::Layer],
+) {
+    if model
+        .effects
+        .iter()
+        .any(|material| material.normal.is_none() || material.native.is_some())
+    {
+        document["asset"]["extras"] = json!({"omitted":"Native transparent effects and opaque extra color terms need view, scene depth or runtime shader inputs. They are retained in image exports. Opaque geometry and the base gear material remain in this file."});
+    }
+    let omitted_normals: Vec<_> = plates
+        .iter()
+        .filter(|(plate, _)| plate.omits_normal())
+        .flat_map(|(_, triangles)| triangles.iter().copied())
+        .collect();
+    if !omitted_normals.is_empty() {
+        if document["asset"]["extras"].is_null() {
+            document["asset"]["extras"] = json!({});
+        }
+        document["asset"]["extras"]["normal_maps"] = json!({"omitted_triangles":omitted_normals,
+            "reason":"These surfaces use geometric normals because neither their stored tangents nor their UVs provide a usable frame."});
+    }
+    let reduced: Vec<_> = layers
+        .iter()
+        .flat_map(|layer| &layer.detail_sampling)
+        .map(|&(triangle, source_pixels, stored_edge)| {
+            json!({"triangle":triangle,
+            "source_pixels":source_pixels,"stored_edge":stored_edge})
+        })
+        .collect();
+    if !reduced.is_empty() {
+        if document["asset"]["extras"].is_null() {
+            document["asset"]["extras"] = json!({});
+        }
+        document["asset"]["extras"]["detail_sampling"] = json!({"reduced_triangles":reduced,
+            "reason":"These detail patterns are sampled within the model export texture budget. Model previews and image exports retain the source coordinates."});
+    }
 }
 
 const EMISSIVE_STRENGTH: &str = "KHR_materials_emissive_strength";
@@ -360,12 +447,15 @@ fn channel(value: f32) -> f32 {
 
 /// glTF asks for unit normals, and a normal buffer that failed to decode is left zeroed.
 fn unit(normal: [f32; 3]) -> [f32; 3] {
-    let length = normal.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
-    if length > 1e-6 {
-        normal.map(|axis| axis / length)
-    } else {
-        [0.0, 0.0, 1.0]
+    let normal = normal.map(finite);
+    let scale = normal.into_iter().map(f32::abs).fold(0.0, f32::max);
+    if scale == 0.0 {
+        return [0.0, 0.0, 1.0];
     }
+    // Scale before squaring so finite magnitudes cannot overflow or erase the direction.
+    let normal = normal.map(|axis| axis / scale);
+    let length = normal.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    normal.map(|axis| axis / length)
 }
 
 /// The binary chunk under construction, with the view and accessor tables that address it.
@@ -380,7 +470,7 @@ impl Buffer {
     /// Every view starts on a four-byte boundary, which satisfies glTF's alignment rule for
     /// any component type without tracking each accessor's own stride.
     fn view(&mut self, bytes: &[u8], target: Option<u32>) -> usize {
-        while self.bin.len() % 4 != 0 {
+        while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
         }
         let mut view = json!({
@@ -429,21 +519,17 @@ fn positions(buffer: &mut Buffer, points: &[[f32; 3]]) -> usize {
     accessor
 }
 
-fn normals(buffer: &mut Buffer, model: &Model) -> Option<usize> {
-    // A posed export carries animated positions but bind-pose normals, which no longer belong
-    // to the surface. The rasterizer drops vertex normals under animation for the same reason,
-    // and importers recompute them from the triangles.
-    if model.animation.is_some() || model.normals.len() != model.vertices.len() {
+fn normals(buffer: &mut Buffer, vertices: usize, normals: &[[f32; 3]]) -> Option<usize> {
+    if normals.len() != vertices {
         return None;
     }
-    let bytes: Vec<u8> = model
-        .normals
+    let bytes: Vec<u8> = normals
         .iter()
         .flat_map(|&normal| unit(upright(normal)))
         .flat_map(f32::to_le_bytes)
         .collect();
     let view = buffer.view(&bytes, Some(ARRAY_BUFFER));
-    Some(buffer.accessor(view, FLOAT, "VEC3", model.normals.len()))
+    Some(buffer.accessor(view, FLOAT, "VEC3", normals.len()))
 }
 
 fn texcoords(buffer: &mut Buffer, model: &Model) -> Option<usize> {
@@ -660,59 +746,6 @@ fn container(document: &Value, bin: &[u8]) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use crate::model_preview::texture::Texture;
-    use std::io::Write;
-
-    /// Walks the chunk stream, verifying each checksum, and hands back the payloads in order.
-    fn chunks(encoded: &[u8]) -> Vec<(String, Vec<u8>)> {
-        let mut chunks = Vec::new();
-        let mut at = 8;
-        while at + 12 <= encoded.len() {
-            let length =
-                u32::from_be_bytes(encoded[at..at + 4].try_into().expect("length")) as usize;
-            let body = &encoded[at + 4..at + 8 + length];
-            let stored = u32::from_be_bytes(
-                encoded[at + 8 + length..at + 12 + length]
-                    .try_into()
-                    .expect("checksum"),
-            );
-            let mut crc = flate2::Crc::new();
-            crc.update(body);
-            assert_eq!(crc.sum(), stored, "chunk checksum at {at}");
-            chunks.push((
-                String::from_utf8_lossy(&body[..4]).into_owned(),
-                body[4..].to_vec(),
-            ));
-            at += 12 + length;
-        }
-        assert_eq!(at, encoded.len(), "trailing bytes after the last chunk");
-        chunks
-    }
-
-    #[test]
-    fn png_signs_every_chunk_and_keeps_them_in_order() {
-        let encoded = png(&[9u8; 2 * 3 * 4], 2, 3).expect("encode");
-        assert_eq!(encoded[..8], SIGNATURE);
-        let chunks = chunks(&encoded);
-        let kinds: Vec<&str> = chunks.iter().map(|(kind, _)| kind.as_str()).collect();
-        assert_eq!(kinds, ["IHDR", "IDAT", "IEND"]);
-        assert_eq!(chunks[0].1, [0u8, 0, 0, 2, 0, 0, 0, 3, 8, 6, 0, 0, 0]);
-        assert!(chunks[2].1.is_empty());
-    }
-
-    #[test]
-    fn png_deflates_each_row_behind_a_zero_filter_byte() {
-        let pixels: Vec<u8> = (0u8..16).collect();
-        let encoded = png(&pixels, 2, 2).expect("encode");
-        let chunks = chunks(&encoded);
-        let mut decoder = flate2::write::ZlibDecoder::new(Vec::new());
-        decoder.write_all(&chunks[1].1).expect("inflate");
-        let raw = decoder.finish().expect("inflate");
-        let mut expected: Vec<u8> = vec![0];
-        expected.extend_from_slice(&pixels[..8]);
-        expected.push(0);
-        expected.extend_from_slice(&pixels[8..]);
-        assert_eq!(raw, expected);
-    }
 
     #[test]
     fn png_rejects_a_buffer_that_does_not_match_its_size() {
@@ -736,6 +769,8 @@ mod tests {
             normals: vec![[0.0, -1.0, 0.0]; 4],
             triangle_textures: vec![Some(0), None],
             textures: vec![Texture {
+                mips: None,
+                linear: None,
                 tag: 0x1234_5678,
                 size: [1, 1],
                 rgba: vec![255, 0, 0, 255],
@@ -774,6 +809,47 @@ mod tests {
         (document, bytes[at + 8..].to_vec())
     }
 
+    /// Read an accessor through the emitted document, including optional offsets.
+    fn accessor_bytes<'a>(
+        document: &Value,
+        bin: &'a [u8],
+        accessor: &Value,
+        length: usize,
+    ) -> &'a [u8] {
+        let view = &document["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize
+            + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+        &bin[offset..offset + length]
+    }
+
+    fn exported_indices(document: &Value, bin: &[u8], primitive: &Value) -> Vec<u32> {
+        let accessor = &document["accessors"][primitive["indices"].as_u64().unwrap() as usize];
+        assert_eq!(accessor["type"], "SCALAR");
+        let width = match accessor["componentType"].as_u64().unwrap() {
+            5121 => 1,
+            5123 => 2,
+            5125 => 4,
+            other => panic!("Unexpected index component type {other}"),
+        };
+        let count = accessor["count"].as_u64().unwrap() as usize;
+        accessor_bytes(document, bin, accessor, count * width)
+            .chunks_exact(width)
+            .map(|bytes| match width {
+                1 => u32::from(bytes[0]),
+                2 => u32::from(u16::from_le_bytes(bytes.try_into().unwrap())),
+                _ => u32::from_le_bytes(bytes.try_into().unwrap()),
+            })
+            .collect()
+    }
+
+    fn retain_glb(name: &str, bytes: &[u8]) {
+        if let Some(directory) = std::env::var_os("SUNDIAL_TEST_ARTIFACTS") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(name), bytes).unwrap();
+        }
+    }
+
     #[test]
     fn glb_writes_one_primitive_per_material_group() {
         let (document, bin) = parse(&glb(&quad(), 0.0).expect("export"));
@@ -782,66 +858,59 @@ mod tests {
             .expect("primitives");
         assert_eq!(primitives.len(), 2);
         assert_eq!(document["materials"].as_array().map(Vec::len), Some(2));
-        // The groups share one vertex table and differ only in their index accessor.
-        assert_eq!(
-            primitives[0]["attributes"], primitives[1]["attributes"],
-            "primitives should share the vertex accessors"
-        );
-        assert_ne!(primitives[0]["indices"], primitives[1]["indices"]);
-        for primitive in primitives {
-            let accessor = primitive["indices"].as_u64().expect("indices") as usize;
-            assert_eq!(document["accessors"][accessor]["count"], 3);
-            assert_eq!(
-                document["accessors"][accessor]["componentType"],
-                UNSIGNED_SHORT
-            );
+        for (group, primitive) in primitives.iter().enumerate() {
+            let indices = exported_indices(&document, &bin, primitive);
+            assert_eq!(indices, quad().triangles[group]);
         }
         assert_eq!(document["accessors"][0]["count"], 4);
         assert_eq!(document["accessors"][0]["type"], "VEC3");
-        assert_eq!(document["accessors"].as_array().map(Vec::len), Some(5));
         // The buffer stops before the chunk's alignment filler, which glTF allows to be up to
         // three bytes longer than the buffer it carries.
         let declared = document["buffers"][0]["byteLength"]
             .as_u64()
             .expect("byteLength") as usize;
         assert!(declared <= bin.len() && bin.len() - declared < 4);
-    }
 
-    #[test]
-    fn glb_embeds_each_used_plate_as_a_png() {
-        let (document, _) = parse(&glb(&quad(), 0.0).expect("export"));
-        assert_eq!(document["images"].as_array().map(Vec::len), Some(1));
-        assert_eq!(document["images"][0]["mimeType"], "image/png");
-        assert_eq!(document["textures"][0]["source"], 0);
-        assert_eq!(document["samplers"].as_array().map(Vec::len), Some(1));
-        let materials = document["materials"].as_array().expect("materials");
-        let textured = materials
-            .iter()
-            .filter(|material| !material["pbrMetallicRoughness"]["baseColorTexture"].is_null())
-            .count();
-        assert_eq!(textured, 1);
-        // The bare group falls back to the rasterizer's untextured fill, in linear space.
-        let bare = materials
-            .iter()
-            .find(|material| material["pbrMetallicRoughness"]["baseColorTexture"].is_null())
-            .expect("an untextured group");
-        assert_eq!(
-            bare["pbrMetallicRoughness"]["baseColorFactor"]
-                .as_array()
-                .map(Vec::len),
-            Some(4)
-        );
+        let mut evidence = Vec::new();
+        for vertices in [65_535, 65_536, 65_537] {
+            let triangle = [0, (vertices - 2) as u32, (vertices - 1) as u32];
+            let mut model = Model {
+                vertices: vec![[0.0; 3]; vertices],
+                triangles: vec![triangle],
+                ..Default::default()
+            };
+            model.vertices[vertices - 2] = [1.0, 0.0, 0.0];
+            model.vertices[vertices - 1] = [0.0, 0.0, 1.0];
+            let bytes = glb(&model, 0.0).expect("export index boundary");
+            let (document, bin) = parse(&bytes);
+            let primitive = &document["meshes"][0]["primitives"][0];
+            let accessor = &document["accessors"][primitive["indices"].as_u64().unwrap() as usize];
+            let indices = exported_indices(&document, &bin, primitive);
+            assert_eq!(indices, triangle);
+            let reserved = match accessor["componentType"].as_u64().unwrap() {
+                5121 => 255,
+                5123 => 65_535,
+                5125 => u32::MAX,
+                _ => unreachable!(),
+            };
+            assert!(indices.iter().all(|index| *index < reserved));
+            retain_glb(&format!("export-index-boundary-{vertices}.glb"), &bytes);
+            evidence.push(json!({"vertices":vertices,"indices":indices,"component_type":accessor["componentType"]}));
+        }
+        crate::test_support::artifact("export-index-boundaries.json", &json!(evidence));
     }
 
     /// One dyed, alpha-clipped quad with a gearstack and a normal map, the way gear arrives.
     fn dyed() -> Model {
         let flat = |rgba: [u8; 4]| Texture {
+            mips: None,
+            linear: None,
             tag: 0,
             size: [2, 2],
             rgba: rgba.repeat(4),
         };
         let dye = shader::Dye {
-            surface: crate::weapon_dyes::material::Surface {
+            surface: crate::dyes::material::Surface {
                 albedo: [1.0, 0.0, 0.0],
                 worn_albedo: [1.0, 0.0, 0.0],
                 params: [0.0, 0.0, 0.0, 1.0],
@@ -894,19 +963,17 @@ mod tests {
 
     /// The pixels of one embedded texture.
     fn texels(document: &Value, bin: &[u8], slot: &Value, channels: usize) -> Vec<u8> {
-        let chunks = chunks(embedded(document, bin, slot));
-        let width = u32::from_be_bytes(chunks[0].1[..4].try_into().expect("width")) as usize;
-        let data = &chunks
-            .iter()
-            .find(|(kind, _)| kind == "IDAT")
-            .expect("image data")
-            .1;
-        let mut decoder = flate2::write::ZlibDecoder::new(Vec::new());
-        decoder.write_all(data).expect("inflate");
-        let raw = decoder.finish().expect("inflate");
-        raw.chunks_exact(1 + width * channels)
-            .flat_map(|row| row[1..].to_vec())
-            .collect()
+        let decoded = eframe::icon_data::from_png_bytes(embedded(document, bin, slot))
+            .expect("decode embedded material texture");
+        match channels {
+            4 => decoded.rgba,
+            3 => decoded
+                .rgba
+                .chunks_exact(4)
+                .flat_map(|pixel| pixel[..3].iter().copied())
+                .collect(),
+            _ => panic!("unsupported material channel count {channels}"),
+        }
     }
 
     #[test]
@@ -965,90 +1032,23 @@ mod tests {
             json!(3.0)
         );
         assert_eq!(panel["alphaMode"], "MASK");
-        assert_eq!(document["extensionsUsed"], json!([EMISSIVE_STRENGTH]));
-    }
-
-    /// Exports two real weapons and writes every baked map beside the raw colour plates, so a
-    /// reader can see the dyes arrive in the file. Age-Old Bond wears two dyed finishes and
-    /// Better Devils carries emissive panels.
-    #[test]
-    #[ignore = "requires SUNDIAL_PREVIEW_PACKAGES and SUNDIAL_PROBE_OUT"]
-    fn real_weapons_export_their_dyed_materials() {
-        let setting = |name: &str| {
-            std::path::PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
-        };
-        let packages = setting("SUNDIAL_PREVIEW_PACKAGES");
-        let out = setting("SUNDIAL_PROBE_OUT");
-        std::fs::create_dir_all(&out).expect("output folder");
-        let catalog = crate::investment::InvestmentCatalog::load(
-            packages.parent().expect("install folder"),
-            false,
-            |_| {},
-        )
-        .expect("catalog");
-        let mut report = String::new();
-        for name in ["Age-Old Bond", "Better Devils"] {
-            let donor = catalog
-                .weapon_donors()
-                .into_iter()
-                .find(|donor| donor.name == name)
-                .expect("donor");
-            let loadout = catalog.preview_loadout(donor.hash).expect("loadout");
-            let appearance = catalog.preview_appearance(&loadout);
-            let model = crate::model_preview::weapon::load_reported(
-                &packages,
-                &appearance,
-                &crate::model_preview::Load::default(),
-            )
-            .expect("model");
-            let slug = name.to_lowercase().replace(' ', "-");
-            let plates: std::collections::BTreeSet<usize> =
-                model.triangle_textures.iter().flatten().copied().collect();
-            for plate in plates {
-                let texture = &model.textures[plate];
-                let raw = png(&texture.rgba, texture.size[0], texture.size[1]).expect("raw");
-                std::fs::write(out.join(format!("{slug}-raw-{plate}.png")), raw).expect("raw");
-            }
-            let started = std::time::Instant::now();
-            let bytes = glb(&model, 0.0).expect("export");
-            let elapsed = started.elapsed();
-            std::fs::write(out.join(format!("{slug}.glb")), &bytes).expect("write glb");
-            let (document, bin) = parse(&bytes);
-            let materials = document["materials"].as_array().expect("materials");
-            report.push_str(&format!(
-                "{name}: {} bytes in {elapsed:?}, {} materials, {} images, {} triangles\n",
-                bytes.len(),
-                materials.len(),
-                document["images"].as_array().map_or(0, Vec::len),
-                model.triangles.len(),
-            ));
-            for (index, material) in materials.iter().enumerate() {
-                report.push_str(&format!("  material {index}: {material}\n"));
-                let pbr = &material["pbrMetallicRoughness"];
-                for (slot, reference) in [
-                    ("color", &pbr["baseColorTexture"]),
-                    ("channels", &pbr["metallicRoughnessTexture"]),
-                    ("normal", &material["normalTexture"]),
-                    ("emission", &material["emissiveTexture"]),
-                ] {
-                    if !reference.is_null() {
-                        let map = embedded(&document, &bin, reference);
-                        std::fs::write(out.join(format!("{slug}-{index}-{slot}.png")), map)
-                            .expect("write map");
-                    }
-                }
-            }
-        }
-        std::fs::write(out.join("export-report.txt"), &report).expect("write report");
-        println!("{report}");
+        assert!(
+            document["extensionsUsed"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(EMISSIVE_STRENGTH))
+        );
     }
 
     #[test]
     fn glb_stands_the_engines_up_axis_upright() {
         assert_eq!(upright([1.0, 2.0, 3.0]), [1.0, 3.0, -2.0]);
         let (document, _) = parse(&glb(&quad(), 0.0).expect("export"));
+        let position = document["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+            .as_u64()
+            .unwrap() as usize;
         let bounds = |name: &str| -> Vec<f64> {
-            document["accessors"][0][name]
+            document["accessors"][position][name]
                 .as_array()
                 .expect("bounds")
                 .iter()
@@ -1058,6 +1058,44 @@ mod tests {
         // Engine Z spans 0..2 and becomes the glTF up axis; engine Y is flat and becomes -Z.
         assert_eq!(bounds("min"), [0.0, 0.0, 0.0]);
         assert_eq!(bounds("max"), [1.0, 2.0, 0.0]);
+
+        let mut evidence = Vec::new();
+        for (name, input, expected) in [
+            ("ordinary", [3.0, 4.0, 0.0], [0.6, 0.0, -0.8]),
+            ("large", [3.0e20, 4.0e20, 0.0], [0.6, 0.0, -0.8]),
+            ("small", [3.0e-20, 4.0e-20, 0.0], [0.6, 0.0, -0.8]),
+            ("zero", [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ] {
+            let mut model = quad();
+            model.normals = vec![input; model.vertices.len()];
+            let bytes = glb(&model, 0.0).expect("export normal direction");
+            let (document, bin) = parse(&bytes);
+            let primitive = &document["meshes"][0]["primitives"][0];
+            let accessor = &document["accessors"]
+                [primitive["attributes"]["NORMAL"].as_u64().unwrap() as usize];
+            assert_eq!(accessor["type"], "VEC3");
+            assert_eq!(accessor["componentType"], 5126);
+            let count = accessor["count"].as_u64().unwrap() as usize;
+            let raw = accessor_bytes(&document, &bin, accessor, count * 12);
+            let mut normals = Vec::new();
+            for normal in raw.chunks_exact(12) {
+                let decoded: [f32; 3] = std::array::from_fn(|axis| {
+                    f32::from_le_bytes(normal[axis * 4..axis * 4 + 4].try_into().unwrap())
+                });
+                for axis in 0..3 {
+                    assert!(
+                        (decoded[axis] - expected[axis]).abs() < 1.0e-6,
+                        "{name}: {decoded:?}"
+                    );
+                }
+                let length = decoded.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+                assert!((length - 1.0).abs() < 1.0e-6);
+                normals.push(decoded);
+            }
+            retain_glb(&format!("export-normals-{name}.glb"), &bytes);
+            evidence.push(json!({"case":name,"input":input,"normals":normals}));
+        }
+        crate::test_support::artifact("export-normal-directions.json", &json!(evidence));
     }
 
     #[test]

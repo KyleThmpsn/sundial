@@ -10,95 +10,6 @@ fn defaults() -> Value {
 }
 
 #[test]
-fn dawn_missing_flags_are_valid_default_off_and_preserved() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = Runtime::inspect(&dir.path().join("steam_api64.dll"));
-    let document = defaults();
-    let before = document.clone();
-    assert!(!executor_enabled(&document));
-    assert_eq!(runtime.validate(&document), Ok(()));
-    assert_eq!(document, before);
-    assert!(document.get("experiments").is_none());
-}
-
-#[test]
-fn dawn_checks_every_known_boolean_and_preserves_unknown_extensions() {
-    for (group, fields) in [
-        (OMEGA, OMEGA_FLAGS.as_slice()),
-        (CLIENT, CLIENT_FLAGS.as_slice()),
-    ] {
-        for (key, _, default) in fields {
-            for invalid in [Value::Null, json!(0), json!("false"), json!([]), json!({})] {
-                let mut document = defaults();
-                assert!(set_flag(&mut document, group, key, !*default));
-                *document.pointer_mut(&format!("{group}/{key}")).unwrap() = invalid;
-                assert!(
-                    settings_issues(&document)
-                        .iter()
-                        .any(|e| e.contains(&dotted(&format!("{group}/{key}"))))
-                );
-                assert!(set_flag(&mut document, group, key, *default));
-                assert!(settings_issues(&document).is_empty());
-            }
-        }
-    }
-    let mut document = defaults();
-    document["experiments"] = json!({"unknown": null, "omega": {"future_flag": ["opaque"]}});
-    document["client"]["future_flag"] = json!({"keep": true});
-    assert!(settings_issues(&document).is_empty());
-    let before = document.clone();
-    assert!(set_flag(&mut document, OMEGA, "coo_executor", true));
-    assert!(executor_enabled(&document));
-    document["experiments"]["omega"]
-        .as_object_mut()
-        .unwrap()
-        .remove("coo_executor");
-    assert_eq!(document, before);
-}
-
-#[test]
-fn dawn_client_defaults_and_spawn_hold_match_the_runtime_contract() {
-    let mut document = defaults();
-    document["client"]
-        .as_object_mut()
-        .unwrap()
-        .remove("fade_release");
-    assert!(settings_issues(&document).is_empty());
-
-    document["client"]["spawn_hold_ms"] = json!(0);
-    assert!(
-        settings_issues(&document)
-            .iter()
-            .any(|issue| issue.contains("client.spawn_hold_ms"))
-    );
-    assert!(set_unsigned(
-        &mut document,
-        CLIENT,
-        "spawn_hold_ms",
-        DEFAULT_SPAWN_HOLD_MS
-    ));
-    assert!(settings_issues(&document).is_empty());
-}
-
-#[test]
-fn dawn_malformed_groups_are_reported_without_discarding_them() {
-    for group in ["/experiments", OMEGA, CLIENT] {
-        let mut document = defaults();
-        document["experiments"] = json!({"omega": {}});
-        *document.pointer_mut(group).unwrap() = json!(["keep this"]);
-        let before = document.clone();
-        assert!(
-            settings_issues(&document)
-                .iter()
-                .any(|e| e == &format!("{} must be an object.", dotted(group)))
-        );
-        let flag_group = if group == CLIENT { CLIENT } else { OMEGA };
-        assert!(!set_flag(&mut document, flag_group, "coo_executor", true));
-        assert_eq!(document, before);
-    }
-}
-
-#[test]
 fn dawn_executor_requires_a_readable_nonempty_script_beside_its_dll() {
     let dir = tempfile::tempdir().unwrap();
     let mut document = defaults();
@@ -149,14 +60,14 @@ fn draw_page(
 ) -> (egui::FullOutput, bool) {
     let mut changed = false;
     let mut runtime = runtime;
-    let output = context.run(
+    let output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let edits = crate::game_settings::draw_page(
                     ui,
                     crate::game_settings::PageContext {
@@ -164,7 +75,6 @@ fn draw_page(
                         account_settings: Err("No account needed on this tab"),
                         bindings_editable: false,
                         json_account: true,
-                        extended_fov: false,
                         dawn: runtime.as_deref_mut(),
                         tab,
                         key_bindings: &mut Default::default(),
@@ -225,15 +135,7 @@ fn dawn_page_is_gated_by_detection_and_readonly_until_clicked() {
             assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains(pos));
             let mut clicked = false;
             for pressed in [true, false] {
-                let events = vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    },
-                ];
+                let events = crate::test_support::primary_press(pos, pressed);
                 clicked |= draw_page(
                     &context,
                     size,

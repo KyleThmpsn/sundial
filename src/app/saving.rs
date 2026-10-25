@@ -1,17 +1,21 @@
-//! UI save orchestration; persistence transactions live in workspace_save.
+//! UI save orchestration. The transaction across the workspace's sources lives in `sources`.
+
+pub(in crate::app) mod sources;
+#[cfg(test)]
+mod tests;
+
 use super::account_validation::validate_new_account_catalog_issues;
 use super::account_workspace::WorkspaceDocument;
 use super::preferences::normalized_automatic_backup_limit;
-use super::save_support::{SaveAction, settings_save_note};
 use super::settings::{
-    backups_path, create_adjacent_backup, repair_known_ability_pairs, validate_workspace_document,
-    verify_workspace_source_unchanged,
+    SaveJsonResult, backups_path, create_adjacent_backup, repair_known_ability_pairs,
+    validate_workspace_document, verify_workspace_source_unchanged,
 };
-use super::workspace_save::save_changed_sources;
 use super::{ConfirmationDialog, SundialApp, has_save_work, platform};
 use crate::backups::prune_automatic_backups;
 use crate::persistence::json_account::ensure_schema_v8_preferences;
 use eframe::egui;
+use sources::save_changed_sources;
 
 impl SundialApp {
     pub(super) fn save_sources(&mut self) -> bool {
@@ -286,6 +290,22 @@ impl SundialApp {
         }
     }
 
+    /// Whether exiting may go ahead as far as Parhelion's work outside its recipe goes. Work
+    /// whose last save failed is written again first, and while some is still unsaved this asks
+    /// instead. A closed Parhelion keeps that work, so it is asked whether or not it is open.
+    pub(super) fn confirm_authoring_work_saved(&mut self) -> bool {
+        let Some(reason) = self
+            .package_authoring
+            .as_mut()
+            .and_then(|package_authoring| package_authoring.unsaved_work())
+        else {
+            return true;
+        };
+        self.unsaved_authoring_work = Some(reason);
+        self.confirmation = Some(ConfirmationDialog::UnsavedAuthoringWork);
+        false
+    }
+
     pub(super) fn request_save(&mut self, ctx: &egui::Context, action: SaveAction) {
         if self.json_editor.has_unapplied_changes() && !self.apply_raw_json() {
             return;
@@ -321,6 +341,9 @@ impl SundialApp {
         if action == SaveAction::SaveAndExit && !self.has_unsaved_changes() && safe_to_close {
             if let Some(message) = self.package_authoring_exit_blocker() {
                 self.set_status(message, true);
+                return;
+            }
+            if !self.confirm_authoring_work_saved() {
                 return;
             }
             self.exit_confirmed = true;
@@ -359,5 +382,39 @@ impl SundialApp {
                 true,
             ),
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SaveAction {
+    Save,
+    SaveAndExit,
+}
+
+pub(super) fn settings_save_note(result: &SaveJsonResult) -> String {
+    let limit = settings_size_label(result.size_limit_bytes);
+    let mut note = if result.compacted {
+        format!(
+            " Compacted to {} bytes to fit the {limit} limit.",
+            result.encoded_bytes,
+        )
+    } else {
+        String::new()
+    };
+    if let Some(warning) = &result.durability_warning {
+        note.push(' ');
+        note.push_str(warning);
+        note.push('.');
+    }
+    note
+}
+
+pub(super) fn settings_size_label(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * KIB;
+    if bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{} KiB", bytes / KIB)
     }
 }

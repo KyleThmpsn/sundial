@@ -83,7 +83,7 @@ impl SundialApp {
         let equipment_editable = account::can_mutate_equipment(&self.document);
         ui.horizontal(|ui| {
             ui.heading("Character Inventory");
-            crate::ui_help::info(ui, "Each character's stored and equipped items.");
+            crate::ui::help::info(ui, "Each character's stored and equipped items.");
         });
         if self.document.uses_json_account() {
             draw_schema_notice(ui, mode, InventoryPageKind::Character);
@@ -112,7 +112,7 @@ impl SundialApp {
         ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.character_inventory_query)
-                    .hint_text("Search inventory by name, type, hash, or instance…")
+                    .hint_text("Search Inventory by Name, Type, Hash, or Instance…")
                     .desired_width(360.0),
             );
             egui::ComboBox::from_id_salt("character-inventory-source-filter")
@@ -196,12 +196,12 @@ impl SundialApp {
             return source_matches && lock_matches;
         }
         let hash = entry.definition_hash();
-        let definition_matches =
-            hash.and_then(|hash| self.manifest.item(hash))
-                .is_some_and(|item| {
-                    item.name.to_ascii_lowercase().contains(query)
-                        || item.type_name.to_ascii_lowercase().contains(query)
-                });
+        let definition_matches = hash
+            .and_then(|hash| self.manifest.inventory_definition(hash))
+            .is_some_and(|definition| {
+                definition.name.to_ascii_lowercase().contains(query)
+                    || definition.type_name.to_ascii_lowercase().contains(query)
+            });
         let hash_matches = hash.is_some_and(|hash| {
             hash.to_string().contains(query)
                 || format_hash_hex(hash).to_ascii_lowercase().contains(query)
@@ -389,7 +389,7 @@ impl SundialApp {
             .iter()
             .copied()
             .filter(|metadata| {
-                crate::account_contract::inventory_bucket_available(
+                crate::account::contract::inventory_bucket_available(
                     metadata.native_bucket_id,
                     self.document.supports_emote_collection(),
                 )
@@ -413,8 +413,10 @@ impl SundialApp {
                     CharacterInventorySort::Name => group.items.sort_by_cached_key(|entry| {
                         entry
                             .definition_hash()
-                            .and_then(|hash| self.manifest.item(hash))
-                            .map_or_else(String::new, |item| item.name.to_ascii_lowercase())
+                            .and_then(|hash| self.manifest.inventory_definition(hash))
+                            .map_or_else(String::new, |definition| {
+                                definition.name.to_ascii_lowercase()
+                            })
                     }),
                     CharacterInventorySort::PowerDescending => {
                         group

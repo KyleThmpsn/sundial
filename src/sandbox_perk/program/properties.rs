@@ -8,6 +8,7 @@ use crate::sandbox_perk::action::{
 };
 
 mod cache;
+pub use cache::cached_cancellable;
 pub use cache::{KeyIndex, cached, cached_only};
 
 /// Numeric observations from one action resource.
@@ -160,6 +161,12 @@ pub fn key_purpose(hash: u32) -> Option<&'static str> {
         ),
         0xA7C6_3FDC => Some(
             "Sticky Grenades. Written by Sticky Grenades (\"grenades attach on impact\") and Excavation (\"sticky flame grenades\").",
+        ),
+        // Cluster Bombs' action writes 1 while the weapon is drawn and 0 on holster. The stock
+        // rocket `80BBD121` hands it to its detonation emitter `80BBD11C`, whose effect flow
+        // creates bomblet `80BBD114` only from groups that need it above 0.
+        0xA026_F207 => Some(
+            "Cluster Bombs. Written by Cluster Bombs (\"rockets spawn cluster bombs upon detonation\") while the weapon is drawn, and read by the stock rocket's detonation, which creates its bomblets only while it is set.",
         ),
         0x7838_029C => Some(
             "Warmind Cell Spawn Chance. Added to by Blessing of Rasputin when a Warmind Cell is collected (\"increases the chances that your next final blow with a Seraph weapon will create a Warmind Cell\") and initialised by the five Seraph weapon perks that read it.",

@@ -1,7 +1,6 @@
 use crate::app::account_workspace as account;
 
 use super::{character_ability_issue, repair_known_ability_pairs, validate_characters};
-use crate::app::inventory::EQUIPMENT_FLAGS_SCHEMA_VERSION;
 use crate::app::*;
 use crate::hash::format_hash_hex;
 
@@ -192,7 +191,7 @@ fn equipped_flags_follow_the_schema_four_introduction() {
             }
         });
         let result = validate_characters(&document);
-        if version < EQUIPMENT_FLAGS_SCHEMA_VERSION {
+        if version < 4 {
             assert!(
                 result.is_err(),
                 "schema {version} unexpectedly accepted flags"
@@ -221,9 +220,7 @@ fn future_schema_character_validation_ignores_unknown_equipment_slots() {
 
     assert!(validate_characters(&document).is_err());
     document["version"] = Value::from(crate::game_settings::MAX_SUPPORTED_SCHEMA + 1);
-    let before = document.clone();
     assert_eq!(validate_characters(&document), Ok(()));
-    assert_eq!(document, before);
 }
 
 #[test]
@@ -241,9 +238,7 @@ fn character_validation_checks_presence_gated_sunrise_scalars() {
             }]
         }
     });
-    let before = valid.clone();
     assert_eq!(validate_characters(&valid), Ok(()));
-    assert_eq!(valid, before);
 
     for (key, invalid) in [
         ("accepted", Value::from(1)),

@@ -16,7 +16,9 @@ pub(super) enum Role {
     Transparent,
     Emission,
     Shadow,
+    ShadowPixel,
     Depth,
+    DepthPixel,
     OpticStencil,
     Reticle,
 }
@@ -25,7 +27,7 @@ impl Role {
     fn accepts_layout(self, layout: i16) -> bool {
         layout == 139 || (layout == 137 && matches!(self, Self::Reticle | Self::OpticStencil))
     }
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 12] = [
         Self::Surface,
         Self::Decal,
         Self::AdditiveDecal,
@@ -33,7 +35,9 @@ impl Role {
         Self::Transparent,
         Self::Emission,
         Self::Shadow,
+        Self::ShadowPixel,
         Self::Depth,
+        Self::DepthPixel,
         Self::OpticStencil,
         Self::Reticle,
     ];
@@ -44,8 +48,8 @@ impl Role {
             Self::Decal | Self::AdditiveDecal | Self::AlphaDecal => 1,
             Self::Transparent => 7,
             Self::Emission => 9,
-            Self::Shadow => 3,
-            Self::Depth => 12,
+            Self::Shadow | Self::ShadowPixel => 3,
+            Self::Depth | Self::DepthPixel => 12,
             Self::OpticStencil => 14,
             Self::Reticle => 16,
         }
@@ -63,7 +67,9 @@ impl Role {
             Self::Transparent => mode == 1 && scopes & !0x06004000 == 0x2083 && state == 0x88,
             Self::Emission => mode == 1 && scopes == 0x2083 && state == 0x88,
             Self::Shadow => mode == 2 && scopes == 0x8083 && state == 0 && pixel == u32::MAX,
+            Self::ShadowPixel => mode == 1 && scopes == 0x02008083 && state == 0,
             Self::Depth => mode == 2 && scopes == 0x83 && state == 0 && pixel == u32::MAX,
+            Self::DepthPixel => mode == 1 && scopes == 0x02000083 && state == 0,
             Self::OpticStencil => mode == 1 && scopes == 0x83 && state == 0,
             Self::Reticle => mode == 1 && scopes == 0x04002083 && state == 0x88,
         };
@@ -80,6 +86,7 @@ impl Role {
             Self::Decal => Some([0, 0x1000, 0x400000, 0x86000483, 0x7F7F80]),
             Self::Emission => Some([0, 0, 0, 0x02006083, 0x7F7F00]),
             Self::Shadow | Self::Depth => Some([0, 0, 0, 0x82008083, 0x10180]),
+            Self::ShadowPixel | Self::DepthPixel => Some([2, 0, 0, 0x82008083, 0x7F7F80]),
             Self::OpticStencil => Some([0, 0, 0, 0x02000083, 0x7F7F00]),
             Self::Reticle => Some([4, 0, 0x10000200, 0x06002083, 0x7F7F00]),
             _ => None,
@@ -130,7 +137,7 @@ pub(super) struct Catalog {
 }
 
 impl Catalog {
-    const SCHEMA: u32 = 2;
+    const SCHEMA: u32 = 3;
 
     pub fn read(root: &Path) -> Result<Self> {
         let catalog: Self = serde_json::from_value(load(&root.join("contracts.json"))?)?;
@@ -379,7 +386,7 @@ fn reusable_carriers(cache: &Path, current: &Path, reader: &Reader) -> Option<Ca
             .then_some((entry.metadata().ok()?.modified().ok()?, path))
         })
         .collect::<Vec<_>>();
-    candidates.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_unstable_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     candidates.into_iter().find_map(|(_, path)| {
         let bytes = fs::read(path).ok()?;
         let catalog: Catalog = serde_json::from_slice(&bytes).ok()?;
@@ -394,47 +401,44 @@ pub(super) fn export(
     progress: &mut dyn FnMut(String),
 ) -> Result<()> {
     let stamp = crate::d2_mot::service::package_stamp(packages)?;
-    let cache = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("Local app data folder")?)
-        .join("Sundial/parhelion/importer/cache/native-contracts");
-    fs::create_dir_all(&cache)?;
-    let path = cache.join(format!("{}-{stamp}.json", Catalog::SCHEMA));
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path.with_extension("lock"))?;
-    if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
-        progress("Waiting for native rendering compatibility discovery…".into());
-        fs2::FileExt::lock_exclusive(&lock)?;
-    }
-    let cached = fs::read(&path)
-        .ok()
+    let generation = std::env::var_os("LOCALAPPDATA").and_then(|root| {
+        crate::cache::Generation::file(
+            &PathBuf::from(root).join("Sundial/parhelion/importer/cache/native-contracts"),
+            &format!("{}-{stamp}", Catalog::SCHEMA),
+        )
+    });
+    let lock = generation
+        .as_ref()
+        .map(crate::cache::Generation::writer)
+        .transpose()?
+        .flatten();
+    let generation = generation.filter(|_| lock.is_some());
+    let path = generation.as_ref().map(crate::cache::Generation::path);
+    let cached = path
+        .and_then(|path| fs::read(path).ok())
         .and_then(|b| serde_json::from_slice::<Catalog>(&b).ok())
         .filter(|c| c.schema == Catalog::SCHEMA && c.stamp == stamp && c.validate(reader).is_ok());
+    let changed = cached.is_none();
     let catalog = if let Some(catalog) = cached {
         progress("Using cached native rendering compatibility…".into());
         catalog
-    } else if let Some(mut catalog) = reusable_carriers(&cache, &path, reader) {
+    } else if let Some(mut catalog) =
+        path.and_then(|path| reusable_carriers(path.parent()?, path, reader))
+    {
         progress("Reusing validated native rendering passes and refreshing resources…".into());
         (catalog.cube, catalog.samplers) = resources(reader)?;
         catalog.stamp = stamp.clone();
-        ensure!(
-            crate::d2_mot::service::package_stamp(packages)? == stamp,
-            "Native packages changed during discovery"
-        );
-        fs::write(&path, serde_json::to_vec(&catalog)?)?;
         catalog
     } else {
-        let catalog = scan(reader, stamp.clone(), progress)?;
-        ensure!(
-            crate::d2_mot::service::package_stamp(packages)? == stamp,
-            "Native packages changed during discovery"
-        );
-        // An interrupted write is treated as a cache miss on the next read.
-        fs::write(&path, serde_json::to_vec(&catalog)?)?;
-        catalog
+        scan(reader, stamp.clone(), progress)?
     };
+    ensure!(
+        crate::d2_mot::service::package_stamp(packages)? == stamp,
+        "Native packages changed during discovery"
+    );
+    if changed && let Some(path) = path {
+        let _ = crate::cache::write_json(path, &catalog);
+    }
     reader.begin_export(&root.join("materials"))?;
     for carrier in catalog.carriers.values() {
         reader.tag(carrier.material, Some(0x808071E8))?;

@@ -32,7 +32,7 @@ pub(super) fn draw(ui: &mut egui::Ui, loaded: &PrivatePerkRuntimeGraph, query: &
                     .max_height(280.0).show_rows(ui, ui.text_style_height(&egui::TextStyle::Body), fields.len(), |ui, range| {
                         for &((owner, offset, _), field) in &fields[range] {
                             let text = format!("{} · {} · {}", field.label, field.representation, field.value);
-                            ui.add(egui::Label::new(text).truncate().selectable(true)).on_hover_text(format!(
+                            ui.add(crate::app::style::cut_label(ui, text).selectable(true)).on_hover_text(format!(
                                 "{}\n{}\n{}\nOwner 0x{owner:08X} at +0x{offset:X}\nDeclaring Type 0x{:08X} at +0x{:X}",
                                 field.label, field.representation, field.value, field.schema, field.schema_offset));
                         }

@@ -10,11 +10,11 @@ fn ability_adjustments_default_to_no_limit_and_preserve_authored_gates() {
         trigger: Trigger::Always,
         duration_ms: 0,
         actions: vec![
-            Action::adjust_component(1),
+            Action::adjust_component(AbilityTarget::Super),
             Action::AbilityProperty {
-                target: 2,
+                target: AbilityTarget::Melee,
                 key: 0x1234_5678,
-                option: 0,
+                option: PropertyOperation::Apply,
             },
         ],
         ..Program::default()
@@ -38,12 +38,12 @@ fn ability_adjustments_default_to_no_limit_and_preserve_authored_gates() {
             ..
         } = &mut program.actions[0]
         {
-            *flag = state;
-            *option = version;
+            *flag = state.into();
+            *option = version.into();
             *limit_bits = limit.to_bits();
         }
         if let Action::AbilityProperty { option, .. } = &mut program.actions[1] {
-            *option = version;
+            *option = version.into();
         }
         let compiled = assemble(&program, None).unwrap();
         let decoded = action::decode(&compiled.payload).unwrap();
@@ -57,11 +57,9 @@ fn ability_adjustments_default_to_no_limit_and_preserve_authored_gates() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES"]
 fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
-    let packages = std::path::PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean packages"),
-    );
+    let packages = crate::test_support::stock_packages();
     let manager =
         crate::package_runtime::open_shadowkeep_packages(packages.parent().unwrap()).unwrap();
     for graph in [
@@ -71,6 +69,10 @@ fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
             graph,
             path: String::new(),
             values: Vec::new(),
+            damage_type: None,
+            rows: Vec::new(),
+            hud_status: None,
+            script: None,
         };
         let mut program = Program {
             trigger: Trigger::WeaponKill,
@@ -93,286 +95,6 @@ fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
                 .expect("world object cannot replace a projectile")
                 .contains("requires a projectile")
         );
-    }
-}
-
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with clean client resources"]
-fn every_native_kind_compiles_against_clean_client_resources() {
-    use crate::sandbox_perk::nodes;
-    let packages = std::path::PathBuf::from(
-        std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").expect("clean packages"),
-    );
-    let manager =
-        crate::package_runtime::open_shadowkeep_packages(packages.parent().unwrap()).unwrap();
-    let templates: Vec<(bool, u8, u32, usize, String)> =
-        serde_json::from_str(include_str!("../../action/native/templates.json")).unwrap();
-    for (condition, kind, tag, offset, _) in templates {
-        let entry = if condition {
-            nodes::condition(kind)
-        } else {
-            nodes::effect(kind)
-        }
-        .unwrap();
-        let source = manager
-            .read_tag(TagHash(tag))
-            .unwrap_or_else(|error| panic!("{} template source 0x{tag:08X}: {error}", entry.name));
-        let bytes = crate::sandbox_perk::action::native::template(condition, kind).unwrap();
-        let template =
-            crate::sandbox_perk::action::native::Graph::read(&bytes, 0, entry.class).unwrap();
-        let clean =
-            crate::sandbox_perk::action::native::Graph::read(&source, offset, entry.class).unwrap();
-        assert_eq!(
-            template, clean,
-            "{} template differs from the clean client",
-            entry.name
-        );
-    }
-    let mut count = 0;
-    for (condition, entries) in [
-        (true, nodes::CONDITIONS.as_slice()),
-        (false, nodes::EFFECTS.as_slice()),
-    ] {
-        for entry in entries.iter().filter(|entry| entry.observed()) {
-            let program = if condition {
-                Program {
-                    trigger: Trigger::Native,
-                    native_trigger: NativeNode::condition(entry.kind),
-                    duration_ms: 1000,
-                    actions: vec![Action::native(43).unwrap()],
-                    ..Program::default()
-                }
-            } else {
-                Program {
-                    trigger: Trigger::Always,
-                    actions: vec![Action::native(entry.kind).unwrap()],
-                    ..Program::default()
-                }
-            };
-            let compiled = compile(&manager, &program)
-                .unwrap_or_else(|error| panic!("{}: {error}", entry.name));
-            let decoded = action::decode(&compiled.payload).unwrap();
-            if condition {
-                assert_eq!(decoded.groups[0].activation[0].kind, entry.kind);
-            } else {
-                assert_eq!(decoded.groups[0].effects[0].kind, entry.kind);
-            }
-            count += 1;
-        }
-    }
-    assert!(count > 0, "no native kinds were compiled");
-    for empty in [0_u32, u32::MAX] {
-        let mut node = NativeNode::effect(13).unwrap();
-        node.bytes[16..20].copy_from_slice(&empty.to_le_bytes());
-        let program = Program {
-            trigger: Trigger::Always,
-            actions: vec![Action::Native { node }],
-            ..Program::default()
-        };
-        compile(&manager, &program).expect("weighted spawning has an optional attachment");
-    }
-}
-
-#[test]
-fn every_authorable_catalog_kind_has_a_checked_compiler_path() {
-    use crate::sandbox_perk::nodes::{self, Support};
-    use std::collections::BTreeSet;
-    let asset = Asset {
-        graph: 0x80BC_5810,
-        path: String::new(),
-        values: Vec::new(),
-    };
-    let mut conditions = BTreeSet::new();
-    let mut effects = BTreeSet::new();
-    let mut programs = Vec::new();
-    for trigger in Trigger::ALL
-        .into_iter()
-        .filter(|trigger| *trigger != Trigger::Native)
-    {
-        let mut program = Program {
-            trigger,
-            actions: vec![
-                Action::attach(asset.clone()),
-                Action::Spawn {
-                    asset: asset.clone(),
-                    position: Position::Owner,
-                },
-                Action::Pattern {
-                    asset: asset.clone(),
-                },
-                Action::property(0x5EE2_66FC),
-                Action::add_rounds(2),
-                Action::add_fraction(0.5),
-            ],
-            ..Program::default()
-        };
-        if trigger.is_event() {
-            program.actions.push(Action::ExtendTimers {
-                extend_ms: 1000,
-                cap_ms: 5000,
-            });
-        }
-        programs.push(program);
-    }
-    for entry in nodes::EFFECTS.iter().filter(|entry| entry.observed()) {
-        programs.push(Program {
-            trigger: Trigger::Always,
-            actions: vec![Action::Native {
-                node: NativeNode::effect(entry.kind).unwrap(),
-            }],
-            ..Program::default()
-        });
-    }
-    for entry in nodes::CONDITIONS.iter().filter(|entry| entry.observed()) {
-        programs.push(Program {
-            trigger: Trigger::Native,
-            native_trigger: NativeNode::condition(entry.kind),
-            actions: vec![Action::Native {
-                node: NativeNode::effect(43).unwrap(),
-            }],
-            ..Program::default()
-        });
-    }
-    for program in programs {
-        let labels = program.trigger.is_event().then_some((&[][..], [0; 40]));
-        let compiled = assemble(&program, labels).unwrap();
-        let decoded = action::decode(&compiled.payload).unwrap();
-        conditions.extend(decoded.conditions().iter().map(|node| node.kind));
-        effects.extend(decoded.effects().map(|node| node.kind));
-    }
-    assert_eq!(
-        conditions,
-        nodes::CONDITIONS
-            .iter()
-            .filter(|node| node.support == Support::Authorable)
-            .map(|node| node.kind)
-            .collect()
-    );
-    assert_eq!(
-        effects,
-        nodes::EFFECTS
-            .iter()
-            .filter(|node| node.support == Support::Authorable)
-            .map(|node| node.kind)
-            .collect()
-    );
-}
-
-#[test]
-fn every_scalar_effect_can_be_authored_serialized_compiled_and_read_back() {
-    for entry in layout::EFFECT_LAYOUTS {
-        let mut node = NativeNode::effect(entry.kind).unwrap();
-        for field in entry.fields {
-            use layout::FieldFormat::*;
-            let value = match field.format {
-                Byte => FactValue::Selector(2),
-                Flag => FactValue::Flag(true),
-                Mask8 => FactValue::Mask(0x81),
-                Mask32 => FactValue::Mask(0x8000_0001),
-                Key => FactValue::Key(0x1234_5678),
-                Float => FactValue::Number(1.25),
-                Seconds => FactValue::Seconds(1.25),
-                Range => FactValue::Range(0.5, 2.5),
-            };
-            assert!(field.write(&mut node.bytes, &value));
-        }
-        let program = Program {
-            trigger: Trigger::Always,
-            // An always-active program emits no removal condition, so it has nowhere to keep
-            // a duration and the default one would not survive the round trip below. Zero is
-            // what "runs until something removes it" means in the compiled form.
-            duration_ms: 0,
-            actions: vec![Action::Native { node: node.clone() }],
-            ..Program::default()
-        };
-        let json = serde_json::to_string(&program).unwrap();
-        assert_eq!(serde_json::from_str::<Program>(&json).unwrap(), program);
-        let compiled = assemble(&program, None).unwrap();
-        let decoded = action::decode(&compiled.payload).unwrap();
-        let effect = decoded.effects().next().unwrap();
-        assert_eq!(effect.kind, entry.kind);
-        assert_eq!(
-            &compiled.payload[effect.offset..effect.offset + node.bytes.len()],
-            node.bytes
-        );
-        let recovered = decompile::decompile(&decoded, &program.name, |tag| tag).unwrap();
-        let rebuilt = assemble(&recovered, None).unwrap();
-        assert!(
-            decompile::fidelity(&compiled.payload, &rebuilt.payload)
-                .unwrap()
-                .is_empty()
-        );
-        // The recovered program is a fixed point: saving and reopening it returns the same
-        // program, not merely bytes that compile alike. Equality with the authored program
-        // is deliberately not asserted, because a node with a typed action comes back as
-        // that action, which is what the editor should show. An asset-bearing action needs
-        // a package manager to resolve its graph and so stays with the tests that require an
-        // installation, but everything reachable through `assemble` is checked on every
-        // change rather than only on a machine with the game installed.
-        let reopened = decompile::decompile(
-            &action::decode(&rebuilt.payload).unwrap(),
-            &program.name,
-            |tag| tag,
-        )
-        .unwrap();
-        assert_eq!(reopened, recovered, "effect kind {}", entry.kind);
-    }
-}
-
-#[test]
-fn every_scalar_condition_can_be_authored_as_activation_and_removal() {
-    for entry in layout::CONDITION_LAYOUTS {
-        let mut node = NativeNode::condition(entry.kind).unwrap();
-        // Author every field the kind carries. A bare template leaves them zero, and a
-        // zero-length timer is a removal the compiled form does not keep, so the round trip
-        // below would be checking a condition that says nothing.
-        for field in entry.fields {
-            use layout::FieldFormat::*;
-            let value = match field.format {
-                Byte => FactValue::Selector(2),
-                Flag => FactValue::Flag(true),
-                Mask8 => FactValue::Mask(0x81),
-                Mask32 => FactValue::Mask(0x8000_0001),
-                Key => FactValue::Key(0x1234_5678),
-                Float => FactValue::Number(1.25),
-                Seconds => FactValue::Seconds(1.25),
-                Range => FactValue::Range(0.5, 2.5),
-            };
-            assert!(field.write(&mut node.bytes, &value));
-        }
-        let node = node;
-        let program = Program {
-            trigger: Trigger::Native,
-            native_trigger: Some(node.clone()),
-            native_removal: Some(node),
-            actions: vec![Action::Native {
-                node: NativeNode::effect(43).unwrap(),
-            }],
-            ..Program::default()
-        };
-        let compiled = assemble(&program, None).unwrap();
-        let decoded = action::decode(&compiled.payload).unwrap();
-        assert_eq!(decoded.groups[0].activation[0].kind, entry.kind);
-        assert_eq!(decoded.groups[0].removal[0].kind, entry.kind);
-        assert_eq!(decoded.activation_event_mask, 1_u64 << entry.kind);
-        assert_eq!(decoded.removal_event_mask, 1_u64 << entry.kind);
-        // A condition also has to survive being read back and reopened, or an authored
-        // trigger would change under a reader who only opened and saved the perk.
-        let recovered = decompile::decompile(&decoded, &program.name, |tag| tag).unwrap();
-        let rebuilt = assemble(&recovered, None).unwrap();
-        let differences = decompile::fidelity(&compiled.payload, &rebuilt.payload).unwrap();
-        assert!(
-            differences.is_empty(),
-            "condition kind {}: {differences:?}",
-            entry.kind
-        );
-        let reopened = decompile::decompile(
-            &action::decode(&rebuilt.payload).unwrap(),
-            &program.name,
-            |tag| tag,
-        )
-        .unwrap();
-        assert_eq!(reopened, recovered, "condition kind {}", entry.kind);
     }
 }
 

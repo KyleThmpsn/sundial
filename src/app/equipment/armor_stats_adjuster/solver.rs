@@ -2,7 +2,18 @@
 
 use super::*;
 
+#[cfg(test)]
 pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
+    solve_until(input, targets, &AtomicBool::new(false)).expect("an uncancelled search finishes")
+}
+
+/// The best loadout for `targets`, or `None` once `cancel` is set. The flag is read before each
+/// slot and each search state it extends, so a stale search stops within part of a layer.
+pub(super) fn solve_until(
+    input: &LoadoutInput,
+    targets: [u16; 6],
+    cancel: &AtomicBool,
+) -> Option<Solution> {
     let mut states = vec![SearchState {
         totals: [0; 6],
         plans: Vec::with_capacity(input.candidates.len()),
@@ -12,9 +23,15 @@ pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
         exotics: 0,
     }];
     for candidates in &input.candidates {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            return None;
+        }
         let plans = slot_plans(candidates, targets);
-        let mut next = HashMap::<[u16; 6], SearchState>::new();
+        let mut next = HashMap::<([i32; 6], usize), SearchState>::new();
         for state in &states {
+            if cancel.load(AtomicOrdering::Relaxed) {
+                return None;
+            }
             for plan in &plans {
                 let candidate = &candidates[plan.candidate_index];
                 let exotics = state.exotics + usize::from(candidate.exotic);
@@ -30,7 +47,7 @@ pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
                 candidate.plug_changes += plan.plug_changes;
                 candidate.masterworks += plan.masterworks;
                 candidate.exotics = exotics;
-                let key = solver_key(candidate.totals, targets);
+                let key = (solver_key(candidate.totals, targets), exotics);
                 match next.entry(key) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(candidate);
@@ -60,11 +77,11 @@ pub(super) fn solve(input: &LoadoutInput, targets: [u16; 6]) -> Solution {
             masterworks: 0,
             exotics: 0,
         });
-    solution_from_search(input, targets, best)
+    Some(solution_from_search(input, targets, best))
 }
 
 pub(super) fn slot_plans(candidates: &[ArmorCandidate], targets: [u16; 6]) -> Vec<PiecePlan> {
-    let mut by_result = HashMap::<([u16; 6], bool), PiecePlan>::new();
+    let mut by_result = HashMap::<([i32; 6], bool), PiecePlan>::new();
     for (candidate_index, candidate) in candidates.iter().enumerate() {
         for plan in piece_plans(candidate, candidate_index, targets) {
             let key = (solver_key(plan.totals, targets), candidate.exotic);
@@ -99,7 +116,7 @@ pub(super) fn piece_plans(
     }];
     for socket in &candidate.sockets {
         let choices = choices_for_targets(socket, targets);
-        let mut next = HashMap::<[u16; 6], PieceSearchState>::new();
+        let mut next = HashMap::<[i32; 6], PieceSearchState>::new();
         for state in &states {
             for choice in &choices {
                 let mut next_state = state.clone();
@@ -221,15 +238,15 @@ pub(super) fn choices_for_targets(socket: &MutableSocket, targets: [u16; 6]) -> 
 }
 
 pub(super) fn prune_search_map(
-    states: HashMap<[u16; 6], SearchState>,
+    states: HashMap<([i32; 6], usize), SearchState>,
     targets: [u16; 6],
-) -> HashMap<[u16; 6], SearchState> {
+) -> HashMap<([i32; 6], usize), SearchState> {
     let mut states = states.into_values().collect::<Vec<_>>();
     states.sort_by(|left, right| compare_states(left, right, targets));
     states.truncate(MAX_SOLVER_STATES);
     states
         .into_iter()
-        .map(|state| (solver_key(state.totals, targets), state))
+        .map(|state| ((solver_key(state.totals, targets), state.exotics), state))
         .collect()
 }
 
@@ -363,8 +380,9 @@ pub(super) fn cap_u16_totals(totals: [u16; 6]) -> [u16; 6] {
     totals.map(|value| value.min(armor_stat_allocation::TARGET_MAX))
 }
 
-pub(super) fn solver_key(totals: [i32; 6], targets: [u16; 6]) -> [u16; 6] {
-    let totals = capped_totals(totals);
+pub(super) fn solver_key(totals: [i32; 6], targets: [u16; 6]) -> [i32; 6] {
+    // Later sockets and pieces can add bonuses or penalties. Capping an intermediate
+    // value would merge distinct routes before those contributions are known.
     std::array::from_fn(|index| {
         if targets[index] == 0 {
             0

@@ -59,8 +59,32 @@ pub(super) fn compile(
     payload[0xCC] = payload[0xCC].max(states);
     payload[0xCD] = payload[0xCD].max(states - 1);
     let mut asset_offsets = Vec::new();
+    let mut scripts: Vec<ScriptCopy> = Vec::new();
     for (index, asset) in program.assets.iter().enumerate() {
         validate_asset(manager, &Action::attach(asset.clone()))?;
+        if let Some(script) = asset.script {
+            let lanes = crate::package_runtime::references::declared_fields(manager, script)
+                .map_err(|error| format!("Behavior script 0x{script:08X}: {error}"))?
+                .into_iter()
+                .filter(|&(_, tag)| tag == asset.graph)
+                .map(|(at, _)| at)
+                .collect::<Vec<_>>();
+            if lanes.is_empty() {
+                return Err(format!(
+                    "Behavior script 0x{script:08X} no longer names graph 0x{:08X}.",
+                    asset.graph
+                ));
+            }
+            match scripts.iter_mut().find(|copy| copy.tag == script) {
+                Some(copy) => copy.assets.push((index, lanes)),
+                None => scripts.push(ScriptCopy {
+                    tag: script,
+                    operands: script_operands(&graph, &offsets, &payload, script)?,
+                    assets: vec![(index, lanes)],
+                }),
+            }
+            continue;
+        }
         let mut lanes = Vec::new();
         for (&block_index, &start) in &offsets {
             let block = &graph.blocks[block_index];
@@ -87,5 +111,36 @@ pub(super) fn compile(
         payload,
         graph_offsets: Vec::new(),
         asset_offsets,
+        scripts,
     })
+}
+
+/// The class of a Run a Game Script effect, which names its script at +0x10.
+const SCRIPT_EFFECT: u32 = 0x8080_2D0A;
+const SCRIPT_OPERAND: usize = 0x10;
+
+/// Every lane where an emitted Run a Game Script effect names `script`.
+fn script_operands(
+    graph: &Graph,
+    offsets: &std::collections::BTreeMap<usize, usize>,
+    payload: &[u8],
+    script: u32,
+) -> Result<Vec<usize>, String> {
+    let mut lanes = Vec::new();
+    for (&block_index, &start) in offsets {
+        let block = &graph.blocks[block_index];
+        if block.class != SCRIPT_EFFECT {
+            continue;
+        }
+        let at = start + SCRIPT_OPERAND;
+        if u32_at(payload, at)? == script {
+            lanes.push(at);
+        }
+    }
+    if lanes.is_empty() {
+        return Err(format!(
+            "No Run a Game Script effect runs behavior script 0x{script:08X}."
+        ));
+    }
+    Ok(lanes)
 }

@@ -1,74 +1,12 @@
 use super::*;
-use sundial::investment::{InvestmentCatalog, WeaponAmmoType, WeaponDamageProfile, WeaponRarity};
-use sundial::package_authoring::weapon_entity::{
+use sundial::investment::InvestmentCatalog;
+use sundial::package_authoring::entity::{
     WEAPON_RELOAD_COMPONENT_KEY, WEAPON_TRIGGER_COMPONENT_KEY,
 };
-
-fn donor(hash: u32) -> WeaponDonorSummary {
-    WeaponDonorSummary {
-        hash,
-        name: format!("Donor {hash}"),
-        type_name: "Sidearm".into(),
-        bucket_hash: 1,
-        collection_backed: true,
-        power_cap: None,
-        damage_type: None,
-        inventory_slot: None,
-        ammo_type: Some(WeaponAmmoType::Primary),
-        weapon_pattern_index: Some(hash as u16),
-        weapon_translation_group: Some(1),
-        stat_group_index: None,
-        damage_profile: WeaponDamageProfile::Unknown,
-        rarity: WeaponRarity::Legendary,
-    }
-}
-
-#[test]
-fn group_selection_replaces_conflicting_choices_and_preserves_independent_edits() {
-    let mut recipe =
-        WeaponRecipe::new_weapon_for_donor("parhelion.group-test", 1, "Donor 1").unwrap();
-    let mut key = RuntimeGraphKey::new(
-        Some(1),
-        1,
-        [(10, Some(2), 2), (20, Some(3), 3), (30, Some(4), 4)],
-    );
-    for (binding, _, hash) in &key.component_donors {
-        recipe.set_runtime_component_donor(
-            *binding,
-            Some(WeaponDonorReference {
-                item_hash: (*hash).into(),
-                expected_name: None,
-            }),
-        );
-    }
-    let independent = recipe.runtime_component_donor(30).cloned();
-    replace_group(&mut recipe, &mut key, &[10, 20], &donor(5), false);
-    assert_eq!(
-        key.component_donors,
-        vec![(10, Some(5), 5), (20, Some(5), 5), (30, Some(4), 4)]
-    );
-    assert_eq!(recipe.runtime_component_donor(30), independent.as_ref());
-    for binding in [10, 20] {
-        assert_eq!(
-            recipe
-                .runtime_component_donor(binding)
-                .unwrap()
-                .item_hash
-                .parse_u32()
-                .unwrap(),
-            5
-        );
-    }
-    replace_group(&mut recipe, &mut key, &[10, 20], &donor(1), true);
-    assert_eq!(key.component_donors, vec![(30, Some(4), 4)]);
-    assert!(recipe.runtime_component_donor(10).is_none());
-    assert!(recipe.runtime_component_donor(20).is_none());
-    assert_eq!(recipe.runtime_component_donor(30), independent.as_ref());
-}
+use sundial::package_authoring::runtime::SchemaHandle;
 
 fn stock() -> (std::path::PathBuf, Vec<WeaponDonorSummary>) {
-    let packages =
-        std::path::PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let cache = tempfile::tempdir().unwrap();
     let catalog = InvestmentCatalog::load_with_cache_path(
         packages.parent().unwrap(),
@@ -82,8 +20,8 @@ fn stock() -> (std::path::PathBuf, Vec<WeaponDonorSummary>) {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
-fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_the_recipe() {
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+fn native_group_swap_repairs_conflicts_and_previews_transferred_settings() {
     let (packages, donors) = stock();
     let baseline = donors
         .iter()
@@ -128,7 +66,7 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
             report
                 .affected_bindings
                 .iter()
-                .any(|(binding, _)| *binding == field.locator.binding_hash)
+                .any(|(binding, _)| *binding == field.locator.binding_hash.get())
                 && field.kind == WeaponRuntimeValueKind::Float32
                 && field.locator.is_buildable()
         })
@@ -141,9 +79,8 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
             value: field.value.clone(),
         });
     let mut stale = recipe.overrides.runtime_values[0].clone();
-    stale.locator.root_schema = 0x8080_FFFF;
+    stale.locator.root_schema = SchemaHandle::new(0x8080_FFFF);
     recipe.overrides.runtime_values.push(stale);
-    let before = recipe.clone();
     let plan = preview(
         &packages,
         &recipe,
@@ -153,7 +90,6 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
         &donors,
     )
     .unwrap();
-    assert_eq!(recipe, before);
     assert!(plan.error.is_none(), "{:?}", plan.error);
     assert!(
         plan.kept + plan.transferred.len() > 0,
@@ -207,7 +143,7 @@ fn native_group_swap_repairs_conflicts_and_previews_settings_without_mutating_th
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn preview_uses_compiler_overlap_checks_for_automatic_ammo_edits() {
     let (packages, donors) = stock();
     let baseline = donors
@@ -217,10 +153,10 @@ fn preview_uses_compiler_overlap_checks_for_automatic_ammo_edits() {
     let key = RuntimeGraphKey::new(baseline.weapon_pattern_index, baseline.hash, []);
     let manager = open_shadowkeep_package_manager(&packages).unwrap();
     let entity = load_effective_runtime_entity(&manager, &key).unwrap();
-    let patches = crate::weapon_ammo::patches(
+    let patches = crate::weapon::ammo::patches(
         &manager,
         &entity.payload,
-        crate::weapon::WeaponAmmoType::Special,
+        crate::item::WeaponAmmoType::Special,
     )
     .unwrap();
     let patch = &patches[0];

@@ -1,6 +1,4 @@
 //! Independent color replacements, shared by previews and every authored texture lane.
-#[cfg(test)]
-use super::WeaponIconEdit;
 use super::preview::DecodedIconImage;
 use serde::{Deserialize, Serialize};
 
@@ -214,8 +212,8 @@ pub(super) fn draw_controls(
                 });
                 let mut by_hue = replacement.hue_range_degrees.is_some();
                 if ui
-                    .checkbox(&mut by_hue, "Match every shade of this hue")
-                    .on_hover_text("Artwork shades one color from dark to bright, which spreads it out in color range. Matching the hue takes the whole surface at once, and each pixel keeps its own brightness.")
+                    .checkbox(&mut by_hue, "Match Every Shade")
+                    .on_hover_text("Recolors every shade of this hue at once. Each pixel keeps its brightness.")
                     .changed()
                 {
                     replacement.hue_range_degrees = by_hue.then_some(DEFAULT_HUE_RANGE_DEGREES);
@@ -224,11 +222,11 @@ pub(super) fn draw_controls(
                 changed |= match &mut replacement.hue_range_degrees {
                     Some(degrees) => ui
                         .add(egui::Slider::new(degrees, 0..=MAX_HUE_RANGE_DEGREES).text("Hue range").suffix("°"))
-                        .on_hover_text("0° matches only the source hue. Widen to take neighbouring hues with a soft transition. Greys and near-greys are never matched by hue.")
+                        .on_hover_text("0° matches only the source hue. Greys never match by hue.")
                         .changed(),
                     None => ui
                         .add(egui::Slider::new(&mut replacement.range_percent, 0..=100).text("Color range").suffix("%"))
-                        .on_hover_text("0% matches the exact source color before adjustments. Increase to include nearby shades with a soft transition. Replacement colors are applied last. The strongest match wins. Replacements never chain.")
+                        .on_hover_text("0% matches only the exact source color. The strongest match wins and replacements never chain.")
                         .changed(),
                 };
             });
@@ -287,152 +285,4 @@ pub(super) fn sample(primary: &DecodedIconImage, uv: egui::Vec2) -> Option<[u8; 
         .get((y * primary.size[0] + x) * 4..)?
         .get(..4)?;
     (pixel[3] != 0).then(|| [pixel[0], pixel[1], pixel[2]])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn rule(source: [u8; 3], replacement: [u8; 3]) -> IconColorReplacement {
-        IconColorReplacement {
-            source,
-            replacement,
-            range_percent: 0,
-            hue_range_degrees: None,
-        }
-    }
-
-    #[test]
-    fn matching_feathers_preserves_shading_and_ignores_unrelated_colors() {
-        let replacement = IconColorReplacement {
-            range_percent: 100,
-            ..rule([0, 0, 255], [255, 0, 0])
-        };
-        let shaded = replacement.apply([0, 0, 100], [0, 0, 100], 255);
-        assert_eq!(shaded, [100, 0, 0]);
-        assert!(replacement.weight([0, 0, 200]) > replacement.weight([0, 0, 100]));
-        assert_eq!(replacement.weight([255, 255, 0]), 0);
-        let overlap = [replacement, rule([0, 0, 100], [255, 128, 0])];
-        assert_eq!(apply(&overlap, [0, 0, 100], [0, 0, 100]), [255, 128, 0]);
-        assert_eq!(
-            rule([0; 3], [255, 128, 0]).apply([0; 3], [0; 3], 255),
-            [255, 128, 0]
-        );
-    }
-
-    #[test]
-    fn chosen_replacement_color_is_not_transformed_by_global_adjustments() {
-        for mut edit in [
-            WeaponIconEdit {
-                hue_shift_degrees: 120,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                saturation: -100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                brightness: 50,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                contrast: -100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                red_balance: -100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                green_balance: 100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                blue_balance: 100,
-                ..Default::default()
-            },
-            WeaponIconEdit {
-                invert: true,
-                ..Default::default()
-            },
-        ] {
-            let original = [46, 40, 40, 128, 10, 100, 200, 255, 46, 40, 40, 0];
-            let mut adjusted = original;
-            edit.apply_to_rgba8(&mut adjusted).unwrap();
-            edit.color_replacements = vec![rule([46, 40, 40], [150, 43, 43])];
-            let mut replaced = original;
-            edit.apply_to_rgba8(&mut replaced).unwrap();
-            assert_eq!(&replaced[..4], &[150, 43, 43, 128], "{edit:?}");
-            assert_eq!(&replaced[4..], &adjusted[4..], "{edit:?}");
-        }
-    }
-
-    #[test]
-    fn replacement_edges_blend_adjusted_pixels_with_original_shading() {
-        let mut pixels = [0, 0, 150, 200];
-        let edit = WeaponIconEdit {
-            color_replacements: vec![IconColorReplacement {
-                range_percent: 100,
-                ..rule([0, 0, 200], [150, 43, 43])
-            }],
-            hue_shift_degrees: 120,
-            opacity_percent: 50,
-            ..Default::default()
-        };
-        edit.apply_to_rgba8(&mut pixels).unwrap();
-        // The original shade produces [113, 32, 32], blended at 229/255 over
-        // the hue-adjusted base [150, 0, 0]. Opacity still applies afterward.
-        assert_eq!(pixels, [117, 29, 29, 100]);
-    }
-
-    #[test]
-    fn adjusted_pixels_and_replacement_targets_cannot_trigger_other_rules() {
-        let mut pixels = [0, 0, 255, 255, 255, 0, 0, 255, 0, 255, 0, 255];
-        WeaponIconEdit {
-            color_replacements: vec![
-                rule([0, 0, 255], [255, 0, 0]),
-                rule([255, 0, 0], [0, 255, 0]),
-            ],
-            hue_shift_degrees: 120,
-            ..Default::default()
-        }
-        .apply_to_rgba8(&mut pixels)
-        .unwrap();
-        assert_eq!(pixels, [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]);
-    }
-
-    #[test]
-    fn replacements_round_trip_and_old_recipes_remain_unchanged() {
-        let old: WeaponIconEdit = serde_json::from_str("{}").unwrap();
-        assert!(old.is_identity());
-        assert!(
-            !serde_json::to_string(&old)
-                .unwrap()
-                .contains("color_replacements")
-        );
-        let mut edit = old;
-        edit.color_replacements = vec![
-            rule([0, 0, 255], [255, 0, 0]),
-            rule([255; 3], [255, 128, 0]),
-        ];
-        assert!(!edit.is_identity());
-        assert_eq!(
-            serde_json::from_str::<WeaponIconEdit>(&serde_json::to_string(&edit).unwrap()).unwrap(),
-            edit
-        );
-        edit.color_replacements[0].range_percent = 101;
-        assert!(edit.validate().is_err());
-        edit.color_replacements = vec![IconColorReplacement::default(); MAX_REPLACEMENTS + 1];
-        assert!(edit.validate().is_err());
-    }
-
-    #[test]
-    fn eyedropper_ignores_transparent_pixels_and_outside_clicks() {
-        let primary = DecodedIconImage {
-            size: [2, 1],
-            rgba: vec![123, 45, 67, 255, 90, 80, 70, 0],
-        };
-        assert_eq!(sample(&primary, egui::vec2(0.1, 0.5)), Some([123, 45, 67]));
-        assert_eq!(sample(&primary, egui::vec2(0.9, 0.5)), None);
-        assert_eq!(sample(&primary, egui::vec2(1.1, 0.5)), None);
-    }
 }

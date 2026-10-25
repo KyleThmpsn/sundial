@@ -49,6 +49,20 @@ pub(super) fn apply_character_updates<D: NativeAccountDocument>(
     if updates.is_empty() {
         return Ok(false);
     }
+    if !document.appearance_editable(character_index) {
+        let original = character_metadata(document, character_index)?;
+        for update in &updates {
+            if let domain::CharacterMetadataUpdate::SetAppearanceAndClass { race, gender, .. } =
+                update
+                && (*race, *gender) != (original.race, original.gender)
+            {
+                return Err(
+                    "Race and gender cannot be changed while a saved native appearance is present"
+                        .into(),
+                );
+            }
+        }
+    }
     let abilities_changed = updates.iter().any(|update| {
         matches!(
             update,
@@ -439,7 +453,7 @@ pub(super) fn equipped_item_snapshots<D: NativeAccountDocument>(
     character_index: usize,
 ) -> Result<Vec<EquippedItemSnapshot>, String> {
     let character = character(document, character_index)?;
-    Ok(crate::account_contract::ALL_EQUIPMENT_SLOTS
+    Ok(crate::account::contract::ALL_EQUIPMENT_SLOTS
         .iter()
         .filter_map(|&(slot, slot_label, bucket_hash)| {
             character

@@ -1,8 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 
 use eframe::egui;
 
-use crate::catalog::{Catalog, DefinitionSearchHit};
+use crate::catalog::{BrowseEntry, Catalog, DefinitionSearchHit, ItemRarity, Shelf};
 
 use super::matches::CatalogHashMatchIndex;
 use crate::app::inspector::DefinitionInspectionContext;
@@ -23,6 +26,8 @@ pub(in crate::app) struct HashInspectionState {
     pub(super) forward: Vec<InspectionTarget>,
     pub(super) match_index: Option<(u64, Arc<CatalogHashMatchIndex>)>,
     pub(super) search: DefinitionSearch,
+    /// The home page's shelves and filters, kept while the window is closed.
+    pub(super) browse: Browse,
     pub(super) source_context: Option<DefinitionInspectionContext>,
     pub(super) mutation_feedback: Option<(bool, String)>,
     pub(super) runtime: super::runtime::RuntimeInspectionState,
@@ -55,6 +60,115 @@ pub(super) struct SearchResults {
     /// A hash the query parses as, offered as a row of its own.
     pub(super) hash: Option<u64>,
     pub(super) highlighted: usize,
+}
+
+/// A home page tab: a shelf of items or the recently opened definitions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BrowseTab {
+    Shelf(Shelf),
+    Recent,
+}
+
+impl Default for BrowseTab {
+    fn default() -> Self {
+        Self::Shelf(Shelf::default())
+    }
+}
+
+/// The order cards are listed in. Ordering never hides a card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum BrowseSort {
+    #[default]
+    Type,
+    Name,
+    Rarity,
+}
+
+impl BrowseSort {
+    pub(super) const ALL: [Self; 3] = [Self::Type, Self::Name, Self::Rarity];
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Type => "By Type",
+            Self::Name => "Name",
+            Self::Rarity => "Rarity",
+        }
+    }
+}
+
+/// The home page's tab, filters and the cards they leave.
+#[derive(Debug, Default)]
+pub(super) struct Browse {
+    pub(super) tab: BrowseTab,
+    /// None shows every type.
+    pub(super) type_name: Option<String>,
+    pub(super) rarity: Option<ItemRarity>,
+    /// 0 Titan, 1 Hunter, 2 Warlock. None shows every class.
+    pub(super) class: Option<u8>,
+    pub(super) sort: BrowseSort,
+    pub(super) dummy_items: bool,
+    /// Type groups folded on each shelf.
+    pub(super) folded: HashSet<(Shelf, String)>,
+    pub(super) index: Option<Arc<BrowseIndex>>,
+    pub(super) results: BrowseResults,
+    /// Definitions other than items that match the search.
+    pub(super) definitions: SearchResults,
+}
+
+impl Browse {
+    /// Whether a filter or the search narrows the cards beyond the defaults.
+    pub(super) fn narrowed(&self, query: &str) -> bool {
+        self.type_name.is_some()
+            || self.rarity.is_some()
+            || self.class.is_some()
+            || self.dummy_items
+            || !query.trim().is_empty()
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.type_name = None;
+        self.rarity = None;
+        self.class = None;
+        self.dummy_items = false;
+    }
+}
+
+/// Every browsable entry of one catalog, with the text the search matches.
+#[derive(Debug)]
+pub(super) struct BrowseIndex {
+    /// The catalog's address, so a new catalog rebuilds the index.
+    pub(super) catalog: usize,
+    pub(super) entries: Vec<BrowseEntry>,
+    /// Lowercased name, type and hash per entry.
+    pub(super) text: Vec<String>,
+}
+
+/// The cards for one set of filters, rebuilt only when that set changes.
+#[derive(Debug, Default)]
+pub(super) struct BrowseResults {
+    pub(super) key: Option<BrowseKey>,
+    /// Indices into the index's entries, in display order.
+    pub(super) cards: Vec<usize>,
+    /// Cards each type would show, counted before the type filter.
+    pub(super) types: BTreeMap<String, usize>,
+    /// Cards across every type.
+    pub(super) total: usize,
+    /// Search matches on each shelf, in [`Shelf::ALL`] order.
+    pub(super) shelf_matches: [usize; 5],
+    /// Whether the shelf holds items of one class.
+    pub(super) has_classes: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BrowseKey {
+    pub(super) catalog: usize,
+    pub(super) query: String,
+    pub(super) shelf: Shelf,
+    pub(super) type_name: Option<String>,
+    pub(super) rarity: Option<ItemRarity>,
+    pub(super) class: Option<u8>,
+    pub(super) sort: BrowseSort,
+    pub(super) dummy_items: bool,
 }
 
 pub(super) const HASH_INSPECTOR_HISTORY_LIMIT: usize = 32;
@@ -212,6 +326,7 @@ impl HashInspectionState {
     pub(in crate::app) fn reset(&mut self) {
         self.close();
         self.history.clear();
+        self.browse = Browse::default();
     }
 }
 
@@ -219,168 +334,5 @@ fn trim_navigation_stack(stack: &mut Vec<InspectionTarget>) {
     let overflow = stack.len().saturating_sub(HASH_INSPECTOR_HISTORY_LIMIT);
     if overflow > 0 {
         stack.drain(0..overflow);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::inspector::DefinitionInspectionContext;
-
-    fn assert_navigation_state(
-        inspection: &HashInspectionState,
-        current: Option<u64>,
-        history: &[u64],
-        forward: &[u64],
-    ) {
-        assert_eq!(inspection.current, current);
-        assert_eq!(hashes(&inspection.history), history);
-        assert_eq!(hashes(&inspection.forward), forward);
-    }
-
-    #[test]
-    fn navigation_keeps_a_real_history() {
-        let mut inspection = HashInspectionState::default();
-        inspection.open(0);
-        assert_eq!(inspection.current, None);
-
-        inspection.open(0x1111_1111);
-        inspection.open(0x1111_1111);
-        assert_navigation_state(&inspection, Some(0x1111_1111), &[], &[]);
-
-        inspection.open(0x2222_2222);
-        inspection.open(0x3333_3333);
-        assert_navigation_state(
-            &inspection,
-            Some(0x3333_3333),
-            &[0x1111_1111, 0x2222_2222],
-            &[],
-        );
-
-        inspection.back();
-        assert_navigation_state(
-            &inspection,
-            Some(0x2222_2222),
-            &[0x1111_1111],
-            &[0x3333_3333],
-        );
-
-        inspection.open(0x3333_3333);
-        inspection.open(0x4444_4444);
-        inspection.navigate_history(0);
-        assert_navigation_state(
-            &inspection,
-            Some(0x1111_1111),
-            &[],
-            &[0x4444_4444, 0x3333_3333, 0x2222_2222],
-        );
-
-        inspection.navigate_forward(1);
-        assert_navigation_state(
-            &inspection,
-            Some(0x3333_3333),
-            &[0x1111_1111, 0x2222_2222],
-            &[0x4444_4444],
-        );
-
-        inspection.search.query = "ace".into();
-        inspection.close();
-        assert!(!inspection.is_open());
-        assert_eq!(
-            hashes(&inspection.history),
-            [0x1111_1111, 0x2222_2222, 0x3333_3333],
-            "closing keeps the back history and the page that was open"
-        );
-        assert!(inspection.forward.is_empty());
-        assert!(inspection.search.query.is_empty());
-
-        inspection.open_search();
-        assert_navigation_state(
-            &inspection,
-            Some(HOME),
-            &[0x1111_1111, 0x2222_2222, 0x3333_3333],
-            &[],
-        );
-        inspection.close();
-        assert_eq!(
-            hashes(&inspection.history),
-            [0x1111_1111, 0x2222_2222, 0x3333_3333],
-            "the search page is not kept as a recent definition"
-        );
-    }
-
-    #[test]
-    fn the_search_page_is_a_navigation_entry() {
-        let mut inspection = HashInspectionState::default();
-        inspection.open_search();
-        assert!(inspection.is_open());
-        assert_navigation_state(&inspection, Some(HOME), &[], &[]);
-        assert!(inspection.search.focus);
-
-        inspection.open(0x1111_1111);
-        assert_navigation_state(&inspection, Some(0x1111_1111), &[HOME], &[]);
-        inspection.search.focus = false;
-        inspection.open_search();
-        assert_eq!(
-            inspection.current,
-            Some(0x1111_1111),
-            "an open window keeps its page and focuses the search field"
-        );
-        assert!(inspection.search.focus);
-
-        inspection.go_home();
-        assert_navigation_state(&inspection, Some(HOME), &[HOME, 0x1111_1111], &[]);
-        inspection.back();
-        assert_navigation_state(&inspection, Some(0x1111_1111), &[HOME], &[HOME]);
-    }
-
-    #[test]
-    fn navigation_restores_the_original_instance_snapshot() {
-        let mut inspection = HashInspectionState::default();
-        let context = DefinitionInspectionContext {
-            source: "Character 1 equipment · Kinetic".into(),
-            instance_id: Some("0x4000000000000001".into()),
-            authored_level: Some(1_950),
-            flags: Some(1),
-            plug_count: Some(8),
-            ..Default::default()
-        };
-
-        inspection.open_with_context(0xD980_2C4F, Some(context.clone()));
-        assert_eq!(inspection.source_context, Some(context.clone()));
-
-        inspection.open(0x395D_3E2F);
-        assert_eq!(inspection.source_context, None);
-
-        inspection.back();
-        assert_eq!(inspection.current, Some(0xD980_2C4F));
-        assert_eq!(inspection.source_context, Some(context));
-    }
-
-    fn hashes(targets: &[InspectionTarget]) -> Vec<u64> {
-        targets.iter().map(|entry| entry.hash).collect()
-    }
-
-    #[test]
-    fn same_definition_instances_keep_separate_history_snapshots() {
-        let mut state = HashInspectionState::default();
-        let first = DefinitionInspectionContext {
-            instance_id: Some("first".into()),
-            plugs: Some(serde_json::json!([1, null])),
-            ..Default::default()
-        };
-        let second = DefinitionInspectionContext {
-            instance_id: Some("second".into()),
-            plugs: Some(serde_json::json!([2])),
-            ..Default::default()
-        };
-        state.open_with_context(7, Some(first.clone()));
-        state.open_with_context(7, Some(second.clone()));
-        state.open(0);
-        assert_eq!(state.source_context, Some(second.clone()));
-        state.back();
-        assert_eq!(state.source_context, Some(first));
-        state.forward();
-        assert_eq!(state.source_context, Some(second));
     }
 }

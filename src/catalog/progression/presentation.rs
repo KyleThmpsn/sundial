@@ -325,12 +325,6 @@ impl PresentationIndex {
 }
 
 impl Catalog {
-    /// Every presentation node in table order.
-    #[cfg(test)]
-    pub(crate) fn presentation_nodes(&self) -> &[PresentationNode] {
-        &self.presentation_nodes
-    }
-
     pub(crate) fn presentation_node(&self, hash: u64) -> Option<&PresentationNode> {
         let position = *self.presentation_index().nodes.get(&hash)?;
         self.presentation_nodes.get(position)

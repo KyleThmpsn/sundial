@@ -1,80 +1,9 @@
 use super::*;
 
-fn save_key() -> egui::Event {
-    egui::Event::Key {
-        key: egui::Key::S,
-        physical_key: Some(egui::Key::S),
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::COMMAND,
-    }
-}
-
-#[test]
-fn save_shortcut_writes_the_current_perk_and_keeps_other_files_unchanged() {
-    let (_temporary, library, original, entry, mut workbench) = workbench_with_saved_perk();
-    let mut sibling = PerkRecipe::new();
-    sibling.name = "Sibling".into();
-    let sibling = library.save(&sibling, None).unwrap();
-    workbench.open = true;
-    workbench.documents[0].recipe.description = "Saved with Ctrl+S".into();
-    let ctx = egui::Context::default();
-    frame(
-        &ctx,
-        &mut workbench,
-        false,
-        egui::vec2(1000.0, 720.0),
-        vec![save_key()],
-    );
-    let saved = Library::read(&entry.path).unwrap();
-    assert_eq!(saved.recipe.id, original.id);
-    assert_eq!(saved.recipe.description, "Saved with Ctrl+S");
-    assert_eq!(
-        workbench.documents[0].baseline.as_deref(),
-        Some(saved.baseline.as_slice())
-    );
-    assert_eq!(std::fs::read(sibling.path).unwrap(), sibling.baseline);
-}
-
-#[test]
-fn save_shortcut_preserves_unapplied_parameters_and_closed_workbenches() {
-    let (_temporary, _library, _original, entry, mut workbench) = workbench_with_saved_perk();
-    let ctx = egui::Context::default();
-    workbench.documents[0].recipe.description = "Not saved yet".into();
-    frame(
-        &ctx,
-        &mut workbench,
-        false,
-        egui::vec2(1000.0, 720.0),
-        vec![save_key()],
-    );
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
-    workbench.open = true;
-    workbench.editor = Some(editor(fixture()));
-    workbench.editing_effect = Some(405);
-    frame(
-        &ctx,
-        &mut workbench,
-        false,
-        egui::vec2(1000.0, 720.0),
-        vec![save_key()],
-    );
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
-    assert!(
-        workbench
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("Apply or discard")
-    );
-    assert!(workbench.editor.is_some());
-    assert!(workbench.documents[0].pending_effect.is_some());
-}
-
 /// The library and its drafts file through a restart: what a reader left open comes back with
 /// its edits, what they saved is on disk, a draft the workbench cannot read is set aside
 /// without taking the others with it, and export, import and delete work on the files.
-/// With `PARHELION_LIBRARY_OUT` set, a report of each step is written there.
+/// With `SUNDIAL_TEST_ARTIFACTS` set, a report of each step is written there.
 #[test]
 fn drafts_and_saved_perks_survive_a_restart_and_a_bad_draft_is_set_aside() {
     let temporary = tempfile::tempdir().unwrap();
@@ -85,6 +14,7 @@ fn drafts_and_saved_perks_survive_a_restart_and_a_bad_draft_is_set_aside() {
     let mut third = a_bad_draft_is_set_aside(&root, &mut steps);
     export_and_import(&mut third, temporary.path(), &bravo_id, &mut steps);
     delete_by_id(&mut third, &root, &bravo_id, &mut steps);
+    two_windows_keep_both_drafts(&root, &mut steps);
     write_library_report(&steps);
 }
 
@@ -99,6 +29,93 @@ fn named(name: &str) -> PerkRecipe {
     let mut recipe = PerkRecipe::new();
     recipe.name = name.into();
     recipe
+}
+
+#[test]
+fn imported_filter_keeps_saved_perks_and_open_edits_through_refresh() {
+    let temporary = tempfile::tempdir().unwrap();
+    let library = Library::open(temporary.path().join("perks")).unwrap();
+    let custom = library.save(&named("Personal Perk"), None).unwrap();
+    library.import_embedded([named("Imported Perk")]).unwrap();
+    let imported = library
+        .scan()
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.recipe.name == "Imported Perk")
+        .unwrap();
+    let mut workbench = open_workbench(library.root());
+    workbench.add_document(Document::new(
+        imported.recipe.clone(),
+        Some(imported.baseline.clone()),
+    ));
+    workbench.documents[workbench.selected].recipe.description = "Unsaved edit".into();
+    let ctx = egui::Context::default();
+    let draw = |workbench: &mut Workbench, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| workbench.draw_library(ui, None, None));
+            },
+        )
+    };
+    let mut output = draw(&mut workbench, vec![]);
+    for _ in 0..3 {
+        output = draw(&mut workbench, vec![]);
+    }
+    assert_eq!(
+        label(&output, "Imported Perk · Draft").is_some(),
+        cfg!(feature = "d2-model-importer")
+    );
+    let mut visible = cfg!(feature = "d2-model-importer");
+    let mut observations = Vec::new();
+    for _ in 0..3 {
+        let control = label(&output, "Show Imported Perks").unwrap().center();
+        for events in crate::test_support::driver::tap(control) {
+            draw(&mut workbench, events);
+        }
+        visible = !visible;
+        workbench.refresh_library();
+        output = draw(&mut workbench, vec![]);
+        assert_eq!(label(&output, "Imported Perk · Draft").is_some(), visible);
+        assert!(label(&output, "Personal Perk").is_some());
+        assert_eq!(
+            workbench.documents[workbench.selected].recipe.description,
+            "Unsaved edit"
+        );
+        capture::write(
+            &ctx,
+            &output,
+            if visible {
+                "imported-perks-visible"
+            } else {
+                "imported-perks-hidden"
+            },
+        );
+        observations.push(visible);
+    }
+    assert_eq!(std::fs::read(&custom.path).unwrap(), custom.baseline);
+    assert_eq!(std::fs::read(&imported.path).unwrap(), imported.baseline);
+    // A closed imported entry obeys the same filter after reopening the library.
+    workbench.documents.clear();
+    workbench.refresh_library();
+    output = draw(&mut workbench, vec![]);
+    assert_eq!(label(&output, "Imported Perk").is_some(), visible);
+    crate::test_support::artifact(
+        "imported-perk-filter.json",
+        &serde_json::json!({
+            "feature_enabled": cfg!(feature = "d2-model-importer"), "observations": observations,
+            "imported": imported.recipe.id, "custom": custom.recipe.id,
+            "saved_files_unchanged": true, "open_edits_retained": true
+        }),
+    );
 }
 
 fn names(workbench: &Workbench) -> Vec<String> {
@@ -166,7 +183,12 @@ fn a_bad_draft_is_set_aside(root: &Path, steps: &mut Vec<String>) -> Workbench {
     let mut third = open_workbench(root);
     let error = third.error.clone().unwrap_or_default();
     assert!(error.starts_with("1 draft could not be opened"), "{error}");
-    assert!(root.join("workbench-drafts.rejected.json").exists());
+    let kept = std::fs::read_dir(root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .any(|name| name.starts_with("workbench-drafts.rejected.") && name.ends_with(".json"));
+    assert!(kept, "the rejected draft has no file of its own");
     assert!(names(&third).contains(&"Alpha".to_owned()));
     assert!(third.drafts_writable);
     third.persist_drafts();
@@ -216,12 +238,49 @@ fn delete_by_id(workbench: &mut Workbench, root: &Path, bravo_id: &str, steps: &
     steps.push(format!("Deleted {bravo_id}, {:?} remain", names(workbench)));
 }
 
-/// The report of each step, where `PARHELION_LIBRARY_OUT` asks for it.
+/// Two windows open the library before either autosaves. However often the second one autosaves
+/// after losing the drafts file to the first, the first window's drafts stay, and the next start
+/// opens the drafts of both.
+fn two_windows_keep_both_drafts(root: &Path, steps: &mut Vec<String>) {
+    let mut first = open_workbench(root);
+    let mut second = open_workbench(root);
+    first.add_document(Document::new(named("Charlie"), None));
+    assert_eq!(first.drafts_error, None);
+    second.add_document(Document::new(named("Delta"), None));
+    assert!(
+        second.drafts_error.is_some(),
+        "the second window must see the conflict"
+    );
+    for text in ["second window", "second window, edited again"] {
+        second.documents[second.selected].recipe.description = text.into();
+        second.persist_drafts();
+    }
+    let on_disk =
+        String::from_utf8(std::fs::read(root.join("workbench-drafts.json")).unwrap()).unwrap();
+    assert!(
+        on_disk.contains("Charlie"),
+        "the first window's draft was replaced"
+    );
+    let next = open_workbench(root);
+    let opened = names(&next);
+    assert!(opened.contains(&"Charlie".to_owned()), "{opened:?}");
+    let delta = next
+        .documents
+        .iter()
+        .find(|document| document.recipe.name == "Delta")
+        .expect("the second window's draft");
+    assert_eq!(delta.recipe.description, "second window, edited again");
+    steps.push(format!(
+        "Two windows kept both drafts: {}. The next start opened {opened:?}",
+        second.drafts_error.unwrap_or_default()
+    ));
+}
+
+/// The report of each step, where `SUNDIAL_TEST_ARTIFACTS` asks for it.
 fn write_library_report(steps: &[String]) {
-    let Some(out) = std::env::var_os("PARHELION_LIBRARY_OUT") else {
+    let Some(out) = crate::test_support::artifacts("library-controls") else {
         return;
     };
-    let out = PathBuf::from(out);
     std::fs::create_dir_all(&out).unwrap();
     let report = format!(
         "# Custom perk library round trip\n\n{}\n",
@@ -232,62 +291,4 @@ fn write_library_report(steps: &[String]) {
             .join("\n")
     );
     std::fs::write(out.join("report.md"), report).unwrap();
-}
-
-#[test]
-fn truncated_program_summary_opens_only_one_tooltip() {
-    use super::super::canvas::{self, Backend, Canvas};
-    use sundial::package_authoring::sandbox_perk::program::{Action, Program};
-    let mut program = Program {
-        actions: (1..=8).map(Action::add_rounds).collect(),
-        ..Program::default()
-    };
-    let summary = super::super::guidance::summary_with_assets(&program, None, None);
-    let labels = std::collections::BTreeMap::new();
-    let ctx = egui::Context::default();
-    ctx.style_mut(|style| style.interaction.tooltip_delay = 0.0);
-    // A locked card reads its program as one line, truncated in a narrow pane.
-    let mut frame = |events| {
-        ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(420.0, 720.0),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    canvas::draw(
-                        ui,
-                        Canvas {
-                            name: "",
-                            backend: Backend::Program {
-                                program: &mut program,
-                                stock: None,
-                                description: None,
-                                labels: &labels,
-                                editing: None,
-                            },
-                            header: None,
-                            place: None,
-                            footer: None,
-                            trigger_command: None,
-                        },
-                    );
-                });
-            },
-        )
-    };
-    let mut output = egui::FullOutput::default();
-    for _ in 0..4 {
-        output = frame(vec![]);
-    }
-    let position = label(&output, &summary).expect("program summary").center();
-    for _ in 0..4 {
-        output = frame(vec![egui::Event::PointerMoved(position)]);
-    }
-    let summaries = output.shapes.iter().filter(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == summary)).count();
-    assert_eq!(summaries, 2, "one summary label and one tooltip");
 }

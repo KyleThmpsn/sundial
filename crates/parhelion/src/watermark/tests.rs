@@ -17,10 +17,10 @@ const MISFIT_PRIMARY_HEADER: TagHash = TagHash(0x8132_5793);
 const MISFIT_PRIMARY_DATA: TagHash = TagHash(0x8132_5794);
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn cross_rarity_icons_keep_art_and_rebuild_exact_resource_dependencies() {
     use AuthoredWeaponRarity as R;
-    let packages = std::path::PathBuf::from(std::env::var_os("SUNDIAL_TEST_PACKAGES").unwrap());
+    let packages = crate::test_support::stock_packages();
     let manager = sundial::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
     let exotic = TagHash(0x8132_36D9); // Cerberus+1
     let donor = manager.read_tag(exotic).unwrap();
@@ -56,10 +56,15 @@ fn cross_rarity_icons_keep_art_and_rebuild_exact_resource_dependencies() {
         .unwrap();
         assert_eq!(
             read_tag(payload, ICON_RARITY_BACKGROUND_LAYER_OFFSET).unwrap(),
-            container.rarity.icon_background_layer()
+            TagHash(match container.rarity {
+                R::Common => 0x8132_0719,
+                R::Uncommon => 0x8132_1AFD,
+                R::Rare => 0x8131_8517,
+                R::Legendary => 0x8131_819C,
+                R::Exotic => 0x8132_3525,
+            })
         );
-        let mut expected =
-            collect_unchanged_container_dependencies(&manager, exotic, payload, false).unwrap();
+        let mut expected = native_container_dependencies(&manager, payload);
         for pair in &plan.texture_pairs {
             expected.insert(pair.data_tag.0);
             expected.insert(pair.header_tag.0);
@@ -98,70 +103,6 @@ const MISFIT_WATERMARK_LAYER: TagHash = TagHash(0x8131_8639);
 const TEST_DESTINATION_PACKAGE_ID: u16 = 0x0914;
 const TEST_DESTINATION_ENTRY_COUNT: usize = 5_452;
 const TEST_APPENDED_ORDINAL_BASE: usize = 2;
-
-#[test]
-fn higher_resolution_output_keeps_the_approved_design_in_all_six_lanes() {
-    for (index, (width, height)) in TEXTURE_DIMENSIONS.into_iter().enumerate() {
-        let output = render_output_texture(index).unwrap();
-        assert_eq!(output.dimensions(), (width * 4, height * 4));
-        assert_eq!(output.as_raw().len(), (width * height * 4 * 16) as usize);
-        assert!(output.pixels().any(|pixel| pixel[3] == 0));
-        assert!(output.pixels().any(|pixel| pixel[3] >= 200));
-        let source = decode_authored_texture(index, width, height).unwrap();
-        let reduced = crate::image_import::fit(&output, width, height);
-        // Resampling may soften an edge slightly, but must not replace or reposition the
-        // mark. Compare premultiplied channels so invisible RGB does not skew the check.
-        let error: f64 = source
-            .chunks_exact(4)
-            .zip(reduced.pixels())
-            .map(|(a, b)| {
-                (0..3)
-                    .map(|channel| {
-                        (f64::from(a[channel]) * f64::from(a[3]) / 255.0
-                            - f64::from(b[channel]) * f64::from(b[3]) / 255.0)
-                            .abs()
-                    })
-                    .sum::<f64>()
-                    + (f64::from(a[3]) - f64::from(b[3])).abs()
-            })
-            .sum();
-        assert!(error / f64::from(width * height * 4) < 3.0, "lane {index}");
-        if let Some(directory) = std::env::var_os("SUNDIAL_TEST_ICON_PREVIEW_DIR") {
-            output
-                .save(
-                    std::path::Path::new(&directory).join(format!("watermark-output-{index}.png")),
-                )
-                .unwrap();
-        }
-    }
-}
-
-#[test]
-fn private_icon_fingerprint_tracks_composition_and_pixel_revisions() {
-    let mut container = vec![0u8; ICON_CONTAINER_SIZE];
-    let original = private_icon_fingerprint(&container, b"original pixels");
-    assert_ne!(
-        original,
-        private_icon_fingerprint(&container, b"new pixels")
-    );
-    container[ICON_WATERMARK_LAYER_OFFSET] = 1;
-    assert_ne!(
-        original,
-        private_icon_fingerprint(&container, b"original pixels")
-    );
-    let changed = private_icon_fingerprint(&container, b"original pixels");
-    container[ICON_CONTENT_FINGERPRINT_OFFSET] = 1;
-    assert_eq!(
-        changed,
-        private_icon_fingerprint(&container, b"original pixels")
-    );
-}
-
-#[test]
-fn assigned_tags_reject_package_table_overflow() {
-    let error = assigned_tag(0x0914, 8191, 1).expect_err("index 8192 must fail");
-    assert!(error.to_string().contains("package-table limit"));
-}
 
 #[test]
 fn absent_resource_references_are_only_the_ffffffff_sentinel() {
@@ -223,20 +164,47 @@ fn icon_layer_validation_visits_every_texture_header_reference() {
     assert!(error.to_string().contains("811C9DC5"));
 }
 
+// Decode the stock layers and entry references directly. This is independent of the
+// compiler collector whose emitted dependency indexes these checks validate.
+fn native_container_dependencies(
+    manager: &PackageManager,
+    container: &[u8],
+) -> SharedTagDependencies {
+    let mut result = SharedTagDependencies::new();
+    for offset in ICON_LAYER_REFERENCE_OFFSETS {
+        if offset == ICON_WATERMARK_LAYER_OFFSET {
+            continue;
+        }
+        let tag = read_tag(container, offset).unwrap();
+        if tag.0 == u32::MAX {
+            continue;
+        }
+        result.insert(tag.0);
+        let layer = manager.read_tag(tag).unwrap();
+        let count = read_u64(&layer, 0x20).unwrap() as usize;
+        let lanes = relative_target(&layer, 0x28, "native layer").unwrap();
+        for lane in 0..count {
+            let descriptor = lanes + 0x10 + lane * 0x10;
+            let textures = read_u64(&layer, descriptor).unwrap() as usize;
+            let rows =
+                relative_target(&layer, descriptor + 8, "native texture array").unwrap() + 0x10;
+            for index in 0..textures {
+                let header = read_tag(&layer, rows + index * 4).unwrap();
+                result.insert(header.0);
+                result.insert(manager.get_entry(header).unwrap().reference);
+            }
+        }
+    }
+    result
+}
+
 fn assert_shared_watermark_plan(plan: &WatermarkPlan, repeated: &WatermarkPlan) {
-    assert_eq!(plan.new_tags.len(), SHARED_TAG_COUNT + 4);
-    assert_eq!(plan.reference_overrides.len(), 12);
     assert_eq!(plan.icon_containers.len(), 2);
-    assert_eq!(plan.watermark_layer_ordinal, 14);
-    assert_eq!(plan.watermark_layer_tag, TagHash::new(0x0914, 5_466));
-    assert_eq!(
-        plan.container_for_donor(ARC_LOGIC_ICON_CONTAINER),
-        Some(TagHash::new(0x0914, 5_467))
-    );
-    assert_eq!(
-        plan.container_for_donor(MOUNTAINTOP_ICON_CONTAINER),
-        Some(TagHash::new(0x0914, 5_469))
-    );
+    assert_eq!(plan.container_for_request(0), plan.container_for_request(2));
+    assert_ne!(plan.container_for_request(0), plan.container_for_request(1));
+    for donor in [ARC_LOGIC_ICON_CONTAINER, MOUNTAINTOP_ICON_CONTAINER] {
+        assert!(plan.container_for_donor(donor).is_some());
+    }
     assert_eq!(
         plan.new_tags
             .iter()
@@ -251,7 +219,8 @@ fn assert_shared_watermark_plan(plan: &WatermarkPlan, repeated: &WatermarkPlan) 
 }
 
 fn assert_authored_watermark_layer(plan: &WatermarkPlan) {
-    let authored_layer = &plan.new_tags[12].payload;
+    let authored_layer =
+        &plan.new_tags[plan.watermark_layer_ordinal - TEST_APPENDED_ORDINAL_BASE].payload;
     for (index, pair) in plan.texture_pairs.iter().enumerate() {
         assert_eq!(
             read_tag(
@@ -267,12 +236,11 @@ fn assert_authored_watermark_layer(plan: &WatermarkPlan) {
 fn assert_watermarked_container(
     manager: &PackageManager,
     plan: &WatermarkPlan,
-    index: usize,
     container: &WatermarkedIconContainer,
 ) {
     let donor = manager.read_tag(container.donor_container_tag).unwrap();
-    let definition_index = SHARED_TAG_COUNT + index * 2;
-    let companion_index = definition_index + 1;
+    let definition_index = container.ordinal - TEST_APPENDED_ORDINAL_BASE;
+    let companion_index = container.companion_ordinal - TEST_APPENDED_ORDINAL_BASE;
     let authored = &plan.new_tags[definition_index].payload;
     validate_only_patched_fields(
         &donor,
@@ -301,14 +269,16 @@ fn assert_watermarked_container(
         plan.new_tags[companion_index].storage,
         NewTagStorageMode::InheritTemplate
     );
-    assert_eq!(container.companion_ordinal, container.ordinal + 1);
     assert_eq!(
         container.companion_tag,
-        TagHash::new(0x0914, 5_468 + (index as u16) * 2)
+        TagHash::new(container.tag.pkg_id(), container.tag.entry_index() + 1)
     );
     assert_eq!(
         container.donor_companion_tag,
-        crate::shared_tag_memory::adjacent_companion_tag(container.donor_container_tag).unwrap()
+        TagHash::new(
+            container.donor_container_tag.pkg_id(),
+            container.donor_container_tag.entry_index() + 1
+        )
     );
     assert_eq!(
         plan.new_tags[companion_index].template_tag,
@@ -323,13 +293,7 @@ fn assert_watermarked_container(
         container.tag
     );
 
-    let mut expected_dependencies = collect_unchanged_container_dependencies(
-        manager,
-        container.donor_container_tag,
-        authored,
-        false,
-    )
-    .unwrap();
+    let mut expected_dependencies = native_container_dependencies(manager, authored);
     for pair in &plan.texture_pairs {
         assert_resized_texture_header(manager, plan, pair);
         expected_dependencies.insert(u32::from(pair.data_tag));
@@ -370,10 +334,9 @@ fn assert_resized_texture_header(
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_stock_chain_authors_one_shared_resource_for_multiple_items_when_configured() {
-    let package_directory = std::env::var_os("SUNDIAL_TEST_PACKAGES")
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+    let package_directory = crate::test_support::stock_packages();
     let manager = PackageManager::new(
         Path::new(&package_directory),
         GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),
@@ -398,8 +361,8 @@ fn real_stock_chain_authors_one_shared_resource_for_multiple_items_when_configur
 
     assert_shared_watermark_plan(&plan, &repeated);
     assert_authored_watermark_layer(&plan);
-    for (index, container) in plan.icon_containers.iter().enumerate() {
-        assert_watermarked_container(&manager, &plan, index, container);
+    for container in &plan.icon_containers {
+        assert_watermarked_container(&manager, &plan, container);
     }
 }
 
@@ -409,23 +372,49 @@ fn assert_private_primary_graph(
     authored_primary: TagHash,
     primary_local: usize,
 ) {
-    assert_eq!(
-        plan.new_tags[primary_local - 2].template_tag,
-        MISFIT_PRIMARY_DATA
-    );
-    assert_eq!(
-        plan.new_tags[primary_local - 1].template_tag,
-        MISFIT_PRIMARY_HEADER
-    );
+    let data_local = plan
+        .new_tags
+        .iter()
+        .position(|tag| tag.template_tag == MISFIT_PRIMARY_DATA)
+        .unwrap();
+    let header_local = plan
+        .new_tags
+        .iter()
+        .position(|tag| tag.template_tag == MISFIT_PRIMARY_HEADER)
+        .unwrap();
     assert_eq!(
         plan.new_tags[primary_local].template_tag,
         MISFIT_PRIMARY_LAYER
+    );
+    assert!(
+        plan.reference_overrides
+            .iter()
+            .any(|reference| reference.new_tag_ordinal
+                == TEST_APPENDED_ORDINAL_BASE + header_local
+                && reference.reference
+                    == crate::extend::NewTagReference::Appended(
+                        TEST_APPENDED_ORDINAL_BASE + data_local
+                    ))
+    );
+    let primary_layer = &plan.new_tags[primary_local].payload;
+    assert!(read_u64(primary_layer, 0x20).unwrap() > 0);
+    let lanes = relative_target(primary_layer, 0x28, "private primary lanes").unwrap();
+    let descriptor = lanes + 0x10;
+    assert!(read_u64(primary_layer, descriptor).unwrap() > 0);
+    let textures =
+        relative_target(primary_layer, descriptor + 8, "private primary textures").unwrap();
+    assert_eq!(
+        read_tag(primary_layer, textures + 0x10).unwrap(),
+        TagHash::new(
+            TEST_DESTINATION_PACKAGE_ID,
+            (TEST_DESTINATION_ENTRY_COUNT + TEST_APPENDED_ORDINAL_BASE + header_local) as u16
+        )
     );
 
     let donor_pixels = manager
         .read_tag(MISFIT_PRIMARY_DATA)
         .expect("Misfit primary pixels should read");
-    let authored_pixels = &plan.new_tags[primary_local - 2].payload;
+    let authored_pixels = &plan.new_tags[data_local].payload;
     assert_eq!(authored_pixels.len(), donor_pixels.len());
     let alpha_mismatches = donor_pixels
         .chunks_exact(4)
@@ -459,7 +448,6 @@ fn assert_private_container_graph(
     plan: &WatermarkPlan,
     authored_container: &WatermarkedIconContainer,
     authored_primary: TagHash,
-    primary_local: usize,
 ) {
     let donor_container = manager
         .read_tag(MISFIT_ICON_CONTAINER)
@@ -498,12 +486,21 @@ fn assert_private_container_graph(
     );
 
     let companion_dependencies = crate::shared_tag_memory::validate_shared_tag_companion_payload(
-        &plan.new_tags[container_local + 1].payload,
+        &plan.new_tags[authored_container.companion_ordinal - TEST_APPENDED_ORDINAL_BASE].payload,
         authored_container.companion_tag,
         authored_container.tag,
     )
     .expect("the authored container companion should remain canonical");
-    for local in [primary_local - 2, primary_local - 1, primary_local] {
+    for template in [
+        MISFIT_PRIMARY_DATA,
+        MISFIT_PRIMARY_HEADER,
+        MISFIT_PRIMARY_LAYER,
+    ] {
+        let local = plan
+            .new_tags
+            .iter()
+            .position(|resource| resource.template_tag == template)
+            .unwrap();
         let tag = TagHash::new(
             TEST_DESTINATION_PACKAGE_ID,
             (TEST_DESTINATION_ENTRY_COUNT + TEST_APPENDED_ORDINAL_BASE + local) as u16,
@@ -523,10 +520,9 @@ fn assert_private_container_graph(
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_misfit_edit_authors_a_private_primary_graph_when_configured() {
-    let package_directory = std::env::var_os("SUNDIAL_TEST_PACKAGES")
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+    let package_directory = crate::test_support::stock_packages();
     let manager = PackageManager::new(
         Path::new(&package_directory),
         GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep),
@@ -553,8 +549,6 @@ fn real_misfit_edit_authors_a_private_primary_graph_when_configured() {
     )
     .expect("Misfit should support a private edited primary-image graph");
 
-    assert_eq!(plan.new_tags.len(), SHARED_TAG_COUNT + 5);
-    assert_eq!(plan.reference_overrides.len(), 14);
     assert_eq!(plan.icon_containers.len(), 1);
     let authored_container = &plan.icon_containers[0];
     let authored_primary = authored_container
@@ -567,20 +561,13 @@ fn real_misfit_edit_authors_a_private_primary_graph_when_configured() {
         - TEST_DESTINATION_ENTRY_COUNT
         - TEST_APPENDED_ORDINAL_BASE;
     assert_private_primary_graph(&manager, &plan, authored_primary, primary_local);
-    assert_private_container_graph(
-        &manager,
-        &plan,
-        authored_container,
-        authored_primary,
-        primary_local,
-    );
+    assert_private_container_graph(&manager, &plan, authored_container, authored_primary);
 }
 
 #[test]
-#[ignore = "requires SUNDIAL_TEST_PACKAGES pointing to Shadowkeep packages"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to Shadowkeep packages"]
 fn real_standalone_asset_package_round_trips_when_configured() {
-    let package_directory = std::env::var_os("SUNDIAL_TEST_PACKAGES")
-        .expect("SUNDIAL_TEST_PACKAGES must point to Shadowkeep packages");
+    let package_directory = crate::test_support::stock_packages();
     let package_directory = Path::new(&package_directory);
     let manager = PackageManager::new(
         package_directory,

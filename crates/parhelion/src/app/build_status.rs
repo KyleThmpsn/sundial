@@ -2,7 +2,6 @@
 use super::*;
 
 mod progress;
-pub(super) use progress::message as progress_message;
 pub(super) use progress::{Activity, InstallStatus};
 #[cfg(test)]
 mod tests;
@@ -12,6 +11,33 @@ struct BuildBlocker {
     path: PathBuf,
     name: String,
     open: bool,
+}
+
+fn draw_mods(ui: &mut egui::Ui, mods: &[crate::ModReport]) {
+    if mods.is_empty() {
+        return;
+    }
+    ui.strong("Managed Mods");
+    ui.label("Imported resources belong to their importer mods. Parhelion holds the records, native assets and stock patches. Changed folders are backed up together.");
+    if mods.iter().any(|member| {
+        member.id == sundial::package_authoring::mod_content::ID
+            && member.status == crate::ModStatus::Updated
+    }) && mods.iter().any(|member| {
+        member.id != sundial::package_authoring::mod_content::ID
+            && member.status == crate::ModStatus::Installed
+    }) {
+        ui.label("Imported resources move into the new importer mods listed below. Parhelion and the importer mods change in one transaction.");
+    }
+    for member in mods {
+        ui.collapsing(
+            format!("{}: {}", member.name, member.status.label()),
+            |ui| {
+                for package in &member.packages {
+                    ui.monospace(package);
+                }
+            },
+        );
+    }
 }
 
 impl PackageAuthoringApp {
@@ -46,10 +72,12 @@ impl PackageAuthoringApp {
             .resizable(true)
             .default_width(820.0)
             .default_height(620.0)
-            .max_size(ctx.screen_rect().size() - egui::vec2(48.0, 48.0))
+            .max_size(ctx.content_rect().size() - egui::vec2(48.0, 48.0))
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
+                // Keep the height selected at the window border, even when a phase has little text.
+                ui.set_min_height(ui.available_height());
                 workbench_style(ui);
                 progress::draw_steps(ui, self);
                 match self.build_dialog_step {
@@ -63,6 +91,38 @@ impl PackageAuthoringApp {
                     }
                     BuildDialogStep::Build => {}
                 }
+                egui::Panel::bottom("build-status-footer")
+                    .frame(egui::Frame::NONE)
+                    .show_separator_line(false)
+                    .show(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+                        ui.horizontal_wrapped(|ui| {
+                            let mut install_button = egui::Button::new(
+                                egui::RichText::new("Review Installation").strong(),
+                            );
+                            if can_install {
+                                install_button =
+                                    install_button.fill(ui.visuals().selection.bg_fill);
+                            }
+                            if ui.add_enabled(can_install, install_button).clicked() {
+                                install_requested = true;
+                            }
+                            if ui
+                                .add_enabled(
+                                    staging_directory.is_some(),
+                                    egui::Button::new("Open Staging Folder"),
+                                )
+                                .clicked()
+                            {
+                                open_staging_requested = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                close_requested = true;
+                            }
+                        });
+                    });
                 if building {
                     if let Some(current) = &self.build_progress {
                         progress::draw_build(ui, current, self.build_elapsed(Instant::now()), true);
@@ -71,76 +131,52 @@ impl PackageAuthoringApp {
                         ui.spinner();
                     }
                     ui.add_space(12.0);
-                    self.build_activity.draw(ui, "build-progress-activity");
+                    self.build_activity
+                        .draw(ui, "build-progress-activity", Some(0.0));
                 } else {
                     if let Some(progress) = &self.build_progress {
                         ui.weak(format!("Elapsed {}", format_elapsed(progress.elapsed)));
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("parhelion-build-status-report")
-                        .max_height((ui.available_height() - 110.0).max(120.0))
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| match self.latest_build.as_ref() {
-                            Some(Ok(report)) => draw_build_report(ui, report),
-                            Some(Err(error)) => {
-                                ui.heading(
-                                    egui::RichText::new("Build Blocked")
-                                        .color(ui.visuals().error_fg_color),
-                                );
-                                ui.colored_label(ui.visuals().error_fg_color, error);
-                                ui.horizontal_wrapped(|ui| {
-                                    if ui.button("Copy Error").clicked() {
-                                        ui.ctx().copy_text(error.clone());
-                                    }
-                                    let Some(blocker) = &blocker else {
-                                        return;
-                                    };
-                                    if ui.button("Remove from Build").clicked() {
-                                        remove_blocker_requested = true;
-                                    }
-                                    if !blocker.open && ui.button("Open Recipe").clicked() {
-                                        open_blocker_requested = true;
-                                    }
-                                });
-                            }
-                            None => {
-                                ui.label("No build result.");
-                            }
-                        });
-                }
-
-                if !building {
-                    egui::CollapsingHeader::new("Build Activity")
-                        .default_open(matches!(self.latest_build, Some(Err(_))))
+                        .max_height(ui.available_height().max(0.0))
+                        .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            self.build_activity.draw(ui, "build-progress-activity")
+                            match self.latest_build.as_ref() {
+                                Some(Ok(report)) => draw_build_report(ui, report),
+                                Some(Err(error)) => {
+                                    ui.heading(
+                                        egui::RichText::new("Build Blocked")
+                                            .color(ui.visuals().error_fg_color),
+                                    );
+                                    ui.colored_label(ui.visuals().error_fg_color, error);
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui.button("Copy Error").clicked() {
+                                            ui.ctx().copy_text(error.clone());
+                                        }
+                                        let Some(blocker) = &blocker else {
+                                            return;
+                                        };
+                                        if ui.button("Remove from Build").clicked() {
+                                            remove_blocker_requested = true;
+                                        }
+                                        if !blocker.open && ui.button("Open Recipe").clicked() {
+                                            open_blocker_requested = true;
+                                        }
+                                    });
+                                }
+                                None => {
+                                    ui.label("No build result.");
+                                }
+                            }
+                            egui::CollapsingHeader::new("Build Activity")
+                                .default_open(matches!(self.latest_build, Some(Err(_))))
+                                .show(ui, |ui| {
+                                    self.build_activity
+                                        .draw(ui, "build-progress-activity", None)
+                                });
                         });
                 }
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(5.0);
-                ui.horizontal_wrapped(|ui| {
-                    let mut install_button =
-                        egui::Button::new(egui::RichText::new("Review Installation").strong());
-                    if can_install {
-                        install_button = install_button.fill(ui.visuals().selection.bg_fill);
-                    }
-                    if ui.add_enabled(can_install, install_button).clicked() {
-                        install_requested = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            staging_directory.is_some(),
-                            egui::Button::new("Open Staging Folder"),
-                        )
-                        .clicked()
-                    {
-                        open_staging_requested = true;
-                    }
-                    if ui.button("Close").clicked() {
-                        close_requested = true;
-                    }
-                });
             });
 
         if open_staging_requested
@@ -203,15 +239,73 @@ impl PackageAuthoringApp {
 
     pub(super) fn draw_install_confirmation(&mut self, ui: &mut egui::Ui) {
         self.poll_replacement_review();
-        let Some(Ok(build)) = self.latest_build.as_ref() else {
+        if self.install_candidate().is_none() {
             self.build_dialog_step = BuildDialogStep::Build;
             return;
+        }
+        let mut install_requested = false;
+        egui::Panel::bottom("install-review-footer")
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    let label = if self
+                        .replacement_review
+                        .as_ref()
+                        .and_then(|r| r.as_ref().ok())
+                        .is_some_and(|r| r.removes_account_data())
+                    {
+                        "Back Up, Remove & Install"
+                    } else if self
+                        .replacement_review
+                        .as_ref()
+                        .and_then(|r| r.as_ref().ok())
+                        .is_some_and(|r| r.changes_account())
+                    {
+                        "Back Up, Update & Install"
+                    } else {
+                        "Back Up & Install"
+                    };
+                    install_requested = ui
+                        .add_enabled(
+                            self.install_receiver.is_none()
+                                && self.account_resync_receiver.is_none()
+                                && matches!(self.replacement_review, Some(Ok(_)))
+                                && self.replacement_receiver.is_none()
+                                && self.catalog_receiver.is_none()
+                                && self.catalog_worker.is_none()
+                                && !self.catalog_reload_pending
+                                && !self.technical_markers_busy()
+                                && !self.importer_busy(),
+                            egui::Button::new(label).fill(ui.visuals().selection.bg_fill),
+                        )
+                        .clicked();
+                    if ui.button("Back to Build").clicked() {
+                        self.restore = None;
+                        self.build_dialog_step = BuildDialogStep::Build;
+                    }
+                });
+            });
+        let restoring = self.restore.is_some();
+        let Some(build) = self.install_candidate() else {
+            return;
         };
-        ui.heading("Review Installation");
+        ui.heading(if restoring {
+            "Review Restore"
+        } else {
+            "Review Installation"
+        });
+        if restoring {
+            ui.label(
+                "Installs the build you last installed for this runtime again, without a rebuild.",
+            );
+        }
         egui::ScrollArea::vertical()
             .id_salt("install-review-contents")
-            .max_height((ui.available_height() - 56.0).max(120.0))
-            .auto_shrink([false, true])
+            .max_height(ui.available_height().max(0.0))
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 reports::draw_summary(
                     ui,
@@ -236,9 +330,24 @@ impl PackageAuthoringApp {
                         ui.set_width(ui.available_width());
                         self.draw_account_changes(ui);
                     });
+                if self.replacement_status.progress.is_some() {
+                    egui::CollapsingHeader::new("Account Review Activity").show(ui, |ui| {
+                        self.replacement_status
+                            .activity
+                            .draw(ui, "review-progress-activity", None);
+                    });
+                }
                 ui.add_space(8.0);
                 egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
-                    reports::path_row(ui, "Staged Run", &build.run_directory);
+                    reports::path_row(
+                        ui,
+                        if restoring {
+                            "Kept Build"
+                        } else {
+                            "Staged Run"
+                        },
+                        &build.run_directory,
+                    );
                     reports::path_row(ui, "Target Packages", &self.packages);
                     reports::path_row(ui, "Backup Folder", Path::new(self.backup_root.trim()));
                     ui.add_space(5.0);
@@ -248,44 +357,6 @@ impl PackageAuthoringApp {
                     }
                 });
             });
-        ui.add_space(6.0);
-        ui.separator();
-        let mut install_requested = false;
-        ui.horizontal_wrapped(|ui| {
-            let label = if self
-                .replacement_review
-                .as_ref()
-                .and_then(|r| r.as_ref().ok())
-                .is_some_and(|r| r.removes_account_data())
-            {
-                "Back Up, Remove & Install"
-            } else if self
-                .replacement_review
-                .as_ref()
-                .and_then(|r| r.as_ref().ok())
-                .is_some_and(|r| r.changes_account())
-            {
-                "Back Up, Update & Install"
-            } else {
-                "Back Up & Install"
-            };
-            install_requested = ui
-                .add_enabled(
-                    self.install_receiver.is_none()
-                        && matches!(self.replacement_review, Some(Ok(_)))
-                        && self.replacement_receiver.is_none()
-                        && self.catalog_receiver.is_none()
-                        && self.catalog_worker.is_none()
-                        && !self.catalog_reload_pending
-                        && !self.technical_markers_busy()
-                        && !self.importer_busy(),
-                    egui::Button::new(label).fill(ui.visuals().selection.bg_fill),
-                )
-                .clicked();
-            if ui.button("Back to Build").clicked() {
-                self.build_dialog_step = BuildDialogStep::Build;
-            }
-        });
         if install_requested {
             self.start_install();
         }
@@ -293,12 +364,25 @@ impl PackageAuthoringApp {
 
     pub(super) fn draw_account_changes(&self, ui: &mut egui::Ui) {
         if self.replacement_receiver.is_some() {
+            let status = &self.replacement_status;
+            let elapsed = status
+                .started
+                .map_or(status.elapsed, |started| started.elapsed());
+            let progress = status.progress.as_ref();
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Checking saved weapons and custom perks…");
+                ui.label(
+                    progress
+                        .and_then(|p| p.current_artifact.as_deref())
+                        .unwrap_or("Starting account review…"),
+                );
+            });
+            ui.weak(format!("Elapsed {}", format_elapsed(elapsed)));
+            let fraction = progress.filter(|p| p.total > 0).map_or(0.0, |p| {
+                (p.completed as f32 / p.total as f32).clamp(0.0, 1.0)
             });
             ui.add(
-                sundial::investment::progress_bar(0.0)
+                sundial::investment::progress_bar(fraction)
                     .animate(true)
                     .text("Reviewing Account Changes…"),
             );
@@ -313,6 +397,7 @@ impl PackageAuthoringApp {
             }
             None => return,
         };
+        draw_mods(ui, review.mods());
         if !review.changes_account() {
             ui.label("No account changes needed.");
             return;
@@ -398,6 +483,10 @@ impl PackageAuthoringApp {
                 .as_ref()
                 .map(|catalog| catalog.plug_label(change.definition_hash, false))
                 .unwrap_or_else(|| format!("Item 0x{:08X}", change.definition_hash));
+            if change.default_plugs.len() == change.previous_socket_count {
+                ui.label(format!("Update {count} saved {name} to new default plugs."));
+                continue;
+            }
             ui.label(format!(
                 "Update {count} saved {name} from {} to {} sockets.",
                 change.previous_socket_count,
@@ -415,9 +504,30 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_install_status(&mut self, ui: &mut egui::Ui) {
-        if self.install_receiver.is_some() {
+        let installing = self.install_receiver.is_some();
+        egui::Panel::bottom("install-status-footer")
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.separator();
+                if installing {
+                    ui.weak("Keep Destiny 2 closed.");
+                    return;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Close").clicked() {
+                        self.build_status_open = false;
+                    }
+                    if matches!(self.latest_install, Some(Err(_)))
+                        && ui.button("Review Again").clicked()
+                    {
+                        self.start_replacement_review();
+                        self.build_dialog_step = BuildDialogStep::ReviewInstall;
+                    }
+                });
+            });
+        if installing {
             self.install_status.draw(ui, true);
-            ui.weak("Keep Destiny 2 closed.");
             return;
         }
         ui.weak(format!(
@@ -426,36 +536,26 @@ impl PackageAuthoringApp {
         ));
         egui::ScrollArea::vertical()
             .id_salt("install-result-contents")
-            .max_height((ui.available_height() - 90.0).max(120.0))
-            .auto_shrink([false, true])
-            .show(ui, |ui| match &self.latest_install {
-                Some(Ok(report)) => {
-                    draw_install_report(ui, report);
-                }
-                Some(Err(error)) => {
-                    ui.heading("Installation Blocked");
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
-                None => {
-                    ui.label("No installation result.");
-                }
-            });
-        egui::CollapsingHeader::new("Installation Activity")
-            .default_open(matches!(self.latest_install, Some(Err(_))))
+            .max_height(ui.available_height().max(0.0))
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                self.install_status
-                    .activity
-                    .draw(ui, "install-progress-activity")
+                match &self.latest_install {
+                    Some(Ok(report)) => draw_install_report(ui, report),
+                    Some(Err(error)) => {
+                        ui.heading("Installation Blocked");
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                    None => {
+                        ui.label("No installation result.");
+                    }
+                }
+                egui::CollapsingHeader::new("Installation Activity")
+                    .default_open(matches!(self.latest_install, Some(Err(_))))
+                    .show(ui, |ui| {
+                        self.install_status
+                            .activity
+                            .draw(ui, "install-progress-activity", None)
+                    });
             });
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Close").clicked() {
-                self.build_status_open = false;
-            }
-            if matches!(self.latest_install, Some(Err(_))) && ui.button("Review Again").clicked() {
-                self.start_replacement_review();
-                self.build_dialog_step = BuildDialogStep::ReviewInstall;
-            }
-        });
     }
 }

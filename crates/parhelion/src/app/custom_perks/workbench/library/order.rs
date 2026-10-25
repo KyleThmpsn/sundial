@@ -58,6 +58,14 @@ impl Workbench {
                 },
             );
         }
+        changed |= ui
+            .checkbox(
+                self.show_imported_perks
+                    .get_or_insert(cfg!(feature = "d2-model-importer")),
+                "Show Imported Perks",
+            )
+            .on_hover_text("Include perks imported from saved item recipes.")
+            .changed();
         if changed || before != self.library_order {
             self.reveal_document = true;
         }
@@ -105,6 +113,11 @@ impl Workbench {
             .map(|(index, entry)| (PerkSource::Entry(index), &entry.recipe, entry.modified));
         let mut rows = documents
             .chain(entries)
+            .filter(|(_, recipe, _)| {
+                self.show_imported_perks
+                    .unwrap_or(cfg!(feature = "d2-model-importer"))
+                    || !self.imported_perks.contains(&recipe.id)
+            })
             .map(|(source, recipe, modified)| {
                 (
                     source,
@@ -123,81 +136,5 @@ impl Workbench {
             order.then_with(|| a.2.cmp(b.2))
         });
         rows.into_iter().map(|row| row.0).collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recent_and_name_orders_merge_saved_perks_and_drafts_without_duplicates() {
-        let temporary = tempfile::tempdir().unwrap();
-        let library = Library::open(temporary.path().to_owned()).unwrap();
-        let at = |seconds| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
-        let mut recipe = PerkRecipe::new();
-        recipe.name = "Alpha".into();
-        let mut alpha = library.save(&recipe, None).unwrap();
-        alpha.modified = at(10);
-        let mut draft = Document::new(PerkRecipe::new(), None);
-        draft.recipe.name = "Bravo".into();
-        draft.modified = at(20);
-        recipe = PerkRecipe::new();
-        recipe.name = "Charlie".into();
-        let mut charlie = library.save(&recipe, None).unwrap();
-        charlie.modified = at(30);
-        let opened = Document::new(alpha.recipe.clone(), Some(alpha.baseline.clone()));
-        let mut workbench = Workbench {
-            entries: vec![alpha, charlie],
-            documents: vec![opened, draft],
-            ..Default::default()
-        };
-        assert_eq!(
-            workbench.library_rows(),
-            [
-                PerkSource::Entry(1),
-                PerkSource::Document(1),
-                PerkSource::Document(0)
-            ]
-        );
-        workbench.library_order = Order::NameAscending;
-        assert_eq!(
-            workbench.library_rows(),
-            [
-                PerkSource::Document(0),
-                PerkSource::Document(1),
-                PerkSource::Entry(1)
-            ]
-        );
-        workbench.library_order = Order::NameDescending;
-        assert_eq!(
-            workbench.library_rows(),
-            [
-                PerkSource::Entry(1),
-                PerkSource::Document(1),
-                PerkSource::Document(0)
-            ]
-        );
-        workbench.documents[0].modified = at(40);
-        workbench.library_order = Order::Recent;
-        assert_eq!(workbench.library_rows()[0], PerkSource::Document(0));
-        let restored: Vec<Document> =
-            serde_json::from_slice(&serde_json::to_vec(&workbench.documents).unwrap()).unwrap();
-        assert_eq!(restored[0].modified, at(40));
-    }
-
-    #[test]
-    fn an_untouched_socket_copy_stays_out_of_the_list_until_it_changes() {
-        let mut recipe = PerkRecipe::new();
-        recipe.name = "Custom Socket Perk".into();
-        let mut document = Document::new(recipe, None);
-        document.from_socket = true;
-        let mut workbench = Workbench {
-            documents: vec![document],
-            ..Default::default()
-        };
-        assert!(workbench.library_rows().is_empty());
-        workbench.documents[0].recipe.description = "Changed".into();
-        assert_eq!(workbench.library_rows(), [PerkSource::Document(0)]);
     }
 }

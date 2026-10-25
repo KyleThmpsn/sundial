@@ -16,11 +16,15 @@ fn load(path: &Path) -> Result<Value> {
 }
 
 pub(crate) fn decompile(tool: &Path, path: &Path) -> Result<()> {
+    crate::cancellation::check()?;
     let mut cmd = Command::new(tool);
     cmd.arg("-D").arg(path);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
-    let output = cmd.output().context("Launching shader decompiler")?;
+    let child = cmd.spawn().context("Launching shader decompiler")?;
+    let output = crate::cancellation::wait_with_output(child)?;
     let mut log = output.stdout;
     log.extend(output.stderr);
     fs::write(path.with_extension("decompile.log"), log)?;
@@ -67,10 +71,18 @@ pub(crate) fn export_with_progress(
     let mut models = Vec::new();
     for entry in report["models"].as_array().context("source models")? {
         let tag = profile::hash(entry, "model")?;
-        let model = Payload(fs::read(source.join(format!("raw/{tag:08X}.bin")))?);
-        for mesh in model.array(16, 128, None)? {
+        let model = if entry["cloth"] == true {
+            (*r.tag(tag, Some(0x80806F07))?).clone()
+        } else {
+            super::geometry::model(&source, tag)?
+        };
+        let mesh = super::geometry::selected_mesh(&model, entry)?;
+        {
             let parts = model.array(mesh + 32, 36, None)?;
-            for stage in [0, 1, 3, 7, 9, 12, 14, 16] {
+            for stage in [0, 1, 3, 7, 9, 12, 14, 16, 23] {
+                if stage == 23 && entry["cloth"] != true {
+                    continue;
+                }
                 for &at in parts
                     .get(
                         model.u16(mesh + 48 + stage * 2)? as usize
@@ -85,7 +97,7 @@ pub(crate) fn export_with_progress(
                 }
             }
         }
-        models.push(tag);
+        models.push(entry.clone());
     }
     let mut bindings = serde_json::Map::new();
     let mut shaders = BTreeSet::new();
@@ -96,7 +108,7 @@ pub(crate) fn export_with_progress(
             index + 1
         ));
         let mat = r.tag(tag, None)?;
-        for at in [0x70, 0x2B0] {
+        for at in [0x70, 0x2B0, 0x340] {
             let shader = mat.u32(at)?;
             if shader != u32::MAX {
                 shaders.insert(shader);
@@ -137,11 +149,14 @@ pub(crate) fn export_with_progress(
         }
     }
     r.finish()?;
-    for tag in &models {
-        let path = refs.join(format!("library-surfaces-01/vertex-colors/{tag:08X}"));
+    for entry in &models {
+        let path = refs.join(format!(
+            "library-surfaces-01/vertex-colors/{}",
+            super::geometry::mesh_key(entry)?
+        ));
         if !path.join("colors.json").exists() {
             r.begin_export(&path)?;
-            let colors = material::vertex_colors(&mut r, *tag)?;
+            let colors = material::vertex_colors_for(&mut r, entry)?;
             write_json(&path.join("colors.json"), &colors)?;
             r.finish()?;
         }

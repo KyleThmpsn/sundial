@@ -1,10 +1,11 @@
 //! Converts portable perk definitions through the same validation used by weapons.
+use super::compile::parse_recipe_hash;
 use super::*;
 
 impl WeaponSocketPlugVariantRecipe {
     pub(crate) fn validate(&self) -> Result<(), RecipeError> {
         let variant = self.to_compiler(0)?;
-        crate::weapon::validate_socket_plug_variant_shapes(&[variant])?;
+        crate::item::validate_socket_plug_variant_shapes(&[variant])?;
         Ok(())
     }
 
@@ -13,6 +14,11 @@ impl WeaponSocketPlugVariantRecipe {
         variant_index: usize,
     ) -> Result<WeaponSocketPlugVariantOverride, RecipeError> {
         let context = format!("socket-plug variant {variant_index}");
+        if self.projectile.is_some() && self.offer_everywhere {
+            return Err(RecipeError::Validation(
+                "A perk with a projectile must be attached to its weapon. It cannot be offered in stock sockets.".into(),
+            ));
+        }
         Ok(WeaponSocketPlugVariantOverride {
             replace_effects: self.replace_effects,
             investment_stats: self
@@ -28,6 +34,7 @@ impl WeaponSocketPlugVariantRecipe {
             )?,
             name: self.name.clone(),
             description: self.description.clone(),
+            offer_everywhere: self.offer_everywhere,
             additional_sandbox_perks: self.additional_sandbox_perks.clone(),
             icon: self.icon.clone(),
             classification_donor_hash: self
@@ -82,5 +89,19 @@ impl WeaponSandboxPerkActionFloatRecipe {
             expected_bits: self.expected_bits,
             value_bits: self.value_bits,
         })
+    }
+}
+
+impl crate::perk::PerkRecipe {
+    /// Its effects as the compiler takes them, for a perk that sits on no socket.
+    pub(crate) fn compiler_effects(
+        &self,
+    ) -> Result<Vec<WeaponSandboxPerkRuntimeOverride>, RecipeError> {
+        if self.projectile.is_some() {
+            return Err(RecipeError::Validation(
+                "A perk with a projectile must be attached to a weapon socket.".into(),
+            ));
+        }
+        Ok(self.at_socket(0, 0).to_compiler(0)?.sandbox_perks)
     }
 }

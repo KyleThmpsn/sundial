@@ -1,11 +1,7 @@
 pub(super) use crate::account::source::{SettingsLayout, SettingsPathResolution};
 pub use crate::investment::PlugSelectionMode;
-pub(super) use crate::investment::plug_selection::draw_plug_selection_warning;
 
 pub(super) mod store;
-
-#[cfg(test)]
-mod tests;
 
 use std::{
     fs,
@@ -17,6 +13,20 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::ui::destiny_text_font_family;
+use crate::ui::ICON_FONT_FAMILY;
+
+/// Draws the warning a plug picker shows beside `mode`, in the warning color for caution and the
+/// error color for high risk.
+pub(super) fn draw_plug_selection_warning(ui: &mut egui::Ui, mode: PlugSelectionMode) {
+    use crate::investment::plug_selection::Risk;
+    if let Some((risk, text)) = mode.warning() {
+        let color = match risk {
+            Risk::Caution => ui.visuals().warn_fg_color,
+            Risk::High => ui.visuals().error_fg_color,
+        };
+        ui.colored_label(color, text);
+    }
+}
 
 const DESTINY_SYMBOL_FONTS: &[(&str, &str)] = &[
     ("Destiny Symbols PC", "Destiny_Symbols_PC.otf"),
@@ -103,6 +113,11 @@ pub(super) struct Preferences {
     #[serde(default)]
     pub(super) show_plug_hashes: bool,
     #[serde(default)]
+    pub(super) show_preview_fps: bool,
+    /// Item tooltips name the package and hash under their band.
+    #[serde(default)]
+    pub(super) show_tooltip_source: bool,
+    #[serde(default)]
     pub(super) item_card_width: ItemCardWidth,
     #[serde(default)]
     pub(super) character_inventory_layout: CharacterInventoryLayout,
@@ -111,11 +126,7 @@ pub(super) struct Preferences {
     #[serde(default)]
     pub(super) experimental_power_above_cap: bool,
     #[serde(default)]
-    pub(super) experimental_extended_fov: bool,
-    #[serde(default)]
     pub(super) experimental_cross_class_subclasses: bool,
-    #[serde(default)]
-    pub(super) experimental_package_authoring: bool,
     #[serde(default)]
     pub(super) parhelion_warning_acknowledged: bool,
     #[serde(default)]
@@ -138,8 +149,6 @@ pub(super) fn normalized_automatic_backup_limit(limit: u16) -> u16 {
 
 /// The family holding Phosphor's light weight. Parhelion names it too, to draw quiet icons.
 const ICON_LIGHT_FONT_FAMILY: &str = "Sundial Icons Light";
-/// Phosphor alone, for an icon whose codepoint a game symbol also uses.
-const ICON_FONT_FAMILY: &str = "Sundial Icons";
 
 pub(super) fn configure_destiny_symbol_fonts(
     ctx: &egui::Context,
@@ -163,10 +172,15 @@ pub(super) fn configure_destiny_symbol_fonts(
     );
     let mut loaded = Vec::new();
     let mut errors = Vec::new();
-    for &(name, file_name) in DESTINY_SYMBOL_FONTS {
+    super::ui::record_game_face(ctx, super::ui::GameFace::Symbol, None);
+    for (index, &(name, file_name)) in DESTINY_SYMBOL_FONTS.iter().enumerate() {
         let path = install.join("fonts").join(file_name);
         match fs::read(&path) {
             Ok(bytes) => {
+                // The PC face leads, and is the one Dawn merges into its text font.
+                if index == 0 {
+                    super::ui::record_game_face(ctx, super::ui::GameFace::Symbol, Some(&bytes));
+                }
                 fonts
                     .font_data
                     .insert(name.to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
@@ -222,7 +236,9 @@ pub(super) fn configure_destiny_symbol_fonts(
     }
     let tooltip_family = egui::FontFamily::Name("Sundial Tooltip Title".into());
     let mut tooltip_fonts = fonts.families[&destiny_text_font_family()].clone();
-    if let Ok(bytes) = fs::read(install.join("fonts").join("NeueHaasUnicaW1G-Medium.otf")) {
+    let medium = fs::read(install.join("fonts").join("NeueHaasUnicaW1G-Medium.otf")).ok();
+    super::ui::record_game_face(ctx, super::ui::GameFace::Title, medium.as_deref());
+    if let Some(bytes) = medium {
         let name = "sundial-tooltip-medium".to_owned();
         fonts
             .font_data
@@ -230,10 +246,38 @@ pub(super) fn configure_destiny_symbol_fonts(
         tooltip_fonts.insert(0, name);
     }
     fonts.families.insert(tooltip_family.clone(), tooltip_fonts);
+    // The game's own text and figure faces, which item cards and tooltips are set in. Each family
+    // exists even without its file, falling back to the Destiny text fonts.
+    for (face, family, file_name) in [
+        (
+            super::ui::GameFace::Text,
+            super::ui::GAME_TEXT_FONT_FAMILY,
+            "NeueHaasUnicaW1G-Regular.otf",
+        ),
+        (
+            super::ui::GameFace::Figure,
+            super::ui::GAME_FIGURE_FONT_FAMILY,
+            "NHaasGroteskDSPro-75Bd.otf",
+        ),
+    ] {
+        let mut family_fonts = fonts.families[&destiny_text_font_family()].clone();
+        let bytes = fs::read(install.join("fonts").join(file_name)).ok();
+        super::ui::record_game_face(ctx, face, bytes.as_deref());
+        if let Some(bytes) = bytes {
+            fonts.font_data.insert(
+                family.to_owned(),
+                Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            family_fonts.insert(0, family.to_owned());
+        }
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(family.into()), family_fonts);
+    }
     ctx.all_styles_mut(|style| {
         let size = egui::TextStyle::Body.resolve(style).size + 2.0;
         style.text_styles.insert(
-            crate::ui_help::tooltip_title_style(),
+            crate::ui::help::tooltip_title_style(),
             egui::FontId::new(size, tooltip_family.clone()),
         );
     });
@@ -260,13 +304,13 @@ impl Default for Preferences {
             color_theme: ColorTheme::Dark,
             always_open_json_editor_in_second_window: false,
             show_plug_hashes: false,
+            show_preview_fps: false,
+            show_tooltip_source: false,
             item_card_width: ItemCardWidth::Standard,
             character_inventory_layout: CharacterInventoryLayout::Cards,
             experimental_progression: false,
             experimental_power_above_cap: false,
-            experimental_extended_fov: false,
             experimental_cross_class_subclasses: false,
-            experimental_package_authoring: false,
             parhelion_warning_acknowledged: false,
             show_parhelion_experimental_options: false,
             troubleshooting_logging: false,

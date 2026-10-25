@@ -5,8 +5,8 @@ use crate::package_runtime::reader::PackageManager;
 use tiger_pkg::TagHash;
 
 use crate::{
-    investment_localization::decode_strings,
-    investment_schema::{
+    investment::localization::decode_strings,
+    investment::schema::{
         GLOBALS_LOCALIZED_STRING_INDEX_TABLE_SLOT, ITEM_DEFINITION_HASH_OFFSET,
         ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE, LOCALIZED_STRING_INDEX_ROW_CLASS,
         LOCALIZED_STRING_INDEX_ROW_SIZE, ROOT_ITEM_DEFINITION_TABLE_SLOT,

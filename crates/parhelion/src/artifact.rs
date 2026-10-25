@@ -16,7 +16,7 @@ pub struct ArtifactMetadata {
     pub sha256: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct FileDigest {
     pub(crate) byte_length: u64,
     pub(crate) sha256: String,
@@ -37,8 +37,16 @@ pub(crate) fn digest_file(path: &Path) -> io::Result<FileDigest> {
     }
     Ok(FileDigest {
         byte_length,
-        sha256: format!("{:X}", digest.finalize()),
+        sha256: hex::encode_upper(digest.finalize()),
     })
+}
+
+/// As [`digest_file`], for bytes already read, so a check that also parses a file reads it once.
+pub(crate) fn digest_bytes(bytes: &[u8]) -> FileDigest {
+    FileDigest {
+        byte_length: bytes.len() as u64,
+        sha256: hex::encode_upper(Sha256::digest(bytes)),
+    }
 }
 
 pub(crate) fn has_pkg_extension(path: &Path) -> bool {

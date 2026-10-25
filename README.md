@@ -2,26 +2,27 @@
 
 <img src="assets/sundial-alt.png" alt="Sundial logo" width="160">
 
-Sundial edits accounts and settings for [Project Sunrise](https://github.com/stanuwu/Sunrise) and [Dawn](https://github.com/isinternets/Dawn), and includes Parhelion for creating custom weapon packages. It reads items from your installed Destiny 2 packages. No game assets are bundled.
+Sundial edits accounts and settings for [Project Sunrise](https://github.com/stanuwu/Sunrise) and [Dawn](https://github.com/isinternets/Dawn), and includes Parhelion for authoring your own weapons and other items. It reads items from your installed Destiny 2 packages. No game assets are bundled.
 
-- Edit characters, equipment, subclasses, and inventories.
+- Edit characters, equipment, Subclasses, and inventories.
 - Search weapons, armor, cosmetics, and perks.
+- Browse or search every item in the Inspector.
 - Inspect the definitions behind items, perks, and progression, with model previews.
 - Randomize loadouts and adjust armor stats.
 - Change game settings, progression, and Collections.
 - Use the JSON editor for settings not covered by the guided interface.
-- Create custom weapons with [Parhelion](crates/parhelion/README.md).
+- Author custom weapons and other items with [Parhelion](crates/parhelion/README.md).
 
 ## Compatibility
 
 - Destiny 2 Shadowkeep build `86657.20.08.23`
-- Project Sunrise settings schema v18 and SQLite schema v2
-- Dawn `player-state.db` schema v5
+- Project Sunrise, up to version 0.6 (settings schema v18 and SQLite schema v3)
+- Dawn, up to version 1.7.2 (`player-state.db` schema v5)
 - Windows 10 or Linux x86-64 (glibc 2.35 or later)
 
-Newer schemas may be opened with a warning, but future compatibility is not guaranteed.
+Sundial remains compatible with previous Project Sunrise and Dawn releases. Newer schemas may be opened with a warning, but future compatibility is not guaranteed.
 
-Sunrise schema v18 stores most account data in `data/investment.sqlite3`, with identity and runtime configuration in `settings.json`. Dawn stores account data, preferences, and key bindings in `player-state.db`, with identity, language, and runtime configuration in `Dawn/settings.json`. Sundial selects the active format automatically and still supports legacy Sunrise JSON accounts.
+Sunrise schema v18 stores most account data in `data/investment.sqlite3`, with identity and runtime configuration in `settings.json`. Dawn stores account data, preferences, and key bindings in `player-state.db`, with identity, language, and runtime configuration in `Dawn/settings.json`. Sundial selects the active format automatically and still supports earlier Sunrise builds, with SQLite schema v2 or legacy JSON accounts.
 
 ## Getting started
 
@@ -37,15 +38,15 @@ Close Destiny 2 before saving account changes, restoring backups, or installing 
 
 ## Parhelion
 
-Parhelion is an experimental custom investment global package builder bundled with Sundial (basically, a weapons workbench). Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox.
+Parhelion is an experimental item workbench bundled with Sundial. Build your own Destiny weapons by mixing weapon types, perks, stats, and appearance, including Exotics and combinations that wouldn't normally exist in the sandbox. It can also author custom perks and mods, armor, vehicles, Emblems, Shaders, and Subclass abilities.
 
-Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. Enable it under **Preferences > Editing > Experimental**, then choose **Open Parhelion**. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in-game.
+Parhelion creates its own Tiger-compatible packages in your existing installation without modifying existing packages. On Project Sunrise 0.6 or later, it installs them as a Sunrise mod. Choose **Open Parhelion** in the sidebar to start. Some combinations may not work and can freeze or crash the game. Before using future Dawn versions with online support, uninstall custom packages or Dawn may report an error. Please [report any issues](https://github.com/kylethmpsn/sundial/issues) with your recipe and a description of what happens in game.
 
 See the [Parhelion README](crates/parhelion/README.md) for more about the authoring workflow.
 
 ## Backups and local files
 
-Sundial backs up account data and settings before saving, checks for outside changes, and preserves unknown JSON fields. Backups are kept separately for each installation. Open the backup folder or reset settings under **Preferences > Saving & recovery**.
+Sundial backs up account data and settings before saving, checks for outside changes, and preserves unknown JSON fields. Backups are kept separately for each installation. Open the backup folder or reset settings under **Preferences > Saving & Recovery**.
 
 | Data | Windows | Linux |
 | --- | --- | --- |
@@ -63,7 +64,7 @@ No. Sundial supports the Project Sunrise and Dawn runtimes with the Shadowkeep v
 
 ### Does Sundial change my loadout while Destiny 2 is running?
 
-No. After saving changes, fully exit Destiny 2 to the desktop and relaunch it for Project Sunrise or Dawn to load them. Close the game before saving to avoid conflicts with its own settings writes. For live in-game equipment editing with Sunrise, check out [Sunrise Gear Editor](https://github.com/WalterGerig/SunriseGearEditor), a separate project. For Dawn, use the built-in **Loadout Editor** in the Dawn menu. It uses some of the same underlying inventory-editing technology as Sundial.
+No. Close Destiny 2 before saving so Sundial doesn't conflict with the game's own writes, then relaunch it so Project Sunrise or Dawn loads your changes. For live in-game equipment editing, use [Sunrise Gear Editor](https://github.com/WalterGerig/SunriseGearEditor), a separate project, with Sunrise, or the built-in **Loadout Studio** in the Dawn menu with Dawn. Loadout Studio uses some of the same inventory-editing technology as Sundial, with a Destiny-inspired UI.
 
 ### What do the plug-safety levels do?
 
@@ -72,10 +73,13 @@ These control how broadly Sundial searches for plugs, not whether an experimenta
 | Mode | Choices shown |
 | --- | --- |
 | Compatible | Plugs listed as supported by the item. |
-| Socket + gear type (default) | Plugs matching both the socket and the kind of gear. |
-| Socket type | Plugs matching the socket, even if not supported by this item. |
-| Gear type | Plugs found on the same broad kind of gear, regardless of socket. |
+| Socket + Item Subtype (default) | Plugs matching both the socket and the item's subtype, such as Sidearm. |
+| Socket Type | Plugs matching the socket, even if not supported by this item. |
+| Item Subtype | Plugs found anywhere on the item's subtype, such as every Sidearm, regardless of socket. |
+| Item Type | Plugs found anywhere on every Weapon or every piece of Armor, regardless of socket. |
 | All | Every discovered plug, regardless of compatibility. |
+
+The plug picker's **Plugs Offered** dropdown carries the same choices, labeled by the socket and item it is picking for. For example, Gnawing Hunger's barrel socket offers **Gnawing Hunger Barrels**, **Auto Rifle Barrels**, **All Barrels**, **Auto Rifles**, **All Weapons**, and **All**, as Dawn's Loadout Studio does.
 
 Broader choices can cause loading failures or crashes. Sundial warns before enabling **All**. Backups are still created when saving experimental selections.
 
@@ -87,13 +91,13 @@ Sundial builds its catalog from your existing game packages, then caches it. The
 
 Include steps to reproduce the problem and any error message or screenshot. Use **Preferences > Installation > Troubleshooting > Copy Report** to include diagnostics. A copy of the active runtime's `settings.json`, `investment.sqlite3`, or `player-state.db` may also help diagnose settings or startup issues.
 
-For Parhelion issues, include the recipe and describe what happens in-game.
+For Parhelion issues, include the recipe and describe what happens in game.
 
 Report bugs through [GitHub Issues](https://github.com/kylethmpsn/sundial/issues). You can also reach me on Discord or Twitter/X as `kylethmpsn`.
 
 ## Building
 
-Requires Rust 1.88 or later.
+Requires Rust 1.95 or later. The repository pins Rust 1.99.0 in `rust-toolchain.toml`, so rustup installs that toolchain on the first build.
 
 ```sh
 cargo build --release --locked -p sundial-suite
@@ -101,9 +105,23 @@ cargo build --release --locked -p sundial-suite
 
 The executable is `target/release/sundial.exe` on Windows or `target/release/sundial` on Linux.
 
-## Credits and Licensing
+### D2 Importer
 
-- [tiger-pkg](https://github.com/v4nguard/tiger-pkg) provides the Destiny 2 package reader. This project would not be possible without it. Package-layout research was also informed by Sunrise and [Charm](https://github.com/MontagueM/Charm).
+The D2 Importer is a work-in-progress feature that isn't included in releases yet. Some imported items and features will be broken or incomplete. Once it's more polished, it will be included in releases. To try it now, build with the importer feature:
+
+```sh
+cargo build --release --locked -p sundial-suite --features d2-model-importer
+```
+
+Then turn on **D2 Importer** in Parhelion's **Preferences… > Editor & Library > Experimental**, and open it from **Tools > D2 Importer…**.
+
+## Credits and licensing
+
+- [tiger-pkg](https://github.com/v4nguard/tiger-pkg) provides the Destiny 2 package reader. This project would not be possible without it.
+- Package-layout research was informed by Sunrise, [Charm](https://github.com/MontagueM/Charm), and [Alkahest](https://github.com/cohaereo/alkahest), whose Pre-Beyond Light branch helped guide the model preview.
+- Compatibility with other Sunrise mods is based on Project Sunrise's mod loader and [Sunrise Studio](https://github.com/stanuwu/SunriseStudio)'s merge data.
+- Thanks to [VulnerabilitiesrUs](https://x.com/TempAccountNull) for help with various aspects of the D2 Importer, and to [isinternets](https://github.com/isinternets) for help researching Destiny 1 imports.
+- [Assembly](https://github.com/XboxChaos/Assembly)'s tag definitions helped guide the D2 Importer's Halo: Reach support.
 - Thanks to [Solus](https://www.youtube.com/@Solus-yt) for creating the Project Sunrise logo used in Parhelion's badge and inspiring its watermark.
 - Thanks to [soul](https://github.com/chnsw) for creating the Dawn icon used in Parhelion's badge and inspiring its watermark, and to [Flumoxxed](https://www.youtube.com/@flumx) for the SVG!
 - [justrealmilk/destiny-icons](https://github.com/justrealmilk/destiny-icons) provides optional alternative icons for custom perks, badges, and watermarks.

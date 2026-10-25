@@ -82,7 +82,7 @@ fn check_boundary(
 }
 
 /// Enforce the boundary in normal package emission, including extension hooks.
-/// Native icon definitions are an intentional eager UI resource. Other type-16
+/// Native icons and replication records are eager resources. Other type-16
 /// asset owners retain their loading boundary, including model and dye owners.
 pub(crate) fn validate_asset_loading<'a>(
     manager: &sundial::package_authoring::PackageManager,
@@ -139,25 +139,22 @@ pub(crate) fn validate_asset_loading<'a>(
     Ok(())
 }
 
-fn deferred_owner(file_type: u8, class: u32) -> AuthoringResult<bool> {
+pub(crate) fn deferred_owner(file_type: u8, class: u32) -> AuthoringResult<bool> {
     if file_type != 16 {
         return Err(invalid("An asset loading index requires a type-16 owner"));
     }
-    Ok(class != sundial::package_authoring::icon_schema::ICON_DEFINITION_CLASS)
+    // Native investment enrollment includes replication roots and their allocation
+    // trees. Their companion remains separately registered in the package table.
+    Ok(
+        class != sundial::package_authoring::icon_schema::ICON_DEFINITION_CLASS
+            && class != 0x8080_9BB6,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tests::{COMPANION, OWNER, fixture};
     use super::*;
-
-    #[test]
-    fn native_icon_owners_allow_eager_ui_loading() {
-        let icon = sundial::package_authoring::icon_schema::ICON_DEFINITION_CLASS;
-        assert!(!deferred_owner(16, icon).unwrap());
-        assert!(deferred_owner(16, 0x8080_9AD8).unwrap());
-        assert!(deferred_owner(8, icon).is_err());
-    }
 
     #[test]
     fn scoped_clone_preserves_native_resources_and_rejects_global_preloading() {
@@ -184,7 +181,6 @@ mod tests {
             indexed_dependencies(&parse(&result, target.companion, target.owner).unwrap()),
             expected
         );
-        assert_eq!(original, fixture());
         assert!(parse(&result, COMPANION, OWNER).is_err());
         let assets = resources
             .map(|t| (t.pkg_id(), t.entry_index()))

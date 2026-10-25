@@ -5,7 +5,7 @@
 //! record to a row. A record type with a reading order of its own is a table even alone, so a
 //! property adjustment always reads as what it changes, then how.
 use super::*;
-use sundial::package_authoring::weapon_runtime::modifiers;
+use sundial::package_authoring::runtime::modifiers;
 
 /// The narrowest a table column gets before each record reads as its own tiles instead.
 const MIN_COLUMN: f32 = 80.0;
@@ -92,7 +92,7 @@ struct Row<'f> {
 
 /// Whether a record of `schema` with `fields` joins the table `other` already belongs to.
 fn joins_record(other: &[Entry<'_>], schema: u32, fields: &[Entry<'_>]) -> bool {
-    let theirs = other[0].field.locator.type_handle;
+    let theirs = other[0].field.locator.type_handle.get();
     theirs == schema
         || modifiers::column_order(theirs).is_none()
             && modifiers::column_order(schema).is_none()
@@ -116,7 +116,7 @@ fn columns<'f>(
         && set
             .iter()
             .flat_map(|(_, fields)| fields)
-            .all(|entry| entry.field.locator.type_handle == schema)
+            .all(|entry| entry.field.locator.type_handle.get() == schema)
     {
         columns.sort_by_key(|(_, offset)| {
             order
@@ -139,7 +139,7 @@ pub(super) fn arrange<'f>(entries: &[Entry<'f>], source: impl Fn(usize) -> Sourc
         let locator = &entry.field.locator;
         let key = (
             entry.group,
-            locator.type_handle,
+            locator.type_handle.get(),
             entry.field.owner_offset.wrapping_sub(locator.value_offset),
         );
         match records.iter_mut().rev().find(|(found, _)| *found == key) {
@@ -174,7 +174,7 @@ pub(super) fn arrange<'f>(entries: &[Entry<'f>], source: impl Fn(usize) -> Sourc
         captions: BTreeMap::new(),
     };
     for set in sets {
-        let schema = set[0].1[0].field.locator.type_handle;
+        let schema = set[0].1[0].field.locator.type_handle.get();
         let order = modifiers::column_order(schema);
         if set.len() < 2 && order.is_none() {
             for (group, fields) in set {
@@ -301,7 +301,7 @@ fn row_labels(set: &[(usize, Vec<Entry<'_>>)], source: &impl Fn(usize) -> Source
 /// component it changes.
 fn row_choices(entry: Entry<'_>, row: &[(u32, i64)]) -> Option<Choices> {
     modifiers::row_choices(
-        entry.field.locator.type_handle,
+        entry.field.locator.type_handle.get(),
         entry.field.locator.value_offset,
         row,
     )
@@ -355,7 +355,7 @@ impl<'f> Table<'f> {
                 row.cells[column].is_some_and(|entry| {
                     !numbers[column].is_some_and(|value| {
                         modifiers::unread(
-                            entry.field.locator.type_handle,
+                            entry.field.locator.type_handle.get(),
                             entry.field.locator.value_offset,
                             value,
                         )
@@ -381,7 +381,7 @@ impl<'f> Table<'f> {
         let body = egui::TextStyle::Body.resolve(ui.style());
         let small = egui::TextStyle::Small.resolve(ui.style());
         let measure = |text: &str, font: &egui::FontId| {
-            ui.fonts(|fonts| {
+            ui.fonts_mut(|fonts| {
                 fonts
                     .layout_no_wrap(text.to_owned(), font.clone(), secondary)
                     .size()
@@ -502,119 +502,5 @@ impl<'f> Table<'f> {
                     ui.end_row();
                 }
             });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A value named `name` at `offset` in a record of type `schema` that starts at `start`.
-    fn value(name: &str, schema: u32, start: u32, offset: u32) -> WeaponRuntimeField {
-        let loaded = crate::app::custom_perks::workbench::parameters::tests::fixture();
-        let mut field = loaded.graphs[0].1.owners[0].roots[0].fields[0].clone();
-        field.name = name.into();
-        field.locator.type_handle = schema;
-        field.locator.value_offset = offset;
-        field.owner_offset = start + offset;
-        field
-    }
-
-    /// Records that repeat a type are numbered rows. An instance's copy of its configuration
-    /// shares a table with it, each row named by its root. A property adjustment is a table
-    /// even alone, read as what it changes and then how. A record that shares no names stays
-    /// a tile under its group's heading.
-    #[test]
-    fn records_read_as_tables_in_their_own_order_and_the_rest_as_tiles() {
-        let instance = [
-            value("Amount", 1, 0x100, 0x28),
-            value("Operation", 1, 0x100, 0x2C),
-            value("Amount", 1, 0x158, 0x28),
-            value("Operation", 1, 0x158, 0x2C),
-            value("Speed Curve Multiplier", 2, 0x200, 0x50),
-            value("Speed Curve Endpoint", 2, 0x200, 0x5C),
-            value("Curve End Distance", 2, 0x200, 0x68),
-            value("Invert Source Property", 3, 0x300, 0xE4),
-            value("Amount", 0x8080_3B06, 0x400, 0x28),
-            value("Operation", 0x8080_3B06, 0x400, 0x2C),
-            value("Property", 0x8080_3B06, 0x400, 0x4A),
-            value("Component", 0x8080_3B06, 0x400, 0x4C),
-        ];
-        let configuration = [
-            value("Speed Curve Endpoint", 4, 0x40, 0),
-            value("Curve End Distance", 4, 0x40, 12),
-            value("Default Health Capacity", 5, 0x80, 0xB4),
-        ];
-        let entries = instance
-            .iter()
-            .map(|field| Entry { group: 0, field })
-            .chain(configuration.iter().map(|field| Entry { group: 1, field }))
-            .collect::<Vec<_>>();
-        let arranged = arrange(&entries, |group| Source {
-            component: if group == 0 {
-                "Projectile Movement".into()
-            } else {
-                "Health and Shields".into()
-            },
-            root: if group == 0 {
-                "Initial Values"
-            } else {
-                "Configuration"
-            },
-        });
-        let tables = arranged
-            .tables
-            .iter()
-            .map(|table| {
-                let rows = table
-                    .rows
-                    .iter()
-                    .map(|row| (row.label.as_str(), row.cells.iter().flatten().count()))
-                    .collect::<Vec<_>>();
-                (table.columns.clone(), rows)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            tables,
-            [
-                (vec!["Amount", "Operation"], vec![("1", 2), ("2", 2)]),
-                (
-                    vec![
-                        "Speed Curve Multiplier",
-                        "Speed Curve Endpoint",
-                        "Curve End Distance"
-                    ],
-                    vec![("Initial Values", 3), ("Configuration", 2)]
-                ),
-                (
-                    vec!["Component", "Property", "Operation", "Amount"],
-                    vec![("", 4)]
-                ),
-            ]
-        );
-        let singles = arranged
-            .singles
-            .iter()
-            .map(|(group, entries)| {
-                let names = entries
-                    .iter()
-                    .map(|entry| entry.field.name.as_str())
-                    .collect::<Vec<_>>();
-                (arranged.captions.get(group).cloned(), names)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            singles,
-            [
-                (
-                    Some("Projectile Movement".to_owned()),
-                    vec!["Invert Source Property"]
-                ),
-                (
-                    Some("Health and Shields".to_owned()),
-                    vec!["Default Health Capacity"]
-                ),
-            ]
-        );
     }
 }

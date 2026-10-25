@@ -83,6 +83,7 @@ impl PackageAuthoringApp {
                 ui.add(
                     egui::DragValue::new(trait_index)
                         .range(0..=u16::MAX - 1)
+                        .clamp_existing_to_range(false)
                         .speed(1),
                 )
                 .on_hover_text("Item trait index");
@@ -146,6 +147,7 @@ impl PackageAuthoringApp {
                     ui.add(
                         egui::DragValue::new(value)
                             .range(1..=i32::MAX as u32)
+                            .clamp_existing_to_range(false)
                             .speed(1),
                     );
                     if ui.button("Restore Gameplay Value").clicked() {
@@ -254,7 +256,7 @@ impl PackageAuthoringApp {
             ui.label("Socket Entry List");
             match self.recipe.overrides.socket_entry_list_index.as_mut() {
                 Some(value) => {
-                    ui.add(egui::DragValue::new(value).range(0..=socket_entry_list_max));
+                    ui.add(egui::DragValue::new(value).range(0..=socket_entry_list_max).clamp_existing_to_range(false));
                     ui.weak(format!("{socket_entry_list_count} installed rows"));
                     if ui.button("Restore Gameplay Value").clicked() {
                         self.recipe.overrides.socket_entry_list_index = None;

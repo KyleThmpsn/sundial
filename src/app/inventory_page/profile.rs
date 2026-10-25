@@ -64,7 +64,7 @@ impl SundialApp {
 
         ui.horizontal(|ui| {
             ui.heading("Profile Inventory");
-            crate::ui_help::info(ui, "Items shared by every character on the account.");
+            crate::ui::help::info(ui, "Items shared by every character on the account.");
         });
         if self.document.uses_json_account() {
             draw_schema_notice(ui, mode, InventoryPageKind::Profile);

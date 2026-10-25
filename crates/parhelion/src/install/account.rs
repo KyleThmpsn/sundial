@@ -66,7 +66,7 @@ impl AccountCleanupRecord {
 fn digest(bytes: &[u8]) -> TransactionDigest {
     TransactionDigest {
         byte_length: bytes.len() as u64,
-        sha256: format!("{:X}", Sha256::digest(bytes)),
+        sha256: hex::encode_upper(Sha256::digest(bytes)),
     }
 }
 
@@ -319,6 +319,18 @@ pub(super) fn verify_committed(transaction: &InstallTransactionRecord) -> Result
     {
         let path = target_path(record, &transaction.target_packages_directory)?;
         verify_source(record, &path, &record.cleaned)?;
+    }
+    Ok(())
+}
+
+pub(super) fn verify_recovered(transaction: &InstallTransactionRecord) -> Result<(), InstallError> {
+    for record in transaction
+        .account_cleanup
+        .iter()
+        .chain(transaction.client_settings.iter())
+    {
+        let path = target_path(record, &transaction.target_packages_directory)?;
+        verify_source(record, &path, &record.original)?;
     }
     Ok(())
 }

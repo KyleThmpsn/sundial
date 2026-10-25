@@ -14,7 +14,7 @@ use sundial_account::{
 use super::super::{schema_version, take_entity_id};
 use super::{EquipmentOrigin, JsonAccountError, JsonCharacterAdapter, JsonCharacterResult};
 use crate::{
-    account_contract::{
+    account::contract::{
         CHARACTER_INVENTORY_CAPACITY, EQUIPMENT_FLAGS_SCHEMA_VERSION,
         EXTENDED_EQUIPMENT_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, MAX_ITEM_PLUGS,
         is_known_equipment_slot, item_flag_mask,

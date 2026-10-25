@@ -3,5 +3,6 @@ mod image;
 pub use image::HudImage;
 pub(crate) mod assets;
 mod preview;
+pub(crate) use preview::silhouette;
 pub(crate) mod runtime;
 pub(crate) mod ui;

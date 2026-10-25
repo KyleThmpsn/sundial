@@ -14,15 +14,18 @@ pub(crate) mod presentation;
 use conditions::*;
 pub(crate) use conditions::{
     classify_sunrise_count_pools, numeric_program_layout, numeric_program_stack_depth,
-    patch_project_acquired_count_programs, patch_project_collection_objectives,
+    patch_project_acquired_count_programs, patch_project_collection_objectives_with_members,
     presentation_ancestor_nodes, shared_numeric_instruction_template,
     validate_shared_expression_table,
 };
+// Only imported ornaments patch a collection's objectives directly.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) use conditions::patch_project_collection_objectives;
 
-mod collectibles;
+mod collections;
 #[cfg(test)]
-use collectibles::*;
-pub(crate) use collectibles::{
+use collections::*;
+pub(crate) use collections::{
     append_collectible, append_collectible_display, collectible_clone_template,
     collection_unlock_index, donor_weapon_collection_page, gear_collection_page,
     node_collectible_children, template_presentation_parents,
@@ -69,13 +72,28 @@ use sundial::package_authoring::investment_schema::{
 use crate::{
     AuthoringError, AuthoringResult,
     error::{invalid, validation},
+    item::WeaponCloneIdentity,
     tag_payload::{
         array_at, read_array, read_i32, read_u16, read_u32, read_u64, relative_target,
         set_array_count, write_i32, write_localized_reference, write_relative_pointer, write_u16,
         write_u32, write_u64,
     },
-    weapon::WeaponCloneIdentity,
 };
+
+/// Starts a typed array at the end of `data` and returns its header's offset. A header follows
+/// [`NESTED_ARRAY_TRAILER`], whose last four bytes are the array marker, at a 16-byte boundary,
+/// as the game's entries hold their arrays. Sunrise's merge refuses an array without its marker.
+/// A block written here ends with the trailer, which then serves the block after it, so the
+/// trailer is written only where the bytes don't already end with one at a boundary.
+pub(crate) fn begin_array_block(data: &mut Vec<u8>) -> usize {
+    if !(data.len().is_multiple_of(16) && data.ends_with(&NESTED_ARRAY_TRAILER)) {
+        while !(data.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
+            data.push(0);
+        }
+        data.extend_from_slice(&NESTED_ARRAY_TRAILER);
+    }
+    data.len()
+}
 
 pub(crate) const COLLECTIBLE_CURATED_ACQUISITION_FLAG_OFFSET: usize = 0x00;
 pub(crate) const COLLECTIBLE_CURATED_ACQUISITION_FLAG: u8 = 1;
@@ -225,7 +243,8 @@ impl SunriseAcquiredPoolSelection {
 pub(crate) struct ProjectAuthoredRow {
     pub(crate) donor_collectible_index: usize,
     pub(crate) authored_collectible_index: usize,
-    pub(crate) weapon_page: u16,
+    pub(crate) pages: crate::collection::CollectionPages,
+    pub(crate) classes: crate::collection::Classes,
     pub(crate) source_acquired_flag: u16,
     pub(crate) authored_unlock_index: u16,
     pub(crate) count_selection: SunriseAcquiredPoolSelection,

@@ -1,7 +1,5 @@
 //! Preview the same model and color sources used by the recipe compiler.
 use super::*;
-#[cfg(test)]
-use sundial::investment::WeaponDyeReference;
 use sundial::ui::model_preview::{self, Loadout};
 
 pub(in crate::app) fn loadout(
@@ -31,7 +29,7 @@ pub(in crate::app) fn loadout(
         }
         None => geometry.arrangement,
     };
-    let dyes = recipe
+    let mut dyes = recipe
         .overrides
         .render_dye_rows
         .as_ref()
@@ -44,6 +42,26 @@ pub(in crate::app) fn loadout(
             })
         })
         .unwrap_or(colors.dyes);
+    if recipe.kind == crate::ItemKind::Weapon {
+        let mut rows = dyes.map(|layer| {
+            layer
+                .into_iter()
+                .map(
+                    |(channel_index, dye_reference_index)| crate::WeaponDyeReferenceOverride {
+                        channel_index,
+                        dye_reference_index,
+                    },
+                )
+                .collect()
+        });
+        crate::dye::unlock_base_colors(&mut rows);
+        dyes = rows.map(|layer| {
+            layer
+                .into_iter()
+                .map(|row| (row.channel_index, row.dye_reference_index))
+                .collect()
+        });
+    }
     let plugs = (0..donor.plugs.len().max(recipe.overrides.socket_columns.len()))
         .map(|index| {
             match recipe
@@ -70,7 +88,26 @@ pub(in crate::app) fn loadout(
 
 impl PackageAuthoringApp {
     pub(in crate::app) fn follow_appearance_preview(&self, ctx: &egui::Context) {
-        if !model_preview::weapon_is_open(ctx) {
+        let inline = egui::Id::new("weapon-preview");
+        if !model_preview::weapon_is_open(ctx) && !model_preview::popped_out(ctx, inline) {
+            return;
+        }
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(reference) = &self.recipe.overrides.imported_graph {
+            let appearance = crate::imported::preview::appearance(reference, self.recipe.kind);
+            model_preview::follow_local_weapon(
+                ctx,
+                &self.packages,
+                appearance.clone(),
+                &self.recipe.name,
+            );
+            model_preview::follow_pop_out_local(
+                ctx,
+                inline,
+                &self.packages,
+                appearance,
+                &self.recipe.name,
+            );
             return;
         }
         let Some(catalog) = &self.catalog else {
@@ -88,9 +125,26 @@ impl PackageAuthoringApp {
                 .as_ref()
                 .map_or("Current Appearance", |g| g.summary.name.as_str()),
         );
+        model_preview::follow_pop_out(
+            ctx,
+            inline,
+            &self.packages,
+            catalog.preview_appearance(&loadout),
+            &self.recipe.name,
+        );
     }
 
     pub(in crate::app) fn draw_appearance_preview(&self, ui: &mut egui::Ui) {
+        #[cfg(feature = "d2-model-importer")]
+        if let Some(reference) = &self.recipe.overrides.imported_graph {
+            model_preview::local_weapon(
+                ui,
+                &self.packages,
+                crate::imported::preview::appearance(reference, self.recipe.kind),
+                &self.recipe.name,
+            );
+            return;
+        }
         let Some(catalog) = &self.catalog else {
             return;
         };
@@ -98,10 +152,6 @@ impl PackageAuthoringApp {
             ui.label("No model for this appearance.");
             return;
         };
-        #[cfg(feature = "d2-model-importer")]
-        let imported = self.recipe.overrides.imported_graph.is_some();
-        #[cfg(not(feature = "d2-model-importer"))]
-        let imported = false;
         let plug_names: Vec<_> = loadout
             .plugs
             .iter()
@@ -123,66 +173,8 @@ impl PackageAuthoringApp {
                 geometry.summary.name.as_str()
             }),
         );
-        if imported {
-            ui.label("Donor Preview")
-                .on_hover_text("The imported model applies at build time.");
-        }
         if !plug_names.is_empty() {
             ui.label(format!("Socket Colors: {}", plug_names.join(", ")));
         }
-    }
-}
-
-#[cfg(test)]
-fn effective_dyes<'a>(
-    rows: &[Vec<WeaponDyeReference>; 3],
-    plugs: impl Iterator<Item = &'a [Vec<WeaponDyeReference>; 3]>,
-) -> Vec<(i8, u16)> {
-    let mut result = BTreeMap::new();
-    let mut insert = |rows: &[WeaponDyeReference]| {
-        for row in rows {
-            if row.channel_index >= 0 && row.dye_reference_index != u16::MAX {
-                result.insert(row.channel_index, row.dye_reference_index);
-            }
-        }
-    };
-    insert(&rows[1]);
-    insert(&rows[0]);
-    for plug in plugs {
-        insert(&plug[1]);
-        insert(&plug[0]);
-        insert(&plug[2]);
-    }
-    insert(&rows[2]);
-    result.into_iter().collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn shader_replaces_defaults_but_keeps_locked_channels() {
-        let row = |channel_index, dye_reference_index| WeaponDyeReference {
-            channel_index,
-            dye_reference_index,
-        };
-        let base = [
-            vec![row(4, 11)],
-            vec![row(4, 10), row(5, 20), row(6, 30)],
-            vec![row(6, 31)],
-        ];
-        let shader = [
-            vec![row(4, 40), row(5, 50), row(6, 60), row(-1, 90)],
-            vec![],
-            vec![],
-        ];
-        assert_eq!(
-            effective_dyes(&base, [&shader].into_iter()),
-            vec![(4, 40), (5, 50), (6, 31)]
-        );
-        assert_eq!(
-            effective_dyes(&base, std::iter::empty()),
-            vec![(4, 11), (5, 20), (6, 31)]
-        );
     }
 }

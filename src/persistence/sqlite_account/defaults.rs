@@ -10,6 +10,7 @@ pub(crate) struct AccountDefaults {
     pub(crate) rows: String,
     pub(crate) settings_schema: String,
     pub(crate) settings_rows: String,
+    pub(crate) starter: Option<String>,
 }
 
 pub(crate) struct ResetPlan {
@@ -43,6 +44,11 @@ impl ResetPlan {
                 SqliteAccountError::sqlite("initialize installed defaults for", error)
             })?;
         }
+        if let Some(starter) = &defaults.starter {
+            transaction.execute_batch(starter).map_err(|error| {
+                SqliteAccountError::sqlite("initialize character starters for", error)
+            })?;
+        }
         super::validation::connection(&transaction).map_err(SqliteAccountError::Backup)?;
         let after = snapshot::capture(&transaction).map_err(SqliteAccountError::Backup)?;
 
@@ -53,16 +59,20 @@ impl ResetPlan {
         let current = current.transaction().map_err(|error| {
             SqliteAccountError::sqlite("inspect the account before resetting", error)
         })?;
-        // Invalid account rows can be reset, but an unreviewed database format cannot.
+        // Reset can replace invalid rows within a supported schema. It cannot migrate formats.
         let version: i64 = current
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|error| {
                 SqliteAccountError::sqlite("read the reset source version from", error)
             })?;
-        if version != super::contract::SCHEMA_VERSION {
+        let target_version: i64 = transaction
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|error| {
+                SqliteAccountError::sqlite("read installed defaults version from", error)
+            })?;
+        if !matches!(version, 2 | 3) || version != target_version {
             return Err(SqliteAccountError::InvalidSchema(format!(
-                "Account reset requires SQLite schema {}, found {version}",
-                super::contract::SCHEMA_VERSION
+                "Account reset requires matching schemas. The account is schema {version} and installed defaults are schema {target_version}"
             )));
         }
         reader::validate_schema(&current)?;
@@ -78,14 +88,34 @@ impl ResetPlan {
         &self.path
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(self) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
-        self.apply_with_backup(None)
+        self.apply_checked(|| Ok(()))
     }
 
+    /// Resets the account, refused whenever `require_closed` reports the game running: before the
+    /// recovery snapshot, and again just before the reset commits.
+    pub(crate) fn apply_checked(
+        self,
+        require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+        self.apply_with(None, require_closed)
+    }
+
+    #[cfg(test)]
     fn apply_with_backup(
         self,
         backup: Option<PathBuf>,
     ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+        self.apply_with(backup, || Ok(()))
+    }
+
+    fn apply_with(
+        self,
+        backup: Option<PathBuf>,
+        mut require_closed: impl FnMut() -> Result<(), String>,
+    ) -> Result<SqliteRestoreReceipt, SqliteAccountError> {
+        require_closed().map_err(SqliteAccountError::WriteBlocked)?;
         if snapshot::capture_path(&self.path).map_err(SqliteAccountError::Backup)? != self.before {
             return Err(SqliteAccountError::SourceChanged);
         }
@@ -102,12 +132,14 @@ impl ResetPlan {
         {
             return Err(SqliteAccountError::SourceChanged);
         }
-        snapshot::restore_snapshot(&self.path, &self.before, &self.after).map_err(|error| {
-            SqliteAccountError::Backup(format!(
-                "Account defaults were not restored: {error}. The recovery snapshot is at {}",
-                safety_backup.display()
-            ))
-        })?;
+        snapshot::restore_snapshot(&self.path, &self.before, &self.after, require_closed).map_err(
+            |error| {
+                SqliteAccountError::Backup(format!(
+                    "Account defaults were not restored: {error}. The recovery snapshot is at {}",
+                    safety_backup.display()
+                ))
+            },
+        )?;
         Ok(SqliteRestoreReceipt { safety_backup })
     }
 }

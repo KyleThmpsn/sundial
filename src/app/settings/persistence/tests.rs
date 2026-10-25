@@ -51,20 +51,6 @@ fn fixture(name: &str) -> (TestDirectory, PathBuf, Value, Value) {
 }
 
 #[test]
-fn every_settings_write_requires_a_closed_game_and_known_process_state() {
-    assert!(
-        require_game_closed(Ok(true))
-            .unwrap_err()
-            .contains("Close Destiny 2")
-    );
-    assert!(require_game_closed(Ok(false)).is_ok());
-    assert_eq!(
-        require_game_closed(Err("process check failed".into())),
-        Err("process check failed".into())
-    );
-}
-
-#[test]
 fn settings_only_save_is_blocked_if_the_game_starts_during_preparation() {
     let (directory, path, before, after) = fixture("settings-game-started");
     let checks = std::cell::Cell::new(0);

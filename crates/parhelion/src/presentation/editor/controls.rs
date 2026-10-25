@@ -24,6 +24,15 @@ impl Editor {
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.tab, Tab::Placement, "Size and Position");
             ui.selectable_value(&mut self.tab, Tab::Crop, "Crop");
+            ui.selectable_value(
+                &mut self.tab,
+                Tab::Colors,
+                if self.kind == Kind::Watermark {
+                    "Opacity"
+                } else {
+                    "Colors"
+                },
+            );
             if self.kind == Kind::Badge {
                 ui.selectable_value(&mut self.tab, Tab::Background, "Background");
             }
@@ -32,6 +41,7 @@ impl Editor {
         match self.tab {
             Tab::Placement => self.placement(ui),
             Tab::Crop => crop::controls(ui, &mut self.composition.crop, self.source.pixels()),
+            Tab::Colors => self.colors(ui),
             Tab::Background => background_controls(ui, &mut self.composition.background),
         }
     }
@@ -74,14 +84,76 @@ impl Editor {
         });
         ui.checkbox(&mut self.composition.flip_horizontal, "Flip Horizontally");
         ui.checkbox(&mut self.composition.flip_vertical, "Flip Vertically");
+        if let Kind::Nameplate { part, size } = self.kind
+            && part.shown_rows(size.1).is_some()
+        {
+            ui.add_space(10.0);
+            ui.strong("Visible Area");
+            if ui.button("Fit Visible Area").clicked() {
+                let picture = self.composition.source(self.source.pixels()).dimensions();
+                if let Some(placed) = crate::emblem::shown_rows_composition(part, picture, size) {
+                    self.composition.fit = placed.fit;
+                    self.composition.scale = placed.scale;
+                    self.composition.offset = placed.offset;
+                }
+            }
+        }
         ui.add_space(10.0);
         if ui.button("Reset Size and Position").clicked() {
             self.composition = Composition {
                 crop: self.composition.crop,
                 background: self.composition.background.clone(),
-                ..Default::default()
+                adjustments: self.composition.adjustments.clone(),
+                ..self.defaults.clone()
             };
         }
+    }
+
+    fn colors(&mut self, ui: &mut egui::Ui) {
+        let colors = &mut self.composition.adjustments;
+        if self.kind == Kind::Watermark {
+            ui.strong("Image Opacity");
+            ui.add(
+                egui::Slider::new(&mut colors.opacity, 0..=100)
+                    .text("Opacity")
+                    .suffix("%"),
+            );
+            if ui
+                .add_enabled(colors.opacity != 100, egui::Button::new("Reset Opacity"))
+                .clicked()
+            {
+                colors.opacity = 100;
+            }
+            ui.weak("The game uses the image's silhouette. Opacity controls its visibility.");
+            return;
+        }
+        ui.strong("Image Colors");
+        ui.add(
+            egui::Slider::new(&mut colors.hue, -180..=180)
+                .text("Hue")
+                .suffix("°"),
+        );
+        for (label, value) in [
+            ("Saturation", &mut colors.saturation),
+            ("Brightness", &mut colors.brightness),
+            ("Contrast", &mut colors.contrast),
+        ] {
+            ui.add(egui::Slider::new(value, -100..=100).text(label).suffix("%"));
+        }
+        ui.add(
+            egui::Slider::new(&mut colors.opacity, 0..=100)
+                .text("Opacity")
+                .suffix("%"),
+        );
+        ui.checkbox(&mut colors.invert, "Invert Colors");
+        ui.add_space(6.0);
+        if ui
+            .add_enabled(!colors.is_identity(), egui::Button::new("Reset Colors"))
+            .clicked()
+        {
+            *colors = Default::default();
+        }
+        ui.weak("Adjusts the image. Transparent areas stay clear.");
     }
 }
 

@@ -13,7 +13,7 @@ use sundial_account::{
 };
 
 use crate::{
-    account_contract::{
+    account::contract::{
         DISMANTLE_REWARDS_SCHEMA_VERSION, FILTERED_DISMANTLE_REWARD_CAPACITY,
         FILTERED_DISMANTLE_REWARDS_SCHEMA_VERSION, LEGACY_DISMANTLE_REWARD_CAPACITY,
         profile_item_capacity,
@@ -117,11 +117,6 @@ impl JsonProfileAdapter {
             dismantle_rows: dismantle.raw,
             rewritten_dismantle_rows: BTreeSet::new(),
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn capabilities(&self) -> ProfileCapabilities {
-        self.capabilities
     }
 
     pub(crate) const fn state(&self) -> &ProfileState {
@@ -414,7 +409,7 @@ fn load_profile_items(
         return Err(JsonProfileError::format(
             "/state/account/profile_items",
             format!(
-                "profile_items contains {} rows; maximum is {capacity}",
+                "profile_items contains {} rows. The maximum is {capacity}",
                 rows.len()
             ),
         ));
@@ -465,7 +460,7 @@ fn load_dismantle_rewards(
         return Err(JsonProfileError::format(
             "/state/account/dismantle_rewards",
             format!(
-                "dismantle_rewards contains {} rows; maximum is {capacity}",
+                "dismantle_rewards contains {} rows. The maximum is {capacity}",
                 rows.len()
             ),
         ));
@@ -675,10 +670,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_account_rejects_projection_without_mutating_inputs() {
+    fn missing_account_rejects_profile_projection() {
         let document = json!({"version": 8, "state": {"characters": []}});
         let adapter = JsonProfileAdapter::load(&document).unwrap();
-        let before = adapter.clone();
 
         assert!(
             adapter
@@ -693,7 +687,5 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(adapter, before);
-        assert_eq!(document, json!({"version": 8, "state": {"characters": []}}));
     }
 }

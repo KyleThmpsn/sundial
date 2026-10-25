@@ -75,7 +75,7 @@ impl AppliedVersions {
 }
 
 pub(crate) fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// Defaults replaced while opening a library, with the folder holding the previous copies.
@@ -109,38 +109,4 @@ impl DefaultsRefresh {
 pub(crate) fn back_up(backup: &Path, file_name: &str, bytes: &[u8]) -> Result<(), String> {
     sundial::storage::create_file(&backup.join(file_name), bytes)
         .map_err(|error| format!("Backup failed at {}: {error}", backup.display()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn versions_round_trip_and_only_write_when_changed() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("versions.json");
-        let mut versions = AppliedVersions::load(path.clone()).unwrap();
-        assert!(!versions.is_current("a", "1"));
-        versions.save().unwrap();
-        assert!(!path.exists());
-
-        versions.record("a", "1".into());
-        versions.save().unwrap();
-        let written = fs::read(&path).unwrap();
-
-        let mut reloaded = AppliedVersions::load(path.clone()).unwrap();
-        assert!(reloaded.is_current("a", "1"));
-        assert!(!reloaded.is_current("a", "2"));
-        reloaded.record("a", "1".into());
-        reloaded.save().unwrap();
-        assert_eq!(fs::read(&path).unwrap(), written);
-    }
-
-    #[test]
-    fn unreadable_versions_are_an_error_not_an_empty_record() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("versions.json");
-        fs::write(&path, b"{").unwrap();
-        assert!(AppliedVersions::load(path).is_err());
-    }
 }

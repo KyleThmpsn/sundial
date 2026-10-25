@@ -27,10 +27,11 @@ pub(super) use progression::{
     resolved_objective_table_text,
 };
 pub(super) use requests::{
-    DefinitionInspectionContext, clear_owned_quantities, publish_owned_quantities,
-    request_definition, request_definition_with_context, request_progression_selection,
-    take_definition_context, take_definition_request, take_owned_quantities_request,
-    take_progression_selection,
+    AddDestination, AddTargets, DefinitionInspectionContext, clear_owned_quantities,
+    publish_add_targets, publish_owned_quantities, request_definition,
+    request_definition_with_context, request_progression_selection, take_add_request,
+    take_add_targets_request, take_definition_context, take_definition_request,
+    take_owned_quantities_request, take_progression_selection,
 };
 
 /// Shown for a definition whose name does not resolve.

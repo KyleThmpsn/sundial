@@ -74,14 +74,14 @@ mod tests {
     fn history_uses_private_vec4_allocation_and_preserves_existing_rows() {
         let mut p = Payload(vec![0; 0x40]);
         let mut row = vec![0; 40];
-        put(&mut row, 0, &VALUES.to_le_bytes()).unwrap();
+        put(&mut row, 0, &0xFC2F3D6Fu32.to_le_bytes()).unwrap();
         put(&mut row, 16, &0x80800090u32.to_le_bytes()).unwrap();
         put(&mut row, 20, &7u32.to_le_bytes()).unwrap();
         append_array(&mut p.0, 0x20, 0x80808852, &row, 40).unwrap();
         interpolation_allocation(&mut p, 0, 3).unwrap();
         let rows = p.array(0x20, 40, Some(0x80808852)).unwrap();
         assert_eq!(&p.0[rows[0]..rows[0] + 40], row);
-        assert_eq!(p.u32(rows[1]).unwrap(), HISTORY);
+        assert_eq!(p.u32(rows[1]).unwrap(), 0xB6515162);
         assert_eq!(p.u32(rows[1] + 20).unwrap(), 3);
         assert!(interpolation_allocation(&mut p, 2, 4).is_err());
         interpolation_allocation(&mut p, 3, 5).unwrap();

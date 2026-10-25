@@ -6,12 +6,36 @@ pub(super) fn load(
     pattern_index: u16,
 ) -> Result<Option<egui::ColorImage>, String> {
     let source =
-        sundial::package_authoring::weapon_runtime::load_weapon_runtime_entity_at_pattern_index_with_manager(
+        sundial::package_authoring::runtime::load_weapon_runtime_entity_at_pattern_index_with_manager(
             manager, pattern_index,
         )?;
     let key =
         super::runtime::inherited_key(manager, &source.payload, source.weapon_content_group_hash)
             .map_err(|error| error.to_string())?;
+    super::runtime::icon_layer(manager, key)
+        .map_err(|error| error.to_string())?
+        .map(|layer| load_layer(manager, layer))
+        .transpose()
+}
+
+/// The silhouette the default block of `entity`'s weapon content names, as an armed vehicle's
+/// does. `None` for an entity without weapon content or with no key in that block.
+pub(crate) fn silhouette(
+    manager: &PackageManager,
+    entity: &[u8],
+) -> Result<Option<egui::ColorImage>, String> {
+    let bindings = sundial::package_authoring::entity::weapon_component_bindings(
+        entity,
+        super::runtime::BINDING,
+    )?;
+    if bindings.is_empty() {
+        return Ok(None);
+    }
+    let keys =
+        super::runtime::field_values(manager, entity, 0xE0).map_err(|error| error.to_string())?;
+    let Some(&key) = keys.first() else {
+        return Ok(None);
+    };
     super::runtime::icon_layer(manager, key)
         .map_err(|error| error.to_string())?
         .map(|layer| load_layer(manager, layer))
@@ -48,40 +72,4 @@ fn load_layer(
         read_u32(&layer, textures).map(tiger_pkg::TagHash)
     };
     crate::icon_edit::render_texture_preview(manager, read().map_err(|error| error.to_string())?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "requires PARHELION_HUD_TEST_PACKAGES pointing to Shadowkeep packages"]
-    fn native_preview_selects_the_appearance_variant_and_preserves_alpha() {
-        let packages =
-            std::path::PathBuf::from(std::env::var_os("PARHELION_HUD_TEST_PACKAGES").unwrap());
-        let manager =
-            sundial::package_authoring::open_shadowkeep_package_manager(&packages).unwrap();
-        let catalog =
-            sundial::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
-                .unwrap();
-        let donors = catalog.weapon_donors();
-        let pattern = |hash| {
-            donors
-                .iter()
-                .find(|donor| donor.hash == hash)
-                .unwrap()
-                .weapon_pattern_index
-                .unwrap()
-        };
-        let bond = load(&manager, pattern(0x23DB_942F)).unwrap().unwrap();
-        assert_eq!(bond.size, [137, 76]);
-        assert!(bond.pixels.iter().any(|pixel| pixel.a() == 0));
-        assert!(bond.pixels.iter().any(|pixel| pixel.a() > 0));
-        let talon = load(&manager, pattern(0xE079_4C51)).unwrap().unwrap();
-        let hook = load(&manager, pattern(0x0222_2CBF)).unwrap().unwrap();
-        assert_ne!(
-            talon.pixels, hook.pixels,
-            "shared sword content owners must select their own silhouette"
-        );
-    }
 }

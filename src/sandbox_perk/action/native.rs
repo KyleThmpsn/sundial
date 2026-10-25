@@ -27,7 +27,73 @@ pub struct Block {
     pub count: Option<usize>,
     pub bytes: Vec<u8>,
     /// Pointer fields contain zero in `bytes` and refer to other blocks here.
+    #[serde(deserialize_with = "links::deserialize")]
     pub links: BTreeMap<usize, usize>,
+}
+
+/// A block's links, keyed by byte offset. JSON writes the offsets as strings. Read straight from
+/// JSON they arrive as numbers, but serde buffers a flattened struct's members first and hands
+/// such a key over as the string, which a `usize` key refuses. A subclass ability's custom perks
+/// sit in a flattened struct, so both forms are taken.
+mod links {
+    use std::{collections::BTreeMap, fmt};
+
+    use serde::de::{self, Deserializer, MapAccess, Visitor};
+
+    struct Offset(usize);
+
+    impl<'de> serde::Deserialize<'de> for Offset {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_any(OffsetVisitor)
+        }
+    }
+
+    struct OffsetVisitor;
+
+    impl Visitor<'_> for OffsetVisitor {
+        type Value = Offset;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a byte offset")
+        }
+
+        fn visit_u64<E: de::Error>(self, value: u64) -> Result<Offset, E> {
+            usize::try_from(value)
+                .map(Offset)
+                .map_err(|_| E::invalid_value(de::Unexpected::Unsigned(value), &self))
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Offset, E> {
+            value
+                .parse()
+                .map(Offset)
+                .map_err(|_| E::invalid_value(de::Unexpected::Str(value), &self))
+        }
+    }
+
+    struct LinksVisitor;
+
+    impl<'de> Visitor<'de> for LinksVisitor {
+        type Value = BTreeMap<usize, usize>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("links by byte offset")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut links = BTreeMap::new();
+            while let Some((Offset(offset), target)) = map.next_entry::<Offset, usize>()? {
+                links.insert(offset, target);
+            }
+            Ok(links)
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<usize, usize>, D::Error> {
+        deserializer.deserialize_map(LinksVisitor)
+    }
 }
 
 /// A closed native allocation graph whose first block is its root object.
@@ -37,17 +103,37 @@ pub struct Graph {
     pub blocks: Vec<Block>,
 }
 
+/// A node kind carries its catalog, so a condition and effect number cannot be paired separately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeKind {
+    Condition(u8),
+    Effect(u8),
+}
+
+impl NodeKind {
+    pub const fn byte(self) -> u8 {
+        match self {
+            Self::Condition(kind) | Self::Effect(kind) => kind,
+        }
+    }
+
+    pub const fn is_condition(self) -> bool {
+        matches!(self, Self::Condition(_))
+    }
+
+    pub fn entry(self) -> Option<&'static crate::sandbox_perk::nodes::NodeKind> {
+        match self {
+            Self::Condition(kind) => crate::sandbox_perk::nodes::condition(kind),
+            Self::Effect(kind) => crate::sandbox_perk::nodes::effect(kind),
+        }
+    }
+}
+
 impl Graph {
     /// Validate a closed node before it enters an authored program.
-    pub fn validate_node(&self, condition: bool, kind: u8) -> Result<(), String> {
-        use crate::sandbox_perk::nodes;
+    pub fn validate_node(&self, kind: NodeKind) -> Result<(), String> {
         self.validate()?;
-        let entry = if condition {
-            nodes::condition(kind)
-        } else {
-            nodes::effect(kind)
-        }
-        .ok_or("Unknown native node kind.")?;
+        let entry = kind.entry().ok_or("Unknown native node kind.")?;
         if self.root_class() != Some(entry.class) {
             return Err("The native root has the wrong class.".into());
         }
@@ -87,7 +173,7 @@ impl Graph {
             let block = &self.blocks[index];
             if let Some(node) = nodes::CONDITIONS
                 .iter()
-                .find(|n| n.class == block.class && n.observed())
+                .find(|n| n.class == block.class && n.has_layout())
             {
                 if block.count.is_some() || block.bytes[5] != node.kind || block.bytes[6] > 1 {
                     return Err("Invalid native condition header.".into());
@@ -99,11 +185,10 @@ impl Graph {
                 }
             } else if let Some(node) = nodes::EFFECTS
                 .iter()
-                .find(|n| n.class == block.class && n.observed())
+                .find(|n| n.class == block.class && n.has_layout())
+                && (block.count.is_some() || block.bytes[0] != node.kind || block.bytes[1] > 1)
             {
-                if block.count.is_some() || block.bytes[0] != node.kind || block.bytes[1] > 1 {
-                    return Err("Invalid native effect header.".into());
-                }
+                return Err("Invalid native effect header.".into());
             }
             if block.class != 0 {
                 let stride = schema::record(block.class)?.size;
@@ -344,17 +429,17 @@ impl Graph {
                     crate::sandbox_perk::nodes::CONDITIONS
                         .iter()
                         .find(|n| n.class == class)
-                        .map(|n| (true, n.kind))
+                        .map(|n| NodeKind::Condition(n.kind))
                         .or_else(|| {
                             crate::sandbox_perk::nodes::EFFECTS
                                 .iter()
                                 .find(|n| n.class == class)
-                                .map(|n| (false, n.kind))
+                                .map(|n| NodeKind::Effect(n.kind))
                         })
                 })
                 .flatten();
-            if let Some((condition, kind)) = node {
-                let bytes = template(condition, kind).ok_or("Missing native node template.")?;
+            if let Some(kind) = node {
+                let bytes = template(kind).ok_or("Missing native node template.")?;
                 changed.append(&Graph::read(&bytes, 0, class)?)?
             } else {
                 let index = changed.blocks.len();
@@ -453,8 +538,8 @@ impl Graph {
 }
 
 /// One observed native configuration, independent of any installed stock action.
-pub fn template(condition: bool, kind: u8) -> Option<Vec<u8>> {
-    schema::template(condition, kind)
+pub fn template(kind: NodeKind) -> Option<Vec<u8>> {
+    schema::template(kind)
 }
 
 /// Capture only the node's declared native data, including all its nested records.

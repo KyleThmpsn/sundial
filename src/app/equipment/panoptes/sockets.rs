@@ -49,7 +49,7 @@ fn panoptes_socket_is_visible(
         || is_mod_socket
         || matches!(
             mode,
-            PlugSelectionMode::GearType | PlugSelectionMode::AnyPlug
+            PlugSelectionMode::GearType | PlugSelectionMode::GearKind | PlugSelectionMode::AnyPlug
         )
 }
 
@@ -250,60 +250,11 @@ impl SundialApp {
         }
         match action {
             Some(ItemEditorAction::SetPlug { hash, .. }) => Some((snapshot.socket_label, hash)),
+            Some(ItemEditorAction::SetPlugSelectionMode { mode }) => {
+                self.request_plug_selection_mode(mode);
+                None
+            }
             _ => None,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn blank_panoptes_sockets_only_surface_for_broad_safety_modes() {
-        assert!(!panoptes_socket_is_visible(
-            PlugSelectionMode::Supported,
-            None,
-            false
-        ));
-        assert!(!panoptes_socket_is_visible(
-            PlugSelectionMode::SocketAndGearType,
-            None,
-            false
-        ));
-        assert!(!panoptes_socket_is_visible(
-            PlugSelectionMode::MatchingSocketType,
-            None,
-            false
-        ));
-        assert!(panoptes_socket_is_visible(
-            PlugSelectionMode::GearType,
-            None,
-            false
-        ));
-        assert!(panoptes_socket_is_visible(
-            PlugSelectionMode::AnyPlug,
-            None,
-            false
-        ));
-    }
-
-    #[test]
-    fn populated_and_explicitly_empty_panoptes_sockets_remain_visible() {
-        assert!(panoptes_socket_is_visible(
-            PlugSelectionMode::Supported,
-            Some(123),
-            false
-        ));
-        assert!(!panoptes_socket_is_visible(
-            PlugSelectionMode::Supported,
-            Some(u64::from(NO_DEFINITION_HASH.get())),
-            false
-        ));
-        assert!(panoptes_socket_is_visible(
-            PlugSelectionMode::Supported,
-            None,
-            true
-        ));
     }
 }

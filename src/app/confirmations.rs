@@ -4,7 +4,7 @@ mod recovery;
 use super::account_workspace::AccountSourceKind;
 use super::change_review::collect_change_summaries;
 use super::preferences::{PlugSelectionMode, SettingsLayout};
-use super::save_support::SaveAction;
+use super::saving::SaveAction;
 use super::settings::settings_path_for_install;
 use super::{
     CHANGE_REVIEW_LIMIT, ConfirmationDialog, SundialApp, draw_future_schema_warning, equipment,
@@ -260,8 +260,8 @@ impl SundialApp {
             let mut confirm = false;
             let mut cancel = false;
             let action = self.pending_save_action.unwrap_or(SaveAction::Save);
-            let review_width = (ctx.screen_rect().width() - 40.0).clamp(280.0, 760.0);
-            let review_height = (ctx.screen_rect().height() - 180.0).clamp(120.0, 430.0);
+            let review_width = (ctx.content_rect().width() - 40.0).clamp(280.0, 760.0);
+            let review_height = (ctx.content_rect().height() - 180.0).clamp(120.0, 430.0);
             let response = egui::Modal::new("review_settings_changes".into()).show(ctx, |ui| {
                 ui.set_width(review_width);
                 ui.heading(if action == SaveAction::SaveAndExit {
@@ -435,11 +435,59 @@ impl SundialApp {
             } else if discard_and_exit {
                 if let Some(message) = self.package_authoring_exit_blocker() {
                     self.set_status(message, true);
-                } else {
+                } else if self.confirm_authoring_work_saved() {
                     self.exit_confirmed = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
+        }
+    }
+
+    /// Asked on the way out while Parhelion work kept outside its recipe, such as perk drafts,
+    /// could not be saved. Trying again exits once the work saves.
+    pub(super) fn draw_unsaved_authoring_work_confirmation(&mut self, ctx: &egui::Context) {
+        if self.confirmation != Some(ConfirmationDialog::UnsavedAuthoringWork) {
+            return;
+        }
+        let reason = self.unsaved_authoring_work.clone().unwrap_or_default();
+        let mut retry = false;
+        let mut exit = false;
+        let mut cancel = false;
+        let response = egui::Modal::new("unsaved_authoring_work".into()).show(ctx, |ui| {
+            ui.heading("Unsaved Parhelion Work");
+            ui.add_space(6.0);
+            ui.label(reason.as_str());
+            ui.label("Exiting now loses the edits made since the last save.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Try Again").clicked() {
+                    retry = true;
+                }
+                if ui.button("Exit Anyway").clicked() {
+                    exit = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        cancel |= response.should_close();
+        if retry {
+            self.confirmation = None;
+            exit = self.confirm_authoring_work_saved();
+        } else if exit || cancel {
+            self.confirmation = None;
+        }
+        if exit {
+            self.unsaved_authoring_work = None;
+            if let Some(message) = self.package_authoring_exit_blocker() {
+                self.set_status(message, true);
+            } else {
+                self.exit_confirmed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if cancel {
+            self.unsaved_authoring_work = None;
         }
     }
 }

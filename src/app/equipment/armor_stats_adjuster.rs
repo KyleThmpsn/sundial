@@ -22,6 +22,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
         mpsc::{self, Receiver, TryRecvError},
     },
     thread,
@@ -74,13 +75,22 @@ impl State {
             self.source_key = None;
             self.input = None;
             self.preview = None;
-            self.preview_task = None;
+            self.retire_preview_task();
             self.preview_due_at = None;
             self.feedback = None;
             self.preserve_feedback_once = false;
         }
         self.window_generation = self.window_generation.wrapping_add(1);
         self.open = true;
+    }
+
+    /// Asks a running preview search to stop, since its request no longer stands. The task is
+    /// kept until its worker ends, so no second search starts beside it, and whatever it sends
+    /// back is dropped.
+    fn retire_preview_task(&mut self) {
+        if let Some(task) = &self.preview_task {
+            task.cancel.store(true, AtomicOrdering::Relaxed);
+        }
     }
 }
 
@@ -218,10 +228,13 @@ struct PieceSearchState {
     masterworks: usize,
 }
 
+/// The one preview search that may run at a time. A newer request waits for it to end.
 struct PreviewTask {
     source_key: SourceKey,
     targets: [u16; 6],
-    receiver: Receiver<Solution>,
+    receiver: Receiver<Option<Solution>>,
+    /// Set once the request is stale. The search stops at its next slot.
+    cancel: Arc<AtomicBool>,
 }
 
 #[cfg(test)]

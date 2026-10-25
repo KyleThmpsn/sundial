@@ -142,7 +142,7 @@ mod tests {
     #[test]
     #[ignore = "Requires SUNDIAL_PREVIEW_PACKAGES and installed Shadowkeep packages"]
     fn installed_effect_nodes_preserve_air_weak_authoring_order() {
-        let packages = std::env::var_os("SUNDIAL_PREVIEW_PACKAGES").expect("package directory");
+        let packages = crate::test_support::preview_packages();
         let manager = crate::investment::discovery::open_packages(std::path::Path::new(&packages))
             .expect("installed packages");
         let bytes = manager.read_tag(0x80EF_576A).expect("effect component");

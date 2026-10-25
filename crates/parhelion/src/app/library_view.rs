@@ -23,139 +23,29 @@ struct LibraryRowState {
     highlighted: bool,
     reveal: bool,
     can_restore: bool,
+    /// The installation carries the item this recipe builds.
+    installed: bool,
 }
 
-type LibraryIconResult = (
-    PathBuf,
-    AuthoredIconPreviewKey,
-    Result<egui::ColorImage, String>,
-);
-
-#[derive(Default)]
-pub(super) struct LibraryIcons {
-    previews: BTreeMap<PathBuf, AuthoredIconPreview>,
-    receiver: Option<Receiver<LibraryIconResult>>,
-    worker: Option<thread::JoinHandle<()>>,
-    pending: BTreeMap<PathBuf, AuthoredIconPreviewKey>,
+/// What a library row's icon is drawn from. The watermark goes by its fingerprint, and the
+/// worker reads its artwork from the recipe, so the list holds none.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IconKey {
+    corner_icon: Option<u64>,
+    item_hash: u32,
+    container_tag: u32,
+    rarity: crate::AuthoredWeaponRarity,
+    edit: crate::WeaponIconEdit,
+    /// A subclass icon, shown without a rarity plate or watermark.
+    plain: bool,
+    /// The art the icon shows in place of its image: a vehicle's silhouette or a generated icon.
+    art: Option<crate::icon_art::Request>,
 }
 
-impl Drop for LibraryIcons {
-    fn drop(&mut self) {
-        // Release every package reader before installation or a catalog replacement.
-        self.receiver = None;
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
+type LibraryIconResult = (PathBuf, IconKey, Result<egui::ColorImage, String>);
 
-impl LibraryIcons {
-    fn update(
-        &mut self,
-        ctx: &egui::Context,
-        packages: &Path,
-        catalog: &InvestmentCatalog,
-        donors: &[WeaponDonorSummary],
-        entries: &[RecipeLibraryEntry],
-    ) {
-        let finished = self
-            .worker
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished);
-        if finished {
-            let _ = self.worker.take().unwrap().join();
-        }
-        if let Some(receiver) = &self.receiver {
-            while let Ok((path, key, result)) = receiver.try_recv() {
-                self.pending.remove(&path);
-                let preview = match result {
-                    Ok(image) => AuthoredIconPreview::Ready {
-                        texture: ctx.load_texture(
-                            format!("library-icon-{}", path.display()),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        ),
-                        key,
-                    },
-                    Err(error) => AuthoredIconPreview::Failed { key, error },
-                };
-                self.previews.insert(path, preview);
-            }
-        }
-        if finished {
-            self.receiver = None;
-            for (path, key) in std::mem::take(&mut self.pending) {
-                self.previews.insert(
-                    path,
-                    AuthoredIconPreview::Failed {
-                        key,
-                        error: "Library icon loading stopped unexpectedly".into(),
-                    },
-                );
-            }
-        }
-        if self.worker.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
-        }
-        let paths: BTreeSet<_> = entries.iter().map(|entry| &entry.path).collect();
-        self.previews.retain(|path, _| paths.contains(path));
-        let missing: Vec<_> = entries
-            .iter()
-            .filter_map(|entry| {
-                let key = AuthoredIconPreviewKey {
-                    corner_icon: entry.corner_icon.clone(),
-                    item_hash: entry.icon_hash,
-                    container_tag: catalog.weapon_icon_container(entry.icon_hash)?,
-                    rarity: effective_icon_rarity(
-                        entry.rarity,
-                        donors
-                            .iter()
-                            .find(|donor| donor.hash == entry.donor_hash)
-                            .map(|donor| donor.rarity),
-                    )?,
-                    edit: entry.icon_edit.clone(),
-                    plain: entry.kind == crate::ItemKind::Subclass,
-                };
-                let cached = self.previews.get(&entry.path).map(|preview| match preview {
-                    AuthoredIconPreview::Ready { key, .. }
-                    | AuthoredIconPreview::Failed { key, .. } => key,
-                });
-                (cached != Some(&key)).then(|| (entry.path.clone(), key))
-            })
-            .collect();
-        if missing.is_empty() {
-            return;
-        }
-        let packages = packages.to_path_buf();
-        let ctx = ctx.clone();
-        let (sender, receiver) = mpsc::channel();
-        self.receiver = Some(receiver);
-        self.pending = missing.iter().cloned().collect();
-        self.worker = Some(thread::spawn(move || {
-            let manager = open_shadowkeep_package_manager(&packages);
-            let branding = crate::branding::Branding::for_packages(&packages);
-            for (path, key) in missing {
-                let result = manager.as_ref().map_err(Clone::clone).and_then(|manager| {
-                    crate::icon_edit::render_weapon_icon_preview_from_manager(
-                        manager,
-                        TagHash(key.container_tag),
-                        key.rarity,
-                        &key.edit,
-                        key.corner_icon.as_ref(),
-                        branding,
-                        key.plain,
-                    )
-                });
-                if sender.send((path, key, result)).is_err() {
-                    break;
-                }
-                ctx.request_repaint();
-            }
-            ctx.request_repaint();
-        }));
-    }
-}
+mod icons;
+pub(super) use icons::Icons as LibraryIcons;
 
 fn library_entry_type<'a>(
     entry: &'a RecipeLibraryEntry,
@@ -164,6 +54,7 @@ fn library_entry_type<'a>(
     entry
         .type_name
         .as_deref()
+        .or(entry.class_type_name)
         .or_else(|| donor.map(|donor| donor.type_name.as_str()))
         .unwrap_or(entry.kind.label())
 }
@@ -235,10 +126,10 @@ fn build_selection_footer_height(ui: &egui::Ui, error: &Option<String>) -> f32 {
 /// reach past the bottom edge: take whichever limit is nearer, leaving room for the bottom
 /// margin and border the window frame draws below the contents.
 fn windowed_list_height(ui: &egui::Ui, footer_height: f32) -> f32 {
-    let style = ui.ctx().style();
+    let style = ui.ctx().global_style();
     let frame_bottom =
         f32::from(style.spacing.window_margin.bottom) + style.visuals.window_stroke.width;
-    let room_on_screen = ui.ctx().screen_rect().bottom() - ui.cursor().top() - frame_bottom;
+    let room_on_screen = ui.ctx().content_rect().bottom() - ui.cursor().top() - frame_bottom;
     (ui.available_height() - footer_height)
         .min(room_on_screen - footer_height)
         .max(120.0)
@@ -285,6 +176,7 @@ fn draw_recipe_search(
     query: &mut String,
     sort: &mut SortOrder,
     kind: &mut Option<ItemKind>,
+    activities_only: &mut bool,
     focus: &mut bool,
 ) {
     ui.horizontal(|ui| {
@@ -302,11 +194,38 @@ fn draw_recipe_search(
         }
         egui::ComboBox::from_id_salt((id, "kind"))
             .width(132.0)
-            .selected_text(kind.map_or("All Items", ItemKind::plural))
+            .selected_text(if *activities_only {
+                "Activities"
+            } else {
+                kind.map_or("All Items", ItemKind::plural)
+            })
             .show_ui(ui, |ui| {
-                ui.selectable_value(kind, None, "All Items");
+                if ui
+                    .selectable_label(kind.is_none() && !*activities_only, "All Items")
+                    .clicked()
+                {
+                    *kind = None;
+                    *activities_only = false;
+                }
+                #[cfg(feature = "d2-model-importer")]
+                if ui
+                    .selectable_label(*activities_only, "Activities")
+                    .clicked()
+                {
+                    *kind = None;
+                    *activities_only = true;
+                }
                 for option in ItemKind::ALL {
-                    ui.selectable_value(kind, Some(option), option.plural());
+                    if ui
+                        .selectable_label(
+                            *kind == Some(option) && !*activities_only,
+                            option.plural(),
+                        )
+                        .clicked()
+                    {
+                        *kind = Some(option);
+                        *activities_only = false;
+                    }
                 }
             });
         egui::ComboBox::from_id_salt(id)
@@ -329,7 +248,8 @@ fn draw_recipe_search(
 /// Both library navigation and build selection use the authored weapon preview.
 fn draw_library_row(
     ui: &mut egui::Ui,
-    icons: &LibraryIcons,
+    catalog: Option<&InvestmentCatalog>,
+    icons: &mut LibraryIcons,
     entry: &RecipeLibraryEntry,
     details: &str,
     state: LibraryRowState,
@@ -348,6 +268,9 @@ fn draw_library_row(
             egui::vec2(ui.available_width(), row_height),
             egui::Sense::hover(),
         );
+        if ui.is_rect_visible(rect) {
+            icons.want(ui.ctx(), &entry.path);
+        }
         let response = ui.interact(
             rect,
             ui.make_persistent_id("weapon-row"),
@@ -465,6 +388,13 @@ fn draw_library_row(
                                 .selectable(false),
                         );
                     }
+                    if state.installed {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new("Installed").weak())
+                                .selectable(false),
+                        )
+                        .on_hover_text("Installed. A build without this recipe removes it.");
+                    }
                 });
             });
             ui.add(
@@ -510,17 +440,212 @@ fn draw_library_row(
                 menu_action = actions::entry_menu(ui, entry, state.can_restore);
             });
         }
-        let clicked = response
-            .on_hover_ui(|ui| {
-                sundial::investment::tooltip_title(ui, &entry.namespace);
-                ui.label(details);
-                ui.label(action);
-            })
-            .clicked();
+        let clicked = library_tooltip(response, catalog, icons, entry, details, action).clicked();
         LibraryRowResponse {
             activated: clicked || checkbox_changed,
             action: menu_action,
         }
+    })
+    .inner
+}
+
+/// A recipe row's tooltip: the game's item tooltip on its base item's band once the catalog has
+/// loaded, with what the row is and what clicking it does as its note.
+fn library_tooltip(
+    response: egui::Response,
+    catalog: Option<&InvestmentCatalog>,
+    icons: &LibraryIcons,
+    entry: &RecipeLibraryEntry,
+    details: &str,
+    action: &str,
+) -> egui::Response {
+    let Some(catalog) = catalog.filter(|_| entry.donor_hash != 0) else {
+        return response.on_hover_ui(|ui| {
+            sundial::investment::tooltip_title(ui, &entry.namespace);
+            ui.label(details);
+            ui.label(action);
+        });
+    };
+    let note = format!("{}\n{details}\n{action}", entry.namespace);
+    // The recipe's own icon, never the base item's while it loads.
+    let icon = match icons.previews.get(&entry.path) {
+        Some(AuthoredIconPreview::Ready { texture, .. }) => {
+            sundial::investment::IconOverride::Texture(texture.id())
+        }
+        _ => sundial::investment::IconOverride::Pending,
+    };
+    catalog.item_tooltip(
+        response,
+        entry.donor_hash,
+        sundial::investment::ItemTooltip {
+            name: Some(&entry.name),
+            type_name: entry.type_name.as_deref().or(entry.class_type_name),
+            // The base item's text and stats are not the recipe's.
+            description: Some(""),
+            rarity: entry.rarity.map(|rarity| rarity as u8 + 1),
+            icon: Some(icon),
+            note: Some(&note),
+            template: true,
+        },
+    )
+}
+
+/// A map's row details: what it is, and the game its level comes from.
+fn map_details(map: &crate::recipe_library::MapLibraryEntry) -> &'static str {
+    if map.source {
+        "Activity · Halo: Reach"
+    } else {
+        "Activity"
+    }
+}
+
+/// The maps a search shows: every map under All Items, matched like recipes by name and details.
+fn matching_maps<'a>(
+    maps: &'a [crate::recipe_library::MapLibraryEntry],
+    kind: Option<ItemKind>,
+    query: &str,
+) -> Vec<&'a crate::recipe_library::MapLibraryEntry> {
+    if kind.is_some() {
+        return Vec::new();
+    }
+    maps.iter()
+        .filter(|map| {
+            let searchable =
+                format!("{} {} {}", map.title, map.name, map_details(map)).to_lowercase();
+            query
+                .split_whitespace()
+                .all(|term| searchable.contains(term))
+        })
+        .collect()
+}
+
+/// A map's row, drawn as a recipe's is, with a map glyph for its icon. With `inclusion` it
+/// carries a build selection checkbox, and without one it opens the activity editor.
+/// Returns whether the row was activated.
+fn draw_map_row(
+    ui: &mut egui::Ui,
+    map: &crate::recipe_library::MapLibraryEntry,
+    inclusion: Option<bool>,
+) -> bool {
+    ui.push_id(&map.path, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let current = inclusion.unwrap_or(false);
+        let details = map_details(map);
+        let body_size = egui::TextStyle::Body.resolve(ui.style()).size;
+        let name_size = (body_size + 2.0).max(16.0);
+        let detail_size = body_size.max(14.0);
+        let row_height = (name_size + detail_size + 14.0).max(52.0);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), row_height),
+            egui::Sense::hover(),
+        );
+        let response = ui.interact(rect, ui.make_persistent_id("map-row"), egui::Sense::CLICK);
+        let visuals = ui.style().interact_selectable(&response, current);
+        let fill = if current {
+            ui.visuals().selection.bg_fill
+        } else if response.hovered() || response.has_focus() {
+            visuals.weak_bg_fill
+        } else {
+            ui.visuals().faint_bg_color
+        };
+        ui.painter().rect_filled(rect, visuals.corner_radius, fill);
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 6.0, rect.center().y - 20.0),
+            egui::vec2(40.0, 40.0),
+        );
+        ui.painter()
+            .rect_filled(icon_rect, 2.0, ui.visuals().extreme_bg_color);
+        ui.put(
+            icon_rect,
+            egui::Label::new(
+                super::style::light_icon(ui, egui_phosphor::regular::MAP_TRIFOLD).size(24.0),
+            )
+            .selectable(false),
+        );
+        let text_rect = egui::Rect::from_min_max(
+            rect.min + egui::vec2(54.0, 3.0),
+            rect.max - egui::vec2(8.0, 3.0),
+        );
+        let mut checkbox_changed = false;
+        let mut checkbox_focus = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(
+                        (ui.available_width() - 34.0).max(40.0),
+                        ui.spacing().interact_size.y,
+                    ),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&map.title).size(name_size).strong(),
+                            )
+                            .truncate()
+                            .selectable(false),
+                        )
+                    },
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(mut included) = inclusion {
+                        let checkbox = ui.checkbox(&mut included, "");
+                        checkbox.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Checkbox,
+                                ui.is_enabled(),
+                                included,
+                                format!("Select {} · {details}", map.title),
+                            )
+                        });
+                        checkbox_changed = checkbox.changed();
+                        checkbox_focus = checkbox.has_focus();
+                        if checkbox.gained_focus() {
+                            checkbox.scroll_to_me(None);
+                        }
+                    }
+                });
+            });
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(details)
+                        .size(detail_size)
+                        .color(ui.visuals().text_color().gamma_multiply(0.8)),
+                )
+                .truncate()
+                .selectable(false),
+            );
+        });
+        if response.has_focus() || checkbox_focus {
+            ui.painter().rect_stroke(
+                rect.shrink(1.0),
+                2.0,
+                egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if response.gained_focus() {
+            response.scroll_to_me(None);
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                current,
+                format!("{} · {details}", map.title),
+            )
+        });
+        let clicked = response
+            .on_hover_ui(|ui| {
+                ui.strong(&map.title);
+                ui.label(details);
+                ui.label(if inclusion.is_some() {
+                    "Toggle selection"
+                } else {
+                    "Open activity recipe"
+                });
+            })
+            .clicked();
+        clicked || checkbox_changed
     })
     .inner
 }
@@ -602,7 +727,7 @@ impl PackageAuthoringApp {
                         .clicked()
                     {
                         *action = Some(LibraryAction::ExportOpen);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -612,7 +737,7 @@ impl PackageAuthoringApp {
                         .clicked()
                     {
                         *action = Some(LibraryAction::ChooseExport);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -622,7 +747,7 @@ impl PackageAuthoringApp {
                         .clicked()
                     {
                         *action = Some(LibraryAction::ExportAll);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             });
@@ -716,7 +841,7 @@ impl PackageAuthoringApp {
                 ctx,
                 &self.packages,
                 catalog,
-                &self.library_donors,
+                (&self.library_donors, &self.subclasses),
                 &self.recipe_entries,
             );
         }
@@ -738,12 +863,14 @@ impl PackageAuthoringApp {
             .show(ctx, |ui| {
                 workbench_style(ui);
                 draw_bundled_recipe_selection(ui, &self.recipe_entries, &mut draft);
+                ui.weak("Shaders used in selected items' sockets are included automatically.");
                 draw_recipe_search(
                     ui,
                     "build-selection-sort",
                     &mut self.build_selection_query,
                     &mut self.library_state.sort,
                     &mut self.library_state.kind,
+                    &mut self.library_state.activities_only,
                     &mut self.recipe_search_focus_pending,
                 );
                 let query = self.build_selection_query.trim().to_lowercase();
@@ -754,8 +881,16 @@ impl PackageAuthoringApp {
                 );
                 self.library_state
                     .sort_entries(&mut shown, &self.library_donors);
+                let shown_maps = matching_maps(&self.map_entries, self.library_state.kind, &query);
                 ui.separator();
-                draw_select_all_shown(ui, shown.iter().map(|(entry, _)| &entry.path), &mut draft);
+                draw_select_all_shown(
+                    ui,
+                    shown
+                        .iter()
+                        .map(|(entry, _)| &entry.path)
+                        .chain(shown_maps.iter().map(|map| &map.path)),
+                    &mut draft,
+                );
                 let footer_height = build_selection_footer_height(ui, &self.build_selection_error);
                 egui::ScrollArea::vertical()
                     .id_salt("build-selection-results")
@@ -766,11 +901,13 @@ impl PackageAuthoringApp {
                             let included = draft.contains(&entry.path);
                             if draw_library_row(
                                 ui,
-                                &self.library_icons,
+                                self.catalog.as_ref(),
+                                &mut self.library_icons,
                                 entry,
                                 details,
                                 LibraryRowState {
                                     inclusion: Some(included),
+                                    installed: self.installed.contains(entry.identity_hash),
                                     ..Default::default()
                                 },
                             )
@@ -783,8 +920,18 @@ impl PackageAuthoringApp {
                                 }
                             }
                         }
-                        if shown.is_empty() {
-                            ui.label("No matching recipes.");
+                        for map in &shown_maps {
+                            let included = draft.contains(&map.path);
+                            if draw_map_row(ui, map, Some(included)) {
+                                if included {
+                                    draft.remove(&map.path);
+                                } else {
+                                    draft.insert(map.path.clone());
+                                }
+                            }
+                        }
+                        if shown.is_empty() && shown_maps.is_empty() {
+                            ui.label("No Matching Results");
                         }
                     });
                 ui.separator();
@@ -797,7 +944,11 @@ impl PackageAuthoringApp {
                         .clicked();
                     cancel = ui.button("Cancel").clicked();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak(format!("{} selected · {} shown", draft.len(), shown.len()));
+                        ui.weak(format!(
+                            "{} selected · {} shown",
+                            draft.len(),
+                            shown.len() + shown_maps.len()
+                        ));
                     });
                 });
             });
@@ -823,7 +974,7 @@ impl PackageAuthoringApp {
             .as_ref()
             .ok_or("Recipe library is unavailable")?;
         // Commit storage first. A failed write must not change the active build in memory.
-        library.save_enabled_paths(&selected, &self.recipe_entries)?;
+        library.save_enabled_selection(&selected, &self.recipe_entries, &self.map_entries)?;
         if self.enabled_recipe_paths != selected {
             self.enabled_recipe_paths = selected;
             self.invalidate_results();

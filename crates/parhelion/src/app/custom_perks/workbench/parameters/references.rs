@@ -27,9 +27,11 @@ pub(super) fn draw(ui: &mut egui::Ui, references: &[Reference]) {
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
                                                 ui.add(
-                                                    egui::Label::new(asset_label(&reference.path))
-                                                        .selectable(true)
-                                                        .truncate(),
+                                                    crate::app::style::cut_label(
+                                                        ui,
+                                                        asset_label(&reference.path),
+                                                    )
+                                                    .selectable(true),
                                                 )
                                                 .on_hover_text(format!(
                                                     "{}\nSource: {:08X} + {:X}\nTarget: {:08X}",

@@ -117,7 +117,7 @@ impl WeaponIconEdit {
         self.apply_to_rgba8_sized(pixels, width, usize::from(width != 0))
     }
 
-    pub(super) fn apply_to_rgba8_sized(
+    pub(crate) fn apply_to_rgba8_sized(
         &self,
         pixels: &mut [u8],
         width: usize,
@@ -128,7 +128,7 @@ impl WeaponIconEdit {
             .checked_mul(height)
             .and_then(|pixels| pixels.checked_mul(4))
             .ok_or_else(|| invalid("RGBA8 icon dimensions overflowed"))?;
-        if pixels.len() % 4 != 0 || pixels.len() != expected {
+        if !pixels.len().is_multiple_of(4) || pixels.len() != expected {
             return Err(invalid(format!(
                 "RGBA8 icon data has {} bytes but dimensions {width}×{height} require {expected}",
                 pixels.len(),
@@ -136,7 +136,7 @@ impl WeaponIconEdit {
         }
         if self.rotation_quarter_turns % 2 == 1 && width != height {
             return Err(invalid(format!(
-                "A 90° or 270° icon rotation requires a square texture; this layer is {width}×{height}"
+                "A 90° or 270° icon rotation requires a square texture. This layer is {width}×{height}"
             )));
         }
         if self.is_identity() {

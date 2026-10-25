@@ -17,7 +17,7 @@ impl AuthoredClientSettings {
         &self,
         cleanup: &mut AuthoredAccountCleanup,
     ) -> Result<bool, String> {
-        if !crate::paths::paths_equal(&self.settings_path, &cleanup.settings_path) {
+        if !crate::system::paths::paths_equal(&self.settings_path, &cleanup.settings_path) {
             return Ok(false);
         }
         if self.original_bytes != cleanup.original_bytes {

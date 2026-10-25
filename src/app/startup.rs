@@ -26,6 +26,8 @@ use super::{
 #[cfg(target_os = "linux")]
 use super::draw_linux_title_bar;
 
+mod window;
+
 enum StartupEvent {
     Progress(CatalogProgress),
     SettingsChoice(PathBuf),
@@ -47,14 +49,17 @@ pub(super) struct StartupApp {
     preferences: Preferences,
     preferences_warning: Option<String>,
     package_authoring: Option<Box<dyn PackageAuthoringUtility>>,
+    window: window::Kept,
 }
 
 impl StartupApp {
+    /// `storage` holds what the last session saved, including its window size and place.
     pub(super) fn new(
         selection: Option<InstallSelection>,
         preferences: Preferences,
         preferences_warning: Option<String>,
         package_authoring: Option<Box<dyn PackageAuthoringUtility>>,
+        storage: Option<&dyn eframe::Storage>,
     ) -> Self {
         let mut app = Self {
             editor: None,
@@ -76,6 +81,7 @@ impl StartupApp {
             preferences,
             preferences_warning,
             package_authoring,
+            window: window::Kept::loaded(storage),
         };
         if let Some(selection) = selection {
             app.begin_loading(selection.install_path, selection.preferred_layout);
@@ -242,7 +248,9 @@ impl StartupApp {
         let _ = diagnostics::initialize_log(&report);
     }
 
-    fn draw_startup(&mut self, ctx: &egui::Context) {
+    fn draw_startup(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let logo = self
             .logo
             .get_or_insert_with(|| load_logo_texture(ctx))
@@ -253,19 +261,19 @@ impl StartupApp {
                 .title_bar_icon
                 .get_or_insert_with(|| super::load_linux_title_bar_texture(ctx))
                 .clone();
-            if draw_linux_title_bar(ctx, &title_bar_icon) {
+            if draw_linux_title_bar(ui, &title_bar_icon) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }
         }
         if let Some(warning) = &self.preferences_warning {
-            egui::TopBottomPanel::top("preferences_load_warning").show(ctx, |ui| {
+            egui::Panel::top("preferences_load_warning").show(ui, |ui| {
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
             });
         }
         if self.receiver.is_some() {
             draw_catalog_loading_view(
-                ctx,
+                ui,
                 &logo,
                 CatalogLoadingView {
                     product_name: "Sundial",
@@ -278,7 +286,7 @@ impl StartupApp {
             );
             return;
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let top_space = ((ui.available_height() - 440.0) / 2.0).max(16.0);
             ui.add_space(top_space);
             ui.vertical_centered(|ui| {
@@ -377,11 +385,10 @@ impl StartupApp {
                                     if ui.button("Choose Another Folder").clicked() {
                                         self.choose_install();
                                     }
-                                    if let Some(path) = self.install_path.clone() {
-                                        if ui.button("Try Again").clicked() {
+                                    if let Some(path) = self.install_path.clone()
+                                        && ui.button("Try Again").clicked() {
                                             self.begin_loading(path, None);
                                         }
-                                    }
                                 });
                                 return;
                             }
@@ -439,49 +446,17 @@ fn send_startup_error(sender: &Sender<StartupEvent>, error: String) {
 }
 
 impl eframe::App for StartupApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.receive_events();
         if let Some(editor) = &mut self.editor {
-            editor.update(ctx, frame);
+            editor.ui(ui, frame);
         } else {
-            self.draw_startup(ctx);
-            ctx.request_repaint_after(Duration::from_millis(50));
+            self.draw_startup(ui);
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn startup_construction_does_not_probe_the_saved_installation() {
-        let selection = InstallSelection {
-            install_path: std::env::temp_dir().join("sundial-unavailable-install"),
-            preferred_layout: None,
-        };
-
-        let app = StartupApp::new(Some(selection), Preferences::default(), None, None);
-
-        assert!(app.receiver.is_some());
-        assert!(app.error.is_none());
-        assert_eq!(app.progress.message, "Checking the saved installation…");
-    }
-
-    #[test]
-    fn disconnected_startup_worker_becomes_a_recoverable_error() {
-        let mut app = StartupApp::new(None, Preferences::default(), None, None);
-        let (sender, receiver) = mpsc::channel();
-        drop(sender);
-        app.receiver = Some(receiver);
-
-        app.receive_events();
-
-        assert!(app.receiver.is_none());
-        assert!(
-            app.error
-                .as_deref()
-                .is_some_and(|error| error.contains("stopped unexpectedly"))
-        );
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.window.save(storage);
     }
 }

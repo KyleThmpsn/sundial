@@ -25,8 +25,11 @@ Desktop.ini
 
 # Local agent guidance; not part of the shared repository.
 /AGENTS.md
+/.playwright-cli/
 
-# Local research, implementation notes, and diagnostic examples.
+# Local knowledge, research, implementation notes, and diagnostic examples.
+/knowledge/
 /docs/
 examples/
 /crates/parhelion/import/
+/.playwright-mcp

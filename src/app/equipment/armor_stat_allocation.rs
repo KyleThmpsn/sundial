@@ -7,8 +7,6 @@
 
 mod model;
 mod solver;
-#[cfg(test)]
-mod tests;
 mod ui;
 
 pub(super) use model::{STAT_NAMES, State, TARGET_MAX};

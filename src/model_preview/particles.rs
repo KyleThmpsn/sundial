@@ -1,6 +1,7 @@
 //! A visual study for point emitters that have no native draw mesh.
 //! The compiled spawn and motion program is not evaluated here.
 use super::Model;
+pub(crate) mod simulation;
 
 pub(crate) struct Source {
     pub position: [f32; 3],
@@ -30,9 +31,7 @@ pub(super) fn texture_index(model: &mut Model, texture: &super::texture::Texture
     if model.textures.len() >= super::MAX_TEXTURES {
         return None;
     }
-    let index = model.textures.len();
-    model.textures.push(texture.clone());
-    Some(index)
+    super::texture::retain(model, texture.clone()).ok()
 }
 
 /// A 32-byte emitter record has no mesh reference and places the system at its local origin.

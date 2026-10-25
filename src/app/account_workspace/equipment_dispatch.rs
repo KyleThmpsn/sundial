@@ -27,13 +27,13 @@ impl WorkspaceDocument {
 
     pub(in crate::app) fn equipment_slots(
         &self,
-    ) -> &'static [crate::account_contract::EquipmentSlotContract] {
+    ) -> &'static [crate::account::contract::EquipmentSlotContract] {
         if self.account_is_dawn() {
-            crate::account_contract::EQUIPMENT_SLOTS
+            crate::account::contract::EQUIPMENT_SLOTS
         } else if self.uses_json_account() {
             crate::app::inventory::schema_mode(self.json()).equipment_slots()
         } else {
-            crate::account_contract::ALL_EQUIPMENT_SLOTS
+            crate::account::contract::ALL_EQUIPMENT_SLOTS
         }
     }
 }
@@ -72,7 +72,7 @@ pub(in crate::app) fn equip_definition(
             "Unknown equipment slot for the active account source: {slot}"
         ));
     }
-    if !crate::account_contract::definition_available(
+    if !crate::account::contract::definition_available(
         definition_hash,
         document.supports_emote_collection(),
     ) {

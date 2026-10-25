@@ -73,7 +73,7 @@ pub(super) fn equipment_definition_choices<'a>(
     candidates
         .into_iter()
         .filter(|item| {
-            crate::account_contract::definition_available(item.hash, supports_emote_collection)
+            crate::account::contract::definition_available(item.hash, supports_emote_collection)
         })
         .map(|item| DefinitionChoice {
             hash: item.hash,
@@ -102,7 +102,7 @@ pub(super) fn equipment_inventory_choices(
                 return None;
             }
             let hash = u64::from(snapshot.definition_hash);
-            if !crate::account_contract::definition_available(
+            if !crate::account::contract::definition_available(
                 hash,
                 document.supports_emote_collection(),
             ) {

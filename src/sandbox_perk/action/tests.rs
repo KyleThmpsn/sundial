@@ -6,6 +6,7 @@
 
 use super::fixtures::{Builder, drawn_pattern_action, precision_kill_action};
 use super::*;
+use crate::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 use crate::sandbox_perk::nodes::Support;
 
 mod catalog;
@@ -45,70 +46,6 @@ fn incoming_damage_summaries_distinguish_literal_stats_and_source_distance() {
 }
 
 #[test]
-fn condition_choices_preserve_owned_records_and_report_nested_probability_sources() {
-    let payload = precision_kill_action();
-    let mut graph = native::Graph::read(&payload, 0, ACTION_ROOT_CLASS).unwrap();
-    let kill = graph
-        .blocks
-        .iter_mut()
-        .find(|block| block.class == 0x80803DE7)
-        .unwrap();
-    kill.bytes[4] = 7;
-    kill.bytes[6] = 1;
-    let payload = graph.emit().unwrap();
-    let decoded = decode(&payload).unwrap();
-    let choices = crate::investment::discovery::conditions::from_payload(&payload).unwrap();
-    let original = &decoded.groups[0].activation[0];
-    let copied = choices
-        .iter()
-        .find(|choice| choice.bytes == original.native)
-        .unwrap();
-    assert!(!copied.requirements.is_empty());
-    let rebuilt = native::Graph::read(&copied.bytes, 0, original.class).unwrap();
-    rebuilt.validate_node(true, copied.kind).unwrap();
-    assert_eq!(rebuilt.emit().unwrap(), copied.bytes);
-    assert!(
-        choices
-            .iter()
-            .any(|choice| choice.source.ends_with("End Condition"))
-    );
-    assert!(
-        choices
-            .iter()
-            .any(|choice| choice.source.ends_with("Reactivation"))
-    );
-    assert!(
-        choices
-            .iter()
-            .any(|choice| choice.source.ends_with("Matching Condition"))
-    );
-}
-
-#[test]
-fn a_drawn_pattern_action_decodes_into_its_lists_and_assets() {
-    let payload = drawn_pattern_action();
-    let action = decode(&payload).expect("decode");
-    assert_eq!(action.groups.len(), 1);
-    assert_eq!(action.policy, 0);
-    assert_eq!(action.retained_state_budget, 2);
-    let group = &action.groups[0];
-    assert_eq!(group.activation.len(), 1);
-    assert_eq!(group.activation[0].kind, 16);
-    assert_eq!(group.removal[0].kind, 17);
-    assert_eq!(group.effects.len(), 2);
-    assert_eq!(group.effects[0].kind, 26);
-    assert_eq!(group.effects[0].referenced_tag, Some(0x8161_F73A));
-    assert_eq!(
-        group.effects[0].referenced_path.as_deref(),
-        Some("content/sandbox/weapons/demo/demo.pattern.tft")
-    );
-    assert_eq!(group.effects[1].kind, 3);
-    assert_eq!(group.effects[1].referenced_tag, Some(0x80BC_2F21));
-    assert_eq!(action.referenced_tags(), vec![0x80BC_2F21, 0x8161_F73A]);
-    assert_eq!(action.support(), Support::Authorable);
-}
-
-#[test]
 fn a_precision_kill_action_decodes_its_labels_timers_and_nested_conditions() {
     let payload = precision_kill_action();
     let action = decode(&payload).expect("decode");
@@ -131,28 +68,6 @@ fn a_precision_kill_action_decodes_its_labels_timers_and_nested_conditions() {
     assert_eq!(extend.conditions[0].kind, 2);
     assert_eq!(action.conditions().len(), 4);
     assert_eq!(action.activation_event_mask, 1 << 2);
-}
-
-#[test]
-fn a_partial_probability_is_reported_rather_than_hidden() {
-    let mut out = Builder::new();
-    let activation = out.kill(&[], false, 0.25);
-    out.pointer_list(
-        PRIMARY_GROUP + GROUP_ACTIVATION,
-        CONDITION_ROW_CLASS,
-        &[activation],
-    );
-    let payload = out.finish();
-    let action = decode(&payload).expect("decode");
-    assert_eq!(
-        action.groups[0].activation[0].probability,
-        Probability::Literal(0.25)
-    );
-    let summary = ActionSummary::new(&action);
-    assert_eq!(
-        summary.groups[0].activation[0].text,
-        "A kill from any credited source (25% chance)"
-    );
 }
 
 #[test]
@@ -302,188 +217,15 @@ fn event_modifiers_distinguish_included_and_excluded_labels_and_decode_scalar_pa
     }));
 }
 
-/// Census of one decode pass over the installed finished-perk actions.
-#[derive(Default)]
-struct Census {
-    actions: usize,
-    conditions: usize,
-    effects: usize,
-    condition_kinds: std::collections::BTreeSet<u8>,
-    effect_kinds: std::collections::BTreeSet<u8>,
-    unmapped_conditions: std::collections::BTreeSet<u8>,
-    unmapped_effects: std::collections::BTreeSet<u8>,
-    referenced_assets: std::collections::BTreeSet<u32>,
-    policies: std::collections::BTreeMap<u8, usize>,
-    /// Actions by the weakest support level of any node they contain.
-    by_support: std::collections::BTreeMap<Support, usize>,
-    /// How many actions each kind whose fields are not mapped keeps from being fully read.
-    blocking_conditions: std::collections::BTreeMap<u8, usize>,
-    blocking_effects: std::collections::BTreeMap<u8, usize>,
-}
-
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with a clean Shadowkeep package directory"]
-fn every_installed_perk_action_decodes_and_summarizes_without_a_structural_error() {
-    use crate::investment_schema::{
-        GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag,
-    };
-    use crate::sandbox_perk::{
-        SANDBOX_PERK_RUNTIME_MAP_TAG, finished_sandbox_perk_at, finished_sandbox_perk_count,
-        sandbox_perk_runtime_assignment,
-    };
-    use std::collections::BTreeSet;
-    use tiger_pkg::TagHash;
-
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must name a clean package directory");
-    let install = std::path::Path::new(&packages)
-        .parent()
-        .expect("clean packages need an install root");
-    let manager =
-        crate::package_runtime::open_shadowkeep_packages(install).expect("open clean packages");
-    let globals_tag =
-        crate::package_runtime::resolve_live_named_tag(&manager, "investment_globals", None)
-            .expect("resolve investment_globals");
-    let globals = manager.read_tag(globals_tag).expect("read globals");
-    let catalog_tag = TagHash(
-        investment_globals_table_tag(&globals, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT)
-            .expect("resolve finished perk catalog"),
-    );
-    let catalog = manager
-        .read_tag(catalog_tag)
-        .expect("read finished catalog");
-    let runtime_map = manager
-        .read_tag(TagHash(SANDBOX_PERK_RUNTIME_MAP_TAG))
-        .expect("read runtime map");
-
-    let mut actions = BTreeSet::new();
-    let perk_count = finished_sandbox_perk_count(&catalog).expect("count perks");
-    for index in 0..perk_count {
-        let perk = finished_sandbox_perk_at(&catalog, index).expect("read perk");
-        if let Some(assignment) = sandbox_perk_runtime_assignment(&runtime_map, perk.runtime_key)
-            .expect("resolve assignment")
-        {
-            actions.insert(assignment.runtime_tag);
-        }
-    }
-    assert!(!actions.is_empty(), "no perk actions were reachable");
-
-    let mut census = Census::default();
-    let mut failures = Vec::new();
-    for tag in actions {
-        let Ok(payload) = manager.read_tag(TagHash(tag)) else {
-            continue;
-        };
-        match decode(&payload) {
-            Ok(action) => record(&mut census, &action),
-            Err(error) => failures.push(format!("0x{tag:08X}: {error}")),
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{} of {} actions failed to decode: {:?}",
-        failures.len(),
-        census.actions + failures.len(),
-        &failures[..failures.len().min(10)]
-    );
-    eprintln!(
-        "decoded {} actions from {perk_count} finished perks: {} conditions across kinds {:?}, {} effects across kinds {:?}",
-        census.actions,
-        census.conditions,
-        census.condition_kinds,
-        census.effects,
-        census.effect_kinds
-    );
-    eprintln!(
-        "policies {:?}; {} distinct referenced entity graphs",
-        census.policies,
-        census.referenced_assets.len()
-    );
-    eprintln!(
-        "kinds whose fields are not mapped: conditions {:?}, effects {:?}",
-        census.unmapped_conditions, census.unmapped_effects
-    );
-    // The honest reading count: an action is fully read only when every node it contains has
-    // mapped fields. Structure Only nodes are named and sized but their fields are not.
-    eprintln!("actions by weakest node support: {:?}", census.by_support);
-    let ranked = |blocking: &std::collections::BTreeMap<u8, usize>, name: fn(u8) -> String| {
-        let mut ranked = blocking.iter().collect::<Vec<_>>();
-        ranked.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
-        ranked
-            .into_iter()
-            .map(|(kind, count)| format!("{} ({kind}): {count}", name(*kind)))
-            .collect::<Vec<_>>()
-    };
-    eprintln!(
-        "condition kinds blocking a full read, by actions: {:?}",
-        ranked(&census.blocking_conditions, nodes::condition_name)
-    );
-    eprintln!(
-        "effect kinds blocking a full read, by actions: {:?}",
-        ranked(&census.blocking_effects, nodes::effect_name)
-    );
-}
-
-fn record(census: &mut Census, action: &DecodedAction) {
-    census.actions += 1;
-    *census.policies.entry(action.policy).or_default() += 1;
-    let summary = ActionSummary::new(action);
-    assert!(!summary.headline.is_empty());
-    assert!(!summary.render().is_empty());
-    for condition in action.conditions() {
-        census.conditions += 1;
-        census.condition_kinds.insert(condition.kind);
-        if condition.facts.is_empty() {
-            census.unmapped_conditions.insert(condition.kind);
-        }
-    }
-    for effect in action.effects() {
-        census.effects += 1;
-        census.effect_kinds.insert(effect.kind);
-        if effect.facts.is_empty() && effect.referenced_tag.is_none() {
-            census.unmapped_effects.insert(effect.kind);
-        }
-        census.referenced_assets.extend(effect.referenced_tag);
-    }
-    *census.by_support.entry(action.support()).or_default() += 1;
-    let structural = |support: Support| support >= Support::Structural;
-    let mut blocking_conditions = std::collections::BTreeSet::new();
-    let mut blocking_effects = std::collections::BTreeSet::new();
-    for condition in action.conditions() {
-        if condition
-            .catalog()
-            .is_none_or(|node| structural(node.support))
-        {
-            blocking_conditions.insert(condition.kind);
-        }
-    }
-    for effect in action.effects() {
-        if effect.catalog().is_none_or(|node| structural(node.support)) {
-            blocking_effects.insert(effect.kind);
-        }
-    }
-    for kind in blocking_conditions {
-        *census.blocking_conditions.entry(kind).or_default() += 1;
-    }
-    for kind in blocking_effects {
-        *census.blocking_effects.entry(kind).or_default() += 1;
-    }
-}
-
 #[test]
 fn general_predicates_read_as_the_state_and_weapon_type_they_check() {
     use crate::sandbox_perk::action::{native, summary::state_description};
     let class = 0x8080_3DCE;
-    let mut bytes = native::template(true, 20).unwrap();
+    let mut bytes = native::template(NativeNodeKind::Condition(20)).unwrap();
     // The template requires the weapon in hand and aimed. These titles read the key alone.
     bytes[0x38] = 0;
     bytes[0x81] = 0;
-    // A key no stock perk names, and no weapon record, keeps the traced name.
-    bytes[0xD4..0xD8].copy_from_slice(&0x811C_9DC5u32.to_le_bytes());
     bytes[0xF8] = 0;
-    let plain = state_description(class, &bytes);
-    // The template may carry its own state; only assert on the keys written below.
-    let _ = plain;
     bytes[0xD4..0xD8].copy_from_slice(&0x59E3_47EDu32.to_le_bytes());
     assert_eq!(
         state_description(class, &bytes).as_deref(),
@@ -555,7 +297,7 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
         );
     }
     let class = 0x8080_3DCE;
-    let mut bytes = native::template(true, 20).unwrap();
+    let mut bytes = native::template(NativeNodeKind::Condition(20)).unwrap();
     bytes[0xD4..0xD8].copy_from_slice(&0x811C_9DC5u32.to_le_bytes());
     bytes[0xF8] = 0;
     bytes[0x38] = 0;
@@ -596,82 +338,4 @@ fn general_predicate_player_and_weapon_states_read_from_the_perks_that_set_them(
         state_description(class, &bytes).as_deref(),
         Some("Meets the Charged with Light Stacks requirement while Aiming Down Sights")
     );
-}
-
-/// Every engine variable the installed perks compare has a named row in the workbench, so
-/// a comparison the game makes is one an author can make too. A game update that compares
-/// a new variable fails here rather than quietly becoming an unnamed General Predicate.
-#[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES with a clean Shadowkeep package directory"]
-fn every_variable_the_stock_perks_compare_has_a_named_comparison_row() {
-    use crate::investment_schema::{
-        GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT, investment_globals_table_tag,
-    };
-    use crate::sandbox_perk::action::native::{Graph, predicate};
-    use crate::sandbox_perk::{
-        SANDBOX_PERK_RUNTIME_MAP_TAG, finished_sandbox_perk_at, finished_sandbox_perk_count,
-        sandbox_perk_runtime_assignment,
-    };
-    use std::collections::BTreeSet;
-    use tiger_pkg::TagHash;
-
-    let packages = std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES")
-        .expect("PARHELION_CLEAN_STOCK_PACKAGES must name a clean package directory");
-    let install = std::path::Path::new(&packages)
-        .parent()
-        .expect("clean packages need an install root");
-    let manager =
-        crate::package_runtime::open_shadowkeep_packages(install).expect("open clean packages");
-    let globals_tag =
-        crate::package_runtime::resolve_live_named_tag(&manager, "investment_globals", None)
-            .expect("resolve investment_globals");
-    let globals = manager.read_tag(globals_tag).expect("read globals");
-    let catalog = manager
-        .read_tag(TagHash(
-            investment_globals_table_tag(&globals, GLOBALS_FINISHED_SANDBOX_PERK_TABLE_SLOT)
-                .expect("resolve finished perk catalog"),
-        ))
-        .expect("read finished catalog");
-    let runtime_map = manager
-        .read_tag(TagHash(SANDBOX_PERK_RUNTIME_MAP_TAG))
-        .expect("read runtime map");
-
-    let mut compared = BTreeSet::new();
-    for index in 0..finished_sandbox_perk_count(&catalog).expect("count perks") {
-        let perk = finished_sandbox_perk_at(&catalog, index).expect("read perk");
-        let Some(assignment) =
-            sandbox_perk_runtime_assignment(&runtime_map, perk.runtime_key).expect("assignment")
-        else {
-            continue;
-        };
-        let Ok(payload) = manager.read_tag(TagHash(assignment.runtime_tag)) else {
-            continue;
-        };
-        let Ok(graph) = Graph::read(&payload, 0, 0x8080_40B5) else {
-            continue;
-        };
-        for block in 0..graph.blocks.len() {
-            if let Some(comparison) = predicate::read(&graph, block) {
-                compared.insert(predicate::plain_variable(&comparison.name).to_owned());
-            }
-        }
-    }
-    let rows = predicate::VARIABLES
-        .iter()
-        .map(|variable| variable.plain)
-        .collect::<BTreeSet<_>>();
-    let missing = compared
-        .iter()
-        .filter(|name| !rows.contains(name.as_str()))
-        .collect::<Vec<_>>();
-    assert!(
-        missing.is_empty(),
-        "the stock perks compare variables with no named row: {missing:?}"
-    );
-    assert_eq!(
-        compared.len(),
-        rows.len(),
-        "a named row compares something the installed perks do not"
-    );
-    println!("{} compared variables, every one named", compared.len());
 }

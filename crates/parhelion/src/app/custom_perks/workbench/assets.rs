@@ -1,5 +1,4 @@
-//! The asset picker shared by spawn, attach and pattern actions, and the native fields an
-//! attach node carries beside its asset.
+//! The asset picker shared by native actions, vehicle summons and vehicle projectiles.
 use super::*;
 use sundial::package_authoring::sandbox_perk::program::Asset;
 
@@ -8,7 +7,7 @@ pub(super) mod variants;
 
 /// Which catalog entries an action may reference.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum AssetScope {
+pub(in crate::app) enum AssetScope {
     /// A pattern override needs a projectile.
     Projectiles,
     /// A spawn accepts a projectile, emitter, pickup or physical world object.
@@ -17,6 +16,10 @@ pub(super) enum AssetScope {
     Any,
     /// An ammo drop's optional effect, shown on the drop. Stock drops use emitters.
     DropEffect,
+    /// A summon needs native entry markers and supported vehicle motion.
+    Vehicles,
+    /// Vehicle barrels require a native moving projectile graph.
+    VehicleProjectiles,
 }
 
 /// A technical name without the tag it ends in, for a list row.
@@ -30,10 +33,13 @@ fn without_tag(name: &str) -> &str {
 }
 
 impl AssetScope {
-    fn placement_hint(self, kind: projectile::Kind) -> &'static str {
+    fn placement_hint(self, kind: entity::Kind) -> &'static str {
         match self {
-            Self::Projectiles => "Fired by the weapon in place of its current projectile.",
-            Self::Spawnable if kind == projectile::Kind::Projectile => {
+            Self::Projectiles | Self::VehicleProjectiles => {
+                "Fired in place of the current projectile."
+            }
+            Self::Vehicles => "Summoned in place of the base Sparrow's vehicle.",
+            Self::Spawnable if kind == entity::Kind::Projectile => {
                 "Starts at Spawn Location and uses the asset's native motion."
             }
             Self::Spawnable => "Created at Spawn Location.",
@@ -66,15 +72,29 @@ impl AssetScope {
                 "Choose a Drop Effect",
                 "Use Drop Effect",
             ),
+            Self::Vehicles => ("Choose Other Vehicle…", "Choose a Vehicle", "Use Vehicle"),
+            Self::VehicleProjectiles => (
+                "Choose Other Projectile…",
+                "Choose a Projectile",
+                "Use Projectile",
+            ),
         }
     }
 
-    fn allows(self, kind: projectile::Kind, object_type: u8) -> bool {
+    fn allows(self, kind: entity::Kind, object_type: u8) -> bool {
         match self {
-            Self::Projectiles => kind == projectile::Kind::Projectile,
-            Self::Spawnable => projectile::spawnable_object(kind, object_type),
-            Self::Any | Self::DropEffect => true,
+            Self::Projectiles | Self::VehicleProjectiles => kind == entity::Kind::Projectile,
+            Self::Vehicles => object_type == 15,
+            Self::Spawnable => entity::spawnable_object(kind, object_type),
+            Self::Any | Self::DropEffect => object_type != 15,
         }
+    }
+
+    fn fixed_kind(self) -> bool {
+        matches!(
+            self,
+            Self::Projectiles | Self::VehicleProjectiles | Self::Vehicles
+        )
     }
 }
 
@@ -125,7 +145,7 @@ impl Order {
 /// reshuffle between frames.
 fn asset_sort_key(
     order: Order,
-    entry: &projectile::catalog::Entry,
+    entry: &entity::catalog::Entry,
     asset: &AssetSearch,
     direct_match: bool,
 ) -> (bool, usize, std::cmp::Reverse<usize>, u8, String, String) {
@@ -147,7 +167,7 @@ fn asset_sort_key(
 }
 
 fn asset_usage(
-    entry: &projectile::catalog::Entry,
+    entry: &entity::catalog::Entry,
     perk_names: &BTreeMap<u16, String>,
     discovery: &discovery::Discovery,
 ) -> String {
@@ -176,6 +196,71 @@ fn asset_usage(
 }
 
 impl Workbench {
+    pub(in crate::app) fn prepare_assets(
+        &mut self,
+        ctx: &egui::Context,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+    ) {
+        if packages.is_dir() {
+            self.discovery.start(packages, ctx);
+        }
+        self.discovery.poll();
+        self.refresh_item_names(catalog);
+        self.refresh_asset_labels();
+    }
+
+    pub(in crate::app) fn asset_catalog(&self) -> Option<&entity::catalog::Catalog> {
+        self.discovery
+            .data
+            .as_ref()
+            .map(|data| data.effects.as_ref())
+    }
+
+    pub(in crate::app) fn asset_name(&self, graph: u32, fallback: &str) -> String {
+        self.asset_labels
+            .get(&graph)
+            .cloned()
+            .unwrap_or_else(|| fallback.to_owned())
+    }
+
+    /// Reuse the asset browser when a preset menu asks for another native asset.
+    pub(in crate::app) fn choose_asset(
+        &mut self,
+        ui: &mut egui::Ui,
+        packages: &Path,
+        catalog: Option<&InvestmentCatalog>,
+        scope: AssetScope,
+        opened: bool,
+        current: Option<u32>,
+    ) -> Option<Asset> {
+        let (_, title, use_label) = scope.picker_labels();
+        let mut query = String::new();
+        pickers::browser_window(
+            ui,
+            ("native-asset-choice", scope as u8),
+            title,
+            &mut query,
+            opened,
+            |ui, query, reset, _height| {
+                self.prepare_assets(ui.ctx(), packages, catalog);
+                Browser {
+                    catalog,
+                    discovery: &self.discovery,
+                    perk_names: &self.perk_names,
+                    item_names: &self.item_names,
+                    asset_labels: &self.asset_labels,
+                    markers: None,
+                    carried: self
+                        .ingredients
+                        .as_ref()
+                        .map(|(_, _, ingredients)| &ingredients.sources),
+                }
+                .draw(ui, scope, query, reset, Some(use_label), current)
+            },
+        )
+    }
+
     /// An attachment with no name of its own is named after this effect. When the picker's
     /// name already names this perk, as "Firefly Attachment" or "Attachment Shared by Ace of
     /// Spades Catalyst, Firefly" do, the list uses that same name, so what a user
@@ -214,8 +299,7 @@ impl Workbench {
                             .iter()
                             .find(|entry| entry.graph == asset.graph)
                             .is_some_and(|entry| {
-                                entry.kind == projectile::Kind::Entity
-                                    && entry.direct_name().is_none()
+                                entry.kind == entity::Kind::Entity && entry.direct_name().is_none()
                             })
                     });
                 (
@@ -301,7 +385,7 @@ pub(super) struct Browser<'a> {
     pub catalog: Option<&'a InvestmentCatalog>,
     pub discovery: &'a discovery::Discovery,
     pub perk_names: &'a BTreeMap<u16, String>,
-    pub item_names: &'a BTreeMap<u32, projectile::catalog::ItemName>,
+    pub item_names: &'a BTreeMap<u32, entity::catalog::ItemName>,
     pub asset_labels: &'a BTreeMap<u32, String>,
     /// The marker index, when the Markers view has read it. An object's attachment points are
     /// part of what it is, so they belong on its page and not only in the marker list.
@@ -365,7 +449,9 @@ impl Browser<'_> {
         let key = (
             std::sync::Arc::as_ptr(&data.perks) as usize,
             data.asset_choices.len(),
-            self.asset_labels.len(),
+            // Labels change with the game names registered after a catalog loads, not only
+            // with their count.
+            self.asset_labels.len() ^ ((entity::catalog::game_names_generation() as usize) << 20),
             self.perk_names.len(),
             self.item_names.len(),
             self.carried
@@ -406,7 +492,7 @@ fn build_search_index(
     key: (usize, usize, usize, usize, usize, usize),
     asset_labels: &BTreeMap<u32, String>,
     perk_names: &BTreeMap<u16, String>,
-    item_names: &BTreeMap<u32, projectile::catalog::ItemName>,
+    item_names: &BTreeMap<u32, entity::catalog::ItemName>,
     carried: Option<&BTreeMap<u16, BTreeSet<sundial::investment::IngredientSource>>>,
 ) -> SearchIndex {
     let mut perks = BTreeMap::new();
@@ -508,19 +594,25 @@ struct Selection {
 }
 
 impl Selection {
-    fn allows(self, entry: &projectile::catalog::Entry) -> bool {
+    fn allows(self, entry: &entity::catalog::Entry, catalog: &entity::catalog::Catalog) -> bool {
         if !self.scope.allows(entry.kind, entry.object_type) {
             return false;
         }
-        if self.scope == AssetScope::Projectiles {
+        if self.scope == AssetScope::Vehicles {
+            return crate::vehicle::catalog::capabilities(catalog, entry).is_some();
+        }
+        if self.scope == AssetScope::VehicleProjectiles {
+            return crate::vehicle::catalog::moving_projectile(catalog, entry);
+        }
+        if self.scope.fixed_kind() {
             return true;
         }
         match self.filter {
-            1 => entry.kind == projectile::Kind::Projectile,
-            2 => entry.kind == projectile::Kind::Emitter,
-            3 => entry.kind == projectile::Kind::Entity,
-            4 => entry.kind == projectile::Kind::Pickup || entry.pickup_role().is_some(),
-            5 => entry.kind == projectile::Kind::Object,
+            1 => entry.kind == entity::Kind::Projectile,
+            2 => entry.kind == entity::Kind::Emitter,
+            3 => entry.kind == entity::Kind::Entity,
+            4 => entry.kind == entity::Kind::Pickup || entry.pickup_role().is_some(),
+            5 => entry.kind == entity::Kind::Object,
             _ => true,
         }
     }
@@ -552,7 +644,7 @@ fn matching_assets(
         .enumerate()
         .filter(|(_, (row, search))| {
             let entry = &data.effects.entries[row.index];
-            selection.allows(entry)
+            selection.allows(entry, &data.effects)
                 && (selection.show_all || exact_graph == Some(entry.graph) || search.identified)
                 && words.iter().all(|word| index.matches(search, word))
         })
@@ -604,6 +696,12 @@ impl Browser<'_> {
             }
             return None;
         };
+        // A first open can start discovery. Reveal the current asset and focus search when
+        // its catalog arrives, just as when the picker opens with an already loaded catalog.
+        let source_id = ui.make_persistent_id("asset-catalog-ready");
+        let source = std::sync::Arc::as_ptr(&data.effects) as usize;
+        let reset = reset || ui.data(|state| state.get_temp::<usize>(source_id)) != Some(source);
+        ui.data_mut(|state| state.insert_temp(source_id, source));
         let filter_id = ui.make_persistent_id("asset-kind");
         let mut filter = ui.data(|state| state.get_temp::<u8>(filter_id).unwrap_or(0));
         let order_id = ui.make_persistent_id("asset-order");
@@ -617,7 +715,10 @@ impl Browser<'_> {
         ui.horizontal(|ui| {
             let width = ui.available_width() - pickers::CLEAR_WIDTH;
             let hint = match scope {
-                AssetScope::Projectiles => "Search Projectiles or Weapons",
+                AssetScope::Projectiles | AssetScope::VehicleProjectiles => {
+                    "Search Projectiles or Weapons"
+                }
+                AssetScope::Vehicles => "Search Vehicles or Tags",
                 AssetScope::Spawnable => "Search Objects, Effects, or Perks",
                 AssetScope::Any | AssetScope::DropEffect if use_label.is_none() => {
                     "Search Objects, Effects, Perks, or Tags"
@@ -634,7 +735,7 @@ impl Browser<'_> {
                 const TYPE_WIDTH: f32 = 150.0;
                 const ORDER_WIDTH: f32 = 150.0;
                 const COUNT_WIDTH: f32 = 86.0;
-                if scope != AssetScope::Projectiles {
+                if !scope.fixed_kind() {
                     let types = [
                         (0, "All Types"),
                         (1, "Projectiles"),
@@ -782,8 +883,8 @@ impl Browser<'_> {
             });
         }
         // The names people try first are abilities and weapons, which are not objects here.
-        if choices.is_empty() && !normalized_query.is_empty() && scope != AssetScope::Projectiles {
-            ui.weak("Abilities are on the ability triggers and actions. Weapons are on Unique Weapon Behavior.");
+        if choices.is_empty() && !normalized_query.is_empty() && !scope.fixed_kind() {
+            ui.weak("Abilities are on the ability triggers and actions. Weapons are on Behavior.");
         }
         ui.separator();
         // Assets that differ only by their variant number share one row, which opens to them.
@@ -913,6 +1014,10 @@ impl Browser<'_> {
                         graph: entry.graph,
                         path: entry.native_paths.first().cloned().unwrap_or_default(),
                         values: Vec::new(),
+                        damage_type: None,
+                        rows: Vec::new(),
+                        hud_status: None,
+                        script: None,
                     });
                 }
                 asset_details(
@@ -933,7 +1038,7 @@ impl Browser<'_> {
     }
 
     /// An asset's name as every picker gives it.
-    fn label(&self, entry: &projectile::catalog::Entry) -> String {
+    fn label(&self, entry: &entity::catalog::Entry) -> String {
         self.asset_labels
             .get(&entry.graph)
             .cloned()
@@ -975,7 +1080,7 @@ impl Browser<'_> {
     /// every word, so an ordinary match stays unadorned.
     fn match_reason(
         &self,
-        entry: &projectile::catalog::Entry,
+        entry: &entity::catalog::Entry,
         name: &str,
         game: Option<&str>,
         words: &[&str],
@@ -1054,411 +1159,3 @@ fn exact_asset_tag(query: &str) -> Option<u32> {
 pub(in crate::app::custom_perks) use sundial::investment::discovery::technical_name;
 /// Shared detail panel for authored actions and stock projectile replacements.
 pub(in crate::app::custom_perks) use sundial::ui::catalog::assets::asset_details;
-
-/// One row a picker shows in its default order, with every family closed.
-#[cfg(test)]
-pub(in crate::app::custom_perks::workbench) struct Listed {
-    /// The asset's name, or a family's name without a variant number.
-    pub label: String,
-    /// The game's name for an asset its label names by a native name.
-    pub game: Option<String>,
-    /// Whether the asset is one Suggested leads with.
-    pub well_known: bool,
-    /// How many variants the row holds, one for an asset alone.
-    pub variants: usize,
-}
-
-#[cfg(test)]
-impl Browser<'_> {
-    /// What a picker lists for a query in its default order, with the default visibility and
-    /// every family closed.
-    pub(in crate::app::custom_perks::workbench) fn listing(
-        &self,
-        scope: AssetScope,
-        query: &str,
-    ) -> Vec<Listed> {
-        let data = self.discovery.data.as_ref().expect("discovered assets");
-        let index = build_search_index(
-            data,
-            (0, 0, 0, 0, 0, 0),
-            self.asset_labels,
-            self.perk_names,
-            self.item_names,
-            self.carried,
-        );
-        let selection = Selection {
-            scope,
-            filter: 0,
-            order: Order::default(),
-            show_all: false,
-        };
-        let rows = matching_assets(data, &index, selection, query);
-        let labels = rows
-            .iter()
-            .map(|&row| self.label(&data.effects.entries[data.asset_choices[row].index]))
-            .collect::<Vec<_>>();
-        variants::group(labels.iter().map(String::as_str))
-            .into_iter()
-            .map(|group| {
-                let first = group.members[0];
-                let asset = &index.assets[rows[first]];
-                Listed {
-                    label: if group.members.len() == 1 {
-                        labels[first].clone()
-                    } else {
-                        group.name.clone()
-                    },
-                    game: asset.game.clone(),
-                    well_known: asset.lead != usize::MAX,
-                    variants: group.members.len(),
-                }
-            })
-            .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        AssetScope, AssetSearch, Order, Selection, asset_sort_key, build_search_index, discovery,
-        exact_asset_tag, matching_assets, suggested,
-    };
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use sundial::investment::discovery::AssetChoice;
-    use sundial::package_authoring::sandbox_perk::dependencies;
-    use sundial::package_authoring::sandbox_perk::projectile::{self, catalog::Entry};
-
-    const BOLT: u32 = 0x80B2_0001;
-    const TRAIL: u32 = 0x80B2_0002;
-    const ARC: u32 = 0x80B2_0003;
-    const UNNAMED: u32 = 0x80B2_0004;
-    /// The perk that names [`ARC`], which the packages leave unnamed.
-    const CHAIN_PERK: u16 = 7;
-
-    /// Four assets covering what the browser has to tell apart: two the packages name, one
-    /// named only by the perk that uses it, and one they never name at all.
-    fn catalog() -> (
-        discovery::Data,
-        BTreeMap<u32, String>,
-        BTreeMap<u16, String>,
-    ) {
-        let named = |graph, kind, name: &str| Entry {
-            native_name: Some(name.to_owned()),
-            ..entry(graph, kind, "sandbox", None)
-        };
-        let mut used_by_a_perk = entry(ARC, projectile::Kind::Projectile, "sandbox", None);
-        used_by_a_perk.perk_indices = vec![CHAIN_PERK];
-        let entries = vec![
-            named(BOLT, projectile::Kind::Projectile, "solar_bolt"),
-            named(TRAIL, projectile::Kind::Emitter, "solar_trail"),
-            used_by_a_perk,
-            entry(UNNAMED, projectile::Kind::Object, "activities", None),
-        ];
-        let asset_choices = entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| AssetChoice {
-                index,
-                name: entry.label(),
-                // What the catalog prepares for each row, kept distinct so a match through it
-                // is told apart from a match through the label or a perk.
-                search: format!("row{index} tag{:08x}", entry.graph),
-            })
-            .collect();
-        let perks = (0..=usize::from(CHAIN_PERK))
-            .map(|index| dependencies::Perk {
-                index,
-                hash: 0x8080_0000 + index as u32,
-                runtime_key: 0,
-                action: None,
-                graphs: Vec::new(),
-                error: None,
-                behavior: (index == usize::from(CHAIN_PERK)).then(|| dependencies::Behavior {
-                    headline: "Kills release a lightning arc".to_owned(),
-                    support: sundial::package_authoring::sandbox_perk::nodes::Support::Authorable,
-                    editable: true,
-                    program: None,
-                    condition_kinds: Vec::new(),
-                    effect_kinds: Vec::new(),
-                    details: Vec::new(),
-                    notes: Vec::new(),
-                }),
-            })
-            .collect();
-        let data = discovery::Data {
-            names: Arc::new(Default::default()),
-            effects: Arc::new(projectile::catalog::Catalog {
-                entries,
-                ..Default::default()
-            }),
-            asset_choices,
-            perks: Arc::new(dependencies::Index {
-                patterns: Vec::new(),
-                caster: None,
-                perks,
-            }),
-            perk_assets: Vec::new(),
-            pattern_items: Default::default(),
-            abilities: Vec::new(),
-            perk_search: Default::default(),
-            scripts: Arc::new(Vec::new()),
-        };
-        let labels = BTreeMap::from([
-            (BOLT, "Solar Bolt".to_owned()),
-            (TRAIL, "Solar Trail".to_owned()),
-        ]);
-        let perk_names = BTreeMap::from([(CHAIN_PERK, "Chain Reaction".to_owned())]);
-        (data, labels, perk_names)
-    }
-
-    /// The assets one search selects, by tag, in a stable order for comparison.
-    fn found(query: &str, filter: u8, show_all: bool) -> Vec<u32> {
-        found_in(AssetScope::Any, query, filter, show_all)
-    }
-
-    fn found_in(scope: AssetScope, query: &str, filter: u8, show_all: bool) -> Vec<u32> {
-        let (data, labels, perk_names) = catalog();
-        let index = build_search_index(
-            &data,
-            (0, 0, 0, 0, 0, 0),
-            &labels,
-            &perk_names,
-            &BTreeMap::new(),
-            None,
-        );
-        let selection = Selection {
-            scope,
-            filter,
-            order: Order::Name,
-            show_all,
-        };
-        let mut graphs = matching_assets(&data, &index, selection, query)
-            .into_iter()
-            .map(|row| data.effects.entries[data.asset_choices[row].index].graph)
-            .collect::<Vec<_>>();
-        graphs.sort_unstable();
-        graphs
-    }
-
-    /// The default listing is evidence, not everything the packages contain: an asset nothing
-    /// names is noise until the reader asks for it.
-    #[test]
-    fn the_listing_hides_assets_nothing_names_until_show_all() {
-        assert_eq!(found("", 0, false), [BOLT, TRAIL, ARC]);
-        assert_eq!(found("", 0, true), [BOLT, TRAIL, ARC, UNNAMED]);
-    }
-
-    /// A tag copied from a crash report or another tool has to reach its asset, whether or not
-    /// anything names it.
-    #[test]
-    fn an_exact_tag_reaches_an_asset_the_listing_hides() {
-        assert_eq!(found("80b20004", 0, false), [UNNAMED]);
-        assert_eq!(found("0x80b20004", 0, false), [UNNAMED]);
-        assert_eq!(found("80B20004", 0, false), [UNNAMED]);
-    }
-
-    /// The three places a search has to reach: the catalog's own text, the label the workbench
-    /// gives an asset, and the perk that uses it.
-    #[test]
-    fn a_search_reaches_the_catalog_text_the_label_and_the_perk() {
-        assert_eq!(found("row1", 0, false), [TRAIL], "the catalog's own text");
-        assert_eq!(found("solar bolt", 0, false), [BOLT], "the workbench label");
-        assert_eq!(found("chain", 0, false), [ARC], "the perk's name");
-        assert_eq!(found("lightning", 0, false), [ARC], "the perk's behavior");
-    }
-
-    /// Every word has to be found, or a two word search is no narrower than its first word.
-    #[test]
-    fn every_word_of_a_search_has_to_match() {
-        assert_eq!(found("solar", 0, false), [BOLT, TRAIL]);
-        assert_eq!(found("solar trail", 0, false), [TRAIL]);
-        assert!(found("solar lightning", 0, false).is_empty());
-        assert!(found("nothing here", 0, false).is_empty());
-    }
-
-    /// Sorting never hides a result, but the type filter is meant to.
-    #[test]
-    fn the_type_filter_selects_one_kind_and_the_projectile_scope_ignores_it() {
-        assert_eq!(found("", 1, true), [BOLT, ARC], "projectiles");
-        assert_eq!(found("", 2, true), [TRAIL], "emitters");
-        assert_eq!(found("", 5, true), [UNNAMED], "world objects");
-        // The projectile picker is already limited to one type, so its combo is not drawn and
-        // a filter left over from the catalog must not narrow it further.
-        assert_eq!(
-            found_in(AssetScope::Projectiles, "", 2, true),
-            [BOLT, ARC],
-            "a stale emitter filter cannot empty the projectile picker"
-        );
-    }
-
-    /// Everything a search can match is lowercased once, so a query never has to be.
-    #[test]
-    fn a_search_is_insensitive_to_case() {
-        assert_eq!(found("SOLAR Bolt", 0, false), [BOLT]);
-        assert_eq!(found("Chain", 0, false), [ARC]);
-    }
-
-    fn entry(graph: u32, kind: projectile::Kind, package: &str, path: Option<&str>) -> Entry {
-        Entry {
-            graph,
-            kind,
-            object_type: 18,
-            owners: Vec::new(),
-            package: package.into(),
-            native_name: None,
-            native_paths: path.map(|path| vec![path.to_owned()]).unwrap_or_default(),
-            contexts: Vec::new(),
-            perk_indices: Vec::new(),
-            source_hint: None,
-        }
-    }
-
-    #[test]
-    fn every_asset_order_is_total_and_keeps_the_same_result_set() {
-        let named = entry(
-            0x80B1_0001,
-            projectile::Kind::Emitter,
-            "sandbox",
-            Some("content/sandbox/effects/zebra.pattern.tft"),
-        );
-        let unnamed = entry(
-            0x80B1_0002,
-            projectile::Kind::Projectile,
-            "activities",
-            None,
-        );
-        let mut rows = [(&named, "zebra emitter"), (&unnamed, "alpha projectile")];
-        fn order_by<'a>(order: Order, rows: &mut [(&Entry, &'a str)]) -> Vec<&'a str> {
-            rows.sort_by_cached_key(|(entry, name)| {
-                asset_sort_key(order, entry, &searched(name), false)
-            });
-            rows.iter().map(|(_, name)| *name).collect()
-        }
-        // Suggested ranks an asset the packages name above one they do not.
-        assert_eq!(
-            order_by(Order::Suggested, &mut rows),
-            ["zebra emitter", "alpha projectile"]
-        );
-        assert_eq!(
-            order_by(Order::Name, &mut rows),
-            ["alpha projectile", "zebra emitter"]
-        );
-        // Emitter sorts before Projectile, and activities before sandbox.
-        assert_eq!(
-            order_by(Order::Kind, &mut rows),
-            ["zebra emitter", "alpha projectile"]
-        );
-        assert_eq!(
-            order_by(Order::Source, &mut rows),
-            ["alpha projectile", "zebra emitter"]
-        );
-    }
-
-    /// The search text of an asset with only a label.
-    fn searched(name: &str) -> AssetSearch {
-        AssetSearch {
-            name: name.into(),
-            own: String::new(),
-            perks: Vec::new(),
-            identified: true,
-            game: suggested::game_name(name),
-            lead: suggested::rank(name),
-            uses: 0,
-        }
-    }
-
-    #[test]
-    fn a_query_match_outranks_a_named_asset_only_under_suggested() {
-        let named = entry(
-            0x80B1_0001,
-            projectile::Kind::Projectile,
-            "sandbox",
-            Some("content/sandbox/effects/named.pattern.tft"),
-        );
-        let matched = entry(0x80B1_0002, projectile::Kind::Projectile, "sandbox", None);
-        assert!(
-            asset_sort_key(Order::Suggested, &matched, &searched("hit"), true)
-                < asset_sort_key(Order::Suggested, &named, &searched("aaa"), false)
-        );
-        assert!(
-            asset_sort_key(Order::Name, &matched, &searched("hit"), true)
-                > asset_sort_key(Order::Name, &named, &searched("aaa"), false)
-        );
-    }
-
-    /// A Discord report: Firefly's action list said "Firefly Attachment 2" and the picker
-    /// could not be searched for it. The entity is attached by Firefly and the Ace of
-    /// Spades Catalyst, so both names now say so, and the picker's search finds it.
-    #[test]
-    #[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES"]
-    fn a_stock_attachment_is_searchable_by_the_name_its_perk_gives_it() {
-        use std::path::PathBuf;
-        let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-        let catalog =
-            sundial::investment::InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {})
-                .unwrap();
-        let names = catalog
-            .weapon_sandbox_perk_choices_from(crate::package_profile::is_stock_item_definition)
-            .into_iter()
-            .map(|choice| (choice.perk_index, choice.representative_name))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let data = sundial::investment::discovery::discover(&packages, |_| {}).unwrap();
-        let labels = data
-            .effects
-            .discovery_labels_with(|index| names.get(&index).cloned(), |_| None);
-        let firefly = data
-            .effects
-            .entries
-            .iter()
-            .find(|entry| entry.graph == 0x80C1_9A55)
-            .expect("Firefly's explosion attachment");
-        assert!(firefly.has_discovery_identity_with(|index| names.get(&index).cloned(), |_| None));
-        let label = &labels[&firefly.graph];
-        assert_eq!(
-            label,
-            "Attachment Shared by Ace of Spades Catalyst, Firefly"
-        );
-        assert!(crate::app::pickers::matches("firefly attachment", label));
-        // Every attachment a named weapon perk carries reads as one.
-        let attachments = data
-            .effects
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry.kind == projectile::Kind::Entity
-                    && entry.direct_name().is_none()
-                    && entry
-                        .source_hint
-                        .as_deref()
-                        .is_some_and(|role| role.starts_with("Attached Entity"))
-                    && entry
-                        .perk_indices
-                        .iter()
-                        .any(|index| names.contains_key(index))
-            })
-            .collect::<Vec<_>>();
-        assert!(!attachments.is_empty());
-        for entry in &attachments {
-            let label = &labels[&entry.graph];
-            assert!(
-                label.contains("Attachment") && !label.starts_with("Unidentified"),
-                "0x{:08X}: {label}",
-                entry.graph
-            );
-        }
-        println!(
-            "{} attachments carried by named weapon perks are named after them",
-            attachments.len()
-        );
-    }
-
-    #[test]
-    fn only_complete_asset_tags_bypass_discovery_visibility() {
-        assert_eq!(exact_asset_tag("0x80c1d182"), Some(0x80C1D182));
-        assert_eq!(exact_asset_tag("80c1d182"), Some(0x80C1D182));
-        for query in ["frog", "80c1", "80c1d182 frog", "123456789", "zzzzzzzz"] {
-            assert_eq!(exact_asset_tag(query), None);
-        }
-    }
-}

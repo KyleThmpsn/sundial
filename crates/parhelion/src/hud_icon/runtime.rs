@@ -1,10 +1,12 @@
-//! Shadowkeep C9E280 reads definition +160 or variant property +E0.
+//! Shadowkeep C9E280 reads definition +160 or variant property +E0. The same weapon content
+//! carries the hip-fire crosshair keys, which `crate::weapon::crosshair` writes through
+//! [`field_patches`].
 use crate::tag_payload::{read_u32 as u32_at, read_u64 as u64_at};
-use crate::{AuthoringResult, error::invalid, weapon::WeaponRuntimeResourcePatch};
+use crate::{AuthoringResult, error::invalid, item::WeaponRuntimeResourcePatch};
 use sundial::package_authoring::PackageManager;
-use sundial::package_authoring::weapon_entity::weapon_component_bindings;
+use sundial::package_authoring::entity::weapon_component_bindings;
 use tiger_pkg::TagHash;
-const BINDING: u32 = 0x5F0DD954;
+pub(super) const BINDING: u32 = 0x5F0DD954;
 struct Content {
     owner: Vec<u8>,
     instance: usize,
@@ -14,26 +16,18 @@ fn content(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Content> 
     let bindings = weapon_component_bindings(entity, BINDING).map_err(invalid)?;
     let [binding] = bindings.as_slice() else {
         return Err(invalid(
-            "HUD icon authoring requires one weapon-content component",
+            "Weapon content edits require one weapon-content component",
         ));
     };
     if binding.concrete_class != 0x80803ACB {
-        return Err(invalid("Unsupported HUD weapon-content class"));
+        return Err(invalid("Unsupported weapon-content class"));
     }
     let owner = manager
         .read_tag(TagHash(binding.owner_tag))
         .map_err(|e| invalid(e.to_string()))?;
     let instance = usize::try_from(binding.resource_offset)
-        .map_err(|_| invalid("HUD instance offset overflow"))?;
-    if u32_at(&owner, instance)? != binding.owner_tag || u32_at(&owner, instance + 4)? != 0x80803AC9
-    {
-        return Err(invalid(
-            "HUD content definition must be typed within its owner",
-        ));
-    }
-    let definition = usize::try_from(u64_at(&owner, instance + 8)?)
-        .map_err(|_| invalid("HUD definition offset overflow"))?;
-    let properties = crate::weapon_ammo::property_offsets(&owner, definition)?;
+        .map_err(|_| invalid("Weapon content instance offset overflow"))?;
+    let properties = properties(&owner, binding.owner_tag, instance)?;
     Ok(Content {
         owner,
         instance,
@@ -41,16 +35,123 @@ fn content(manager: &PackageManager, entity: &[u8]) -> AuthoringResult<Content> 
     })
 }
 
+fn properties(owner: &[u8], tag: u32, instance: usize) -> AuthoringResult<Vec<usize>> {
+    if u32_at(owner, instance)? != tag || u32_at(owner, instance + 4)? != 0x80803AC9 {
+        return Err(invalid(
+            "HUD content definition must be typed within its owner",
+        ));
+    }
+    let definition = usize::try_from(u64_at(owner, instance + 8)?)
+        .map_err(|_| invalid("HUD content definition offset overflow"))?;
+    if u32_at(owner, definition)? != tag
+        || u32_at(owner, definition + 4)? != 0x80803ACB
+        || u64_at(owner, definition + 8)? != instance as u64
+    {
+        return Err(invalid("HUD content definition is not reciprocal"));
+    }
+    crate::weapon::ammo::property_offsets(owner, definition)
+}
+
+/// A complete prepared vehicle already owns its content in the pending private
+/// asset packages. Change its HUD key there before those packages are committed.
+pub(crate) fn write_prepared_key(
+    packages: &mut crate::asset_packages::AssetPackages,
+    entity: &[u8],
+    key: u32,
+) -> AuthoringResult<()> {
+    let bindings = weapon_component_bindings(entity, BINDING).map_err(invalid)?;
+    let [binding] = bindings.as_slice() else {
+        return Err(invalid(
+            "Vehicle HUD artwork requires one weapon-content component",
+        ));
+    };
+    if binding.concrete_class != 0x80803ACB {
+        return Err(invalid("Unsupported vehicle HUD content class"));
+    }
+    let tag = TagHash(binding.owner_tag);
+    let owner = packages
+        .packages
+        .iter_mut()
+        .find(|package| package.id == tag.pkg_id())
+        .and_then(|package| package.tags.get_mut(tag.entry_index() as usize))
+        .ok_or_else(|| invalid("Vehicle HUD content is not privately allocated"))?;
+    let instance = usize::try_from(binding.resource_offset)
+        .map_err(|_| invalid("Vehicle HUD content instance offset overflow"))?;
+    let fields = properties(&owner.payload, tag.0, instance)?;
+    for property in fields {
+        crate::tag_payload::write_u32(&mut owner.payload, property + 0xE0, key)?;
+    }
+    write_prepared_driver_keys(packages, entity, key)?;
+    Ok(())
+}
+
+/// The driver carries a separate vehicle silhouette key from weapon content.
+/// Keep that key private to the same complete vehicle assembly.
+fn write_prepared_driver_keys(
+    packages: &mut crate::asset_packages::AssetPackages,
+    entity: &[u8],
+    key: u32,
+) -> AuthoringResult<()> {
+    let (count, _, rows, class) = crate::tag_payload::array_at(entity, 16)?;
+    if class != 0x80809C04 || count == 0 {
+        return Err(invalid("Prepared vehicle component table differs"));
+    }
+    let mut drivers = 0;
+    for row in (0..count).map(|index| rows + index * 12) {
+        let tag = TagHash(u32_at(entity, row)?);
+        let owner = packages
+            .packages
+            .iter_mut()
+            .find(|package| package.id == tag.pkg_id())
+            .and_then(|package| package.tags.get_mut(tag.entry_index() as usize))
+            .ok_or_else(|| invalid("Vehicle component is not privately allocated"))?;
+        let instance = crate::tag_payload::relative_target(&owner.payload, 16)?;
+        if u32_at(&owner.payload, instance + 4)? != 0x80803D7D {
+            continue;
+        }
+        let definition = usize::try_from(u64_at(&owner.payload, instance + 8)?)
+            .map_err(|_| invalid("Vehicle driver definition offset overflow"))?;
+        if u32_at(&owner.payload, instance)? != tag.0
+            || u32_at(&owner.payload, definition)? != tag.0
+            || u32_at(&owner.payload, definition + 4)? != 0x808042AD
+            || u64_at(&owner.payload, definition + 8)? != instance as u64
+        {
+            return Err(invalid("Vehicle driver definition is not reciprocal"));
+        }
+        crate::tag_payload::write_u32(&mut owner.payload, definition + 0x288, key)?;
+        drivers += 1;
+    }
+    if drivers == 0 {
+        return Err(invalid("Prepared vehicle has no driver silhouette key"));
+    }
+    Ok(())
+}
+
 /// Each native variant's +10 key selects the appearance pattern's content group.
 /// Select before copying the HUD key; shared sword owners also contain other swords' icons.
+///
+/// A block with no key of its own shows the icon its type markers name. HUD keys are type names
+/// (`shotgun`, `machinegun`, `hand_cannon`), and the HUD table holds Gunnora's Axe's +18
+/// `shotgun` but not its +30. That fallback is spelled out here, since the weapon's own block
+/// keeps the base's type markers and would otherwise show the base's icon.
 pub(crate) fn inherited_key(
     manager: &PackageManager,
     entity: &[u8],
     content_group: u32,
 ) -> AuthoringResult<u32> {
     let content = content(manager, entity)?;
-    let key = selected_key(&content.owner, &content.properties, content_group)?;
-    icon_layer(manager, key)?;
+    let property = selected_property(&content.owner, &content.properties, content_group)?;
+    let key = u32_at(&content.owner, property + 0xE0)?;
+    if key != 0x811C9DC5 {
+        icon_layer(manager, key)?;
+        return Ok(key);
+    }
+    for marker in [0x30, 0x18] {
+        let named = u32_at(&content.owner, property + marker)?;
+        if named != 0x811C9DC5 && matches!(icon_layer(manager, named), Ok(Some(_))) {
+            return Ok(named);
+        }
+    }
     Ok(key)
 }
 
@@ -78,7 +179,20 @@ pub(super) fn icon_layer(manager: &PackageManager, key: u32) -> AuthoringResult<
     u32_at(row, 4).map(TagHash).map(Some)
 }
 
+#[cfg(test)]
 fn selected_key(owner: &[u8], properties: &[usize], content_group: u32) -> AuthoringResult<u32> {
+    u32_at(
+        owner,
+        selected_property(owner, properties, content_group)? + 0xE0,
+    )
+}
+
+/// The variant block `content_group` selects, or the default block.
+fn selected_property(
+    owner: &[u8],
+    properties: &[usize],
+    content_group: u32,
+) -> AuthoringResult<usize> {
     let mut selected = None;
     for &property in &properties[1..] {
         if u32_at(owner, property + 0x10)? == content_group && selected.replace(property).is_some()
@@ -88,7 +202,21 @@ fn selected_key(owner: &[u8], properties: &[usize], content_group: u32) -> Autho
             ));
         }
     }
-    u32_at(owner, selected.unwrap_or(properties[0]) + 0xE0)
+    Ok(selected.unwrap_or(properties[0]))
+}
+
+/// The key at property offset `field` of the weapon content's default block and of every variant.
+pub(crate) fn field_values(
+    manager: &PackageManager,
+    entity: &[u8],
+    field: usize,
+) -> AuthoringResult<Vec<u32>> {
+    let content = content(manager, entity)?;
+    content
+        .properties
+        .iter()
+        .map(|property| u32_at(&content.owner, property + field))
+        .collect()
 }
 
 pub(crate) fn patches(
@@ -96,28 +224,41 @@ pub(crate) fn patches(
     entity: &[u8],
     key: u32,
 ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    field_patches(manager, entity, &[(0xE0, key)])
+}
+
+/// Write each (property offset, key) into the weapon content's default property block and every
+/// variant, so whichever variant the item selects carries the key.
+pub(crate) fn field_patches(
+    manager: &PackageManager,
+    entity: &[u8],
+    fields: &[(usize, u32)],
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
     let Content {
         instance,
         properties,
         ..
     } = content(manager, entity)?;
-    properties
-        .into_iter()
-        .map(|property| {
+    let mut patches = Vec::with_capacity(properties.len() * fields.len());
+    for property in properties {
+        for &(field, key) in fields {
             let offset = property
-                .checked_add(0xE0)
+                .checked_add(field)
                 .and_then(|v| v.checked_sub(instance))
                 .and_then(|v| u32::try_from(v).ok())
-                .ok_or_else(|| invalid("HUD property offset overflow"))?;
-            Ok(WeaponRuntimeResourcePatch {
+                .ok_or_else(|| invalid("Weapon content property offset overflow"))?;
+            patches.push(WeaponRuntimeResourcePatch {
                 binding_hash: BINDING,
                 resource_index: 0,
                 offset,
                 bytes: key.to_le_bytes().to_vec(),
                 graph_values: Vec::new(),
-            })
-        })
-        .collect()
+                graph_removals: Vec::new(),
+                graph_trajectories: None,
+            });
+        }
+    }
+    Ok(patches)
 }
 
 #[cfg(test)]

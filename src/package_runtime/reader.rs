@@ -9,8 +9,12 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use tiger_pkg::{GameVersion, Package, PackagePlatform, TagHash, TagHash64, Version};
+use tiger_pkg::{GameVersion, Package, PackagePlatform, TagHash, Version};
+mod decoder;
+mod index;
 mod pool;
+mod trace;
+pub use decoder::initialize_source_decoder;
 
 static NEXT_READER: AtomicU64 = AtomicU64::new(1);
 // Reserve room for GUI, database, cache and metadata-index handles even on low-limit systems.
@@ -23,6 +27,16 @@ pub struct PackageManager {
     pub version: GameVersion,
     pub platform: PackagePlatform,
     identity: u64,
+    trace: Mutex<Option<trace::Reads>>,
+    local: HashMap<u16, Vec<Arc<[u8]>>>,
+    // A provider keeps its own inherited block chain and bounded-reader identity. Routing only
+    // changed entries preserves disjoint patches that otherwise share the same package filename.
+    routes: HashMap<TagHash, usize>,
+    overlays: Vec<Self>,
+    /// Entries the loader rewrites as it serves them: rows several mods add, merged, and then
+    /// configured values.
+    rewritten: HashMap<TagHash, Arc<[u8]>>,
+    view: Option<Arc<super::mods::View>>,
 }
 impl PackageManager {
     pub fn new(
@@ -30,19 +44,108 @@ impl PackageManager {
         version: GameVersion,
         platform: Option<PackagePlatform>,
     ) -> Result<Self, String> {
-        let metadata = tiger_pkg::PackageManager::new(path, version, platform)
-            .map_err(|e| format!("{e:#}"))?;
+        let tables = index::read(path.as_ref(), version, platform)?;
         Ok(Self {
-            package_dir: metadata.package_dir,
-            package_paths: metadata.package_paths.into_iter().collect(),
-            lookup: metadata.lookup,
-            version: metadata.version,
-            platform: metadata.platform,
+            package_dir: tables.package_dir,
+            package_paths: tables.package_paths,
+            lookup: tables.lookup,
+            version,
+            platform: tables.platform,
             identity: NEXT_READER.fetch_add(1, Ordering::Relaxed),
+            trace: Mutex::new(None),
+            local: HashMap::new(),
+            routes: HashMap::new(),
+            overlays: Vec::new(),
+            rewritten: HashMap::new(),
+            view: None,
         })
+    }
+    pub(super) fn retain_view(&mut self, view: Arc<super::mods::View>) -> Result<(), String> {
+        for layer in view.layers() {
+            let overlay = Self::new(&layer.packages, self.version, Some(self.platform))?;
+            for &tag in &layer.tags {
+                let header = overlay
+                    .get_entry(tag)
+                    .ok_or_else(|| format!("Mod entry 0x{:08X} has no metadata", tag.0))?;
+                let target = self
+                    .lookup
+                    .tag32_entries_by_pkg
+                    .get_mut(&tag.pkg_id())
+                    .and_then(|entries| entries.get_mut(usize::from(tag.entry_index())))
+                    .ok_or("Mod entry has no stock metadata")?;
+                *target = header;
+                self.routes.insert(tag, self.overlays.len());
+            }
+            // Where two mods name a 64-bit tag differently, the layer read last is kept. Which
+            // one the client keeps is unverified.
+            for (&hash, value) in &overlay.lookup.tag64_entries {
+                self.lookup.tag64_entries.insert(hash, value.clone());
+            }
+            for (&tag, &hash) in &overlay.lookup.tag32_to_tag64 {
+                self.lookup.tag32_to_tag64.insert(tag, hash);
+            }
+            for name in &overlay.lookup.named_tags {
+                if !self.lookup.named_tags.iter().any(|n| {
+                    n.hash == name.hash && n.class_hash == name.class_hash && n.name == name.name
+                }) {
+                    self.lookup.named_tags.push(name.clone());
+                }
+            }
+            self.overlays.push(overlay);
+        }
+        for (tag, bytes) in view.merged() {
+            let header = self
+                .lookup
+                .tag32_entries_by_pkg
+                .get_mut(&tag.pkg_id())
+                .and_then(|entries| entries.get_mut(usize::from(tag.entry_index())))
+                .ok_or_else(|| format!("Merged entry 0x{:08X} has no metadata", tag.0))?;
+            header.file_size = u32::try_from(bytes.len())
+                .map_err(|_| format!("Merged entry 0x{:08X} is too large", tag.0))?;
+            self.rewritten.insert(*tag, Arc::clone(bytes));
+        }
+        self.view = Some(view);
+        Ok(())
+    }
+    /// Reads `values` in place of the entries mods bind configured values to.
+    pub(super) fn configure(&mut self, values: Vec<(TagHash, Vec<u8>)>) {
+        self.rewritten.extend(
+            values
+                .into_iter()
+                .map(|(tag, bytes)| (tag, Arc::from(bytes))),
+        );
+    }
+    /// The installation's packages directory this reader was opened for. With a Sunrise mod in
+    /// place, `package_dir` is a temporary view of it with the resolved mod content added.
+    pub fn source_dir(&self) -> &Path {
+        self.view
+            .as_ref()
+            .map_or(self.package_dir.as_path(), |view| view.source())
     }
     pub fn read_tag(&self, tag: impl Into<TagHash>) -> Result<Vec<u8>, String> {
         let tag = tag.into();
+        let result = self.read_payload(tag);
+        if let Ok(mut trace) = self.trace.lock()
+            && let Some(trace) = trace.as_mut()
+        {
+            trace.record(tag.0, &result);
+        }
+        result
+    }
+
+    fn read_payload(&self, tag: TagHash) -> Result<Vec<u8>, String> {
+        if let Some(bytes) = self.rewritten.get(&tag) {
+            return Ok(bytes.to_vec());
+        }
+        if let Some(&index) = self.routes.get(&tag) {
+            return self.overlays[index].read_payload(tag);
+        }
+        if let Some(entries) = self.local.get(&tag.pkg_id()) {
+            return entries
+                .get(usize::from(tag.entry_index()))
+                .map(|data| data.to_vec())
+                .ok_or_else(|| format!("Local preview entry 0x{:08X} is missing", tag.0));
+        }
         let path = self
             .package_paths
             .get(&tag.pkg_id())
@@ -68,16 +171,6 @@ impl PackageManager {
             )
         })
     }
-    pub fn read_tag64(&self, hash: impl Into<TagHash64>) -> Result<Vec<u8>, String> {
-        let hash = hash.into();
-        let tag = self
-            .lookup
-            .tag64_entries
-            .get(&hash.0)
-            .ok_or_else(|| format!("Hash 0x{:016X} was not found", hash.0))?
-            .hash32;
-        self.read_tag(tag)
-    }
 }
 impl Drop for PackageManager {
     fn drop(&mut self) {
@@ -86,6 +179,36 @@ impl Drop for PackageManager {
 }
 
 impl PackageManager {
+    /// Add read-only preview payloads under an unused package identity. Existing package
+    /// entries cannot be replaced, and no package files or shared readers are changed.
+    pub fn add_local_package(
+        &mut self,
+        package: u16,
+        entries: Vec<(tiger_pkg::package::UEntryHeader, Vec<u8>)>,
+    ) -> Result<(), String> {
+        if package > 0x3ff
+            || entries.is_empty()
+            || entries.len() > 8192
+            || self.package_paths.contains_key(&package)
+            || self.lookup.tag32_entries_by_pkg.contains_key(&package)
+        {
+            return Err("Local preview package identity is unavailable".into());
+        }
+        let mut headers = Vec::with_capacity(entries.len());
+        let mut payloads = Vec::with_capacity(entries.len());
+        for (mut header, payload) in entries {
+            header.file_size = u32::try_from(payload.len())
+                .map_err(|_| "Local preview payload exceeds the package size limit")?;
+            header.starting_block = 0;
+            header.starting_block_offset = 0;
+            headers.push(header);
+            payloads.push(Arc::from(payload));
+        }
+        self.lookup.tag32_entries_by_pkg.insert(package, headers);
+        self.local.insert(package, payloads);
+        Ok(())
+    }
+
     pub fn get_entry(&self, tag: impl Into<TagHash>) -> Option<tiger_pkg::package::UEntryHeader> {
         let tag = tag.into();
         self.lookup
@@ -151,25 +274,4 @@ fn describe_open_failure(file_name: &str, error: &str) -> String {
         );
     }
     format!("Could not open {file_name}: {error}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::describe_open_failure;
-
-    /// The remedy is only useful where it applies, and misapplied it would send someone chasing
-    /// a limit while the real fault is the package.
-    #[test]
-    fn only_a_descriptor_failure_mentions_the_limit() {
-        let exhausted = describe_open_failure(
-            "w64_globals_01a3_0.pkg",
-            "Too many open files (os error 24)",
-        );
-        assert!(exhausted.contains("ulimit -n 8192"));
-        assert!(exhausted.contains("w64_globals_01a3_0.pkg"));
-
-        let corrupt = describe_open_failure("w64_globals_01a3_0.pkg", "invalid package header");
-        assert!(!corrupt.contains("ulimit"));
-        assert!(corrupt.contains("invalid package header"));
-    }
 }

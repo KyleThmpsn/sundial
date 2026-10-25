@@ -4,20 +4,19 @@ use super::*;
 pub(super) enum Order {
     #[default]
     Catalog,
+    #[serde(alias = "Status")]
     Name,
     Type,
-    Status,
 }
 
 impl Order {
-    pub const ALL: [Order; 4] = [Order::Catalog, Order::Name, Order::Type, Order::Status];
+    pub const ALL: [Order; 3] = [Order::Catalog, Order::Name, Order::Type];
 
     pub fn label(self) -> &'static str {
         match self {
             Order::Catalog => "Catalog Order",
             Order::Name => "Name",
-            Order::Type => "Weapon Type",
-            Order::Status => "Status",
+            Order::Type => "Item Type",
         }
     }
 }
@@ -29,8 +28,8 @@ pub(super) struct View {
     pub query: String,
     #[serde(default)]
     pub kind: String,
-    #[serde(default)]
-    pub status: status::Filter,
+    #[serde(flatten)]
+    pub filters: filters::Filters,
     #[serde(default)]
     pub order: Order,
     #[serde(default)]
@@ -40,19 +39,19 @@ pub(super) struct View {
 }
 
 impl View {
-    pub fn load() -> View {
-        data_root()
+    pub fn load(path: &std::path::Path) -> View {
+        std::fs::read(path)
             .ok()
-            .and_then(|root| std::fs::read(root.join("importer-view.json")).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
-    pub fn save(&self) -> Result<(), String> {
-        let root = data_root()?;
-        std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
         let bytes = serde_json::to_vec_pretty(self).map_err(|error| error.to_string())?;
-        sundial::package_authoring::replace_authoring_file(&root.join("importer-view.json"), &bytes)
+        sundial::package_authoring::replace_authoring_file(path, &bytes)
             .map_err(|error| error.to_string())
     }
 }
@@ -69,9 +68,7 @@ pub(super) struct Browser {
     /// The view differs from the saved view file.
     pub view_changed: bool,
     pub visible: Vec<usize>,
-    pub types: BTreeMap<String, usize>,
-    pub records: BTreeMap<u32, status::Record>,
-    pub status: status::Filter,
+    pub filters: filters::Filters,
     /// Weapons with no native donor of their type and no profile donor installed.
     pub no_donor: BTreeSet<u32>,
     /// Shift+click range anchor.
@@ -94,9 +91,7 @@ impl Default for Browser {
             reset_scroll: false,
             view_changed: false,
             visible: Vec::new(),
-            types: BTreeMap::new(),
-            records: BTreeMap::new(),
-            status: status::Filter::All,
+            filters: filters::Filters::default(),
             no_donor: BTreeSet::new(),
             anchor: None,
             cursor: None,
@@ -106,14 +101,20 @@ impl Default for Browser {
     }
 }
 
-pub(super) const ROW_HEIGHT: f32 = 64.0;
+pub(super) const ROW_HEIGHT: f32 = 52.0;
+/// Rows without artwork drop the icon tile and its height.
+const TEXT_ROW_HEIGHT: f32 = 40.0;
+
+fn row_height(icons: bool) -> f32 {
+    if icons { ROW_HEIGHT } else { TEXT_ROW_HEIGHT }
+}
 
 impl Browser {
     pub fn view(&self) -> View {
         View {
             query: self.query.clone(),
             kind: self.kind.clone(),
-            status: self.status,
+            filters: self.filters.clone(),
             order: self.order,
             show_installed: self.show_installed,
             show_dummy: self.show_dummy,
@@ -123,7 +124,7 @@ impl Browser {
     pub fn apply_view(&mut self, view: View) {
         self.query = view.query;
         self.kind = view.kind;
-        self.status = view.status;
+        self.filters = view.filters;
         self.order = view.order;
         self.show_installed = view.show_installed;
         self.show_dummy = view.show_dummy;
@@ -134,48 +135,43 @@ impl Browser {
         (self.show_dummy || !weapon.dummy)
             && (self.show_installed || !weapon.present_in_native)
             && (self.kind.is_empty() || weapon.weapon_type == self.kind)
-            && match self.status {
-                status::Filter::All => true,
-                status::Filter::Working => self.is_working(weapon.hash),
-                status::Filter::NotTested => !self.is_working(weapon.hash),
-            }
-            && (query.is_empty()
-                || weapon.name.to_lowercase().contains(query)
-                || format!("{:08x}", weapon.hash).contains(query.trim_start_matches("0x")))
+            && self.filters.matches(weapon)
+            && query.split_whitespace().all(|word| {
+                weapon.name.to_lowercase().contains(word)
+                    || format!("{:08x}", weapon.hash)
+                        .contains(word.strip_prefix("0x").unwrap_or(word))
+            })
     }
 
-    pub fn is_working(&self, hash: u32) -> bool {
-        self.records.get(&hash).is_some_and(|record| record.working)
-    }
-
+    /// The listing's donor check, before source extraction and conversion validation.
     pub fn importable(&self, weapon: &Weapon) -> bool {
         !self.no_donor.contains(&weapon.hash)
     }
 
     pub fn filters_active(&self) -> bool {
-        !self.query.trim().is_empty() || !self.kind.is_empty() || self.status != status::Filter::All
+        !self.query.trim().is_empty()
+            || !self.kind.is_empty()
+            || self.filters.active()
+            || self.show_installed
+            || self.show_dummy
     }
 
     pub fn clear_filters(&mut self) {
         self.query.clear();
         self.kind.clear();
-        self.status = status::Filter::All;
+        self.filters = filters::Filters::default();
+        self.show_installed = false;
+        self.show_dummy = false;
         self.dirty = true;
         self.reset_scroll = true;
     }
 
-    fn sort_key(&self, weapon: &Weapon) -> (u8, String, String, u32) {
+    fn sort_key(&self, weapon: &Weapon) -> (String, String, u32) {
         let name = weapon.name.to_lowercase();
         match self.order {
-            Order::Catalog => (0, String::new(), String::new(), 0),
-            Order::Name => (0, String::new(), name, weapon.hash),
-            Order::Type => (0, weapon.weapon_type.clone(), name, weapon.hash),
-            Order::Status => (
-                u8::from(!self.is_working(weapon.hash)),
-                String::new(),
-                name,
-                weapon.hash,
-            ),
+            Order::Catalog => (String::new(), String::new(), 0),
+            Order::Name => (String::new(), name, weapon.hash),
+            Order::Type => (weapon.weapon_type.clone(), name, weapon.hash),
         }
     }
 
@@ -227,18 +223,75 @@ impl Browser {
 
 enum RowEvent {
     Toggle { shift: bool },
-    SetStatus(bool),
 }
 
 struct Row<'a> {
     weapon: &'a Weapon,
     selected: bool,
-    working: bool,
     no_donor: bool,
     cursor: bool,
-    note: Option<&'a str>,
     idle: bool,
     stripe: bool,
+    icon: bool,
+    /// Source lines a Halo: Reach or Marathon row adds to its hover.
+    source: Option<String>,
+}
+
+fn row_background(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    response: &egui::Response,
+    row: &Row<'_>,
+    active: bool,
+) {
+    let fill = if row.selected {
+        ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+    } else if response.hovered() && active {
+        ui.visuals().widgets.hovered.bg_fill
+    } else if row.stripe {
+        ui.visuals().faint_bg_color
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let body = rect.shrink2(egui::vec2(0.0, 1.0));
+    ui.painter().rect_filled(body, 4.0, fill);
+    if row.selected {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                rect.min + egui::vec2(0.0, 1.0),
+                egui::vec2(3.0, rect.height() - 2.0),
+            ),
+            2.0,
+            ui.visuals().selection.bg_fill,
+        );
+    }
+    if row.cursor {
+        ui.painter().rect_stroke(
+            body,
+            4.0,
+            ui.visuals().widgets.active.fg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+fn missing_donor_text(row: &Row<'_>) -> &'static str {
+    let weapon = row.weapon;
+    if row.source.is_some() {
+        if weapon.family() == service::Family::Sparrow {
+            "No installed native Sparrow to build on."
+        } else {
+            "No installed native weapon of this type to build on."
+        }
+    } else if weapon.is_shader() {
+        "No installed native shader to convert with."
+    } else if weapon.family().is_model_gear() {
+        "No installed native item matches this equipment slot and class."
+    } else if weapon.family() == service::Family::Emblem {
+        "No installed native emblem to convert with."
+    } else {
+        "No installed native weapon of this type to convert with."
+    }
 }
 
 fn draw_row(
@@ -270,96 +323,67 @@ fn draw_row(
             &weapon.name,
         )
     });
-    let fill = if row.selected {
-        ui.visuals().selection.bg_fill.gamma_multiply(0.35)
-    } else if response.hovered() && active {
-        ui.visuals().widgets.hovered.bg_fill
-    } else if row.stripe {
-        ui.visuals().faint_bg_color
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    let body = rect.shrink2(egui::vec2(0.0, 1.0));
-    ui.painter().rect_filled(body, 4.0, fill);
-    if row.selected {
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(
-                rect.min + egui::vec2(0.0, 1.0),
-                egui::vec2(3.0, rect.height() - 2.0),
-            ),
-            2.0,
-            ui.visuals().selection.bg_fill,
-        );
-    }
-    if row.cursor {
-        ui.painter().rect_stroke(
-            body,
-            4.0,
-            ui.visuals().widgets.active.fg_stroke,
-            egui::StrokeKind::Inside,
-        );
-    }
-    let check_rect =
-        egui::Rect::from_min_size(rect.min + egui::vec2(10.0, 22.0), egui::vec2(20.0, 20.0));
+    row_background(ui, rect, &response, &row, active);
+    let height = rect.height();
+    let check_rect = egui::Rect::from_min_size(
+        rect.min + egui::vec2(10.0, (height - 20.0) / 2.0),
+        egui::vec2(20.0, 20.0),
+    );
     let mut checked = row.selected;
     let check = ui
         .add_enabled_ui(active, |ui| {
             ui.put(check_rect, egui::Checkbox::without_text(&mut checked))
         })
         .inner;
-    let icon_rect =
-        egui::Rect::from_min_size(rect.min + egui::vec2(40.0, 8.0), egui::vec2(48.0, 48.0));
-    ui.painter()
-        .rect_filled(icon_rect, 4.0, ui.visuals().extreme_bg_color);
-    icons.draw(ui, icon_rect, weapon.icon_index);
-
-    let status_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - 112.0, rect.top() + 21.0),
-        egui::vec2(100.0, 22.0),
-    );
-    let (status_text, status_color) = if row.no_donor {
-        ("No Donor", ui.visuals().error_fg_color)
-    } else {
-        (
-            status::name(row.working),
-            status::color(ui.visuals(), row.working),
-        )
-    };
-    let status = ui
-        .new_child(
-            egui::UiBuilder::new()
-                .max_rect(status_rect)
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
-        )
-        .add(
-            egui::Label::new(egui::RichText::new(status_text).color(status_color))
-                .selectable(false),
+    let mut text_left = rect.min.x + 40.0;
+    if row.icon {
+        let icon_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(40.0, (height - 48.0) / 2.0),
+            egui::vec2(48.0, 48.0),
         );
-    if row.no_donor {
-        status.on_hover_text("No installed native weapon of this type to convert with.");
-    } else if let Some(note) = row.note {
-        status.on_hover_text(note);
+        ui.painter()
+            .rect_filled(icon_rect, 4.0, ui.visuals().extreme_bg_color);
+        icons.draw(ui, icon_rect, weapon.icon_index);
+        text_left = rect.min.x + 98.0;
     }
 
-    let text_left = rect.min.x + 98.0;
-    let text_right = status_rect.left() - 12.0;
+    let badge = if row.no_donor {
+        Some(("No Donor", ui.visuals().error_fg_color))
+    } else if weapon.present_in_native {
+        Some(("Installed", ui.visuals().weak_text_color()))
+    } else {
+        None
+    };
+    let mut text_right = rect.right() - 12.0;
+    if let Some((text, color)) = badge {
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - 112.0, rect.top() + (height - 22.0) / 2.0),
+            egui::vec2(100.0, 22.0),
+        );
+        text_right = badge_rect.left() - 12.0;
+        let badge = ui
+            .new_child(
+                egui::UiBuilder::new()
+                    .max_rect(badge_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            )
+            .add(egui::Label::new(egui::RichText::new(text).color(color)).selectable(false));
+        if row.no_donor {
+            badge.on_hover_text(missing_donor_text(&row));
+        }
+    }
+    let text_top = rect.top() + (height - 36.0) / 2.0;
     let title_rect = egui::Rect::from_min_max(
-        egui::pos2(text_left, rect.top() + 9.0),
-        egui::pos2(text_right, rect.top() + 31.0),
+        egui::pos2(text_left, text_top),
+        egui::pos2(text_right, text_top + 18.0),
     );
-    let mut subtitle = format!("{} · {:08X}", weapon.weapon_type, weapon.hash);
-    if weapon.dummy {
-        subtitle.push_str(" · Dummy");
-    }
-    if weapon.present_in_native {
-        subtitle.push_str(" · Installed");
-    }
+    let subtitle = filters::details(weapon);
     // `put` centres a label; rows need left-aligned text.
     for (rect, text) in [
         (title_rect, egui::RichText::new(&weapon.name).strong()),
         (
-            title_rect.translate(egui::vec2(0.0, 22.0)),
-            egui::RichText::new(subtitle).weak(),
+            title_rect.translate(egui::vec2(0.0, 18.0)),
+            egui::RichText::new(&subtitle).weak(),
         ),
     ] {
         ui.new_child(
@@ -369,17 +393,14 @@ fn draw_row(
         )
         .add(egui::Label::new(text).truncate().selectable(false));
     }
-    response.context_menu(|ui| {
-        let flipped = !row.working;
-        if ui
-            .button(format!("Mark {}", status::name(flipped)))
-            .clicked()
-        {
-            event = Some(RowEvent::SetStatus(flipped));
-            ui.close_menu();
-        }
-    });
     let clicked = response.clicked() && !check.hovered();
+    response.on_hover_text(match &row.source {
+        Some(source) => format!("{}\n{}\n{source}", weapon.name, subtitle),
+        None => format!(
+            "{}\n{}\nSource Item: {:08X}",
+            weapon.name, subtitle, weapon.hash
+        ),
+    });
     if clicked || check.changed() {
         event = Some(RowEvent::Toggle {
             shift: clicked && ui.input(|input| input.modifiers.shift),
@@ -396,80 +417,57 @@ impl PackageAuthoringApp {
         let mut query_left = false;
         ui.horizontal_wrapped(|ui| {
             style::compact_controls(ui);
-            // Matches `sundial::ui::catalog::search`, which does not report focus loss.
             let search = ui.add_sized(
-                [220.0, ui.spacing().interact_size.y],
-                egui::TextEdit::singleline(&mut browser.query).hint_text("Search"),
+                [
+                    ui.available_width().clamp(180.0, 320.0),
+                    ui.spacing().interact_size.y,
+                ],
+                egui::TextEdit::singleline(&mut browser.query)
+                    .hint_text("Search Items by Name or Hash"),
             );
-            search.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search")
-            });
+            super::super::pickers::name_response(ui, &search, "Search Items");
             query_changed = search.changed();
             query_left = search.lost_focus();
-            if ui.button("Clear").clicked() {
-                browser.query.clear();
-                query_changed = true;
-                search.request_focus();
+            if ui
+                .add_enabled(browser.filters_active(), egui::Button::new("Reset Filters"))
+                .clicked()
+            {
+                browser.clear_filters();
+                changed = true;
             }
-            egui::ComboBox::from_id_salt("d2-importer-type")
-                .width(150.0)
-                .selected_text(if browser.kind.is_empty() {
-                    "All Types"
-                } else {
-                    &browser.kind
-                })
-                .show_ui(ui, |ui| {
-                    changed |= ui
-                        .selectable_value(&mut browser.kind, String::new(), "All Types")
-                        .changed();
-                    let kinds: Vec<_> = browser
-                        .types
-                        .iter()
-                        .map(|(kind, count)| (kind.clone(), *count))
-                        .collect();
-                    for (kind, count) in kinds {
-                        changed |= ui
-                            .selectable_value(
-                                &mut browser.kind,
-                                kind.clone(),
-                                format!("{kind} ({count})"),
-                            )
-                            .changed();
-                    }
-                });
-            egui::ComboBox::from_id_salt("d2-importer-status")
-                .width(110.0)
-                .selected_text(browser.status.label())
-                .show_ui(ui, |ui| {
-                    for filter in status::Filter::ALL {
-                        changed |= ui
-                            .selectable_value(&mut browser.status, filter, filter.label())
-                            .changed();
-                    }
-                });
-            egui::ComboBox::from_id_salt("d2-importer-order")
-                .width(120.0)
-                .selected_text(browser.order.label())
+            let order = egui::ComboBox::from_id_salt("d2-importer-order")
+                .width(160.0)
+                .selected_text(format!("Sort: {}", browser.order.label()))
                 .show_ui(ui, |ui| {
                     for order in Order::ALL {
                         changed |= ui
                             .selectable_value(&mut browser.order, order, order.label())
                             .changed();
                     }
-                });
-            changed |= ui
-                .checkbox(&mut browser.show_installed, "Installed")
-                .changed();
-            changed |= ui.checkbox(&mut browser.show_dummy, "Dummy").changed();
+                })
+                .response;
+            super::super::pickers::name_response(ui, &order, "Sort Order");
         });
+        let animations = &mut self.importer.settings.marathon_animations;
+        let animated = *animations;
+        changed |= filters::draw(
+            ui,
+            browser,
+            &self.importer.weapons,
+            self.importer.source,
+            animations,
+        );
+        let toggled = *animations != animated;
         if changed || query_changed {
             browser.dirty = true;
             browser.reset_scroll = true;
             browser.view_changed = true;
         }
-        // The query saves when its field loses focus, every other control at once.
         if changed || query_left {
             self.importer.save_view();
+        }
+        if toggled && let Err(error) = self.importer.save() {
+            self.importer.notice = error;
         }
     }
 
@@ -554,15 +552,22 @@ impl PackageAuthoringApp {
             selected,
             icons,
             settings,
+            origins,
+            source,
             ..
         } = &mut self.importer;
+        let with_icons = source.icons();
+        let row_height = row_height(with_icons);
         if browser.visible.is_empty() {
             let (title, detail) = if weapons.is_empty() {
-                ("No weapons", "")
+                ("No Items", "")
             } else if browser.filters_active() {
-                ("No matches", "")
+                ("No Matches", "")
             } else {
-                ("All installed", "Tick Installed to list them.")
+                (
+                    "All Installed",
+                    "Enable Show Installed to browse these items.",
+                )
             };
             ui.add_space(ui.available_height() * 0.3);
             let mut cleared = false;
@@ -572,7 +577,7 @@ impl PackageAuthoringApp {
                     style::hint(ui, detail);
                 }
                 ui.add_space(6.0);
-                if browser.filters_active() && ui.button("Clear Filters").clicked() {
+                if browser.filters_active() && ui.button("Reset Filters").clicked() {
                     browser.clear_filters();
                     browser.view_changed = true;
                     cleared = true;
@@ -583,7 +588,7 @@ impl PackageAuthoringApp {
             }
             return;
         }
-        let step = ROW_HEIGHT + ui.spacing().item_spacing.y;
+        let step = row_height + ui.spacing().item_spacing.y;
         let viewport = ui.available_height();
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("importer-weapons")
@@ -602,18 +607,17 @@ impl PackageAuthoringApp {
         let mut icon_indices = Vec::new();
         let mut events = Vec::new();
         let mut seen = 0..0;
-        scroll.show_rows(ui, ROW_HEIGHT, browser.visible.len(), |ui, rows| {
+        scroll.show_rows(ui, row_height, browser.visible.len(), |ui, rows| {
             seen = rows.clone();
             for row in rows {
                 let weapon = &weapons[browser.visible[row]];
-                if let Some(index) = weapon.icon_index {
+                if let Some(index) = weapon.icon_index.filter(|_| with_icons) {
                     icon_indices.push(index);
                 }
                 let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), ROW_HEIGHT),
+                    egui::vec2(ui.available_width(), row_height),
                     egui::Sense::hover(),
                 );
-                let record = browser.records.get(&weapon.hash);
                 let event = draw_row(
                     ui,
                     rect,
@@ -621,14 +625,12 @@ impl PackageAuthoringApp {
                     Row {
                         weapon,
                         selected: selected.contains(&weapon.hash),
-                        working: record.is_some_and(|record| record.working),
                         no_donor: !browser.importable(weapon),
                         cursor: browser.cursor == Some(row),
-                        note: record
-                            .map(|record| record.note.as_str())
-                            .filter(|note| !note.is_empty()),
                         idle,
                         stripe: row % 2 == 0,
+                        icon: with_icons,
+                        source: origins.get(&weapon.hash).map(Origin::hover),
                     },
                 );
                 if let Some(event) = event {
@@ -637,11 +639,9 @@ impl PackageAuthoringApp {
             }
         });
         browser.last_rows = seen;
-        let mut status_change = None;
         for (row, event) in events {
             let hash = weapons[browser.visible[row]].hash;
             match event {
-                RowEvent::SetStatus(working) => status_change = Some((vec![hash], working)),
                 RowEvent::Toggle { shift } => {
                     browser.cursor = Some(row);
                     let anchor = browser.anchor.and_then(|anchor| {
@@ -671,30 +671,8 @@ impl PackageAuthoringApp {
                 }
             }
         }
-        if let Some(modern) = &settings.modern_packages {
-            icons.request(ui.ctx(), modern, &icon_indices);
-        }
-        if let Some((hashes, working)) = status_change {
-            self.set_import_status(&hashes, working);
-        }
-    }
-
-    pub(super) fn set_import_status(&mut self, hashes: &[u32], working: bool) {
-        let mut records = self.importer.browser.records.clone();
-        for &hash in hashes {
-            let note = records
-                .get(&hash)
-                .filter(|record| record.working == working)
-                .map(|record| record.note.clone())
-                .unwrap_or_default();
-            records.insert(hash, status::Record { working, note });
-        }
-        match status::save(&records) {
-            Ok(()) => {
-                self.importer.browser.records = records;
-                self.importer.browser.dirty = true;
-            }
-            Err(error) => self.importer.notice = error,
+        if with_icons {
+            icons.request(ui.ctx(), *source, settings, &icon_indices);
         }
     }
 }
@@ -702,198 +680,17 @@ impl PackageAuthoringApp {
 impl Importer {
     /// Writes the view file if the view changed since the last write.
     pub(in crate::app) fn save_view(&mut self) {
-        if std::mem::take(&mut self.browser.view_changed)
-            && let Err(error) = self.browser.view().save()
-        {
+        if !std::mem::take(&mut self.browser.view_changed) {
+            return;
+        }
+        let saved = self
+            .view_path
+            .as_ref()
+            .ok_or_else(|| "Could not locate the importer view file".to_owned())
+            .and_then(|path| self.browser.view().save(path));
+        if let Err(error) = saved {
             self.notice = error;
+            self.browser.view_changed = true;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn weapon(hash: u32, name: &str, kind: &str) -> Weapon {
-        Weapon {
-            hash,
-            name: name.into(),
-            weapon_type: kind.into(),
-            present_in_native: false,
-            native_item: false,
-            dummy: false,
-            icon_index: None,
-        }
-    }
-
-    #[test]
-    fn working_filter_never_promotes_an_untested_import() {
-        let weapons = vec![
-            weapon(1, "Tested", "Sword"),
-            weapon(2, "New Import", "Sword"),
-        ];
-        let mut browser = Browser::default();
-        browser.records.insert(
-            1,
-            status::Record {
-                working: true,
-                note: String::new(),
-            },
-        );
-        browser.status = status::Filter::Working;
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [0]);
-        browser.status = status::Filter::NotTested;
-        browser.dirty = true;
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [1]);
-    }
-
-    #[test]
-    fn sorting_reorders_without_hiding_and_ends_with_the_name() {
-        let weapons = vec![
-            weapon(3, "Zephyr", "Sword"),
-            weapon(1, "Ace", "Hand Cannon"),
-            weapon(2, "Midnight", "Sword"),
-        ];
-        let mut browser = Browser::default();
-        browser.records.insert(
-            2,
-            status::Record {
-                working: true,
-                note: String::new(),
-            },
-        );
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [0, 1, 2], "catalog order is untouched");
-        for (order, expected) in [
-            (Order::Name, [1, 2, 0]),
-            (Order::Type, [1, 2, 0]),
-            (Order::Status, [2, 1, 0]),
-        ] {
-            browser.order = order;
-            browser.dirty = true;
-            browser.refresh(&weapons);
-            assert_eq!(browser.visible, expected, "{}", order.label());
-        }
-    }
-
-    #[test]
-    fn status_edits_keep_the_cursor_on_its_weapon_until_the_view_resets() {
-        let weapons = vec![
-            weapon(1, "Ace", "Sword"),
-            weapon(2, "Bolt", "Sword"),
-            weapon(3, "Cinder", "Sword"),
-        ];
-        let mut browser = Browser {
-            order: Order::Status,
-            ..Browser::default()
-        };
-        browser.refresh(&weapons);
-        browser.cursor = Some(2);
-        browser.records.insert(
-            3,
-            status::Record {
-                working: true,
-                note: String::new(),
-            },
-        );
-        browser.dirty = true;
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [2, 0, 1]);
-        assert_eq!(browser.cursor, Some(0));
-        browser.order = Order::Name;
-        browser.dirty = true;
-        browser.reset_scroll = true;
-        browser.refresh(&weapons);
-        assert_eq!(browser.cursor, None);
-    }
-
-    #[test]
-    fn fixed_height_rows_scroll_without_rendering_the_whole_catalog() {
-        let mut app = PackageAuthoringApp::default();
-        app.importer.settings.modern_packages = Some(PathBuf::from("."));
-        app.importer.read_requested = true;
-        app.importer.weapons = (0..1000)
-            .map(|hash| weapon(hash, &format!("Test Weapon {hash:04}"), "Auto Rifle"))
-            .collect();
-        let ctx = egui::Context::default();
-        let mut names = Vec::new();
-        for frame in 0..8 {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(640.0, 480.0),
-                )),
-                time: Some(f64::from(frame) / 10.0),
-                ..Default::default()
-            };
-            input
-                .events
-                .push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0)));
-            if frame == 3 {
-                input.events.push(egui::Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, -900.0),
-                    modifiers: egui::Modifiers::default(),
-                });
-            }
-            let output = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.draw_importer_contents(ui));
-            });
-            names = output
-                .shapes
-                .iter()
-                .filter_map(|shape| {
-                    if let egui::Shape::Text(text) = &shape.shape
-                        && text.galley.text().starts_with("Test Weapon")
-                        && !text.galley.text().contains('\n')
-                    {
-                        Some((text.galley.text().to_owned(), text.pos.y))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            assert!(
-                !names.is_empty() && names.len() < 10,
-                "Only viewport rows should be rendered: {names:?}"
-            );
-            for pair in names.windows(2) {
-                assert!(
-                    (pair[1].1 - pair[0].1 - ROW_HEIGHT - 4.0).abs() < 1.0,
-                    "Rows must keep a stable height: {names:?}"
-                );
-            }
-        }
-        assert!(
-            names.iter().all(|(name, _)| name != "Test Weapon 0000"),
-            "Wheel scrolling must move the catalog"
-        );
-    }
-
-    #[test]
-    fn filters_keep_variants_and_exclude_dummy_and_installed_items_by_default() {
-        let weapons: Vec<Weapon> = serde_json::from_value(serde_json::json!([
-            {"hash":1,"name":"Same Name","weapon_type":"Auto Rifle","present_in_native":false},
-            {"hash":2,"name":"Same Name","weapon_type":"Auto Rifle","present_in_native":false,"dummy":true},
-            {"hash":3,"name":"Installed","weapon_type":"Auto Rifle","present_in_native":true}
-        ])).unwrap();
-        let mut browser = Browser::default();
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [0]);
-        browser.show_dummy = true;
-        browser.show_installed = true;
-        browser.query = "same".into();
-        browser.dirty = true;
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [0, 1]);
-        browser.query = "0x00000003".into();
-        browser.dirty = true;
-        browser.refresh(&weapons);
-        assert_eq!(browser.visible, [2]);
-        assert!(browser.filters_active());
-        browser.clear_filters();
-        assert!(!browser.filters_active());
     }
 }

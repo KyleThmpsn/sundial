@@ -10,7 +10,7 @@ pub(in crate::persistence::dawn_account) fn save(
     db: &Connection,
     document: &DawnAccountDocument,
 ) -> Result<Vec<RewardDebt>, DawnAccountError> {
-    let before = &document.loaded_reward_debts;
+    let before = &document.loaded.reward_debts;
     if document.reward_debts == *before {
         return Ok(before.clone());
     }

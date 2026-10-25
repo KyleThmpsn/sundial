@@ -3,6 +3,7 @@ use crate::d2_mot::reader::Reader;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+
 pub fn find(r: &mut Reader, hash: u32) -> Result<(usize, u32)> {
     let mut matches = vec![];
     for t in r.classes(0x80807997) {

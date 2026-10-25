@@ -1,13 +1,14 @@
-//! Offers to turn a stock action into an editable program.
+//! Offers to turn a stock action into an editable program when the conversion is not exact.
+//! An exact one needs no offer, since the effect's card edits it in place.
 //!
 //! The reading of the action itself is drawn by the program canvas in
 //! `workbench/canvas.rs`, so a stock effect and an authored program share one layout.
 use sundial::package_authoring::sandbox_perk::program::{Program, decompile::Difference};
 
-/// Offers to turn the stock action into an editable program. Returns the program on request.
+/// Offers to turn the stock action into an editable program, listing the native settings it
+/// would leave behind. Returns the program on request.
 ///
-/// The button is disabled while `blocked` holds a reason, which its hover text shows. The
-/// explanation of whether a conversion would be exact is shown either way.
+/// The button is disabled while `blocked` holds a reason, which its hover text shows.
 pub(super) fn draw_conversion(
     ui: &mut egui::Ui,
     program: &Program,
@@ -32,32 +33,8 @@ fn draw_convertible(
     name: &str,
     blocked: Option<&str>,
 ) -> Option<Program> {
-    let label = match fidelity {
-        Ok(differences) if differences.is_empty() => {
-            ui.label("Exact conversion.");
-            "Convert to Editable Program"
-        }
-        Ok(differences) => {
-            ui.label(format!(
-                "The program model changes or omits {} checked native setting{}.",
-                differences.len(),
-                if differences.len() == 1 { "" } else { "s" }
-            ));
-            egui::CollapsingHeader::new(egui::RichText::new("Settings Left Behind").small())
-                .id_salt("conversion-differences")
-                .show(ui, |ui| {
-                    for difference in differences {
-                        ui.small(format!(
-                            "{} +0x{:X}: {} becomes {}",
-                            difference.node,
-                            difference.offset,
-                            hex(&difference.stock),
-                            hex(&difference.compiled)
-                        ));
-                    }
-                });
-            "Convert Anyway"
-        }
+    let differences = match fidelity {
+        Ok(differences) => differences,
         Err(error) => {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -66,7 +43,25 @@ fn draw_convertible(
             return None;
         }
     };
-    let button = ui.add_enabled(blocked.is_none(), egui::Button::new(label));
+    ui.label(format!(
+        "The program model changes or omits {} checked native setting{}.",
+        differences.len(),
+        if differences.len() == 1 { "" } else { "s" }
+    ));
+    egui::CollapsingHeader::new(egui::RichText::new("Settings Left Behind").small())
+        .id_salt("conversion-differences")
+        .show(ui, |ui| {
+            for difference in differences {
+                ui.small(format!(
+                    "{} +0x{:X}: {} becomes {}",
+                    difference.node,
+                    difference.offset,
+                    hex(&difference.stock),
+                    hex(&difference.compiled)
+                ));
+            }
+        });
+    let button = ui.add_enabled(blocked.is_none(), egui::Button::new("Convert Anyway"));
     if button
         .on_disabled_hover_text(blocked.unwrap_or_default())
         .clicked()

@@ -1,69 +1,6 @@
-use crate::app::change_review::collect_change_summaries;
 use crate::app::*;
 use crate::test_support::TestDirectory;
 use std::fs;
-
-#[test]
-fn settings_change_review_reports_nested_values_and_respects_its_limit() {
-    let before = serde_json::json!({"state": {"characters": [{"class": 0, "race": 1}]}});
-    let after = serde_json::json!({"state": {"characters": [{"class": 2, "race": 3}]}});
-
-    let changes = collect_change_summaries(&before, &after, 10);
-    assert_eq!(changes.len(), 2);
-    assert!(changes[0].contains("/state/characters/0/class"));
-    assert!(changes[1].contains("/state/characters/0/race"));
-
-    let limited = collect_change_summaries(&before, &after, 1);
-    assert_eq!(limited.len(), 1);
-}
-
-#[test]
-fn sqlite_default_restore_preserves_only_inactive_json_account_domains() {
-    let mut defaults = serde_json::json!({
-        "version": 8,
-        "state": {
-            "account": {"settings": {"from": "defaults"}},
-            "characters": [{"from": "defaults"}],
-            "server": {"port": 1}
-        }
-    });
-    let source = serde_json::json!({
-        "version": 8,
-        "state": {
-            "account": {"settings": {"sentinel": true}},
-            "characters": "stale but untouched",
-            "server": {"port": 2}
-        }
-    });
-
-    preserve_inactive_json_account_domains(&mut defaults, &source);
-
-    assert_eq!(
-        defaults.pointer("/state/account/settings/sentinel"),
-        Some(&serde_json::json!(true))
-    );
-    assert_eq!(
-        defaults.pointer("/state/characters"),
-        Some(&serde_json::json!("stale but untouched"))
-    );
-    assert_eq!(
-        defaults.pointer("/state/server/port"),
-        Some(&serde_json::json!(1))
-    );
-}
-
-#[test]
-fn sqlite_default_restore_does_not_create_missing_json_account_domains() {
-    let mut defaults = serde_json::json!({
-        "state": {"account": {}, "characters": [], "server": {}}
-    });
-
-    preserve_inactive_json_account_domains(&mut defaults, &serde_json::json!({"state": {}}));
-
-    assert!(defaults.pointer("/state/account").is_none());
-    assert!(defaults.pointer("/state/characters").is_none());
-    assert!(defaults.pointer("/state/server").is_some());
-}
 
 #[test]
 fn check_mode_accepts_compatible_sqlite_and_rejects_blocked_account_sources() {

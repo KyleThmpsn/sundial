@@ -51,7 +51,50 @@ pub(super) fn install_fingerprint(install: &Path) -> Result<String, String> {
     for path in paths {
         hash_package_header(&mut digest, &path)?;
     }
-    Ok(format!("{:x}", digest.finalize()))
+    for path in crate::package_runtime::mods::content_files(install)? {
+        digest.update(
+            path.strip_prefix(install)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        // Readers leave out a mod whose files the loader would refuse, so a malformed or
+        // unreadable one only needs to identify itself here.
+        if let Err(error) = hash_mod_input(&mut digest, &path) {
+            digest.update(error.kind().to_string());
+        }
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+/// A mod package's size and header, or a metadata file's size and bytes, streamed. Merge data over
+/// the readers' byte limit contributes only its size.
+fn hash_mod_input(digest: &mut Sha256, path: &Path) -> std::io::Result<()> {
+    use crate::package_runtime::mods::merge::sidecar;
+    let file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let extension = |name: &str| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(name))
+    };
+    let limit = if extension("pkg") {
+        PACKAGE_HEADER_SIZE as u64
+    } else if extension(sidecar::EXTENSION) && size > sidecar::BYTE_LIMIT as u64 {
+        0
+    } else {
+        size
+    };
+    digest.update(size.to_le_bytes());
+    let mut reader = file.take(limit);
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(())
 }
 
 fn hash_package_header(digest: &mut Sha256, path: &Path) -> Result<(), String> {
@@ -150,24 +193,19 @@ mod tests {
     fn fingerprint_detects_same_size_valid_header_rewrites_without_timestamp_help() {
         let root = TestDirectory::new("package-fingerprint-header");
         let path = write_fixture(&root, &package_fixture(0x31, 0x51));
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
         let before = install_fingerprint(&root.0).expect("first fingerprint should succeed");
         fs::write(&path, package_fixture(0x32, 0x51))
             .expect("same-size valid-header rewrite should succeed");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
         let after = install_fingerprint(&root.0).expect("second fingerprint should succeed");
 
         assert_ne!(before, after);
-    }
-
-    #[test]
-    fn fingerprint_does_not_hash_package_payload_bodies() {
-        let root = TestDirectory::new("package-fingerprint-payload");
-        let path = write_fixture(&root, &package_fixture(0x31, 0x51));
-        let before = install_fingerprint(&root.0).expect("first fingerprint should succeed");
-        fs::write(&path, package_fixture(0x31, 0x52))
-            .expect("same-size payload rewrite should succeed");
-        let after = install_fingerprint(&root.0).expect("second fingerprint should succeed");
-
-        assert_eq!(before, after);
     }
 
     #[test]

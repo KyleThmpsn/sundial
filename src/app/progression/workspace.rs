@@ -40,7 +40,7 @@ impl SundialApp {
                         section == ProgressionSection::Seasonal && self.document.account_is_dawn();
                     let response = ui.add_enabled(
                         !unavailable,
-                        egui::SelectableLabel::new(self.progression_section == section, label),
+                        egui::Button::selectable(self.progression_section == section, label),
                     );
                     if unavailable {
                         response.on_disabled_hover_text(super::seasonal::DAWN_UNAVAILABLE);

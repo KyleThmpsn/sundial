@@ -446,6 +446,7 @@ fn cross_group_choices_for_socket(
 ) -> Vec<CrossGroupChoice> {
     let mut hashes = match mode {
         PlugSelectionMode::GearType => catalog.gear_type_options(item, socket_index),
+        PlugSelectionMode::GearKind => catalog.gear_kind_options(item, socket_index),
         PlugSelectionMode::AnyPlug => catalog.all_plug_options().to_vec(),
         PlugSelectionMode::Supported
         | PlugSelectionMode::SocketAndGearType

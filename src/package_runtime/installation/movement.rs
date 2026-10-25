@@ -2,7 +2,7 @@
 use std::{io, path::Path};
 
 #[cfg(windows)]
-pub(super) fn move_without_replacing(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn move_without_replacing(source: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
     let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -28,7 +28,7 @@ pub(super) fn move_without_replacing(source: &Path, destination: &Path) -> io::R
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn move_without_replacing(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn move_without_replacing(source: &Path, destination: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE).map_err(io::Error::from)
 }

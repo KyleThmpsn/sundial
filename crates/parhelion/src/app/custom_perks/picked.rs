@@ -13,18 +13,53 @@ pub(in crate::app) fn resolve_picked_perk(
     if crate::package_profile::is_stock_item_definition(tag) {
         return Ok(None);
     }
+    // A shader is an authored item referenced by its own hash. Resolve its recipe before
+    // searching private perk variants, even when its edited dyes differ from stock donors.
+    if draft.is_some_and(|recipe| {
+        recipe.kind == crate::ItemKind::Shader
+            && recipe.identity.item_hash.parse_u32().ok() == Some(hash)
+    }) {
+        return Ok(None);
+    }
+    let scan = library.map(RecipeLibrary::scan).transpose()?;
+    if let Some(scan) = &scan
+        && !scan.shader_entries(&BTreeSet::from([hash]))?.is_empty()
+    {
+        return Ok(None);
+    }
+    if catalog.is_shader(hash) {
+        return Err(format!(
+            "The recipe for custom shader 0x{hash:08X} is not in the library. Import it, then select the shader again."
+        ));
+    }
     let mut recipes = draft.cloned().into_iter().collect::<Vec<_>>();
-    if let Some(library) = library {
-        let scan = library.scan()?;
+    // A recipe this version refuses cannot say which plugs it holds, so the search goes on
+    // without it, and names it when the perk is found nowhere else. Its claim tells whether it
+    // is the open draft's own file.
+    let mut unreadable = Vec::new();
+    if let Some(scan) = scan {
         for entry in scan.entries {
-            let recipe = WeaponRecipe::load_json(&entry.path).map_err(|error| error.to_string())?;
-            if draft.is_none_or(|draft| recipe.namespace != draft.namespace) {
-                recipes.push(recipe);
+            let namespace = match WeaponRecipe::load_listing(&entry.path) {
+                Ok(recipe) => {
+                    if draft.is_none_or(|draft| recipe.namespace != draft.namespace) {
+                        recipes.push(recipe);
+                    }
+                    continue;
+                }
+                Err(_) => WeaponRecipe::load_claim(&entry.path)
+                    .map(|(namespace, _)| namespace)
+                    .map_err(|error| error.to_string())?,
+            };
+            if draft.is_none_or(|draft| namespace != draft.namespace) {
+                unreadable.push(entry.path.file_name().map_or_else(
+                    || entry.path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ));
             }
         }
     }
     let mut donors = BTreeMap::new();
-    find_picked_perk(&recipes, hash, |item_hash, socket_index, choice_index| {
+    let found = find_picked_perk(&recipes, hash, |item_hash, socket_index, choice_index| {
         let donor = donors
             .entry(item_hash)
             .or_insert_with(|| {
@@ -41,15 +76,26 @@ pub(in crate::app) fn resolve_picked_perk(
         )
         .get(usize::from(choice_index))
         .copied()
-    })
-    .map(Some)
+    })?;
+    match found {
+        Some(found) => Ok(Some(found)),
+        None if unreadable.is_empty() => Err(format!(
+            "The recipe data for custom perk 0x{hash:08X} is unavailable. Import its source recipe, then select the perk again."
+        )),
+        None => Err(format!(
+            "The recipe data for custom perk 0x{hash:08X} is unavailable. It may be in {}, which could not be read.",
+            unreadable.join(", ")
+        )),
+    }
 }
 
+/// The recipe data of the custom perk `hash` names, from the recipe whose installed choice
+/// it is, or `None` when no recipe holds it.
 fn find_picked_perk(
     recipes: &[WeaponRecipe],
     hash: u32,
     mut installed_choice: impl FnMut(u32, u16, u16) -> Option<u32>,
-) -> Result<WeaponSocketPlugVariantRecipe, String> {
+) -> Result<Option<WeaponSocketPlugVariantRecipe>, String> {
     // Follow native socket bindings instead of guessing a name or an allocation nonce.
     // A shared plug remains reusable through any installed weapon that supplies it.
     let mut found: Option<WeaponSocketPlugVariantRecipe> = None;
@@ -79,12 +125,7 @@ fn find_picked_perk(
             }
         }
     }
-    if let Some(found) = found {
-        return Ok(found);
-    }
-    Err(format!(
-        "The recipe data for custom perk 0x{hash:08X} is unavailable. Import its source recipe, then select the perk again."
-    ))
+    Ok(found)
 }
 
 pub(in crate::app) fn attach_picked_perk(
@@ -166,8 +207,10 @@ pub(in crate::app) fn repair_socket_picks(
                     choice + 1
                 ));
             }
-            let private = resolve_picked_perk(library, Some(recipe), catalog, hash)?
-                .ok_or_else(|| format!("Could not resolve custom perk 0x{hash:08X}"))?;
+            // A library shader stays selected as its own item.
+            let Some(private) = resolve_picked_perk(library, Some(recipe), catalog, hash)? else {
+                continue;
+            };
             repaired.overrides.socket_columns[socket]
                 .as_mut()
                 .expect("existing column")
@@ -181,6 +224,3 @@ pub(in crate::app) fn repair_socket_picks(
     }
     Ok(count)
 }
-
-#[cfg(test)]
-mod tests;

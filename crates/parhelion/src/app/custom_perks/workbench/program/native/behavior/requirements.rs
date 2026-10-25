@@ -43,7 +43,7 @@ pub(super) fn requirements(
                     if !shown && !held && ui.button("Set Stays Met For").clicked() {
                         shown = true;
                         ui.data_mut(|data| data.insert_temp(reveal, true));
-                        ui.close_menu();
+                        ui.close();
                     }
                     // The last requirement goes with the condition that holds it, from that
                     // condition's own menu, so All Requirements never stands empty.
@@ -53,7 +53,7 @@ pub(super) fn requirements(
                         .clicked()
                     {
                         *pending = Some((subgroups.clone(), Edit::Remove(row)));
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
                 ui.add_space(12.0);

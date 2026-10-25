@@ -5,12 +5,12 @@ use super::*;
 use sundial::package_authoring::sandbox_perk::{
     action::{
         FactValue,
-        layout::{self, FieldFormat, Layout},
+        layout::{self, FieldFormat},
     },
     nodes,
     program::{
-        Action, AmmunitionTarget, Asset, EMPTY_KEY, KeyCatalog, NativeNode, Position, Program,
-        Trigger, properties::KeyIndex,
+        AbilityTarget, Action, AmmunitionTarget, Asset, DamageMode, EMPTY_KEY, KeyCatalog,
+        NativeNode, Position, Program, Trigger, properties::KeyIndex,
     },
 };
 
@@ -86,6 +86,8 @@ pub(super) enum NativeRequest<'a> {
     Trigger(&'a str, bool),
     Action(&'a Program),
     Asset(&'a mut Asset, AssetScope),
+    /// The attachment's length tile, drawn at `width` after the action's own tiles.
+    AssetLength(&'a mut Asset, f32),
 }
 
 pub(super) type NativePicker<'a> =
@@ -120,50 +122,6 @@ fn retains(program: &Program) -> bool {
 
 pub(super) mod native;
 pub(super) use native::draw_complete;
-#[cfg(test)]
-mod tests;
-
-pub(super) fn read_native(ui: &mut egui::Ui, condition: bool, node: &NativeNode) {
-    ui.add_enabled_ui(false, |ui| {
-        let mut node = node.clone();
-        if condition {
-            native::negation(ui, &mut node);
-        }
-        native::draw(
-            ui,
-            "native-reader",
-            &mut node,
-            if condition {
-                NativeFamily::Condition
-            } else {
-                NativeFamily::Effect
-            },
-        )
-    });
-}
-
-/// Which node table a native node comes from.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NativeFamily {
-    Condition,
-    Effect,
-}
-
-impl NativeFamily {
-    fn layouts(self) -> &'static [Layout] {
-        match self {
-            Self::Condition => layout::CONDITION_LAYOUTS,
-            Self::Effect => layout::EFFECT_LAYOUTS,
-        }
-    }
-
-    fn catalog(self, kind: u8) -> Option<&'static nodes::NodeKind> {
-        match self {
-            Self::Condition => nodes::condition(kind),
-            Self::Effect => nodes::effect(kind),
-        }
-    }
-}
 
 /// One field control by format. The stored value only changes on valid input.
 fn draw_native_field(ui: &mut egui::Ui, field: &layout::Field, bytes: &mut [u8]) {
@@ -275,8 +233,7 @@ pub(super) fn decoded_condition_title(
 /// The locked reading of a native effect: its name and its mapped fields.
 fn native_action_text(node: &NativeNode) -> String {
     let name = native_action_label(node.kind, &node.bytes);
-    let facts = NativeFamily::Effect
-        .layouts()
+    let facts = layout::EFFECT_LAYOUTS
         .iter()
         .find(|layout| layout.kind == node.kind)
         .map(|layout| layout.facts(&node.bytes))
@@ -517,7 +474,7 @@ pub(super) fn action_text(action: &Action, keys: Option<&KeyCatalog>) -> String 
             value_bits,
             ..
         } => {
-            let energy = component_target(*target, 0, 0)
+            let energy = component_target(target.byte(), 0, 0)
                 .map_or_else(|| format!("selector {target}"), str::to_owned);
             format!(
                 "{title}: {energy}, scale {} by {}",
@@ -533,9 +490,13 @@ pub(super) fn action_text(action: &Action, keys: Option<&KeyCatalog>) -> String 
             key,
             option,
         } => {
-            let ability =
-                ability_slot(*target).map_or_else(|| format!("selector {target}"), str::to_owned);
-            let operation = if *option == 0 { "apply" } else { "remove" };
+            let ability = ability_slot(target.byte())
+                .map_or_else(|| format!("selector {target}"), str::to_owned);
+            let operation = if option.byte() == 0 {
+                "apply"
+            } else {
+                "remove"
+            };
             let property =
                 sundial::package_authoring::sandbox_perk::action::native::fields::keys::name(*key)
                     .map_or_else(|| format!("0x{key:08X}"), str::to_owned);
@@ -547,7 +508,7 @@ pub(super) fn action_text(action: &Action, keys: Option<&KeyCatalog>) -> String 
                     .map_or_else(|| format!("0x{key:08X}"), str::to_owned);
             format!("{title}: {named}")
         }
-        Action::SetDamageType { mode, .. } => match mode {
+        Action::SetDamageType { mode, .. } => match mode.byte() {
             0 => format!("{title}: Kinetic"),
             1 => format!("{title}: Solar"),
             2 => format!("{title}: Arc"),
@@ -684,7 +645,7 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
         42 => "Write the effect's counter, the value Count Needed is measured against.",
         // Kind 43: the Ace of Spades and Trinity Ghoul catalysts publish one, and Blessing
         // of the Sky another. What receives a given signal is not established.
-        43 => "Publish a named signal that On a Game Signal can listen for.",
+        43 => "Publish a named player event.",
         // Kind 47: all 112 stock perks that carry it belong to Transmat Effect items, one key
         // each, which is what the key identifies. The client code that reads the key has
         // not been traced.
@@ -781,12 +742,13 @@ pub(super) fn plain_condition_summary(kind: u8) -> Option<&'static str> {
         // and Under Pressure starting on one to Box Breathing and The Perfect Fifth ending.
         // Its mode can restrict it to a missed shot, as Mulligan and Reversal of Fortune do.
         27 => "Passes when a shot is fired, as Tap the Trigger starts and Box Breathing resets.",
-        // Kind 29: the signals on offer are the ones stock perks start on, such as standing
-        // near a Vex Relay.
-        29 => "Passes when a game signal fires, such as collecting a Warmind Cell.",
-        // Kind 30: an always-active effect ends on its own signal, and Relay Defender and
-        // Resistant Tether end on the signals they started on.
-        30 => "Ends the effect when a game signal fires, as Relay Defender does.",
+        // Kind 29: a Duration component sends its key when its entity is created. The signals
+        // on offer are the ones stock perks start on, such as standing near a Vex Relay.
+        29 => "Passes when a game signal starts, such as collecting a Warmind Cell.",
+        // Kind 30: the same key, sent from the Duration component's cleanup. Relay Defender
+        // and Resistant Tether start when a key's signal starts and end when it ends, and an
+        // always-active effect ends on its own.
+        30 => "Passes when a game signal ends, as Relay Defender's bonus does.",
         // Kind 38 reads back what Remember a Target by Name stored: Vengeance marks the
         // enemy that damaged it and then checks that the mark is still far away.
         38 => "Passes while a remembered target is farther away than the set distance.",
@@ -868,7 +830,7 @@ pub(super) const PROMOTED_NATIVE_ACTIONS: [u8; 16] =
 ///
 /// Sliding, sprinting and one ability's events (kinds 24, 25 and 10) are written up like
 /// crouching and aiming, and their stock configurations carry no recognized name either, so
-/// they are promoted the same way. Trigger release (13), weapon swap (18) and the ending form
+/// they are promoted the same way. Trigger release 13, weapon swap (18) and the ending form
 /// of one ability's events (11) were identified from the stock perks that end or start on them
 /// and joined for the same reason.
 pub(super) const PROMOTED_NATIVE_CONDITIONS: [u8; 19] = [
@@ -959,7 +921,7 @@ pub(super) fn common_actions(
         ),
         (
             plain_action_summary(8).unwrap_or_default(),
-            Action::adjust_component(0),
+            Action::adjust_component(AbilityTarget::Grenade),
         ),
         (
             "Write the effect's counter, the value that When the Effect's Counter Is Reached counts toward Count Needed.",
@@ -967,11 +929,11 @@ pub(super) fn common_actions(
         ),
         (
             "Change a named property of one ability, as And Another Thing grants an extra grenade charge and Jump Jets improves the jump.",
-            Action::ability_property(0),
+            Action::ability_property(AbilityTarget::Grenade),
         ),
         (
             "Change the weapon's damage type to Kinetic, Solar, Arc or Void, as The Fundamentals does.",
-            Action::set_damage_type(1),
+            Action::set_damage_type(DamageMode::Solar),
         ),
         (
             "Play a chosen transmat effect. The effect is named by a key.",

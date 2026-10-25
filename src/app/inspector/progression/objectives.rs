@@ -99,6 +99,7 @@ pub(in crate::app) fn meaningful_definition_contexts(
     definition
         .tested_by
         .iter()
+        .map(|context| &**context)
         .filter(|context| {
             context.kind != ProgressionContextKind::Objective
                 && (!context.name.trim().is_empty()

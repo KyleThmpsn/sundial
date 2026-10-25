@@ -26,18 +26,42 @@ pub(super) fn canonical_single_flag_program(
             .with_semantics(NUMERIC_FLAG_INSTRUCTION, authored_flag)
             .serialized,
     );
-    while (program.len() + NESTED_ARRAY_TRAILER.len()) % 16 != 0 {
+    while !(program.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         program.push(0);
     }
     program.extend_from_slice(&NESTED_ARRAY_TRAILER);
     Ok(program)
 }
 
+#[cfg(any(test, feature = "d2-model-importer"))]
 pub(crate) fn patch_project_collection_objectives(
+    objectives: Vec<u8>,
+    nodes: &[u8],
+    page_counts: &BTreeMap<u16, usize>,
+    weapon_count: usize,
+) -> AuthoringResult<Vec<u8>> {
+    patch_collection_objectives(objectives, nodes, page_counts, weapon_count, None)
+}
+
+pub(crate) fn patch_project_collection_objectives_with_members(
+    objectives: Vec<u8>,
+    nodes: &[u8],
+    members: &BTreeMap<u16, BTreeSet<u16>>,
+) -> AuthoringResult<Vec<u8>> {
+    let counts = members
+        .iter()
+        .map(|(&page, flags)| (page, flags.len()))
+        .collect::<BTreeMap<_, _>>();
+    let count = counts.values().sum();
+    patch_collection_objectives(objectives, nodes, &counts, count, Some(members))
+}
+
+fn patch_collection_objectives(
     mut objectives: Vec<u8>,
     nodes: &[u8],
     page_counts: &BTreeMap<u16, usize>,
     weapon_count: usize,
+    members: Option<&BTreeMap<u16, BTreeSet<u16>>>,
 ) -> AuthoringResult<Vec<u8>> {
     let (objective_count, _, objective_rows, objective_class) = array_at(&objectives, 8)?;
     let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
@@ -89,6 +113,7 @@ pub(crate) fn patch_project_collection_objectives(
     }
     // Exotic and ordinary weapons have different ancestors. Update only ancestors
     // reached by each destination page, not the ordinary Weapons total unconditionally.
+    let mut authored_ancestors = BTreeSet::new();
     let mut ancestor_pages = BTreeMap::<usize, BTreeSet<u16>>::new();
     for &page in page_counts.keys() {
         for ancestor in presentation_ancestor_nodes(nodes, &[page])? {
@@ -114,6 +139,9 @@ pub(crate) fn patch_project_collection_objectives(
                     "A collection page shares its count objective with an ancestor",
                 ));
             }
+            if ancestor >= STOCK_PRESENTATION_NODE_COUNT {
+                authored_ancestors.insert(objective);
+            }
             ancestor_pages.entry(objective).or_default().insert(page);
         }
     }
@@ -122,10 +150,18 @@ pub(crate) fn patch_project_collection_objectives(
             objective_rows + objective * OBJECTIVE_ROW_SIZE + OBJECTIVE_COMPLETION_VALUE_OFFSET;
         let stock = read_i32(&objectives, completion)?;
         // Zero is the native disabled/uncounted completion target.
-        if stock == 0 {
+        if stock == 0 && !authored_ancestors.contains(&objective) {
             continue;
         }
-        let increment = pages.iter().map(|page| page_counts[page]).sum::<usize>();
+        let increment = if let Some(members) = members {
+            pages
+                .iter()
+                .flat_map(|page| members[page].iter().copied())
+                .collect::<BTreeSet<_>>()
+                .len()
+        } else {
+            pages.iter().map(|page| page_counts[page]).sum::<usize>()
+        };
         let increment = i32::try_from(increment)
             .map_err(|_| invalid("Aggregate increment does not fit i32"))?;
         write_i32(
@@ -640,10 +676,7 @@ pub(crate) fn patch_project_acquired_count_programs(
             u64::try_from(layout.count + authored_flags.len() * 2)
                 .map_err(|_| invalid("Project acquired-count length does not fit u64"))?,
         )?;
-        while data.len() % 16 != 0 {
-            data.push(0);
-        }
-        let new_header = data.len();
+        let new_header = begin_array_block(&mut data);
         data.extend_from_slice(&authored);
         write_u64(
             &mut data,

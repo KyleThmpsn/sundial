@@ -1,10 +1,12 @@
 //! Saved image placement and background shared by previews and package output.
 use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
+mod adjustments;
+pub(crate) use adjustments::Adjustments;
 
 pub(crate) const UNITS: u16 = 10_000;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Fit {
     #[default]
@@ -12,7 +14,7 @@ pub(crate) enum Fit {
     Cover,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Background {
     #[default]
@@ -29,7 +31,7 @@ pub(crate) enum Background {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Hash)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Composition {
     /// Source rectangle in ten-thousandths, before orientation and placement.
@@ -41,6 +43,8 @@ pub(crate) struct Composition {
     pub flip_horizontal: bool,
     pub flip_vertical: bool,
     pub background: Background,
+    #[serde(skip_serializing_if = "Adjustments::is_identity")]
+    pub adjustments: Adjustments,
 }
 
 impl Default for Composition {
@@ -54,6 +58,7 @@ impl Default for Composition {
             flip_horizontal: false,
             flip_vertical: false,
             background: Background::Transparent,
+            adjustments: Adjustments::default(),
         }
     }
 }
@@ -77,7 +82,7 @@ impl Composition {
         if matches!(self.background, Background::Gradient { angle, .. } if angle > 360) {
             return Err("Gradient direction must be between 0 and 360 degrees.".into());
         }
-        Ok(())
+        self.adjustments.validate()
     }
 
     pub(crate) fn source(&self, image: &RgbaImage) -> RgbaImage {
@@ -100,6 +105,7 @@ impl Composition {
         if self.flip_vertical {
             image::imageops::flip_vertical_in_place(&mut oriented);
         }
+        self.adjustments.apply(&mut oriented);
         oriented
     }
 
@@ -134,7 +140,8 @@ impl Composition {
             let px = (x as f32 + 0.5 - left) / scale;
             let py = (y as f32 + 0.5 - top) / scale;
             if px >= 0.0 && py >= 0.0 && px < source.width() as f32 && py < source.height() as f32 {
-                let foreground = sample(sampling, px * sample_x - 0.5, py * sample_y - 0.5);
+                let foreground =
+                    crate::image_import::sample(sampling, px * sample_x - 0.5, py * sample_y - 0.5);
                 image::Pixel::blend(&mut background, &foreground);
             }
             background
@@ -162,138 +169,6 @@ impl Background {
                 }
                 Rgba(result)
             }
-        }
-    }
-}
-
-// Sample the visible canvas directly so a very wide image in Fill mode never
-// allocates an enormous intermediate. Interpolate premultiplied color to keep
-// hidden RGB in transparent PNGs from bleeding into the result.
-fn sample(image: &RgbaImage, x: f32, y: f32) -> Rgba<u8> {
-    let x = x.clamp(0.0, (image.width() - 1) as f32);
-    let y = y.clamp(0.0, (image.height() - 1) as f32);
-    let left = x.floor() as u32;
-    let top = y.floor() as u32;
-    let fx = x.fract();
-    let fy = y.fract();
-    let mut sum = [0.0; 4];
-    for (px, py, weight) in [
-        (left, top, (1.0 - fx) * (1.0 - fy)),
-        ((left + 1).min(image.width() - 1), top, fx * (1.0 - fy)),
-        (left, (top + 1).min(image.height() - 1), (1.0 - fx) * fy),
-        (
-            (left + 1).min(image.width() - 1),
-            (top + 1).min(image.height() - 1),
-            fx * fy,
-        ),
-    ] {
-        let pixel = image.get_pixel(px, py);
-        let alpha = f32::from(pixel[3]) * weight;
-        for i in 0..3 {
-            sum[i] += f32::from(pixel[i]) * alpha;
-        }
-        sum[3] += alpha;
-    }
-    if sum[3] == 0.0 {
-        return Rgba([0; 4]);
-    }
-    Rgba([
-        (sum[0] / sum[3]).round() as u8,
-        (sum[1] / sum[3]).round() as u8,
-        (sum[2] / sum[3]).round() as u8,
-        sum[3].round() as u8,
-    ])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shrinking_preserves_thin_detail_coverage_without_transparent_color_bleed() {
-        for phase in 0..8 {
-            let source = RgbaImage::from_fn(768, 96, |x, _| {
-                Rgba(if (x + phase) % 8 < 2 {
-                    [255, 255, 255, 255]
-                } else {
-                    [255, 0, 0, 0]
-                })
-            });
-            let result = Composition::default().render(&source, 96, 12);
-            for x in 4..92 {
-                let pixel = result.get_pixel(x, 6);
-                assert!(
-                    (60..=68).contains(&pixel[3]),
-                    "phase {phase}, x {x}: {pixel:?}"
-                );
-                assert_eq!(&pixel.0[..3], &[255; 3]);
-            }
-        }
-    }
-
-    #[test]
-    fn crop_fill_and_position_control_the_visible_image_without_stretching() {
-        let source = RgbaImage::from_fn(80, 40, |x, _| {
-            Rgba(if x < 40 {
-                [255, 0, 0, 255]
-            } else {
-                [0, 255, 0, 255]
-            })
-        });
-        let edit = Composition {
-            crop: [5000, 0, 5000, 10000],
-            background: Background::Solid {
-                color: [10, 20, 30],
-            },
-            ..Default::default()
-        };
-        let fitted = edit.render(&source, 100, 50);
-        assert_eq!(fitted.get_pixel(0, 25).0, [10, 20, 30, 255]);
-        assert_eq!(fitted.get_pixel(50, 25).0, [0, 255, 0, 255]);
-        let filled = Composition {
-            fit: Fit::Cover,
-            ..edit.clone()
-        }
-        .render(&source, 100, 50);
-        assert!(filled.pixels().all(|p| p.0 == [0, 255, 0, 255]));
-        let moved = Composition {
-            offset: [25, 0],
-            ..edit
-        }
-        .render(&source, 100, 50);
-        assert_eq!(moved.get_pixel(30, 25).0, [10, 20, 30, 255]);
-        assert_eq!(moved.get_pixel(90, 25).0, [0, 255, 0, 255]);
-    }
-
-    #[test]
-    fn transparent_edges_do_not_bleed_hidden_color_and_gradients_reach_both_endpoints() {
-        let source = RgbaImage::from_fn(2, 1, |x, _| {
-            Rgba(if x == 0 {
-                [255, 0, 0, 0]
-            } else {
-                [0, 0, 255, 255]
-            })
-        });
-        let result = Composition::default().render(&source, 20, 10);
-        assert!(
-            result
-                .pixels()
-                .filter(|p| p[3] > 0)
-                .all(|p| p[0] == 0 && p[2] == 255)
-        );
-        let empty = RgbaImage::new(1, 1);
-        for angle in [0, 90] {
-            let result = Composition {
-                background: Background::Gradient {
-                    start: [3, 14, 25],
-                    end: [103, 114, 125],
-                    angle,
-                },
-                ..Default::default()
-            }
-            .render(&empty, 101, 51);
-            assert_eq!(result.get_pixel(0, 0).0, [3, 14, 25, 255]);
-            assert_eq!(result.get_pixel(100, 50).0, [103, 114, 125, 255]);
         }
     }
 }

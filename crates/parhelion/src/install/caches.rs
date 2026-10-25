@@ -82,6 +82,41 @@ pub(super) fn runtime_build_cache_candidates(
     SunriseCacheCandidates { game_root, paths }
 }
 
+/// Clears the build-data caches of the runtimes not in use, before a change to `packages`. Each
+/// runtime keeps its own. Sunrise before 0.6 keys its cache only on the game executable and the
+/// equipped items, so it would miss a change made while another runtime was active, and Dawn is
+/// treated the same. Each runtime rebuilds its cache on its next start, so a cleared one needs no
+/// backup.
+pub(super) fn clear_other_runtime_caches(
+    target_packages_directory: &Path,
+    active: RuntimeBrand,
+) -> Result<(), InstallError> {
+    let game_root = target_packages_directory
+        .parent()
+        .ok_or_else(|| InstallError::validation("Missing game root"))?;
+    for brand in [RuntimeBrand::Sunrise, RuntimeBrand::Dawn] {
+        if brand == active {
+            continue;
+        }
+        for path in runtime_build_cache_candidates(game_root.to_path_buf(), brand).paths {
+            let cleared = match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Ok(metadata) if metadata.is_file() => fs::remove_file(&path),
+                Ok(_) => Err(io::Error::other("it isn't a regular file")),
+                Err(error) => Err(error),
+            };
+            cleared.map_err(|error| {
+                InstallError::validation(format!(
+                    "Could not clear {}'s build-data cache {}: {error}",
+                    brand.name(),
+                    path.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate_package_header_caches(
     target_packages_directory: &Path,
 ) -> Result<ValidatedPackageHeaderCaches, InstallError> {

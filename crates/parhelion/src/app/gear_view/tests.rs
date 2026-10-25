@@ -5,31 +5,255 @@
 //! remixes another shader's dyes and gives two surfaces custom colors and iridescence, and its
 //! preview of those unbuilt edits must match the built shader drawn the same way. A subclass
 //! takes a grenade from another class and an attunement from another subclass of its own, and
-//! authors its middle path: a name of its own, and a second node taken from another path with
-//! its own name, description and one more perk.
+//! authors its middle path: a name of its own, and a passive node taken from another path with
+//! its own name, description and one more perk. Its second grenade is authored as an ability of
+//! its own: a name, a description, another class's icon, and a custom perk made in the workbench
+//! from the grenade's New Custom Perk. The perk it adds is then edited as a custom perk from its
+//! chip's menu, which takes the stock perk's place. It takes two extra charges and a value of one
+//! of its bank's script parameters, which reach it as pool records naming bank rows of the build's
+//! own, and one value of its entity is changed, which the build writes to a copy under an ability
+//! row of its own, while the stock grenade keeps its value. The authored node gives the other
+//! grenade an extra charge the same way.
+//! A second subclass adds a perk that names one of its grenades, as Sunbracers' Helium Spirals
+//! names the Solar Grenade, to that grenade and to a node, and changes a value of that grenade.
+//! No stock subclass grants such a perk itself. Each added perk must be replaced where it stands
+//! by a private copy that names the grenade's copy.
+//! Each gear page's model preview shows an Open in Window corner on hover, and the last one opens
+//! the model viewer through it.
+//! An emblem offers no lore tab. It takes another emblem's banner, searched for in its page's
+//! Nameplate section, flips that banner in the artwork editor, keeps its base's overlay and
+//! inverts an imported background. Each image's tile names its native canvas size. Its strings
+//! and presentation row name a private nameplate container. Edited textures preserve the banner's
+//! donor colors, and the background exports with its saved edits.
 //!
-//! `PARHELION_DEFAULT_WEAPONS_PACKAGES` names the installed packages and
-//! `PARHELION_GEAR_ARTIFACTS` a folder on the same drive. The folder keeps the recipes, the staged
-//! run and `readback.json`. `PARHELION_UI_CAPTURE_DIR` adds page captures, and
+//! `SUNDIAL_INSTALL` names the installed packages and
+//! `SUNDIAL_TEST_ARTIFACTS` a folder on the same drive. The folder keeps the recipes, the staged
+//! run and `readback.json`. `SUNDIAL_TEST_ARTIFACTS` adds page captures, and
 //! `PARHELION_GEAR_KINDS` (such as `Shader` or `Armor,Ship`) authors only the kinds it names.
 //! Nothing installed is changed: the read-back view is hard links to the packages plus the
 //! staged files.
 use super::*;
+mod armor_class;
+mod armor_collections;
+mod emblem;
+mod emblem_trackers;
+#[cfg(feature = "d2-model-importer")]
+#[cfg(feature = "d2-model-importer")]
+mod imported_vehicle;
+mod shader;
+mod shader_socket;
+mod subclass;
+mod vehicles;
 use crate::app::custom_perks::workbench::{Workbench, tests::capture};
+use crate::app::emblem_view;
 use crate::app::shader_view;
 use crate::app::subclass_view::SubclassSelection;
 use crate::dye::{
     DyeChannel, DyeEdit, DyeSurface, DyeTextureEdit, DyeValue, GearType, surface_edit,
     texture_edit, write_vectors,
 };
-use crate::subclass::{AttunementPath, SubclassPathNode, layout};
+use crate::emblem::{NameplateImage, NameplatePart};
+use crate::image_import::EmbeddedImage;
+use crate::subclass::{
+    AbilityModifier, ArtImage, ArtPart, AttunementPath, EffectGrade, EntryIcon, ModifierEffect,
+    PaletteEdit, Place, ScreenArt, SpawnSwap, SubclassAbilities, SubclassPathNode, TintEdit,
+    layout,
+};
+use crate::test_support::driver::{accessible, texts};
+use emblem::*;
+use shader::*;
 use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use subclass::*;
 use sundial::investment::SubclassSummary;
+use sundial::package_authoring::ability_materials::material_routes;
+use sundial::package_authoring::investment_schema::{
+    GLOBALS_ITEM_DENSE_PRESENTATION_TABLE_SLOT, investment_globals_table_tag,
+};
+use sundial::package_authoring::runtime::{
+    WeaponRuntimeFieldSource, WeaponRuntimeValue, WeaponRuntimeValueKind,
+    WeaponRuntimeValueOverride, load_weapon_runtime_graph_for_entity, resolve_weapon_runtime_field,
+};
+use sundial::package_authoring::sandbox_perk::load_sandbox_perk_runtime_action;
+use sundial::package_authoring::{
+    PackageManager, ability_modifier, ability_movement, ability_palette, ability_reference,
+    ability_spawns, ability_tint, open_shadowkeep_package_manager, resolve_live_named_tag,
+};
+
+#[cfg(feature = "d2-model-importer")]
+#[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
+)]
+fn imported_shader_opens_material_controls_without_a_base_catalog() {
+    use parhelion_import::GraphReference;
+    let folder = tempfile::tempdir().unwrap();
+    let mut recipe = WeaponRecipe::new_unbound_kind(ItemKind::Shader).unwrap();
+    recipe.set_donor(0x3001, "Native Shader");
+    recipe.name = "Local Source".into();
+    let item = recipe.identity.item_hash.parse_u32().unwrap();
+    let mut nodes = Vec::new();
+    let mut dyes = Vec::new();
+    for channel in 0..3 {
+        let mut scope = vec![0u8; 0x370];
+        let mut vectors = [[0.0f32; 4]; 27];
+        vectors[9] = [0.1, 0.2, 0.3, 1.0];
+        vectors[13] = [0.3, 0.2, 0.1, 1.0];
+        vectors[11][0] = -1.0;
+        vectors[15][0] = -1.0;
+        crate::tag_payload::append_native_array(
+            &mut scope,
+            0x88,
+            0x80800090,
+            27,
+            &vectors
+                .into_iter()
+                .flatten()
+                .flat_map(f32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for (role, bytes) in [("scope", scope), ("parent", vec![0; 24])] {
+            let symbol = format!("dye-{channel}-{role}");
+            fs::write(folder.path().join(format!("{symbol}.bin")), bytes).unwrap();
+            nodes.push(
+                serde_json::json!({"symbol":symbol,"file":format!("{symbol}.bin"),"patches":[]}),
+            );
+        }
+        dyes.push(serde_json::json!({"channel":channel,"manifest":channel+1,"parent":format!("dye-{channel}-parent")}));
+    }
+    fs::write(folder.path().join("source-icon.png"), {
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            52,
+            52,
+            image::Rgba([34, 45, 56, 255]),
+        ));
+        let mut output = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        output.into_inner()
+    })
+    .unwrap();
+    fs::write(
+        folder.path().join("asset-graph.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "kind":"shader","item_hash":item,"source_item":0xABCD1234u32,"source_name":"Local Source","source_icon_png":"source-icon.png","nodes":nodes,"dyes":dyes
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    recipe.overrides.imported_graph = Some(GraphReference::new(folder.path(), item).unwrap());
+    let original_icon = crate::shader::source_icon(&recipe).unwrap();
+    // Saving and sharing must carry source materials, so reopening cannot depend on this folder.
+    let portable = recipe.to_json_pretty().unwrap();
+    let document: serde_json::Value = serde_json::from_str(&portable).unwrap();
+    let mut damaged = document.clone();
+    damaged["overrides"]["imported_graph"]["embedded_assets"]["files"]["dye-0-scope.bin"] =
+        serde_json::json!("AAAA");
+    assert!(WeaponRecipe::from_json_str(&damaged.to_string()).is_err());
+    let mut escaped = document.clone();
+    escaped["overrides"]["imported_graph"]["embedded_assets"]["files"]["../escaped.bin"] =
+        serde_json::json!("AAAA");
+    assert!(WeaponRecipe::from_json_str(&escaped.to_string()).is_err());
+    folder.close().unwrap();
+    let reopened = WeaponRecipe::from_json_str(&portable).unwrap();
+    assert!(recipe.same_saved_content(&reopened));
+    assert_eq!(crate::shader::source_materials(&reopened).unwrap().len(), 3);
+    assert_eq!(
+        crate::shader::source_icon(&reopened).unwrap(),
+        original_icon
+    );
+    assert!(WeaponRecipe::from_json_str(&damaged.to_string()).is_err());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&reopened.to_json_pretty().unwrap()).unwrap(),
+        document,
+    );
+    let mut app = PackageAuthoringApp {
+        recipe: reopened,
+        catalog: None,
+        packages: PathBuf::new(),
+        ..PackageAuthoringApp::default()
+    };
+    let ctx = context();
+    let started = Instant::now();
+    let output = loop {
+        let output = frame_at(&ctx, &mut app, 1320.0);
+        let labels = texts(&output)
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if labels.contains("#597C95") {
+            break output;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "Source surfaces did not load: {labels}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let labels = texts(&output)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(labels.contains("Source Shader") && labels.contains("Local Source"));
+    assert!(labels.contains("0xABCD1234"));
+    assert!(
+        labels.contains("Dyes") && labels.contains("Metalness") && labels.contains("Detail Tiling")
+    );
+    assert!(!labels.contains("Base Shader") && !labels.contains("not available yet"));
+    capture::write(&ctx, &output, "imported-shader-editable");
+
+    // A shared source must survive the editor's name-derived identity and Duplicate. Neither
+    // operation may rewrite the source graph or bind the copy to the first recipe's identity.
+    let original = app.recipe.clone();
+    app.edit_weapon_name("Renamed Source".into());
+    assert!(app.invalid_weapon_name.is_none());
+    assert_ne!(app.recipe.identity.item_hash, original.identity.item_hash);
+    let library_root = tempfile::tempdir().unwrap();
+    let library = RecipeLibrary::open(library_root.path().join("recipes")).unwrap();
+    let saved = library.save_new(&app.recipe).unwrap();
+    let saved = WeaponRecipe::load_json(saved).unwrap();
+    assert!(saved.same_saved_content(&app.recipe));
+    let copy = WeaponRecipe::load_json(library.duplicate(&saved).unwrap()).unwrap();
+    assert_ne!(copy.identity.item_hash, saved.identity.item_hash);
+    assert_eq!(copy.name, "Renamed Source Copy");
+    assert_eq!(
+        copy.overrides.imported_graph,
+        original.overrides.imported_graph
+    );
+    assert_eq!(
+        crate::shader::source_materials(&copy).unwrap(),
+        crate::shader::source_materials(&original).unwrap(),
+    );
+    assert_eq!(crate::shader::source_icon(&copy).unwrap(), original_icon);
+    let bundle = library_root
+        .path()
+        .join("source-variants.parhelion-bundle.json");
+    library.export_bundle(&[saved, copy], &bundle).unwrap();
+    let recipient = RecipeLibrary::open(library_root.path().join("recipient/recipes")).unwrap();
+    let imported = recipient.import_files(std::slice::from_ref(&bundle));
+    assert!(imported.errors.is_empty(), "{:?}", imported.errors);
+    assert_eq!(imported.paths.len(), 2);
+    let edited = app.recipe.to_json_pretty().unwrap();
+    if let Some(output) = crate::test_support::artifacts("captures") {
+        fs::copy(bundle, output.join("source-variants.parhelion-bundle.json")).unwrap();
+        fs::write(
+            output.join("imported-shader-editable.parhelion.json"),
+            edited,
+        )
+        .unwrap();
+    }
+}
 use sundial::ui::model_preview::{Appearance, SurfaceOverride, still};
 
 const WIDTH: f32 = 1320.0;
+/// Tall enough to keep an ability's Technical section, under its Gameplay cards, in view.
+const HEIGHT: f32 = 2600.0;
 
 /// One authored item and what the build must carry for it.
 struct Authored {
@@ -41,6 +265,8 @@ struct Authored {
     perk_socket: usize,
     perk_name: String,
     perk_stats: Vec<WeaponStatOverride>,
+    /// Whether the custom perk is set to Offer Everywhere, as an Armor 2.0 mod is.
+    offered: bool,
     energy: Option<(usize, u32)>,
     /// The plug the perk's socket keeps as a second choice.
     alternative: Option<u32>,
@@ -48,9 +274,14 @@ struct Authored {
 
 fn context() -> egui::Context {
     let ctx = egui::Context::default();
+    // Inspect settled UI content. A collapsing header's first animation frames can clip the
+    // loading label itself, which would make a check for absent loading text finish too early.
+    ctx.all_styles_mut(|style| style.animation_time = 0.0);
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     ctx.set_fonts(fonts);
+    // Pictures with no text, such as the model preview, are found by their accessible names.
+    ctx.enable_accesskit();
     ctx
 }
 
@@ -60,27 +291,39 @@ fn frame(
     app: &mut PackageAuthoringApp,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    let output = ctx.run(
+    let output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(WIDTH, 1400.0),
+                egui::vec2(WIDTH, HEIGHT),
             )),
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::TopBottomPanel::top("gear-flow-toolbar").show(ctx, |ui| {
+        |ui| {
+            egui::Panel::top("gear-flow-toolbar").show(ui, |ui| {
                 let mut replaced = false;
                 ui.horizontal(|ui| app.draw_new_item_button(ui, &mut replaced));
             });
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 workbench_style(ui);
-                if !app.recipe.kind.is_weapon() {
-                    app.draw_gear_editor(ui);
-                }
+                // The page the app's dispatch draws: a subclass's Appearance, else the editor.
+                egui::ScrollArea::vertical()
+                    .id_salt(("parhelion-workbench", app.workbench_page))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if app.recipe.kind == ItemKind::Subclass
+                            && app.workbench_page == WorkbenchPage::Appearance
+                        {
+                            app.draw_subclass_appearance(ui);
+                        } else if !app.recipe.kind.is_weapon() {
+                            app.draw_gear_editor(ui);
+                        }
+                    });
             });
-            app.draw_perk_workbench(ctx);
+            app.draw_perk_workbench(ui);
+            app.draw_discard_confirmation(ui);
+            app.draw_artwork_editor(ui);
         },
     );
     // Captures draw the images earlier frames uploaded, such as icons and the preview.
@@ -91,24 +334,6 @@ fn frame(
 fn settle(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::FullOutput {
     frame(ctx, app, Vec::new());
     frame(ctx, app, Vec::new())
-}
-
-fn texts(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
-    fn walk(shape: &egui::Shape, found: &mut Vec<(String, egui::Rect)>) {
-        match shape {
-            egui::Shape::Text(text) => found.push((
-                text.galley.job.text.clone(),
-                text.galley.rect.translate(text.pos.to_vec2()),
-            )),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, found)),
-            _ => {}
-        }
-    }
-    let mut found = Vec::new();
-    for clipped in &output.shapes {
-        walk(&clipped.shape, &mut found);
-    }
-    found
 }
 
 fn find(
@@ -144,20 +369,8 @@ fn press(
     position: egui::Pos2,
     button: egui::PointerButton,
 ) {
-    for pressed in [true, false] {
-        frame(
-            ctx,
-            app,
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button,
-                    pressed,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
+    for events in crate::test_support::driver::button_frames(position, button) {
+        frame(ctx, app, events);
     }
 }
 
@@ -184,7 +397,7 @@ fn assert_page_fits(ctx: &egui::Context, app: &mut PackageAuthoringApp, page: &s
         let mut overflow = 0.0_f32;
         let mut output = None;
         for _ in 0..2 {
-            output = Some(ctx.run(
+            output = Some(ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -192,8 +405,8 @@ fn assert_page_fits(ctx: &egui::Context, app: &mut PackageAuthoringApp, page: &s
                     )),
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         workbench_style(ui);
                         edge = ui.max_rect().right();
                         app.draw_gear_editor(ui);
@@ -270,10 +483,12 @@ fn slug(kind: ItemKind, origin: Origin) -> String {
         .replace(' ', "-")
 }
 
-/// New Weapon stays one click, and the caret lists every kind. Picks `kind` from it.
+/// New makes another of the open kind in one click, and the caret lists every kind. Picks `kind`
+/// from it.
 fn new_from_menu(ctx: &egui::Context, app: &mut PackageAuthoringApp, kind: ItemKind) {
     let output = settle(ctx, app);
-    find(&output, "New Weapon", |text, _| text == "New Weapon");
+    let open = format!("New {}", app.recipe.kind.label());
+    find(&output, &open, |text, _| text == open);
     click(
         ctx,
         app,
@@ -297,6 +512,19 @@ fn new_from_menu(ctx: &egui::Context, app: &mut PackageAuthoringApp, kind: ItemK
     capture::write(ctx, &output, "gear-new-menu");
     let chosen = entry(kind.label());
     click(ctx, app, chosen);
+    if app.pending_recipe_action.is_some() {
+        let output = settle(ctx, app);
+        capture::write(ctx, &output, "gear-new-unsaved-confirmation");
+        click(
+            ctx,
+            app,
+            find(&output, "Discard and Continue", |text, _| {
+                text == "Discard and Continue"
+            }),
+        );
+        settle(ctx, app);
+    }
+    assert!(app.pending_recipe_action.is_none());
     assert_eq!(
         app.recipe.kind, kind,
         "the New menu opened a {kind:?} recipe"
@@ -369,7 +597,7 @@ fn choose_base(
                 )
                 .len()
             };
-            let sets = catalog.gear_supported_plug_sets(summary.hash).ok()?;
+            let sets = catalog.supported_plug_sets(summary.hash, &[]).ok()?;
             // A socket that only offers placeholders, such as Random Mod, has no perk to edit.
             let real = |plug: &u32| {
                 let label = catalog.plug_label(*plug, false);
@@ -470,15 +698,15 @@ fn choice_tile(
     })
 }
 
-/// Right-clicks the socket's first choice, picks Edit as Custom Perk, edits the perk and applies
-/// it. The socket keeps its other choices.
+/// Right-clicks the socket's first choice, picks Edit as Custom Perk, edits the perk, ticks
+/// Offer Everywhere when `offer` asks, and applies it. The socket keeps its other choices.
 fn custom_perk(
     ctx: &egui::Context,
     app: &mut PackageAuthoringApp,
     kind: ItemKind,
-    item_slug: &str,
-    socket_index: usize,
+    (item_slug, socket_index): (&str, usize),
     stats: &[(&str, i32)],
+    offer: bool,
 ) -> (String, Vec<WeaponStatOverride>) {
     let donor = app.current_gear_donor().unwrap();
     let choices = socket_choices(app, &donor, socket_index);
@@ -537,7 +765,23 @@ fn custom_perk(
         perk.stats.push(stat.clone());
     }
     let stats = perk.stats.clone();
-    let output = settle(ctx, app);
+    let mut output = settle(ctx, app);
+    if offer {
+        click(
+            ctx,
+            app,
+            find(&output, "Offer Everywhere", |text, _| {
+                text == "Offer Everywhere"
+            }),
+        );
+        output = settle(ctx, app);
+        assert!(
+            app.perk_workbench
+                .open_perk_mut()
+                .is_some_and(|perk| perk.offer_everywhere),
+            "Offer Everywhere turns on"
+        );
+    }
     capture::write(ctx, &output, &format!("gear-{item_slug}-workbench"));
     let apply = format!("Apply to {}", kind.label());
     click(ctx, app, find(&output, &apply, |text, _| text == apply));
@@ -551,6 +795,7 @@ fn custom_perk(
     assert_eq!(variant.choice_index, 0);
     assert_eq!(variant.name.as_deref(), Some(name.as_str()));
     assert_eq!(variant.source_plug_hash.parse_u32().ok(), Some(plug));
+    assert_eq!(variant.offer_everywhere, offer);
     let column = app.recipe.overrides.socket_columns[socket_index]
         .as_ref()
         .expect("a custom perk pins its socket");
@@ -569,8 +814,46 @@ fn custom_perk(
     (name, stats)
 }
 
-/// Runs frames until the base item's lore has loaded, so a capture shows the page as a reader
+/// Runs frames until the base item's model has loaded, so a capture shows the page as a reader
 /// sees it.
+fn settle_page(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::FullOutput {
+    let start = Instant::now();
+    loop {
+        let output = settle(ctx, app);
+        let model_loading = texts(&output)
+            .iter()
+            .any(|(text, _)| text == "Loading Model");
+        if !model_loading {
+            return output;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(180),
+            "the base item's model did not load"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Opens or closes the page's Text Presentation section, which folds over a few frames.
+fn toggle_text_presentation(
+    ctx: &egui::Context,
+    app: &mut PackageAuthoringApp,
+    output: &egui::FullOutput,
+) -> egui::FullOutput {
+    click(
+        ctx,
+        app,
+        find(output, "Text Presentation", |text, _| {
+            text == "Text Presentation"
+        }),
+    );
+    for _ in 0..12 {
+        frame(ctx, app, Vec::new());
+    }
+    settle(ctx, app)
+}
+
+/// Frames until the base item's lore has loaded in the open Text Presentation section.
 fn settle_lore(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::FullOutput {
     let start = Instant::now();
     loop {
@@ -579,15 +862,21 @@ fn settle_lore(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::Full
             return output;
         }
         assert!(
-            start.elapsed() < Duration::from_secs(120),
+            start.elapsed() < Duration::from_secs(180),
             "the base item's lore did not load"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// The page's own layout: the icon under the base in one column, the lore tab in the other, and
-/// armor named by its generation.
+/// The page's own layout. Above, the icon under the base in one column, the item's text in the
+/// next and the preview in the last. Below, the stats under the base with the sockets beside them,
+/// or the sockets from the page's edge where there are no stats. Armor names its generation on its
+/// base.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
+)]
 fn check_gear_page(output: &egui::FullOutput, kind: ItemKind, origin: Origin, donor: &WeaponDonor) {
     let drawn = texts(output)
         .into_iter()
@@ -610,17 +899,23 @@ fn check_gear_page(output: &egui::FullOutput, kind: ItemKind, origin: Origin, do
         "Perks & Sockets",
         "Rarity",
         "Inventory Icon",
-        "Lore Tab",
-        "Custom Lore Tab",
+        "Text Presentation",
     ]) {
         assert!(
             drawn.iter().any(|text| text == label),
             "{kind:?} page lacks {label}"
         );
     }
+    // The lore tab sits in the folded Text Presentation section.
+    assert!(
+        !drawn.iter().any(|text| text.contains("Lore Tab")),
+        "the {kind:?} page shows its lore tab outside Text Presentation"
+    );
     let base = rect_of(output, &format!("Base {}", kind.label()));
     let icon = rect_of(output, "Inventory Icon");
-    let lore = rect_of(output, "Lore Tab");
+    let text = rect_of(output, "Text Presentation");
+    let preview = accessible(output, "Model Preview")
+        .unwrap_or_else(|| panic!("the {kind:?} page has no model preview"));
     let sockets = rect_of(output, "Perks & Sockets");
     assert!(
         icon.top() > base.bottom()
@@ -629,12 +924,37 @@ fn check_gear_page(output: &egui::FullOutput, kind: ItemKind, origin: Origin, do
         "the {kind:?} page puts the icon under its base: base {base:?}, icon {icon:?}"
     );
     assert!(
-        lore.left() > icon.right() && lore.bottom() < sockets.top(),
-        "the {kind:?} page puts the lore tab beside the base: lore {lore:?}, icon {icon:?}"
+        text.left() > icon.right()
+            && preview.left() > text.right()
+            && preview.top() < icon.top()
+            && text.bottom().max(preview.bottom()) < sockets.top(),
+        "the {kind:?} page puts its text beside the base and its preview beside that: base \
+         {base:?}, text {text:?}, preview {preview:?}"
     );
+    if expected.is_empty() {
+        assert!(
+            (sockets.left() - base.left()).abs() < 1.0,
+            "the {kind:?} page has no stats, so its sockets start at the page's edge: sockets \
+             {sockets:?}"
+        );
+    } else {
+        let stats = rect_of(output, &format!("{} Stats", kind.label()));
+        assert!(
+            (stats.left() - base.left()).abs() < 1.0
+                && sockets.left() > icon.right()
+                && (sockets.top() - stats.top()).abs() < 2.0,
+            "the {kind:?} page keeps its sockets beside its stats: stats {stats:?}, sockets \
+             {sockets:?}"
+        );
+    }
+    // The base's card names its slot, class and generation, as its row in the list does.
     let named = ["Armor 1.0", "Armor 2.0"]
         .into_iter()
-        .filter(|generation| drawn.iter().any(|text| text == generation))
+        .filter(|generation| {
+            drawn
+                .iter()
+                .any(|text| text.ends_with(&format!(" · {generation}")))
+        })
         .collect::<Vec<_>>();
     if kind == ItemKind::Armor {
         assert_eq!(
@@ -676,7 +996,13 @@ fn author(
         ItemKind::Sparrow => (&["Sparrow Perk"], Some("Boost"), &[("Speed", 20)]),
         ItemKind::Ship => (&["Transmat Effect"], None, &[]),
         ItemKind::GhostShell => (&["Ghost Perk"], None, &[]),
-        ItemKind::Weapon | ItemKind::Shader | ItemKind::Subclass => unreachable!(),
+        ItemKind::Weapon
+        | ItemKind::Shader
+        | ItemKind::Subclass
+        | ItemKind::Emblem
+        | ItemKind::Mod => {
+            unreachable!()
+        }
     };
     let (perk_socket, collections_base) = choose_base(app, kind, labels, origin, energized);
     let name = format!("Parhelion Test {}{}", origin.prefix(), kind.label());
@@ -685,9 +1011,42 @@ fn author(
     let donor = app.current_gear_donor().unwrap();
 
     assert_page_fits(ctx, app, kind.label());
-    let output = settle_lore(ctx, app);
+    let output = settle_page(ctx, app);
     check_gear_page(&output, kind, origin, &donor);
     capture::write(ctx, &output, &format!("gear-{}", slug(kind, origin)));
+    // A card's buttons take their own clicks under the card's right-click region: Change Base and
+    // Change Icon each open their item picker, and a click on the page's empty corner closes it.
+    for button in ["Change Base", "Change Icon"] {
+        click(ctx, app, find(&output, button, |text, _| text == button));
+        let opened = settle(ctx, app);
+        assert!(
+            accessible(&opened, "Search items").is_some(),
+            "{button} opens the {kind:?} item picker"
+        );
+        click(ctx, app, egui::pos2(WIDTH - 4.0, HEIGHT - 4.0));
+        let closed = settle(ctx, app);
+        assert!(
+            accessible(&closed, "Search items").is_none(),
+            "a click outside closes the {kind:?} item picker"
+        );
+    }
+    // Hovering the preview shows the corner that opens it in the model viewer. The last kind opens
+    // it, so the other pages' captures show the corner as a reader first sees it.
+    let preview = accessible(&output, "Model Preview").unwrap();
+    frame(ctx, app, vec![egui::Event::PointerMoved(preview.center())]);
+    let hovered = settle(ctx, app);
+    let corner = accessible(&hovered, "Open in Window")
+        .unwrap_or_else(|| panic!("hovering the {kind:?} preview shows no Open in Window"));
+    capture::write(ctx, &hovered, &format!("gear-{}-hover", slug(kind, origin)));
+    if kind == ItemKind::GhostShell {
+        click(ctx, app, corner.center());
+        assert!(
+            sundial::ui::model_preview::popped_out(ctx, egui::Id::new("gear-preview")),
+            "Open in Window opens the {kind:?} preview in the model viewer"
+        );
+    }
+    frame(ctx, app, vec![egui::Event::PointerGone]);
+    let output = settle(ctx, app);
     if energized {
         assert_eq!(
             app.catalog.as_ref().unwrap().item_stat_maximum(base),
@@ -696,11 +1055,15 @@ fn author(
         );
     }
 
-    // A lore tab of its own, started from the page's lore section.
+    // A lore tab of its own, started from the lore section in Text Presentation, which then folds
+    // away again.
+    toggle_text_presentation(ctx, app, &output);
+    let opened = settle_lore(ctx, app);
+    capture::write(ctx, &opened, &format!("gear-{}-text", slug(kind, origin)));
     click(
         ctx,
         app,
-        find(&output, "Custom Lore Tab", |text, _| {
+        find(&opened, "Custom Lore Tab", |text, _| {
             text == "Custom Lore Tab"
         }),
     );
@@ -712,6 +1075,8 @@ fn author(
         "A story written for the {} in Parhelion.",
         app.recipe.name
     ));
+    let output = settle(ctx, app);
+    toggle_text_presentation(ctx, app, &output);
 
     // Energy Capacity 10 and one stat, through the page's own edits.
     let energy = energized.then(|| {
@@ -763,8 +1128,16 @@ fn author(
         choices[0]
     });
     concrete_plug(app, &donor, perk_socket);
-    let (perk_name, perk_stats) =
-        custom_perk(ctx, app, kind, &slug(kind, origin), perk_socket, perk_stats);
+    // An Armor 2.0 general mod is offered in every armor piece's general mod socket.
+    let offered = energized;
+    let (perk_name, perk_stats) = custom_perk(
+        ctx,
+        app,
+        kind,
+        (&slug(kind, origin), perk_socket),
+        perk_stats,
+        offered,
+    );
     let output = settle(ctx, app);
     find(&output, &perk_name, |text, _| text == perk_name);
     capture::write(
@@ -783,6 +1156,7 @@ fn author(
         perk_socket,
         perk_name,
         perk_stats,
+        offered,
         energy,
         alternative,
     }
@@ -920,12 +1294,31 @@ fn check_perk(
             item.perk_name
         );
     }
+    // Offered everywhere, the perk joins its own socket's shared set, and the catalog finds it in
+    // every set the build reports.
+    if item.offered {
+        let set = socket
+            .reusable_plug_set_index
+            .expect("the perk's socket keeps its shared plug set");
+        assert!(
+            plug.offered_sets.contains(&set),
+            "{} is offered in its own socket's set {set}: {:?}",
+            item.perk_name,
+            plug.offered_sets
+        );
+        assert_eq!(
+            staged.reusable_set_counts().get(&plug.item_hash),
+            Some(&plug.offered_sets.len()),
+            "{} reads back in every set it joined",
+            item.perk_name
+        );
+    } else {
+        assert!(plug.offered_sets.is_empty());
+    }
     plug.item_hash
 }
 
-/// Sparrows, Ships, Ghost Shells and shaders sit on the runtime's own page in their base's
-/// category. Armor sits beside its base. Everything but class armor also joins the runtime's
-/// badge.
+/// Ordinary armor joins runtime sets, Exotic armor joins only Exotics, and both join class badges. Other gear joins the runtime page in its base's category and every class.
 fn check_collections(
     staged: &InvestmentCatalog,
     kind: ItemKind,
@@ -937,16 +1330,42 @@ fn check_collections(
     let base_parents = staged.item_collection_parents(base);
     let parents = staged.item_collection_parents(item_hash);
     assert!(!base_parents.is_empty());
-    if crate::collection::GearPage::for_kind(kind).is_some() {
+    let paths = staged.item_collection_paths(item_hash);
+    if kind == ItemKind::Armor {
+        let exotic = staged.gear_donor(item_hash).unwrap().summary.rarity == WeaponRarity::Exotic;
+        let supported = staged.item_class_type(item_hash).unwrap();
+        for class in (0..3).filter(|class| supported == 3 || *class == supported) {
+            let class_name = class_label(class).unwrap();
+            if exotic {
+                assert!(
+                    paths.iter().any(|p| p
+                        .iter()
+                        .map(String::as_str)
+                        .eq([class_name, "Armor", "Exotic", "Items"])),
+                    "{name}: {paths:?}"
+                );
+                assert!(!paths.iter().any(|p| p.len() == 5 && p[1] == brand));
+            } else {
+                assert!(
+                    paths.iter().any(|p| p.len() == 5
+                        && p[0].starts_with(&format!("{brand} Armor Set "))
+                        && p[1..]
+                            .iter()
+                            .map(String::as_str)
+                            .eq([brand, class_name, "Armor", "Items"])),
+                    "{name}: {paths:?}"
+                );
+            }
+        }
+    } else if crate::collection::GearPage::for_kind(kind).is_some() {
         let base_paths = staged.item_collection_paths(base);
-        let on_brand_page = staged.item_collection_paths(item_hash).iter().any(|path| {
-            path.first().map(String::as_str) == Some(brand)
-                && base_paths
-                    .iter()
-                    .any(|base| base.len() == path.len() && base[1..] == path[1..])
-        });
         assert!(
-            on_brand_page,
+            paths.iter().any(|path| {
+                path.first().map(String::as_str) == Some(brand)
+                    && base_paths
+                        .iter()
+                        .any(|base| base.len() == path.len() && base[1..] == path[1..])
+            }),
             "{name} sits on the {brand} page in its base's category"
         );
         assert!(
@@ -959,12 +1378,18 @@ fn check_collections(
             "{name} sits beside its base in Collections"
         );
     }
-    // The badge adds its own parents beside the page.
-    assert_eq!(
-        parents.len() > 1,
-        kind != ItemKind::Armor,
-        "{name} Sunrise badge membership"
-    );
+    for (class, hash) in [0x5355_4E54, 0x5355_4E48, 0x5355_4E57]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            parents.contains(&hash),
+            kind != ItemKind::Armor
+                || staged.item_class_type(item_hash) == Some(3)
+                || staged.item_class_type(item_hash) == Some(class as u8),
+            "{name} Sunrise badge class {class}"
+        );
+    }
 }
 
 /// Checks one staged item against what was authored and returns its read-back record.
@@ -1038,1133 +1463,148 @@ fn read_back(
             "name": item.perk_name,
             "item_hash": format!("0x{plug:08X}"),
             "stats": stats(&staged.item_stat_contributions(plug)),
+            "offered_sets": report.custom_plugs[0].offered_sets,
         },
-        "collections": staged.item_collection_paths(report.item_hash),
-    })
-}
-
-/// A shader from the New menu that takes its cloth dyes from another stock shader, gives two
-/// surfaces custom colors and iridescence on every gear type and one weapon surface more values of
-/// its own, and gives the weapons' suit dye another shader's textures.
-struct AuthoredShader {
-    recipe: WeaponRecipe,
-    base: u32,
-    source: u32,
-    /// The armor piece the page's preview showed the unbuilt shader on, and its image.
-    preview_item: u32,
-    preview: Arc<egui::ColorImage>,
-    /// The weapon the page's preview showed first, and its image.
-    weapon_item: u32,
-    weapon_preview: Arc<egui::ColorImage>,
-}
-
-/// The dye a shader's rows give one key.
-fn dye(rows: &shader_view::DyeRows, key: i8) -> Option<u16> {
-    rows.iter()
-        .flatten()
-        .find(|row| row.channel_index == key)
-        .map(|row| row.dye_reference_index)
-}
-
-/// Whether `rows` carry `source`'s dyes for one channel on every gear type.
-fn channel_matches(
-    rows: &shader_view::DyeRows,
-    source: &shader_view::DyeRows,
-    channel: i8,
-) -> bool {
-    crate::dye::GEAR_TYPE_KEYS
-        .iter()
-        .all(|first| dye(rows, first + channel) == dye(source, first + channel))
-}
-
-/// A shader's rows as a model preview composes them.
-fn preview_rows(rows: &shader_view::DyeRows) -> [Vec<(i8, u16)>; 3] {
-    rows.clone().map(|rows| {
-        rows.iter()
-            .map(|row| (row.channel_index, row.dye_reference_index))
-            .collect()
-    })
-}
-
-/// The model preview's image among a frame's texture uploads. The font atlas is the only other
-/// upload this large, and it is not a color image.
-fn preview_image(output: &egui::FullOutput) -> Option<Arc<egui::ColorImage>> {
-    output
-        .textures_delta
-        .set
-        .iter()
-        .filter(|(_, delta)| delta.pos.is_none())
-        .filter_map(|(_, delta)| match &delta.image {
-            egui::ImageData::Color(image) => Some(image.clone()),
-            egui::ImageData::Font(_) => None,
-        })
-        .filter(|image| image.width() >= 200 && image.height() >= 200)
-        .max_by_key(|image| image.width() * image.height())
-}
-
-/// Runs frames until the preview has read what it was asked for. Returns the last image it drew.
-fn await_preview(mut frame: impl FnMut() -> egui::FullOutput, what: &str) -> Arc<egui::ColorImage> {
-    let start = Instant::now();
-    let mut image = None;
-    loop {
-        let output = frame();
-        image = preview_image(&output).or(image);
-        let drawn = texts(&output);
-        if !drawn.iter().any(|(text, _)| text == "Loading Model") {
-            return image.unwrap_or_else(|| {
-                panic!(
-                    "{what} drew no preview. Text drawn: {:?}",
-                    drawn.iter().map(|(text, _)| text).collect::<Vec<_>>()
-                )
-            });
-        }
-        assert!(
-            start.elapsed() < Duration::from_secs(180),
-            "{what} did not load"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// The model preview alone, drawing `appearance` at the size of an earlier image.
-fn draw_preview(
-    packages: &Path,
-    appearance: &Appearance,
-    overrides: &[SurfaceOverride],
-    like: &egui::ColorImage,
-    what: &str,
-) -> Arc<egui::ColorImage> {
-    let ctx = context();
-    let size = egui::vec2(like.width() as f32, like.height() as f32);
-    await_preview(
-        || {
-            ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        size + egui::vec2(64.0, 64.0),
-                    )),
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        still::show(
-                            ui,
-                            egui::Id::new("read-back-preview"),
-                            packages,
-                            Some(appearance.clone()),
-                            overrides,
-                            size,
-                        );
-                    });
-                },
-            )
-        },
-        what,
-    )
-}
-
-fn save_image(image: &egui::ColorImage, path: &Path) {
-    let bytes = image
-        .pixels
-        .iter()
-        .flat_map(|pixel| pixel.to_array())
-        .collect::<Vec<_>>();
-    ::image::RgbaImage::from_raw(image.width() as u32, image.height() as u32, bytes)
-        .unwrap()
-        .save(path)
-        .unwrap();
-}
-
-/// The custom surfaces: armor primary takes a color and an iridescence row that tints the
-/// color, and cloth secondary one that tints the highlight, on every gear type. The weapons' suit
-/// primary takes a color, metalness, smoothness, glow and worn color of its own.
-fn custom_surfaces(packages: &Path) -> Vec<DyeEdit> {
-    let lookup = sundial::package_authoring::load_iridescence_rows(packages).unwrap();
-    let row = |parity: i16| {
-        lookup
-            .iter()
-            .map(|row| row.id)
-            .find(|id| id % 2 == parity)
-            .expect("an authored iridescence row of each parity")
-    };
-    let value = |value: f32| DyeValue::new(value).unwrap();
-    vec![
-        DyeEdit {
-            color: Some([0xC8, 0x32, 0x14]),
-            iridescence: Some(row(0)),
-            ..DyeEdit::new(None, DyeChannel::Armor, DyeSurface::Primary)
-        },
-        DyeEdit {
-            iridescence: Some(row(1)),
-            ..DyeEdit::new(None, DyeChannel::Cloth, DyeSurface::Secondary)
-        },
-        DyeEdit {
-            color: Some([0x14, 0x64, 0xC8]),
-            metalness: Some(value(1.0)),
-            smoothness: Some([value(0.6), value(0.9)]),
-            glow: Some([0x10, 0x20, 0x30]),
-            worn_color: Some([0xEE, 0xDD, 0xCC]),
-            ..DyeEdit::new(
-                Some(GearType::Weapon),
-                DyeChannel::Suit,
-                DyeSurface::Primary,
-            )
-        },
-    ]
-}
-
-/// The weapons' suit dye takes the detail textures of another stock shader's weapon suit dye,
-/// repeated twice as often.
-fn custom_textures(app: &PackageAuthoringApp, base: &shader_view::DyeRows) -> Vec<DyeTextureEdit> {
-    let key = GearType::Weapon.key(DyeChannel::Suit);
-    let own = dye(base, key).expect("the base shader has a weapon suit dye");
-    let catalog = app.catalog.as_ref().unwrap();
-    let materials =
-        |dyes: &[u16]| sundial::package_authoring::load_dye_materials(&app.packages, dyes).unwrap();
-    let own_detail = materials(&[own])[&own].as_ref().unwrap().detail_tag;
-    let mut candidates = app.gear_donors[&ItemKind::Shader]
-        .iter()
-        .filter_map(|shader| dye(&shader_view::stock_rows(catalog, shader.hash), key))
-        .filter(|dye| *dye != own)
-        .collect::<Vec<_>>();
-    candidates.sort_unstable();
-    candidates.dedup();
-    // Read a few at a time, since most stock shaders share a handful of textures.
-    let (detail, normal) = candidates
-        .chunks(16)
-        .find_map(|chunk| {
-            materials(chunk)
-                .into_values()
-                .flatten()
-                .find_map(|material| {
-                    (material.detail_tag.is_some() && material.detail_tag != own_detail)
-                        .then_some((material.detail_tag, material.normal_tag))
-                })
-        })
-        .expect("another shader's weapon suit dye with other textures");
-    let value = |value: f32| DyeValue::new(value).unwrap();
-    vec![DyeTextureEdit {
-        detail,
-        normal,
-        detail_tiling: Some([value(2.0), value(2.0), value(0.0), value(0.0)]),
-        ..DyeTextureEdit::new(Some(GearType::Weapon), DyeChannel::Suit)
-    }]
-}
-
-/// Cloth is the middle channel of each gear type's three.
-const CLOTH: i8 = 1;
-
-fn author_shader(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> AuthoredShader {
-    new_from_menu(ctx, app, ItemKind::Shader);
-    app.recipe
-        .rename_authored_item("Parhelion Test Shader")
-        .unwrap();
-    let base = app.recipe.donor.item_hash.parse_u32().unwrap();
-    assert_page_fits(ctx, app, "Shader");
-    let source = remix_cloth(ctx, app, base);
-    edit_surfaces(ctx, app, base);
-    let (weapon_item, weapon_preview) = preview_weapon(ctx, app);
-    let (preview_item, preview) = preview_armor(ctx, app);
-    check_weapon_view(ctx, app, weapon_item);
-    app.recipe_baseline = app.recipe.clone();
-    app.recipe_dirty = false;
-    AuthoredShader {
-        recipe: app.recipe.clone(),
-        base,
-        source,
-        preview_item,
-        preview,
-        weapon_item,
-        weapon_preview,
-    }
-}
-
-/// Runs frames until nothing on the page is still loading.
-fn settle_loaded(
-    ctx: &egui::Context,
-    app: &mut PackageAuthoringApp,
-    what: &str,
-) -> egui::FullOutput {
-    let start = Instant::now();
-    loop {
-        let output = settle(ctx, app);
-        if !texts(&output).iter().any(|(text, _)| text == "Loading…") {
-            return output;
-        }
-        assert!(
-            start.elapsed() < Duration::from_secs(120),
-            "{what} did not load"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// The new shader's page, then its cloth taken from another stock shader through the page's own
-/// edit, once every surface has loaded. Returns the source shader.
-fn remix_cloth(ctx: &egui::Context, app: &mut PackageAuthoringApp, base: u32) -> u32 {
-    let output = settle(ctx, app);
-    for label in [
-        "Dyes",
-        "All Gear",
-        "Armor Primary",
-        "Cloth Secondary",
-        "Suit Primary",
-        "Copy from Shader…",
-        "Preview",
-        "Rarity",
-    ] {
-        find(&output, label, |text, _| text == label);
-    }
-    capture::write(ctx, &output, "gear-shader");
-    // A shader has no lore tab, so its text offers none.
-    let toggle = |ctx: &egui::Context, app: &mut PackageAuthoringApp, output: &egui::FullOutput| {
-        click(
-            ctx,
-            app,
-            find(output, "Text Presentation", |text, _| {
-                text == "Text Presentation"
-            }),
-        );
-        // The section folds open over a few frames.
-        for _ in 0..12 {
-            frame(ctx, app, Vec::new());
-        }
-        settle(ctx, app)
-    };
-    let opened = toggle(ctx, app, &output);
-    find(&opened, "Custom Item-Type Label", |text, _| {
-        text == "Custom Item-Type Label"
-    });
-    assert!(
-        !texts(&opened)
-            .iter()
-            .any(|(text, _)| text.contains("Lore Tab")),
-        "a shader page offers no lore tab"
-    );
-    toggle(ctx, app, &opened);
-    // The channel's shader list sets the channel through the page's own edit.
-    let catalog = app.catalog.as_ref().unwrap();
-    let base_rows = shader_view::stock_rows(catalog, base);
-    let source = app.gear_donors[&ItemKind::Shader]
-        .iter()
-        .map(|shader| shader.hash)
-        .find(|hash| {
-            *hash != base
-                && !channel_matches(&base_rows, &shader_view::stock_rows(catalog, *hash), CLOTH)
-        })
-        .expect("another shader with other cloth dyes");
-    let source_rows = shader_view::stock_rows(catalog, source);
-    shader_view::set_shader_channel(&mut app.recipe, &base_rows, &source_rows, CLOTH, None);
-    let output = settle(ctx, app);
-    find(&output, "Restore Base Dyes", |text, _| {
-        text == "Restore Base Dyes"
-    });
-    // Each surface loads from the installed dyes in the background, then the inspector shows the
-    // chosen one's values.
-    let output = settle_loaded(ctx, app, "The dyes");
-    assert!(
-        !texts(&output).iter().any(|(text, _)| text == "Unavailable"),
-        "every surface loads"
-    );
-    for label in [
-        "Paint",
-        "Color",
-        "Iridescence",
-        "Detail",
-        "Textures",
-        "Worn",
-        "Glow",
-    ] {
-        find(&output, label, |text, _| text == label);
-    }
-    capture::write(ctx, &output, "gear-shader-remixed");
-    source
-}
-
-/// Two surfaces on every gear type and one weapon surface take custom values, and the weapons'
-/// suit dye another shader's textures, through the page's own edits. The values show in the
-/// surfaces' tiles and inspector, and the icon draws from them once the dyes and iridescence ramps
-/// have loaded.
-fn edit_surfaces(ctx: &egui::Context, app: &mut PackageAuthoringApp, base: u32) {
-    let edits = custom_surfaces(&app.packages);
-    for edit in &edits {
-        shader_view::set_dye_edit(
-            &mut app.recipe.overrides.dye_edits,
-            edit.gear,
-            edit.channel,
-            edit.surface,
-            |surface| *surface = *edit,
-        );
-    }
-    assert_eq!(app.recipe.overrides.dye_edits, edits);
-    let base_rows = shader_view::stock_rows(app.catalog.as_ref().unwrap(), base);
-    let textures = custom_textures(app, &base_rows);
-    for texture in &textures {
-        shader_view::set_texture_edit(
-            &mut app.recipe.overrides.dye_texture_edits,
-            texture.gear,
-            texture.channel,
-            |each| *each = *texture,
-        );
-    }
-    assert_eq!(app.recipe.overrides.dye_texture_edits, textures);
-    let output = settle(ctx, app);
-    find(&output, "the custom color", |text, _| text == "#C83214");
-    // A surface's iridescence shows in the inspector once its tile is chosen.
-    for edit in edits.iter().filter(|edit| edit.gear.is_none()) {
-        let Some(id) = edit.iridescence else {
-            continue;
-        };
-        let name = format!(
-            "{} {}",
-            edit.channel.name_on(edit.gear),
-            edit.surface.label()
-        );
-        let output = settle(ctx, app);
-        click(ctx, app, find(&output, &name, |text, _| text == name));
-        assert_eq!(app.shader_surface, (edit.channel, edit.surface));
-        let id = id.to_string();
-        find(&settle(ctx, app), "the custom iridescence", |text, _| {
-            text == id
-        });
-    }
-    // A new shader draws its icon from its dyes, custom ones included, once the stock dyes and
-    // iridescence ramps have loaded.
-    assert!(
-        app.recipe.overrides.icon_from_dyes,
-        "a new shader draws its icon from its dyes"
-    );
-    let start = Instant::now();
-    while app.recipe.overrides.icon_edit.imported_image.is_none() {
-        assert!(
-            start.elapsed() < Duration::from_secs(60),
-            "the page drew the shader's icon from its dyes"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-        let _output = settle(ctx, app);
-    }
-}
-
-/// Until another item is chosen the page previews the first weapon, which the weapons' own surface
-/// and textures change. Returns the weapon and the page's preview of it.
-fn preview_weapon(
-    ctx: &egui::Context,
-    app: &mut PackageAuthoringApp,
-) -> (u32, Arc<egui::ColorImage>) {
-    let weapon = app.donor_summaries[0].hash;
-    assert_eq!(app.shader_preview_item, None);
-    let weapon_preview = await_preview(|| frame(ctx, app, Vec::new()), "The shader page");
-    let catalog = app.catalog.as_ref().unwrap();
-    let rows = preview_rows(app.recipe.overrides.render_dye_rows.as_ref().unwrap());
-    let weapon_stock = draw_preview(
-        &app.packages,
-        &catalog.shader_preview_appearance(weapon, &rows).unwrap(),
-        &[],
-        &weapon_preview,
-        "The weapon without custom dyes",
-    );
-    assert_ne!(
-        weapon_stock.pixels, weapon_preview.pixels,
-        "the custom dyes change the weapon's preview"
-    );
-    (weapon, weapon_preview)
-}
-
-/// The preview's item picker finds an armor piece by its hash, and the custom surfaces change what
-/// the page draws on it. Returns the armor piece and the page's preview of it.
-fn preview_armor(
-    ctx: &egui::Context,
-    app: &mut PackageAuthoringApp,
-) -> (u32, Arc<egui::ColorImage>) {
-    let catalog = app.catalog.as_ref().unwrap();
-    let rows = preview_rows(app.recipe.overrides.render_dye_rows.as_ref().unwrap());
-    let armor = app.gear_donors[&ItemKind::Armor]
-        .iter()
-        .map(|donor| donor.hash)
-        .find(|hash| {
-            catalog
-                .shader_preview_appearance(*hash, &rows)
-                .is_some_and(|appearance| {
-                    !appearance.dyes.is_empty()
-                        && appearance.dyes.iter().all(|(key, _)| (0..=2).contains(key))
-                })
-        })
-        .expect("an armor piece with its own dyes");
-    let appearance = catalog.shader_preview_appearance(armor, &rows).unwrap();
-    let first = app.donor_summaries[0].name.clone();
-    let output = settle(ctx, app);
-    find(&output, "Preview", |text, _| text == "Preview");
-    click(
-        ctx,
-        app,
-        find(&output, "the preview's item", |text, _| text == first),
-    );
-    let hash = format!("0x{armor:08X}");
-    frame(ctx, app, vec![egui::Event::Text(hash.clone())]);
-    let output = settle(ctx, app);
-    let row = format!("({hash})");
-    click(
-        ctx,
-        app,
-        find(&output, "the armor piece in the picker", |text, _| {
-            text.ends_with(&row)
-        }),
-    );
-    assert_eq!(app.shader_preview_item, Some(armor));
-    let preview = await_preview(|| frame(ctx, app, Vec::new()), "The shader page");
-    capture::write(ctx, &settle(ctx, app), "gear-shader-custom");
-    // The custom surfaces change what the preview draws.
-    let stock = draw_preview(
-        &app.packages,
-        &appearance,
-        &[],
-        &preview,
-        "The preview without custom surfaces",
-    );
-    assert_ne!(
-        stock.pixels, preview.pixels,
-        "the custom surfaces change the preview"
-    );
-    (armor, preview)
-}
-
-/// The Weapons tab, marked for the weapons' own edits, shows those edits over the ones for every
-/// gear type, names the weapons' channels by number as Bungie does, and moves the preview to a
-/// weapon.
-fn check_weapon_view(ctx: &egui::Context, app: &mut PackageAuthoringApp, weapon: u32) {
-    let output = settle(ctx, app);
-    click(
-        ctx,
-        app,
-        find(&output, "the Weapons tab", |text, _| text == "Weapons •"),
-    );
-    assert_eq!(app.shader_dye_gear, Some(GearType::Weapon));
-    assert_eq!(app.shader_preview_item, Some(weapon));
-    await_preview(|| frame(ctx, app, Vec::new()), "The weapons' view");
-    let output = settle_loaded(ctx, app, "The weapons' dyes");
-    find(&output, "the weapons' suit color", |text, _| {
-        text == "#1464C8"
-    });
-    find(&output, "the weapons' third channel", |text, _| {
-        text == "Channel 3 Primary"
-    });
-    capture::write(ctx, &output, "gear-shader-weapons");
-}
-
-/// Each gear type's dye for `channel` in the staged shader. An edited dye is a custom one whose
-/// vectors are the stock dye's with that gear type's edits written over them, every value, and
-/// which binds the edits' textures. Any other dye keeps the stock one.
-fn check_custom_dyes(
-    packages: &Path,
-    name: &str,
-    rows: &shader_view::DyeRows,
-    stock: &shader_view::DyeRows,
-    channel: DyeChannel,
-    (edits, textures): (&[DyeEdit], &[DyeTextureEdit]),
-) -> Vec<String> {
-    let pairs = GearType::ALL
-        .into_iter()
-        .filter_map(|gear| {
-            let key = gear.key(channel);
-            Some((gear, key, dye(rows, key)?, dye(stock, key)?))
-        })
-        .collect::<Vec<_>>();
-    assert!(!pairs.is_empty(), "{name} has no {channel:?} dyes");
-    let indices = pairs
-        .iter()
-        .flat_map(|&(_, _, built, original)| [built, original])
-        .collect::<Vec<_>>();
-    let materials = sundial::package_authoring::load_dye_materials(packages, &indices).unwrap();
-    pairs
-        .into_iter()
-        .map(|(gear, key, built, original)| {
-            let surfaces = DyeSurface::ALL
-                .into_iter()
-                .filter_map(|surface| surface_edit(edits, gear, channel, surface))
-                .collect::<Vec<_>>();
-            let texture = texture_edit(textures, gear, channel);
-            if surfaces.is_empty() && texture.is_none() {
-                assert_eq!(built, original, "{name} keeps the stock dye for key {key}");
-                return format!("key {key}: stock dye {built}");
-            }
-            assert_ne!(built, original, "{name} has a custom dye for key {key}");
-            let built_material = materials[&built].as_ref().unwrap();
-            let stock_material = materials[&original].as_ref().unwrap();
-            let mut expected = stock_material.vectors;
-            for edit in &surfaces {
-                write_vectors(&mut expected, &edit.writes());
-            }
-            if let Some(texture) = texture {
-                write_vectors(&mut expected, &texture.writes());
-            }
-            assert_eq!(
-                built_material.vectors, expected,
-                "{name} key {key} carries every edited value"
-            );
-            let bound = (
-                texture
-                    .and_then(|texture| texture.detail)
-                    .or(stock_material.detail_tag),
-                texture
-                    .and_then(|texture| texture.normal)
-                    .or(stock_material.normal_tag),
-            );
-            assert_eq!(
-                (built_material.detail_tag, built_material.normal_tag),
-                bound,
-                "{name} key {key} binds its textures"
-            );
-            format!("key {key}: dye {built} from {original}, textures {bound:?}")
-        })
-        .collect()
-}
-
-/// The staged shader keeps the stock shape and its base's dyes, with cloth from the source and
-/// custom dyes for the edited surfaces. Its preview matches the page's preview of the unbuilt
-/// edits pixel for pixel.
-fn read_back_shader(
-    staged: &InvestmentCatalog,
-    build: &BuildReport,
-    shader: &AuthoredShader,
-    brand: &str,
-    packages: &Path,
-    artifacts: &Path,
-) -> serde_json::Value {
-    let name = &shader.recipe.name;
-    let report = build
-        .weapons
-        .iter()
-        .find(|report| report.name == *name)
-        .unwrap();
-    assert_eq!(report.kind, ItemKind::Shader);
-    assert_eq!(
-        staged.item_display_name(report.item_hash),
-        Some(name.as_str())
-    );
-    assert!(
-        staged.is_shader(report.item_hash),
-        "{name} keeps the stock shader shape"
-    );
-    let rows = shader_view::stock_rows(staged, report.item_hash);
-    let base = shader_view::stock_rows(staged, shader.base);
-    let source = shader_view::stock_rows(staged, shader.source);
-    let edits = &shader.recipe.overrides.dye_edits;
-    let textures = &shader.recipe.overrides.dye_texture_edits;
-    let custom = DyeChannel::ALL
-        .into_iter()
-        .flat_map(|channel| {
-            // Cloth came from the source shader, and the other channels from the base.
-            let stock = if channel.offset() == CLOTH {
-                &source
-            } else {
-                &base
-            };
-            check_custom_dyes(packages, name, &rows, stock, channel, (edits, textures))
-        })
-        .collect::<Vec<_>>();
-    let built = draw_preview(
-        packages,
-        &staged
-            .shader_preview_appearance(shader.preview_item, &preview_rows(&rows))
-            .unwrap(),
-        &[],
-        &shader.preview,
-        "The built shader",
-    );
-    save_image(
-        &shader.preview,
-        &artifacts.join("shader-preview-unbuilt.png"),
-    );
-    save_image(&built, &artifacts.join("shader-preview-built.png"));
-    let differing = built
-        .pixels
-        .iter()
-        .zip(&shader.preview.pixels)
-        .filter(|(built, unbuilt)| built != unbuilt)
-        .count();
-    assert_eq!(
-        differing, 0,
-        "{name} built draws like its unbuilt preview on 0x{:08X}",
-        shader.preview_item
-    );
-    // On a weapon too, with the weapons' own surface and textures.
-    let built_weapon = draw_preview(
-        packages,
-        &staged
-            .shader_preview_appearance(shader.weapon_item, &preview_rows(&rows))
-            .unwrap(),
-        &[],
-        &shader.weapon_preview,
-        "The built shader on a weapon",
-    );
-    save_image(
-        &shader.weapon_preview,
-        &artifacts.join("shader-weapon-unbuilt.png"),
-    );
-    save_image(&built_weapon, &artifacts.join("shader-weapon-built.png"));
-    let differing = built_weapon
-        .pixels
-        .iter()
-        .zip(&shader.weapon_preview.pixels)
-        .filter(|(built, unbuilt)| built != unbuilt)
-        .count();
-    assert_eq!(
-        differing, 0,
-        "{name} built draws like its unbuilt preview on the weapon 0x{:08X}",
-        shader.weapon_item
-    );
-    check_collections(
-        staged,
-        ItemKind::Shader,
-        shader.base,
-        name,
-        report.item_hash,
-        brand,
-    );
-    serde_json::json!({
-        "kind": ItemKind::Shader,
-        "name": name,
-        "item_hash": format!("0x{:08X}", report.item_hash),
-        "base": format!(
-            "{} 0x{:08X}",
-            staged.item_display_name(shader.base).unwrap_or_default(),
-            shader.base
-        ),
-        "cloth_from": format!(
-            "{} 0x{:08X}",
-            staged.item_display_name(shader.source).unwrap_or_default(),
-            shader.source
-        ),
-        "dye_rows": rows[0]
-            .iter()
-            .map(|row| format!("{}: {}", row.channel_index, row.dye_reference_index))
-            .collect::<Vec<_>>(),
-        "dye_edits": edits,
-        "dye_texture_edits": textures,
-        "custom_dyes": custom,
-        "preview": {
-            "item": format!(
-                "{} 0x{:08X}",
-                staged.item_display_name(shader.preview_item).unwrap_or_default(),
-                shader.preview_item
-            ),
-            "size": shader.preview.size,
-            "matches_built": true,
-        },
-        "weapon_preview": {
-            "item": format!(
-                "{} 0x{:08X}",
-                staged.item_display_name(shader.weapon_item).unwrap_or_default(),
-                shader.weapon_item
-            ),
-            "matches_built": true,
-        },
-        "collections": staged.item_collection_paths(report.item_hash),
-    })
-}
-
-/// A subclass from the New menu whose first grenade comes from another class and whose top
-/// attunement comes from another subclass of its class.
-struct AuthoredSubclass {
-    recipe: WeaponRecipe,
-    base: SubclassSummary,
-    grenade: SubclassSummary,
-    attunement: SubclassSummary,
-    /// The perk the authored middle-path node adds to the ones it starts with.
-    extra_perk: u16,
-}
-
-/// The authored middle path's name, and its second node's.
-const PATH_NAME: &str = "Way of the Sundial";
-const NODE_NAME: &str = "Sundial Strike";
-
-/// Clicks `choice` on the line of the detail panel's choices that `subclass` leads.
-fn choose(ctx: &egui::Context, app: &mut PackageAuthoringApp, subclass: &str, choice: &str) {
-    let output = settle(ctx, app);
-    let line = find(&output, subclass, |text, _| text == subclass);
-    click(
-        ctx,
-        app,
-        find(&output, choice, |text, rect| {
-            text == choice && (rect.center().y - line.y).abs() < 12.0
-        }),
-    );
-}
-
-/// Runs frames until every stock subclass node's icon has loaded, since package icons load on a
-/// worker, so a capture shows them.
-fn settle_icons(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> egui::FullOutput {
-    let start = Instant::now();
-    loop {
-        frame(ctx, app, Vec::new());
-        let catalog = app.catalog.as_ref().unwrap();
-        let pending = app
-            .subclasses
-            .iter()
-            .flat_map(|subclass| subclass.entry_icons.values())
-            .any(|&container| catalog.subclass_icon(ctx, container).is_none());
-        if !pending || start.elapsed() > Duration::from_secs(30) {
-            return settle(ctx, app);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// The gear page alone in a window `width` wide.
-fn frame_at(ctx: &egui::Context, app: &mut PackageAuthoringApp, width: f32) -> egui::FullOutput {
-    let mut output = None;
-    for _ in 0..2 {
-        let frame = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width, 1400.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    workbench_style(ui);
-                    app.draw_gear_editor(ui);
-                });
-            },
-        );
-        capture::record(&frame);
-        output = Some(frame);
-    }
-    output.unwrap()
-}
-
-fn author_subclass(ctx: &egui::Context, app: &mut PackageAuthoringApp) -> AuthoredSubclass {
-    new_from_menu(ctx, app, ItemKind::Subclass);
-    app.recipe
-        .rename_authored_item("Parhelion Test Subclass")
-        .unwrap();
-    let hash = app.recipe.donor.item_hash.parse_u32().unwrap();
-    let base = app
-        .subclasses
-        .iter()
-        .find(|subclass| subclass.hash == hash)
-        .expect("the New menu starts on a stock subclass")
-        .clone();
-    // The catalog reads each node's icon and description from its display record.
-    assert!(
-        !base.entry_icons.is_empty() && !base.entry_descriptions.is_empty(),
-        "{} has no node icons or descriptions",
-        base.name
-    );
-    assert_page_fits(ctx, app, "Subclass");
-    let output = settle_icons(ctx, app);
-    for label in [
-        "Abilities",
-        "Attunements",
-        "Class Ability",
-        "Movement",
-        "Grenade",
-        "Super",
-        "Top",
-        "Middle",
-        "Restore Base Abilities",
-    ] {
-        find(&output, label, |text, _| text == label);
-    }
-    for absent in ["Rarity", "Perks & Sockets", "Stats"] {
-        assert!(
-            !texts(&output).iter().any(|(text, _)| text == absent),
-            "a subclass page has no {absent}"
-        );
-    }
-    capture::write(ctx, &output, "gear-subclass");
-
-    // A grenade from another class: its row shows it beside the list, where its subclass's line
-    // offers it.
-    let grenade = app
-        .subclasses
-        .iter()
-        .find(|subclass| subclass.class_type != base.class_type)
-        .expect("a subclass of another class")
-        .clone();
-    let entry = layout::GRENADES[0];
-    let row = base.entry_names[&entry].as_str();
-    let output = settle(ctx, app);
-    click(ctx, app, find(&output, row, |text, _| text == row));
-    assert_eq!(app.subclass_selection, SubclassSelection::Ability(entry));
-    choose(ctx, app, &grenade.name, &grenade.entry_names[&entry]);
-    let abilities = app.recipe.overrides.subclass_abilities.clone().unwrap();
-    assert_eq!(
-        abilities
-            .choice(entry)
-            .map(|choice| (choice.source, choice.source_entry)),
-        Some((grenade.hash, entry)),
-        "the page took the grenade from {}",
-        grenade.name
-    );
-    // An attunement from the third class, where a bottom one can fill the top place.
-    let attunement = app
-        .subclasses
-        .iter()
-        .find(|subclass| {
-            subclass.class_type != base.class_type && subclass.class_type != grenade.class_type
-        })
-        .expect("a subclass of the third class")
-        .clone();
-    let top = base.attunement_names[AttunementPath::Top.index()].as_str();
-    let output = settle(ctx, app);
-    click(ctx, app, find(&output, top, |text, _| text == top));
-    assert_eq!(
-        app.subclass_selection,
-        SubclassSelection::Path(AttunementPath::Top)
-    );
-    choose(
-        ctx,
-        app,
-        &attunement.name,
-        &attunement.attunement_names[AttunementPath::Bottom.index()],
-    );
-    let abilities = app.recipe.overrides.subclass_abilities.clone().unwrap();
-    assert_eq!(
-        abilities
-            .attunement(AttunementPath::Top)
-            .map(|choice| (choice.source, choice.source_path)),
-        Some((attunement.hash, AttunementPath::Bottom)),
-        "the page took the top attunement from {}",
-        attunement.name
-    );
-    // The middle path of its own: renamed, with its second node from the base's bottom path
-    // under its own name and description, and with one more of the base's perks.
-    let from_node = AttunementPath::Bottom.entries()[1];
-    let node_perks = base
-        .entry_perks
-        .get(&from_node)
-        .cloned()
-        .unwrap_or_default();
-    let extra_perk = base
-        .entry_perks
-        .values()
-        .flatten()
-        .copied()
-        .find(|perk| !node_perks.contains(perk))
-        .expect("the base subclass has another perk");
-    let mut abilities = app.recipe.overrides.subclass_abilities.clone().unwrap();
-    abilities.set_path_name(
-        AttunementPath::Middle,
-        base.hash,
-        Some(PATH_NAME.to_owned()),
-    );
-    let mut node = SubclassPathNode::stock(1, base.hash, AttunementPath::Bottom, 1);
-    node.name = Some(NODE_NAME.to_owned());
-    node.description = Some("Built node by node in Parhelion.".to_owned());
-    node.added_perks = vec![extra_perk];
-    abilities.set_path_node(AttunementPath::Middle, base.hash, 1, Some(node));
-    app.recipe.overrides.subclass_abilities = Some(abilities);
-    let output = settle(ctx, app);
-    let restore = format!("Restore {top}");
-    find(&output, "the top attunement's restore", |text, _| {
-        text == restore
-    });
-    // The Middle tab, marked for its edits, shows the middle attunement and its nodes.
-    click(
-        ctx,
-        app,
-        find(&output, "the Middle tab", |text, _| text == "Middle •"),
-    );
-    assert_eq!(
-        app.subclass_selection,
-        SubclassSelection::Path(AttunementPath::Middle)
-    );
-    let output = settle(ctx, app);
-    find(&output, "the middle path's name", |text, _| {
-        text == PATH_NAME
-    });
-    let output = settle_icons(ctx, app);
-    capture::write(ctx, &output, "gear-subclass-edited");
-    // The authored node shows beside the list with its own name, description and perks.
-    click(
-        ctx,
-        app,
-        find(&output, "the authored node", |text, _| text == NODE_NAME),
-    );
-    assert_eq!(
-        app.subclass_selection,
-        SubclassSelection::Node(AttunementPath::Middle, 1)
-    );
-    let output = settle_icons(ctx, app);
-    for text in [
-        "Middle Path · Node 2",
-        "Description",
-        "Perks",
-        "Add Perk",
-        "Based On",
-    ] {
-        find(&output, text, |drawn, _| drawn == text);
-    }
-    capture::write(ctx, &output, "gear-subclass-path");
-    // Hovering a row shows the house tooltip: the ability's icon, its slot and subclass, and its
-    // node's own description.
-    let grenade_name = grenade.entry_names[&entry].as_str();
-    let row = find(&output, "the taken grenade's row", |text, _| {
-        text == grenade_name
-    });
-    frame(ctx, app, vec![egui::Event::PointerMoved(row)]);
-    let mut output = frame(ctx, app, Vec::new());
-    for _ in 0..40 {
-        output = frame(ctx, app, Vec::new());
-    }
-    let subtitle = format!("Grenade · {}", grenade.name);
-    find(&output, "the tooltip's slot and subclass", |text, _| {
-        text == subtitle
-    });
-    let description = grenade
-        .entry_descriptions
-        .get(&entry)
-        .expect("the taken grenade has a description");
-    find(&output, "the tooltip's description", |text, _| {
-        text == description.as_str()
-    });
-    capture::write(ctx, &output, "gear-subclass-tooltip");
-    frame(ctx, app, vec![egui::Event::PointerGone]);
-    // A narrow window stacks the detail under the list.
-    capture::write(ctx, &frame_at(ctx, app, 640.0), "gear-subclass-narrow");
-    app.recipe_baseline = app.recipe.clone();
-    app.recipe_dirty = false;
-    AuthoredSubclass {
-        recipe: app.recipe.clone(),
-        base,
-        grenade,
-        attunement,
-        extra_perk,
-    }
-}
-
-/// The staged subclass keeps its base's class and every ability it did not take elsewhere, has
-/// the chosen grenade and attunement under their own names, a list of its own and no Collections
-/// entry.
-fn read_back_subclass(
-    stock: &InvestmentCatalog,
-    staged: &InvestmentCatalog,
-    build: &BuildReport,
-    subclass: &AuthoredSubclass,
-) -> serde_json::Value {
-    let name = &subclass.recipe.name;
-    let report = build
-        .weapons
-        .iter()
-        .find(|report| report.name == *name)
-        .unwrap();
-    assert_eq!(report.kind, ItemKind::Subclass);
-    assert!(
-        report.collection.is_none(),
-        "{name} has no collectible or unlock"
-    );
-    let authored = staged
-        .subclasses(|_| true)
-        .into_iter()
-        .find(|staged| staged.hash == report.item_hash)
-        .unwrap_or_else(|| panic!("{name} reads back as a subclass"));
-    assert_eq!(&authored.name, name);
-    assert_eq!(authored.class_type, subclass.base.class_type);
-    // The install adds the subclass to each character of this class, which only the manifest
-    // records.
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &fs::read(
-            build
-                .run_directory
-                .join(crate::manifest::MANIFEST_FILE_NAME),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        manifest["project"]["weapons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|weapon| weapon["name"] == name.as_str())
-            .map(|weapon| weapon["class_type"].clone()),
-        Some(serde_json::json!(subclass.base.class_type)),
-        "{name} records its class for the install"
-    );
-    assert!(
-        staged.item_collection_parents(report.item_hash).is_empty(),
-        "{name} stays out of Collections"
-    );
-    assert_eq!(
-        staged.socket_entry_list_count(),
-        stock.socket_entry_list_count() + 1,
-        "{name} adds one socket-entry list"
-    );
-    let base = &subclass.base;
-    let grenade = layout::GRENADES[0];
-    let top = AttunementPath::Top.entries();
-    let from = AttunementPath::Bottom.entries();
-    let authored_node = AttunementPath::Middle.entries()[1];
-    for (&entry, expected) in &base.entry_names {
-        let expected = if entry == grenade {
-            subclass.grenade.entry_names[&entry].as_str()
-        } else if let Some(position) = top.iter().position(|top| *top == entry) {
-            subclass.attunement.entry_names[&from[position]].as_str()
-        } else if entry == authored_node {
-            NODE_NAME
-        } else {
-            expected.as_str()
-        };
-        assert_eq!(
-            authored.entry_names.get(&entry).map(String::as_str),
-            Some(expected),
-            "{name} entry {entry}"
-        );
-    }
-    assert_eq!(
-        authored.attunement_names,
-        [
-            subclass.attunement.attunement_names[AttunementPath::Bottom.index()].clone(),
-            base.attunement_names[AttunementPath::Bottom.index()].clone(),
-            PATH_NAME.to_owned(),
-        ],
-        "{name} names each attunement for the subclass it comes from, or by its own name"
-    );
-    let mut node_perks = base.entry_perks.get(&from[1]).cloned().unwrap_or_default();
-    node_perks.push(subclass.extra_perk);
-    assert_eq!(
-        authored.entry_perks.get(&authored_node),
-        Some(&node_perks),
-        "{name}'s authored node grants its source's perks and the added one"
-    );
-    serde_json::json!({
-        "kind": ItemKind::Subclass,
-        "name": name,
-        "item_hash": format!("0x{:08X}", report.item_hash),
-        "base": format!("{} 0x{:08X}", base.name, base.hash),
-        "class": authored.class_type,
-        "grenade_from": format!("{} 0x{:08X}", subclass.grenade.name, subclass.grenade.hash),
-        "top_attunement_from": format!(
-            "{} 0x{:08X}",
-            subclass.attunement.name, subclass.attunement.hash
-        ),
-        "attunements": authored.attunement_names,
-        "abilities": authored
-            .entry_names
-            .iter()
-            .map(|(entry, name)| format!("{entry}: {name}"))
-            .collect::<Vec<_>>(),
         "collections": staged.item_collection_paths(report.item_hash),
     })
 }
 
 #[test]
-#[ignore = "requires PARHELION_DEFAULT_WEAPONS_PACKAGES and PARHELION_GEAR_ARTIFACTS; builds and stages gear"]
+#[ignore = "requires SUNDIAL_INSTALL and SUNDIAL_TEST_ARTIFACTS; stages subclasses from every stock donor"]
+fn every_class_subclasses_remove_the_native_equip_requirement() {
+    let packages = crate::test_support::install().join("packages");
+    let artifacts = crate::test_support::artifact_dir("gear").join("class-requirements");
+    fs::create_dir_all(&artifacts).unwrap();
+    let stock = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
+    let bases = stock.subclasses(crate::package_profile::is_stock_item_definition);
+    let recipes = bases
+        .iter()
+        .flat_map(|base| {
+            [false, true].map(|every| {
+                let mut recipe = WeaponRecipe::new_unbound_kind(ItemKind::Subclass).unwrap();
+                recipe.set_donor(base.hash, base.name.clone());
+                recipe
+                    .rename_authored_item(format!(
+                        "{} {}",
+                        base.name,
+                        if every { "Every Class" } else { "Base Class" }
+                    ))
+                    .unwrap();
+                recipe.overrides.subclass_every_class = every;
+                if every && base.hash == bases[0].hash {
+                    recipe.type_name = Some("Subclass".into());
+                }
+                recipe
+            })
+        })
+        .collect::<Vec<_>>();
+    let snapshot = crate::BatchBuildSnapshot::new(crate::BatchBuildRequest {
+        package_directory: packages.clone(),
+        staging_root: artifacts.join("staging"),
+        ignore_installed_authored_overlays: true,
+        recipes: recipes.clone(),
+        maps: Vec::new(),
+    })
+    .unwrap();
+    let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |_| {}).unwrap();
+    let view = artifacts.join("view");
+    staged_view(&packages, &build, &view);
+    let staged = InvestmentCatalog::load_with_cache_path(
+        &view,
+        &artifacts.join("catalog.json"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let manager = open_shadowkeep_package_manager(&view.join("packages")).unwrap();
+    // Read the reachable equipment conditions independently of the authoring helper.
+    let requirements = |hash| {
+        let definition = manager
+            .read_tag(tiger_pkg::TagHash(
+                staged.item_definition_tag(hash).unwrap(),
+            ))
+            .unwrap();
+        let equipment = crate::tag_payload::relative_target(&definition, 0x10).unwrap();
+        let (count, _, groups, class) =
+            crate::tag_payload::array_at(&definition, equipment).unwrap();
+        assert_eq!(class, 0x8080_7D2F);
+        (0..count)
+            .map(|index| {
+                let (count, _, rows, class) =
+                    crate::tag_payload::array_at(&definition, groups + index * 16).unwrap();
+                assert_eq!(class, 0x8080_7D31);
+                (0..count)
+                    .map(|index| {
+                        let row = rows + index * 8;
+                        (
+                            crate::tag_payload::read_u16(&definition, row).unwrap(),
+                            crate::tag_payload::read_u16(&definition, row + 4).unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut readback = Vec::new();
+    for (base, pair) in bases.iter().zip(recipes.chunks_exact(2)) {
+        let stock_requirements = requirements(base.hash);
+        assert_eq!(stock_requirements.len(), 1);
+        for recipe in pair {
+            let hash = recipe.identity.item_hash.parse_u32().unwrap();
+            let every = recipe.overrides.subclass_every_class;
+            let actual = requirements(hash);
+            assert_eq!(
+                actual,
+                if every {
+                    vec![]
+                } else {
+                    stock_requirements.clone()
+                },
+                "{} equip conditions",
+                recipe.name
+            );
+            assert_eq!(
+                staged.item_class_type(hash),
+                Some(if every { 3 } else { base.class_type })
+            );
+            let expected_type = recipe.type_name.clone().unwrap_or_else(|| {
+                if every {
+                    "Guardian Subclass".into()
+                } else {
+                    stock.item_type_name(base.hash).unwrap()
+                }
+            });
+            assert_eq!(staged.item_type_name(hash), Some(expected_type.clone()));
+            let own = staged
+                .subclasses(|_| true)
+                .into_iter()
+                .find(|item| item.hash == hash)
+                .unwrap();
+            assert_eq!(
+                own.entry_entities, base.entry_entities,
+                "{} keeps its abilities",
+                recipe.name
+            );
+            readback.push(serde_json::json!({"name": recipe.name, "item_hash": hash, "donor": base.hash, "class": own.class_type, "type_name": expected_type, "requirements": actual}));
+        }
+        assert_eq!(staged.item_class_type(base.hash), Some(base.class_type));
+        assert_eq!(requirements(base.hash), stock_requirements);
+    }
+    fs::write(
+        artifacts.join("readback.json"),
+        serde_json::to_vec_pretty(&readback).unwrap(),
+    )
+    .unwrap();
+    fs::remove_dir_all(&view).unwrap();
+}
+
+#[test]
+#[ignore = "requires SUNDIAL_INSTALL and SUNDIAL_TEST_ARTIFACTS; builds and stages gear"]
 fn gear_of_every_kind_goes_from_the_new_menu_to_staged_packages() {
-    let packages = PathBuf::from(
-        std::env::var_os("PARHELION_DEFAULT_WEAPONS_PACKAGES")
-            .expect("PARHELION_DEFAULT_WEAPONS_PACKAGES names the installed packages"),
-    );
-    let artifacts = PathBuf::from(
-        std::env::var_os("PARHELION_GEAR_ARTIFACTS")
-            .expect("PARHELION_GEAR_ARTIFACTS names an output folder on the packages' drive"),
-    );
+    let packages = crate::test_support::install().join("packages");
+    let artifacts = crate::test_support::artifact_dir("gear");
     fs::create_dir_all(artifacts.join("recipes")).unwrap();
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let mut app = PackageAuthoringApp {
         packages: packages.clone(),
         perk_workbench: Workbench::offline(),
@@ -2193,13 +1633,17 @@ fn gear_of_every_kind_goes_from_the_new_menu_to_staged_packages() {
     .filter(|(kind, _)| wanted(*kind))
     .map(|(kind, origin)| author(&ctx, &mut app, kind, origin))
     .collect::<Vec<_>>();
+    let emblem = wanted(ItemKind::Emblem).then(|| author_emblem(&ctx, &mut app));
     let shader = wanted(ItemKind::Shader).then(|| author_shader(&ctx, &mut app));
     let subclass = wanted(ItemKind::Subclass).then(|| author_subclass(&ctx, &mut app));
+    let retarget = wanted(ItemKind::Subclass).then(|| author_retarget(&ctx, &mut app));
     let recipes = authored
         .iter()
         .map(|item| item.recipe.clone())
+        .chain(emblem.iter().map(|emblem| emblem.recipe.clone()))
         .chain(shader.iter().map(|shader| shader.recipe.clone()))
         .chain(subclass.iter().map(|subclass| subclass.recipe.clone()))
+        .chain(retarget.iter().map(|retarget| retarget.recipe.clone()))
         .collect::<Vec<_>>();
     assert!(!recipes.is_empty(), "PARHELION_GEAR_KINDS names no kind");
     for recipe in &recipes {
@@ -2219,6 +1663,7 @@ fn gear_of_every_kind_goes_from_the_new_menu_to_staged_packages() {
         staging_root: artifacts.join("staging"),
         ignore_installed_authored_overlays: true,
         recipes: recipes.clone(),
+        maps: Vec::new(),
     })
     .unwrap();
     let build = crate::build_and_stage_snapshot_with_progress(&snapshot, |progress| {
@@ -2242,38 +1687,71 @@ fn gear_of_every_kind_goes_from_the_new_menu_to_staged_packages() {
         |_| {},
     )
     .unwrap();
-    let readback = authored
-        .iter()
-        .map(|item| read_back(&staged, &build, item, (brand, &view.join("packages"))))
-        .chain(shader.iter().map(|shader| {
-            read_back_shader(
-                &staged,
-                &build,
-                shader,
-                brand,
-                &view.join("packages"),
-                &artifacts,
-            )
-        }))
-        .chain(subclass.iter().map(|subclass| {
-            // The live install may already carry authored lists, so the stock baseline is the
-            // packages the staged view started from, with no build in them.
-            let stock_view = artifacts.join("stock-view");
-            package_view(&packages, &[], &stock_view);
-            let stock = InvestmentCatalog::load_with_cache_path(
-                &stock_view,
-                &artifacts.join("stock-catalog.json"),
-                true,
-                |_| {},
-            )
-            .unwrap();
-            read_back_subclass(&stock, &staged, &build, subclass)
-        }))
-        .collect::<Vec<_>>();
+    let readback =
+        authored
+            .iter()
+            .map(|item| read_back(&staged, &build, item, (brand, &view.join("packages"))))
+            .chain(emblem.iter().map(|emblem| {
+                read_back_emblem(
+                    &staged,
+                    &build,
+                    emblem,
+                    (brand, &view.join("packages")),
+                    &artifacts,
+                )
+            }))
+            .chain(shader.iter().map(|shader| {
+                read_back_shader(
+                    &staged,
+                    &build,
+                    shader,
+                    brand,
+                    &view.join("packages"),
+                    &artifacts,
+                )
+            }))
+            .chain(subclass.iter().map(|subclass| {
+                // The live install may already carry authored lists, so the stock baseline is the
+                // packages the staged view started from, with no build in them.
+                let stock_view = artifacts.join("stock-view");
+                package_view(&packages, &[], &stock_view);
+                let stock = InvestmentCatalog::load_with_cache_path(
+                    &stock_view,
+                    &artifacts.join("stock-catalog.json"),
+                    true,
+                    |_| {},
+                )
+                .unwrap();
+                read_back_subclass((&stock, &staged), &build, subclass, &view.join("packages"))
+            }))
+            .chain(retarget.iter().map(|retarget| {
+                read_back_retarget(&staged, &build, retarget, &view.join("packages"))
+            }))
+            .collect::<Vec<_>>();
     fs::write(
         artifacts.join("readback.json"),
         serde_json::to_vec_pretty(&readback).unwrap(),
     )
     .unwrap();
     fs::remove_dir_all(&view).unwrap();
+}
+
+fn tuning_parameter(bank: &sundial::investment::AbilityRowSummary) -> (u32, f32) {
+    assert!(bank.charges, "a grenade's bank takes charge rows");
+    let stock = bank
+        .parameters
+        .iter()
+        .find(|parameter| {
+            sundial::package_authoring::ability_bank::parameter_label(parameter.name).is_some()
+        })
+        .or(bank.parameters.first())
+        .expect("a grenade's bank has script parameters a row can set");
+    (
+        stock.name,
+        if stock.reset == 0.0 {
+            1.0
+        } else {
+            stock.reset * 1.5
+        },
+    )
 }

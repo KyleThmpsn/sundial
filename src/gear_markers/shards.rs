@@ -49,7 +49,7 @@ fn plans<'a>(
     jobs: &'a [Vec<u32>],
     snapshot: &Snapshot,
 ) -> Result<Vec<Plan<'a>>, String> {
-    let directory = crate::paths::cache_dir().map(|root| {
+    let directory = crate::system::paths::cache_dir().map(|root| {
         root.join(crate::sandbox_perk::CACHE_DIRECTORY)
             .join("marker-shards")
     });
@@ -61,7 +61,9 @@ fn plans<'a>(
             let path = directory
                 .as_ref()
                 .map(|directory| {
-                    source.key().map(|key| {
+                    // By the files alone: a build's stock view and the Sunrise mod view link the
+                    // same files into a new directory each time.
+                    source.files_key().map(|key| {
                         directory.join(format!("{}-{package:04x}-{key}.json", kind.prefix()))
                     })
                 })
@@ -79,7 +81,7 @@ fn plans<'a>(
 fn load<T: DeserializeOwned>(plan: &Plan<'_>) -> Option<Vec<(u32, Result<T, String>)>> {
     let bytes = std::fs::read(plan.path.as_ref()?).ok()?;
     let saved: Saved<T> = cache_file::read(&bytes).ok()?;
-    if saved.snapshot != plan.snapshot
+    if saved.snapshot.files_key().ok() != plan.snapshot.files_key().ok()
         || saved.package != plan.package
         || saved.rows.iter().map(|(tag, _)| tag).ne(plan.tags.iter())
     {

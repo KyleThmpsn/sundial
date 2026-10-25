@@ -270,16 +270,15 @@ pub(super) fn fold_regions(text: &str) -> Vec<FoldRegion> {
                 }
                 b'}' | b']' => {
                     let expected = if byte == b'}' { b'{' } else { b'[' };
-                    if stack.last().is_some_and(|open| open.delimiter == expected) {
-                        let open = stack.pop().expect("the matching section was checked");
-                        if line > open.line {
-                            regions.push(FoldRegion {
-                                id: open.id,
-                                open_byte: open.byte,
-                                close_byte: index,
-                                open_line: open.line,
-                            });
-                        }
+                    if let Some(open) = stack.pop_if(|open| open.delimiter == expected)
+                        && line > open.line
+                    {
+                        regions.push(FoldRegion {
+                            id: open.id,
+                            open_byte: open.byte,
+                            close_byte: index,
+                            open_line: open.line,
+                        });
                     }
                 }
                 _ => {}
@@ -323,7 +322,7 @@ pub(super) fn visible_line_numbers(source: &str, projection: &FoldProjection) ->
 pub(super) fn line_number_gutter_width(ui: &egui::Ui, line_count: usize) -> i8 {
     let digits = line_count.to_string().len();
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-    let digit_width = ui.fonts(|fonts| fonts.glyph_width(&font_id, '0'));
+    let digit_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font_id, '0'));
     ((digits as f32 * digit_width + 34.0).ceil() as i8).clamp(44, 120)
 }
 
@@ -345,9 +344,9 @@ pub(super) fn paint_line_numbers(
     let mut toggled = None;
 
     for (index, row) in output.galley.rows.iter().enumerate() {
-        let center_y = output.galley_pos.y + row.rect.center().y;
-        if center_y < clip_rect.top() - row.rect.height()
-            || center_y > clip_rect.bottom() + row.rect.height()
+        let center_y = output.galley_pos.y + row.rect().center().y;
+        if center_y < clip_rect.top() - row.rect().height()
+            || center_y > clip_rect.bottom() + row.rect().height()
         {
             continue;
         }
@@ -367,7 +366,7 @@ pub(super) fn paint_line_numbers(
             let is_folded = folded.contains(&region.id);
             let icon_rect = egui::Rect::from_center_size(
                 egui::pos2(icon_x, center_y),
-                egui::vec2(16.0, row.rect.height()),
+                egui::vec2(16.0, row.rect().height()),
             );
             let interaction = ui
                 .interact(

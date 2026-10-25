@@ -2,7 +2,7 @@
 use super::*;
 use crate::d2_mot::reader::Reader;
 use sha2::{Digest, Sha256};
-mod decompiler;
+pub(crate) mod decompiler;
 mod references;
 
 /// Add source optic rendering to a copied import without rebuilding its audio or animations.
@@ -36,6 +36,11 @@ pub fn refresh_optics(prepared: &Path, graph: &Path, out: &Path) -> Result<Value
         &mut progress,
     )?;
     effects::refresh_optics(prepared, graph, &refs, &bindings, out)
+}
+
+/// The pinned shader decompiler, fetched on first use.
+pub(crate) fn decompiler(progress: &mut dyn FnMut(String)) -> Result<PathBuf> {
+    decompiler::prepare(progress)
 }
 
 const TEMPLATES: &[(u32, &str)] = &[

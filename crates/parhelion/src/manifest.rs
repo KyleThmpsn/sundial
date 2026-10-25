@@ -27,8 +27,22 @@ pub(crate) struct ManifestDocument {
     pub(crate) ignored_authored_files: Vec<String>,
     pub(crate) selection_fingerprint: String,
     pub(crate) selected_recipe_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) selected_map_files: Vec<String>,
     pub(crate) project: ManifestProject,
     pub(crate) artifacts: Vec<ArtifactMetadata>,
+    /// The merge data beside each package of a mod-folder build, which Sunrise reads to merge
+    /// the rows Parhelion and other mods add to one table. Empty for other builds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) merge_data: Vec<ArtifactMetadata>,
+    /// Optional source provenance installed with this package generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) map_diagnostics: Option<ArtifactMetadata>,
+    /// Executable mission sidecars published atomically with their activity packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) mission_scripts: Vec<ArtifactMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) mods: Vec<crate::mod_family::Member>,
 }
 
 impl ManifestDocument {
@@ -44,7 +58,14 @@ impl ManifestDocument {
         }
         validate_sha256("selection fingerprint", &self.selection_fingerprint)?;
         validate_ignored_authored_files(&self.ignored_authored_files)?;
-        validate_selected_recipe_files(&self.selected_recipe_files)?;
+        validate_selected_recipe_files(
+            &self
+                .selected_recipe_files
+                .iter()
+                .chain(&self.selected_map_files)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )?;
         if self.selected_recipe_files.len() != self.project.weapons.len() {
             return Err(format!(
                 "The manifest lists {} selected recipe files for {} authored weapons",
@@ -54,8 +75,66 @@ impl ManifestDocument {
         }
         validate_artifact_metadata("source artifact", &self.source_artifacts)?;
         validate_artifact_metadata("artifact", &self.artifacts)?;
+        validate_artifact_metadata("merge data", &self.merge_data)?;
+        validate_merge_data(&self.artifacts, &self.merge_data)?;
+        validate_artifact_metadata("mission controller", &self.mission_scripts)?;
+        let mut scripts = BTreeSet::new();
+        for artifact in &self.mission_scripts {
+            use sundial::package_authoring::mod_content::mission_script;
+            if mission_script::path(&artifact.file_name).is_none()
+                || artifact.byte_length > mission_script::BYTE_LIMIT
+                || !scripts.insert(&artifact.file_name)
+            {
+                return Err("Invalid or repeated mission controller artifact".into());
+            }
+        }
+        crate::mod_family::validate(
+            &self.mods,
+            &self.artifacts,
+            &self.merge_data,
+            self.map_diagnostics.as_ref(),
+            &self.mission_scripts,
+        )?;
+        if let Some(artifact) = &self.map_diagnostics {
+            use sundial::package_authoring::mod_content::map_diagnostics;
+            if artifact.file_name != map_diagnostics::FILE_NAME
+                || artifact.byte_length == 0
+                || artifact.byte_length > map_diagnostics::BYTE_LIMIT
+            {
+                return Err("Invalid map diagnostics artifact".into());
+            }
+            validate_sha256("map diagnostics", &artifact.sha256)?;
+        }
         self.project.validate()
     }
+}
+
+/// Merge data sits beside its package under the same name, and a build has it for every package
+/// or for none, since Sunrise ignores all of a mod's merge data when a file lacks it.
+fn validate_merge_data(
+    artifacts: &[ArtifactMetadata],
+    merge_data: &[ArtifactMetadata],
+) -> Result<(), String> {
+    if merge_data.is_empty() {
+        return Ok(());
+    }
+    let packages = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.file_name.strip_suffix(".pkg"))
+        .collect::<BTreeSet<_>>();
+    let described = merge_data
+        .iter()
+        .map(|data| {
+            data.file_name
+                .strip_suffix(".merge")
+                .filter(|stem| packages.contains(stem))
+                .ok_or_else(|| format!("Merge data {} sits beside no package", data.file_name))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if described.len() != merge_data.len() || described != packages {
+        return Err("The manifest needs merge data for every package or for none".to_owned());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -165,9 +244,20 @@ impl ManifestProject {
                         definition_tag: ManifestHash::new(plan.template_definition_tag.0),
                         string_tag: ManifestHash::new(plan.template_string_tag.0),
                     },
+                    // A subclass for another class goes to that class's characters.
                     class_type: (recipe.kind == ItemKind::Subclass)
-                        .then(|| subclass_classes.get(&plan.template_item_hash).copied())
+                        .then(|| {
+                            recipe
+                                .overrides
+                                .subclass_class
+                                .and_then(crate::ArmorClass::native_class)
+                                .or_else(|| {
+                                    subclass_classes.get(&plan.template_item_hash).copied()
+                                })
+                        })
                         .flatten(),
+                    every_class: recipe.kind == ItemKind::Subclass
+                        && recipe.overrides.subclass_every_class,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -283,6 +373,9 @@ pub(crate) struct ManifestWeapon {
     /// from, the install adds the subclass to each character of this class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) class_type: Option<u8>,
+    /// A subclass the install adds to every character, equipping it only on its own class's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) every_class: bool,
 }
 
 impl ManifestWeapon {
@@ -303,14 +396,22 @@ impl ManifestWeapon {
                 self.namespace
             ));
         }
-        if subclass != (self.collectible.is_none() && self.unlock.is_none())
+        if self.every_class && (!subclass || self.class_type.is_none()) {
+            return Err(format!(
+                "Manifest {} {} is for every class without being a subclass with a class",
+                self.kind.noun(),
+                self.namespace
+            ));
+        }
+        let collected = self.kind.has_collections();
+        if collected == (self.collectible.is_none() && self.unlock.is_none())
             || self.collectible.is_none() != self.unlock.is_none()
         {
             return Err(format!(
                 "Manifest {} {} has {} Collections entry",
                 self.kind.noun(),
                 self.namespace,
-                if subclass { "a" } else { "no complete" }
+                if collected { "no complete" } else { "a" }
             ));
         }
         for (label, hash) in [
@@ -459,20 +560,67 @@ fn validate_package_tag(owner: &str, label: &str, tag: ManifestHash) -> Result<(
 }
 
 pub(crate) fn recipe_selection_fingerprint(recipes: &[WeaponRecipe]) -> Result<String, String> {
-    let mut digest = Sha256::new();
+    selection_fingerprint(recipes, &[])
+}
+
+pub(crate) fn selection_fingerprint(
+    recipes: &[WeaponRecipe],
+    maps: &[crate::map::MapRecipe],
+) -> Result<String, String> {
+    let mut selection = SelectionFingerprint::default();
     for recipe in recipes {
-        let encoded = recipe.to_json_pretty().map_err(|error| {
-            format!(
-                "Recipe: {:?} ({})\nItem: {}\nCould not normalize recipe: {error}",
-                recipe.name,
-                recipe.namespace,
-                recipe.identity.item_hash.as_str()
-            )
-        })?;
-        digest.update(encoded.len().to_le_bytes());
-        digest.update(encoded.as_bytes());
+        selection.add(&canonical_recipe(recipe)?);
     }
-    Ok(format!("{:X}", digest.finalize()))
+    for map in maps {
+        selection.add(&canonical_map(map)?);
+    }
+    Ok(selection.finish())
+}
+
+pub(crate) fn canonical_map(map: &crate::map::MapRecipe) -> Result<String, String> {
+    map.validate().map_err(|error| error.to_string())?;
+    serde_json::to_string_pretty(map)
+        .map_err(|error| format!("Could not normalize map {}: {error}", map.name))
+}
+
+/// A recipe's canonical encoding, the bytes its fingerprint and its staged snapshot hold.
+pub(crate) fn canonical_recipe(recipe: &WeaponRecipe) -> Result<String, String> {
+    recipe.to_json_pretty().map_err(|error| {
+        format!(
+            "Recipe: {:?} ({})\nItem: {}\nCould not normalize recipe: {error}",
+            recipe.name,
+            recipe.namespace,
+            recipe.identity.item_hash.as_str()
+        )
+    })
+}
+
+/// The fingerprint of a recipe selection: SHA-256 over each recipe's canonical encoding in
+/// order, each after its length. A caller that already holds an encoding, as staging does when
+/// it writes the snapshot or installation does when it reads one, adds it without encoding the
+/// recipe again. An imported recipe's encoding packs its whole model, so encoding it is the
+/// expensive part.
+#[derive(Default)]
+pub(crate) struct SelectionFingerprint {
+    digest: Sha256,
+}
+
+impl SelectionFingerprint {
+    pub(crate) fn add(&mut self, encoded: &str) {
+        self.digest.update(encoded.len().to_le_bytes());
+        self.digest.update(encoded.as_bytes());
+    }
+
+    pub(crate) fn finish(self) -> String {
+        hex::encode_upper(self.digest.finalize())
+    }
+
+    /// The fingerprint of one recipe whose canonical encoding is `encoded`.
+    pub(crate) fn of(encoded: &str) -> String {
+        let mut one = Self::default();
+        one.add(encoded);
+        one.finish()
+    }
 }
 
 fn parse_canonical_hash(encoded: &str) -> Result<u32, String> {
@@ -643,7 +791,7 @@ mod tests {
             incomplete
                 .validate()
                 .unwrap_err()
-                .contains("0 authored weapons but 1 watermarked icon containers")
+                .contains("watermarked icon containers")
         );
     }
 }

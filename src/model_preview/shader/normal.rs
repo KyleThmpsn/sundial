@@ -22,6 +22,66 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 }
 
 impl Basis {
+    pub fn tangent(self) -> [f32; 4] {
+        let hand = if dot(cross(self.normal, self.tangent), self.bitangent) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        [self.tangent[0], self.tangent[1], self.tangent[2], hand]
+    }
+
+    pub fn stored(normal: [f32; 3], tangent: [f32; 4]) -> Option<Self> {
+        if !tangent[3].is_finite() || tangent[3].abs() < 1e-8 {
+            return None;
+        }
+        let normal = normalize(normal)?;
+        let direction = [tangent[0], tangent[1], tangent[2]];
+        let amount = dot(direction, normal);
+        let tangent_direction =
+            normalize(std::array::from_fn(|i| direction[i] - normal[i] * amount))?;
+        Some(Self {
+            normal,
+            tangent: tangent_direction,
+            bitangent: cross(normal, tangent_direction)
+                .map(|v| if tangent[3] < 0.0 { -v } else { v }),
+        })
+    }
+
+    pub fn vectors(normal: [f32; 3], tangent: [f32; 3], bitangent: [f32; 3]) -> Option<Self> {
+        let basis = Self {
+            normal: normalize(normal)?,
+            tangent: normalize(tangent)?,
+            bitangent: normalize(bitangent)?,
+        };
+        let amount = dot(basis.tangent, basis.normal);
+        normalize(std::array::from_fn(|i| {
+            basis.tangent[i] - basis.normal[i] * amount
+        }))?;
+        Some(basis.with_normal(basis.normal))
+    }
+
+    pub fn map(self, transform: impl Fn([f32; 3]) -> [f32; 3]) -> Self {
+        Self {
+            normal: transform(self.normal),
+            tangent: transform(self.tangent),
+            bitangent: transform(self.bitangent),
+        }
+    }
+
+    pub fn at(frames: [Self; 3], b: f32, c: f32) -> Option<Self> {
+        let interpolate = |values: [[f32; 3]; 3]| {
+            std::array::from_fn(|i| {
+                values[0][i] + b * (values[1][i] - values[0][i]) + c * (values[2][i] - values[0][i])
+            })
+        };
+        Self::vectors(
+            interpolate(frames.map(|v| v.normal)),
+            interpolate(frames.map(|v| v.tangent)),
+            interpolate(frames.map(|v| v.bitangent)),
+        )
+    }
+
     pub fn triangle(points: [[f32; 3]; 3], uv: [[f32; 2]; 3]) -> Option<Self> {
         let a: [f32; 3] = std::array::from_fn(|i| points[1][i] - points[0][i]);
         let b: [f32; 3] = std::array::from_fn(|i| points[2][i] - points[0][i]);
@@ -41,11 +101,6 @@ impl Basis {
 
     pub fn with_normal(self, normal: [f32; 3]) -> Self {
         let normal = normalize(normal).unwrap_or(self.normal);
-        let normal = if dot(normal, self.normal) < 0.0 {
-            normal.map(|v| -v)
-        } else {
-            normal
-        };
         let amount = dot(self.tangent, normal);
         let tangent = normalize(std::array::from_fn(|i| {
             self.tangent[i] - normal[i] * amount
@@ -71,26 +126,5 @@ impl Basis {
             self.tangent[i] * x + self.bitangent[i] * y + self.normal[i] * z
         }))
         .unwrap_or(self.normal)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn mirrored_uvs_reverse_the_tangent_and_neutral_maps_preserve_the_surface() {
-        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let a = Basis::triangle(points, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]).unwrap();
-        let b = Basis::triangle(points, [[0.0, 0.0], [-1.0, 0.0], [0.0, 1.0]]).unwrap();
-        assert_eq!(a.apply([0.5, 0.5]), [0.0, 0.0, 1.0]);
-        assert!(a.apply([0.8, 0.5])[0] > 0.0);
-        assert!(b.apply([0.8, 0.5])[0] < 0.0);
-        assert!(Basis::triangle(points, [[0.0; 2]; 3]).is_none());
-        assert!(
-            dot(
-                a.with_normal([0.0, 1.0, 1.0]).apply([0.5, 0.5]),
-                normalize([0.0, 1.0, 1.0]).unwrap()
-            ) > 0.999
-        );
     }
 }

@@ -64,6 +64,7 @@ fn legacy_unlock_sync_ignores_an_existing_database() {
         &settings,
         &[(200, 1, 42)],
         save_unlock_test_settings(&directory),
+        || Ok(()),
     )
     .unwrap();
     assert_eq!(saved_path, settings);
@@ -86,6 +87,7 @@ fn sqlite_unlock_sync_updates_active_database_and_preserves_json() {
         &settings,
         &[(200, 1, 42)],
         save_unlock_test_settings(&directory),
+        || Ok(()),
     )
     .unwrap();
 
@@ -125,6 +127,7 @@ fn already_acquired_authored_unlocks_do_not_rewrite_or_back_up_settings() {
         &settings,
         &[(200, 1, 42)],
         save_unlock_test_settings(&directory),
+        || Ok(()),
     )
     .unwrap();
 
@@ -155,6 +158,7 @@ fn authored_unlock_sync_refuses_to_overwrite_a_newer_settings_document() {
         original,
         &[(200, 1, 42)],
         save_unlock_test_settings(&directory),
+        || Ok(()),
     )
     .unwrap_err();
 
@@ -178,10 +182,11 @@ fn authored_unlock_sync_accepts_the_last_extended_account_flag_byte() {
         &settings,
         &[(
             200,
-            crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
+            crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
             slot,
         )],
         save_unlock_test_settings(&directory),
+        || Ok(()),
     )
     .unwrap();
 
@@ -206,10 +211,11 @@ fn authored_unlock_sync_rejects_the_first_byte_of_the_next_account_region() {
         &settings,
         &[(
             200,
-            crate::account_contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
+            crate::account::contract::SHADOWKEEP_ACCOUNT_FLAG_BANK,
             slot,
         )],
         save_unlock_test_settings(&directory),
+        || Ok(()),
     )
     .unwrap_err();
 
@@ -243,6 +249,7 @@ fn authored_unlock_sync_preserves_v8_and_v13_documents_and_is_idempotent() {
             &settings,
             &[(21613, 1, 11923), (21614, 1, 11924)],
             save_unlock_test_settings(&directory),
+            || Ok(()),
         )
         .unwrap();
         assert_eq!(changed, 2);
@@ -255,6 +262,7 @@ fn authored_unlock_sync_preserves_v8_and_v13_documents_and_is_idempotent() {
             &settings,
             &[(21613, 1, 11923), (21614, 1, 11924)],
             save_unlock_test_settings(&directory),
+            || Ok(()),
         )
         .unwrap();
         assert_eq!(changed, 0);

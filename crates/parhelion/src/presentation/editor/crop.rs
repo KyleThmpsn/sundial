@@ -26,10 +26,10 @@ impl Selection {
         if response.drag_started() {
             self.anchor = response.interact_pointer_pos().map(|p| rect.clamp(p));
         }
-        if response.dragged() {
-            if let (Some(anchor), Some(pointer)) = (self.anchor, response.interact_pointer_pos()) {
-                *crop = selection(rect, anchor, rect.clamp(pointer));
-            }
+        if response.dragged()
+            && let (Some(anchor), Some(pointer)) = (self.anchor, response.interact_pointer_pos())
+        {
+            *crop = selection(rect, anchor, rect.clamp(pointer));
         }
         if response.drag_stopped() {
             self.anchor = None;
@@ -107,10 +107,10 @@ pub(super) fn controls(ui: &mut egui::Ui, crop: &mut [u16; 4], source: &image::R
     if ui.button("Reset Crop").clicked() {
         *crop = [0, 0, UNITS, UNITS];
     }
-    if ui.button("Trim Transparent Padding").clicked() {
-        if let Some(bounds) = alpha_bounds(source) {
-            *crop = bounds;
-        }
+    if ui.button("Trim Transparent Padding").clicked()
+        && let Some(bounds) = alpha_bounds(source)
+    {
+        *crop = bounds;
     }
 }
 
@@ -137,32 +137,4 @@ fn alpha_bounds(source: &image::RgbaImage) -> Option<[u16; 4]> {
         upper(right, source.width()) - x,
         upper(bottom, source.height()) - y,
     ])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reversed_crop_drags_and_transparent_padding_preserve_source_bounds() {
-        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 100.0));
-        let a = egui::pos2(60.0, 45.0);
-        let b = egui::pos2(160.0, 95.0);
-        assert_eq!(selection(rect, a, b), [2500, 2500, 5000, 5000]);
-        assert_eq!(selection(rect, b, a), [2500, 2500, 5000, 5000]);
-        let source = image::RgbaImage::from_fn(80, 40, |x, y| {
-            image::Rgba([
-                0,
-                0,
-                0,
-                if (20..60).contains(&x) && (10..30).contains(&y) {
-                    255
-                } else {
-                    0
-                },
-            ])
-        });
-        assert_eq!(alpha_bounds(&source), Some([2500, 2500, 5000, 5000]));
-        assert_eq!(alpha_bounds(&image::RgbaImage::new(20, 20)), None);
-    }
 }

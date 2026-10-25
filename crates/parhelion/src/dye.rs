@@ -15,6 +15,20 @@ pub const IRIDESCENCE_ROWS: i16 = 128;
 /// A surface with no iridescence.
 pub const NO_IRIDESCENCE: i16 = -1;
 
+/// Preserve base colors while allowing equipped shaders to replace locked channels.
+pub(crate) fn unlock_base_colors(rows: &mut [Vec<crate::WeaponDyeReferenceOverride>; 3]) {
+    let locked = std::mem::take(&mut rows[2]);
+    let channels = locked
+        .iter()
+        .map(|row| row.channel_index)
+        .collect::<std::collections::BTreeSet<_>>();
+    // A source custom row must not hide the previously locked base color once
+    // that color becomes a default. Keep unrelated custom channels intact.
+    rows[0].retain(|row| !channels.contains(&row.channel_index));
+    rows[1].retain(|row| !channels.contains(&row.channel_index));
+    rows[1].extend(locked);
+}
+
 /// One of the three channels every gear type paints with its own dye.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -148,16 +162,6 @@ impl GearType {
     }
 }
 
-/// The first dye key of each gear type: armor, weapons, ships, Sparrows and Ghost Shells. A key
-/// is its gear type's first key plus the channel's offset.
-pub const GEAR_TYPE_KEYS: [i8; 5] = [
-    GearType::Armor.first_key(),
-    GearType::Weapon.first_key(),
-    GearType::Ship.first_key(),
-    GearType::Sparrow.first_key(),
-    GearType::GhostShell.first_key(),
-];
-
 /// The gear type and channel a dye key paints, if it is one of the gear-type keys.
 #[must_use]
 pub fn slot_of_key(key: i8) -> Option<(GearType, DyeChannel)> {
@@ -167,12 +171,6 @@ pub fn slot_of_key(key: i8) -> Option<(GearType, DyeChannel)> {
             .find(|channel| gear.key(*channel) == key)
             .map(|channel| (gear, channel))
     })
-}
-
-/// The channel a dye key paints, if it is one of the gear-type keys.
-#[must_use]
-pub fn channel_of_key(key: i8) -> Option<DyeChannel> {
-    slot_of_key(key).map(|(_, channel)| channel)
 }
 
 /// Where a dye's values sit among its 27 material vectors, for the primary and the secondary

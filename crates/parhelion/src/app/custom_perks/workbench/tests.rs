@@ -1,28 +1,13 @@
-mod accessibility;
-mod canvas;
-pub(crate) mod capture;
+pub(crate) use sundial::test_support::capture;
 mod cards;
 mod entry;
-mod guidance;
-mod identity;
+mod gaps;
 mod library_controls;
 mod library_issues;
-mod navigation;
+mod weapon_properties;
 use super::attachment::{Change, Target};
 use super::*;
-use crate::app::custom_perks::workbench::parameters::tests::{editor, fixture};
-
-impl Workbench {
-    pub(in crate::app) fn set_test_editor(&mut self, editor: PerkEditor) {
-        self.initialized = true;
-        self.open = true;
-        let mut recipe = PerkRecipe::new();
-        recipe.effects.push(PerkRecipe::effect(1178));
-        self.documents = vec![Document::new(recipe, None)];
-        self.editing_effect = Some(1178);
-        self.editor = Some(editor);
-    }
-}
+use crate::test_support::driver::label;
 
 fn frame(
     ctx: &egui::Context,
@@ -32,129 +17,20 @@ fn frame(
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
     let weapon = WeaponRecipe::every_end();
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |ctx| {
+        |ui| {
             assert!(
                 workbench
-                    .show(ctx, Path::new(""), None, &[], experimental, (&weapon, None))
+                    .show(ui, Path::new(""), None, &[], experimental, (&weapon, None))
                     .is_none()
             );
         },
     )
-}
-
-fn label(output: &egui::FullOutput, name: &str) -> Option<egui::Rect> {
-    output.shapes.iter().find_map(|shape| match &shape.shape {
-        egui::Shape::Text(text) if text.galley.job.text == name => {
-            Some(text.galley.rect.translate(text.pos.to_vec2()))
-        }
-        _ => None,
-    })
-}
-
-#[test]
-fn inline_parameters_keep_back_and_validation_available_during_loading() {
-    let mut pending = editor(fixture());
-    let (sender, receiver) = mpsc::channel();
-    pending.receiver = Some(receiver);
-    pending.graph = None;
-    let mut workbench = Workbench::default();
-    workbench.set_test_editor(pending);
-    let ctx = egui::Context::default();
-    let mut output = egui::FullOutput::default();
-    for _ in 0..3 {
-        output = frame(
-            &ctx,
-            &mut workbench,
-            false,
-            egui::vec2(1000.0, 720.0),
-            vec![],
-        );
-    }
-    assert!(label(&output, "Wait for the perk data").is_none());
-    let position = label(&output, "Back").expect("Back while loading").center();
-    for pressed in [true, false] {
-        frame(
-            &ctx,
-            &mut workbench,
-            false,
-            egui::vec2(1000.0, 720.0),
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
-    }
-    assert!(workbench.editor.is_none());
-    assert_eq!(workbench.retired_editors.len(), 1);
-    assert!(
-        workbench.documents[0].recipe.effects[0]
-            .runtime_values
-            .is_empty()
-    );
-    drop(sender);
-}
-
-#[test]
-fn discard_restores_saved_or_initial_perk_and_clears_pending_edits() {
-    for saved in [false, true] {
-        let mut workbench = Workbench::default();
-        workbench.set_test_editor(editor(fixture()));
-        let original = workbench.documents[0].recipe.clone();
-        if saved {
-            workbench.documents[0].set_baseline(Some(serde_json::to_vec(&original).unwrap()));
-        }
-        workbench.documents[0].recipe.name = "Changed".into();
-        workbench.documents[0]
-            .recipe
-            .stats
-            .push(WeaponStatOverride {
-                definition_index: 1,
-                value: 50,
-            });
-        workbench.capture_effect_draft();
-        workbench.discard_changes();
-        assert_eq!(workbench.documents[0].recipe, original);
-        assert!(workbench.documents[0].pending_effect.is_none());
-        assert!(workbench.editor.is_none());
-    }
-}
-
-#[test]
-fn save_as_new_preserves_the_original_library_file_and_pending_document() {
-    let temporary = tempfile::tempdir().unwrap();
-    let library = Library::open(temporary.path().to_owned()).unwrap();
-    let mut original = PerkRecipe::new();
-    original.effects.push(PerkRecipe::effect(405));
-    let entry = library.save(&original, None).unwrap();
-    let mut workbench = Workbench {
-        initialized: true,
-        library: Some(library.clone()),
-        documents: vec![Document::new(
-            original.clone(),
-            Some(entry.baseline.clone()),
-        )],
-        ..Default::default()
-    };
-    workbench.documents[0].recipe.description = "Modified copy".into();
-    let draft = workbench.documents[0].recipe.clone();
-    workbench.save(true);
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
-    assert_eq!(workbench.documents[0].recipe, draft);
-    assert_ne!(workbench.documents[1].recipe.id, original.id);
-    assert_eq!(workbench.documents[1].recipe.description, draft.description);
-    assert_eq!(library.scan().unwrap().entries.len(), 2);
 }
 
 /// A workbench over a temporary library holding one saved perk named Alpha.
@@ -175,47 +51,6 @@ fn workbench_with_saved_perk() -> (tempfile::TempDir, Library, PerkRecipe, Entry
         ..Default::default()
     };
     (temporary, library, original, entry, workbench)
-}
-
-#[test]
-fn duplicating_a_perk_opens_a_fresh_draft_and_leaves_the_file_alone() {
-    let (_temporary, _library, original, entry, mut workbench) = workbench_with_saved_perk();
-    workbench.duplicate(library::PerkSource::Document(0));
-    assert_eq!(workbench.documents.len(), 2);
-    assert_eq!(workbench.selected, 1);
-    let copy = &workbench.documents[1];
-    assert_eq!(copy.recipe.name, "Alpha Copy");
-    assert_ne!(copy.recipe.id, original.id);
-    assert_eq!(copy.recipe.effects, original.effects);
-    assert!(copy.baseline.is_none());
-    assert_eq!(std::fs::read(&entry.path).unwrap(), entry.baseline);
-}
-
-#[test]
-fn deleting_a_perk_removes_its_file_and_keeps_one_document_selected() {
-    let (_temporary, library, original, entry, mut workbench) = workbench_with_saved_perk();
-    workbench.duplicate(library::PerkSource::Document(0));
-    // Deleting the saved perk removes its file and its document, keeping the copy selected.
-    workbench.delete(library::PerkSource::Document(0));
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert!(!entry.path.exists());
-    assert_eq!(workbench.documents.len(), 1);
-    assert_eq!(workbench.documents[0].recipe.name, "Alpha Copy");
-    assert_eq!(workbench.selected, 0);
-    // Deleting the last document leaves a fresh, unsaved perk open.
-    workbench.delete(library::PerkSource::Document(0));
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert_eq!(workbench.documents.len(), 1);
-    assert!(workbench.documents[0].baseline.is_none());
-    assert_ne!(workbench.documents[0].recipe.name, "Alpha Copy");
-    // A saved perk that is not open can be deleted from the list as well.
-    let entry = library.save(&original, None).unwrap();
-    workbench.refresh_library();
-    assert_eq!(workbench.entries.len(), 1);
-    workbench.delete(library::PerkSource::Entry(0));
-    assert!(workbench.error.is_none(), "{:?}", workbench.error);
-    assert!(!entry.path.exists());
-    assert!(workbench.entries.is_empty());
 }
 
 #[test]
@@ -248,10 +83,10 @@ fn a_deleted_bundled_perk_is_not_added_back() {
 }
 
 #[test]
-#[ignore = "requires PARHELION_CLEAN_STOCK_PACKAGES for native stock and extra socket choices"]
+#[ignore = "requires SUNDIAL_STOCK_PACKAGES for native stock and extra socket choices"]
 fn native_workbench_roundtrip_preserves_all_effects_extra_choices_and_socket_metadata() {
-    let packages = PathBuf::from(std::env::var_os("PARHELION_CLEAN_STOCK_PACKAGES").unwrap());
-    let catalog = InvestmentCatalog::load(packages.parent().unwrap(), false, |_| {}).unwrap();
+    let packages = crate::test_support::stock_packages();
+    let catalog = crate::test_support::catalog(packages.parent().unwrap()).unwrap();
     let donor = catalog.weapon_donor(0x23DB_942F).unwrap();
     let mut weapon = WeaponRecipe::new_weapon_for_donor(
         "parhelion.workbench-parity",

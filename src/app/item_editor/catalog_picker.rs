@@ -53,7 +53,7 @@ pub(crate) fn draw_picker_row_with_icon(
     icon: Option<crate::investment::IconOverride>,
 ) -> egui::Response {
     let title =
-        crate::ui_help::emphasized_font(ui, egui::TextStyle::Button.resolve(ui.style()).size);
+        crate::ui::help::emphasized_font(ui, egui::TextStyle::Button.resolve(ui.style()).size);
     draw_row(ui, catalog, row, icon, title)
 }
 
@@ -196,7 +196,7 @@ fn limited_line_galley(
     job.wrap.max_width = max_width;
     job.wrap.max_rows = max_rows.max(1);
     job.wrap.break_anywhere = true;
-    ui.fonts(|fonts| fonts.layout_job(job))
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 pub(super) fn single_line_text(text: &str) -> String {
@@ -211,26 +211,82 @@ pub(super) fn picker_secondary_text(type_name: &str, description: &str) -> Strin
     }
 }
 
+/// The game's item tooltip for an inventory item, else the plain tooltip for any other named
+/// definition.
 pub(crate) fn catalog_item_tooltip(
     response: egui::Response,
     catalog: &Catalog,
     hash: u64,
 ) -> egui::Response {
-    if !catalog_item_tooltip_available(catalog, hash) {
-        return response;
-    }
-    response.on_hover_ui(|ui| draw_catalog_item_tooltip(ui, catalog, hash))
+    authored_item_tooltip(response, catalog, hash, AuthoredTooltip::default())
 }
 
+/// [`catalog_item_tooltip`] without the hover delay. The game's tooltip never waits.
 pub(crate) fn catalog_item_tooltip_immediate(
     response: egui::Response,
     catalog: &Catalog,
     hash: u64,
 ) -> egui::Response {
+    if catalog.item_package_metadata(hash).is_some() {
+        return crate::app::item_art::tooltip::on_hover(response, catalog, hash);
+    }
     if response.hovered() && catalog_item_tooltip_available(catalog, hash) {
         response.show_tooltip_ui(|ui| draw_catalog_item_tooltip(ui, catalog, hash));
     }
     response
+}
+
+/// What an authored item, perk or plug shows in place of the catalog's, and a closing note.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AuthoredTooltip<'a> {
+    pub text: Option<crate::investment::PlugTooltip<'a>>,
+    pub icon: Option<crate::investment::IconOverride>,
+    pub note: Option<&'a str>,
+    /// The hash names a template, such as a custom perk's, so its catalog stats are left out.
+    pub template: bool,
+}
+
+/// [`catalog_item_tooltip`] with authored text, icon or a note.
+pub(crate) fn authored_item_tooltip(
+    response: egui::Response,
+    catalog: &Catalog,
+    hash: u64,
+    authored: AuthoredTooltip<'_>,
+) -> egui::Response {
+    if catalog.item_package_metadata(hash).is_some() {
+        let text = authored.text.unwrap_or(crate::investment::PlugTooltip {
+            name: None,
+            description: None,
+            classification_hash: None,
+        });
+        return crate::app::item_art::tooltip::on_hover_authored(
+            response,
+            catalog,
+            hash,
+            crate::app::item_art::tooltip::Authored {
+                name: text.name,
+                description: text.description,
+                classification: text.classification_hash.map(u64::from),
+                icon: authored.icon,
+                note: authored.note,
+                template: authored.template,
+                ..Default::default()
+            },
+        );
+    }
+    if authored.text.is_none()
+        && authored.icon.is_none()
+        && !catalog_item_tooltip_available(catalog, hash)
+    {
+        return response;
+    }
+    response.on_hover_ui(|ui| {
+        draw_item_tooltip_with_icon(ui, catalog, hash, authored.text, authored.icon);
+        if let Some(note) = authored.note {
+            ui.separator();
+            ui.label(note);
+        }
+    })
 }
 
 pub(crate) fn catalog_item_tooltip_available(catalog: &Catalog, hash: u64) -> bool {
@@ -376,7 +432,7 @@ fn draw_tooltip_layout(
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if let Some(name) = name {
-                    crate::ui_help::tooltip_title(ui, name);
+                    crate::ui::help::tooltip_title(ui, name);
                 }
                 details(ui);
             });

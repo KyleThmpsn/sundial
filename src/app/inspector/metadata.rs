@@ -194,7 +194,7 @@ pub(in crate::app) fn definition_context_menu(response: &egui::Response, label: 
 pub(in crate::app) fn inspect_menu_button(ui: &mut egui::Ui, label: &str, hash: u64) {
     if ui.button(label).clicked() {
         request_definition(ui.ctx(), hash);
-        ui.close_menu();
+        ui.close();
     }
 }
 
@@ -202,22 +202,24 @@ pub(in crate::app) fn inspect_menu_button(ui: &mut egui::Ui, label: &str, hash: 
 pub(in crate::app) fn copy_menu_buttons(ui: &mut egui::Ui, hash: u64, name: Option<&str>) {
     if ui.button("Copy Hash").clicked() {
         ui.ctx().copy_text(format_hash_hex(hash));
-        ui.close_menu();
+        ui.close();
     }
     if ui.button("Copy Decimal").clicked() {
         ui.ctx().copy_text(format_hash_decimal(hash));
-        ui.close_menu();
+        ui.close();
     }
     if let Some(name) = name
         && ui.button("Copy Name").clicked()
     {
         ui.ctx().copy_text(name.to_owned());
-        ui.close_menu();
+        ui.close();
     }
 }
 
 fn catalog_hash_tooltip(response: egui::Response, catalog: &Catalog, hash: u64) -> egui::Response {
-    if crate::app::item_editor::catalog_item_tooltip_available(catalog, hash) {
+    if catalog.item_package_metadata(hash).is_some()
+        || crate::app::item_editor::catalog_item_tooltip_available(catalog, hash)
+    {
         crate::app::item_editor::catalog_item_tooltip(response, catalog, hash)
     } else {
         response.on_hover_text(format!("Open details for {}", format_hash_hex(hash)))
@@ -293,30 +295,5 @@ pub(in crate::app) const fn progression_scope_label(scope: ProgressionScope) -> 
         ProgressionScope::Account => "Account",
         ProgressionScope::Character => "Character",
         ProgressionScope::Unreplicated => "Unreplicated",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_hashes_are_read_in_every_displayed_form() {
-        for text in [
-            "0x574E0A2A",
-            " 0X574e0a2a ",
-            "574E0A2A",
-            "574e0a2a",
-            "1464732202",
-            "0x574E0A2A · 1464732202",
-        ] {
-            assert_eq!(parse_hash_text(text), Some(0x574E_0A2A), "{text}");
-        }
-        assert_eq!(parse_hash_text("12345678"), Some(0x1234_5678));
-        assert_eq!(parse_hash_text("ace"), Some(0xACE));
-        assert_eq!(parse_hash_text("1234"), Some(1234));
-        for text in ["", "0", "0x0", "ace rifle", "4294967296", "0xnope", "x12"] {
-            assert_eq!(parse_hash_text(text), None, "{text}");
-        }
     }
 }

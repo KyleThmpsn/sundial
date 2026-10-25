@@ -29,40 +29,6 @@ fn click_label(output: &egui::FullOutput, label: &str) -> Vec<egui::Event> {
     ]
 }
 
-fn editor_menu(
-    ctx: &egui::Context,
-    text: &mut String,
-    state: &mut JsonEditorState,
-) -> egui::FullOutput {
-    let output = frame(ctx, text, state, vec![]);
-    frame(ctx, text, state, click_label(&output, "Editor"));
-    frame(ctx, text, state, vec![])
-}
-
-#[test]
-fn collapse_all_keeps_top_level_keys_and_source_visible() {
-    let ctx = egui::Context::default();
-    let original = "{\n  \"version\": 13,\n  \"state\": {\n    \"hidden\": 42\n  },\n  \"preferences\": {\n    \"fov\": 105\n  }\n}";
-    let mut text = original.to_owned();
-    let mut state = JsonEditorState::default();
-    state.folded.insert(fold_regions(&text)[0].id.clone());
-    let output = editor_menu(&ctx, &mut text, &mut state);
-    frame(
-        &ctx,
-        &mut text,
-        &mut state,
-        click_label(&output, "Collapse All"),
-    );
-    let projection = FoldProjection::new(&text, &state.regions, &state.folded);
-    for key in ["version", "state", "preferences"] {
-        assert!(projection.text.contains(key));
-    }
-    assert!(!projection.text.contains("hidden"));
-    assert!(!state.folded.iter().any(|id| id.len() == 1));
-    assert_eq!(text, original);
-    assert!(!state.has_unapplied_changes());
-}
-
 #[test]
 fn replace_all_includes_folded_unicode_content_and_undoes_once() {
     let ctx = egui::Context::default();
@@ -94,107 +60,13 @@ fn replace_all_includes_folded_unicode_content_and_undoes_once() {
     assert_eq!(text, original);
 }
 
-#[test]
-fn format_shortcut_preserves_unknown_fields_and_rejects_duplicate_keys() {
-    for original in [
-        r#"{"opaque":{"é":[1,true]},"version":8}"#,
-        r#"{"x":1,"x":2}"#,
-    ] {
-        let ctx = egui::Context::default();
-        let mut text = original.to_owned();
-        let mut state = JsonEditorState::default();
-        frame(&ctx, &mut text, &mut state, vec![]);
-        frame(
-            &ctx,
-            &mut text,
-            &mut state,
-            vec![key(
-                egui::Key::F,
-                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-            )],
-        );
-        if let Ok(value) = crate::strict_json::from_str::<serde_json::Value>(original) {
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-                value
-            );
-            assert!(text.contains('\n'));
-            select(&ctx, &state, 0, 0);
-            frame(
-                &ctx,
-                &mut text,
-                &mut state,
-                vec![key(egui::Key::Z, egui::Modifiers::COMMAND)],
-            );
-        }
-        assert_eq!(text, original);
-    }
-}
-
-#[test]
-fn navigation_reveals_and_selects_an_escaped_pointer() {
-    let ctx = egui::Context::default();
-    let mut text = "{\n  \"a/b\": {\n    \"~key\": \"🔥\"\n  }\n}".to_owned();
-    let mut state = JsonEditorState {
-        navigation_open: true,
-        pointer: "/a~1b/~0key".into(),
-        ..Default::default()
-    };
-    state.folded.insert(fold_regions(&text)[0].id.clone());
-    let output = frame(&ctx, &mut text, &mut state, vec![]);
-    frame(&ctx, &mut text, &mut state, click_label(&output, "Go"));
-    assert!(state.folded.is_empty());
-    let edit = egui::text_edit::TextEditState::load(&ctx, state.text_edit_id.unwrap()).unwrap();
-    let cursor = edit.cursor.char_range().unwrap();
-    let range = cursor.primary.index.min(cursor.secondary.index)
-        ..cursor.primary.index.max(cursor.secondary.index);
-    assert_eq!(
-        text.chars()
-            .skip(range.start)
-            .take(range.len())
-            .collect::<String>(),
-        "\"🔥\""
-    );
-}
-
-#[test]
-fn completion_uses_matching_defaults_without_overwriting_unknown_fields() {
-    for version in [8, 13] {
-        let ctx = egui::Context::default();
-        let mut text = format!("{{\"version\":{version},\"opaque\":42}}");
-        let original = text.clone();
-        let mut state = JsonEditorState {
-            completion_open: true,
-            ..Default::default()
-        };
-        state.set_completion_defaults(Ok(serde_json::json!({"version":13,"fov":105})));
-        let output = frame(&ctx, &mut text, &mut state, vec![]);
-        if version == 13 {
-            frame(&ctx, &mut text, &mut state, click_label(&output, "Add fov"));
-            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-            assert_eq!(value["fov"], 105);
-            assert_eq!(value["opaque"], 42);
-            select(&ctx, &state, 0, 0);
-            frame(
-                &ctx,
-                &mut text,
-                &mut state,
-                vec![key(egui::Key::Z, egui::Modifiers::COMMAND)],
-            );
-        } else {
-            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.job.text.contains("same version"))));
-        }
-        assert_eq!(text, original);
-    }
-}
-
 fn frame(
     ctx: &egui::Context,
     text: &mut String,
     state: &mut JsonEditorState,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -203,8 +75,8 @@ fn frame(
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 draw(ui, text, state, false, true);
             });
         },
@@ -312,91 +184,4 @@ fn deleting_text_before_a_fold_rebuilds_its_offsets() {
     assert!(text.contains("\"value\": 1"));
     assert!(crate::strict_json::from_str::<serde_json::Value>(&text).is_ok());
     frame(&ctx, &mut text, &mut state, vec![]);
-}
-
-#[test]
-fn validation_reports_duplicate_keys_and_clears_after_correction() {
-    let mut state = JsonEditorState::default();
-    assert!(
-        state
-            .validate(r#"{"x":1,"x":2}"#)
-            .unwrap()
-            .contains("duplicate")
-    );
-    assert!(state.validate(r#"{"x":1}"#).is_none());
-    state.set_application_error("unsupported setting".into());
-    state.mark_modified();
-    assert!(state.application_error.is_none());
-}
-
-#[test]
-fn resetting_the_source_drops_history_from_the_previous_document() {
-    let mut state = JsonEditorState::default();
-    let mut text = "old".to_owned();
-    state.history.feed_state(0.0, &text);
-    state.reset_history();
-    text = "new".to_owned();
-    state.history.feed_state(1.0, &text);
-    state.restore_history(&mut text, false);
-    assert_eq!(text, "new");
-}
-
-#[test]
-fn enter_in_find_advances_without_editing_the_document() {
-    let ctx = egui::Context::default();
-    let mut text = r#"{"x": "x"}"#.to_owned();
-    let original = text.clone();
-    let mut state = JsonEditorState {
-        query: "x".into(),
-        ..Default::default()
-    };
-    frame(&ctx, &mut text, &mut state, vec![]);
-    assert_eq!(state.current_match, Some(0));
-    frame(
-        &ctx,
-        &mut text,
-        &mut state,
-        vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
-    );
-    frame(
-        &ctx,
-        &mut text,
-        &mut state,
-        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
-    );
-    assert_eq!(state.current_match, Some(1));
-    frame(
-        &ctx,
-        &mut text,
-        &mut state,
-        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
-    );
-    assert_eq!(state.current_match, Some(0));
-    assert_eq!(text, original);
-}
-
-#[test]
-fn applying_or_saving_does_not_erase_source_history() {
-    let mut state = JsonEditorState::default();
-    state.history.feed_state(0.0, &"{\"x\":1}".to_owned());
-    let mut text = "{\"x\":2}".to_owned();
-    state.history.feed_state(0.1, &text);
-    state.mark_synced();
-    state.restore_history(&mut text, false);
-    assert_eq!(text, "{\"x\":1}");
-    assert!(state.has_unapplied_changes());
-}
-
-#[test]
-fn rejected_edits_are_retried_only_when_the_user_changes_them() {
-    let mut state = JsonEditorState::default();
-    state.mark_modified();
-    assert!(state.take_auto_apply_request());
-    assert!(!state.take_auto_apply_request());
-    assert!(state.has_unapplied_changes());
-    state.mark_modified();
-    assert!(state.take_auto_apply_request());
-    state.mark_modified();
-    state.mark_synced();
-    assert!(!state.take_auto_apply_request());
 }

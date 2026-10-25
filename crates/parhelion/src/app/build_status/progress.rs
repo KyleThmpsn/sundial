@@ -1,6 +1,8 @@
 use super::*;
 use crate::install::{InstallPhase, InstallProgress};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+
+mod events;
 
 const MAX_EVENTS: usize = 2_000;
 const BUILD_STAGES: [BuildPhase; 12] = [
@@ -21,26 +23,41 @@ const BUILD_STAGES: [BuildPhase; 12] = [
 #[derive(Default)]
 pub(in crate::app) struct Activity {
     lines: VecDeque<String>,
+    operation: Option<events::Entry>,
+    first_line: u64,
+    packages: BTreeMap<(u16, u32), (u64, crate::workflow::OperationStatus)>,
 }
 
 impl Activity {
-    pub(in crate::app) fn update_last(&mut self, elapsed: Duration, message: String) {
-        if let Some(line) = self.lines.back_mut() {
+    fn update(&mut self, id: u64, elapsed: Duration, message: String) {
+        if let Some(line) = id
+            .checked_sub(self.first_line)
+            .and_then(|index| self.lines.get_mut(index as usize))
+        {
             *line = format!("[{}] {message}", format_elapsed(elapsed));
-        } else {
-            self.push(elapsed, message);
         }
     }
 
     pub(in crate::app) fn push(&mut self, elapsed: Duration, message: String) {
-        if self.lines.len() == MAX_EVENTS {
-            self.lines.pop_front();
-        }
-        self.lines
-            .push_back(format!("[{}] {message}", format_elapsed(elapsed)));
+        self.operation = None;
+        self.append(elapsed, message);
     }
 
-    pub(super) fn draw(&self, ui: &mut egui::Ui, id: &'static str) {
+    fn append(&mut self, elapsed: Duration, message: String) -> u64 {
+        if self.lines.len() == MAX_EVENTS {
+            self.lines.pop_front();
+            self.first_line += 1;
+            self.packages
+                .retain(|_, (line, _)| *line >= self.first_line);
+        }
+        let line = self.first_line + self.lines.len() as u64;
+        self.lines
+            .push_back(format!("[{}] {message}", format_elapsed(elapsed)));
+        line
+    }
+
+    /// Active operations fill the window above their footer. Completed activity stays compact.
+    pub(super) fn draw(&self, ui: &mut egui::Ui, id: &'static str, footer_height: Option<f32>) {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Activity");
             ui.weak(format!("{} recent events", self.lines.len()));
@@ -58,8 +75,11 @@ impl Activity {
                 ui.set_width(ui.available_width());
                 egui::ScrollArea::vertical()
                     .id_salt(id)
-                    .max_height(180.0)
-                    .auto_shrink([false, true])
+                    .max_height(
+                        footer_height
+                            .map_or(180.0, |footer| (ui.available_height() - footer).max(40.0)),
+                    )
+                    .auto_shrink([false, footer_height.is_none()])
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         if self.lines.is_empty() {
@@ -73,14 +93,9 @@ impl Activity {
     }
 }
 
-pub(in crate::app) fn message(
-    label: &str,
-    item: Option<&str>,
-    completed: usize,
-    total: usize,
-) -> String {
+fn message(label: &str, item: Option<&str>, completed: usize, total: usize) -> String {
     let count = if total > 0 {
-        format!(" ({}/{total})", completed.min(total))
+        format!(" ({completed}/{total} complete)")
     } else {
         String::new()
     };
@@ -103,25 +118,22 @@ pub(in crate::app) struct InstallStatus {
 impl InstallStatus {
     pub(in crate::app) fn poll(&mut self, log: &mut ActivityLog) {
         while let Some(Ok((progress, elapsed))) = self.receiver.as_ref().map(Receiver::try_recv) {
-            if self.progress.as_ref() != Some(&progress) {
-                let message = message(
+            if self.progress.as_ref() != Some(&progress)
+                && let Some(message) = self.activity.progress(
+                    elapsed,
                     progress.phase.label(),
                     progress.current_artifact.as_deref(),
-                    progress.completed,
-                    progress.total,
-                );
-                let same_operation = self.progress.as_ref().is_some_and(|previous| {
-                    previous.phase == progress.phase
-                        && previous.current_artifact == progress.current_artifact
-                        && previous.total == progress.total
-                        && previous.completed <= progress.completed
-                });
-                if same_operation {
-                    self.activity.update_last(elapsed, message);
-                } else {
-                    self.activity.push(elapsed, message.clone());
-                    log.push(LogEntry::info(message));
-                }
+                    (progress.completed, progress.total),
+                    matches!(
+                        progress.phase,
+                        InstallPhase::Checking
+                            | InstallPhase::ReviewingAccount
+                            | InstallPhase::Rechecking
+                    ),
+                    progress.phase != InstallPhase::RollingBack,
+                )
+            {
+                log.push(LogEntry::info(message));
             }
             self.elapsed = elapsed;
             if progress.phase == InstallPhase::Complete {
@@ -175,7 +187,8 @@ impl InstallStatus {
             );
         }
         ui.add_space(12.0);
-        self.activity.draw(ui, "install-progress-activity");
+        self.activity
+            .draw(ui, "install-progress-activity", Some(0.0));
     }
 }
 
@@ -228,11 +241,7 @@ fn draw_progress(ui: &mut egui::Ui, info: &ProgressView<'_>, running: bool) {
         let text = if info.total <= 1 {
             if running { "Working…" } else { "Stopped" }.to_owned()
         } else {
-            format!(
-                "{} of {} operations complete",
-                info.completed.min(info.total),
-                info.total
-            )
+            format!("{} of {} operations complete", info.completed, info.total)
         };
         ui.add(
             sundial::investment::progress_bar(info.fraction)
@@ -246,35 +255,23 @@ fn draw_progress(ui: &mut egui::Ui, info: &ProgressView<'_>, running: bool) {
 }
 
 fn build_title(phase: BuildPhase) -> &'static str {
-    match phase {
-        BuildPhase::InspectingSource => "Inspecting Source Packages",
-        BuildPhase::LoadingCatalog => "Loading Donor Catalog",
-        BuildPhase::CheckingRecipes => "Checking Recipe Compatibility",
-        BuildPhase::PreparingSource => "Preparing Source Packages",
-        BuildPhase::HashingSource => "Recording Source Checksums",
-        BuildPhase::CompilingProject => "Compiling Items",
-        BuildPhase::BuildingPayloads => "Building Package Payloads",
-        BuildPhase::RecheckingSource => "Rechecking Source Packages",
-        BuildPhase::WritingPackages => "Writing Packages",
-        BuildPhase::ValidatingPackages => "Validating Packages",
-        BuildPhase::StagingRecipes => "Saving Recipe Snapshots",
-        BuildPhase::WritingManifest => "Writing Build Manifest",
-        BuildPhase::Complete => "Build Validated",
-    }
+    phase.label()
 }
 
 fn build_detail(phase: BuildPhase) -> &'static str {
     match phase {
         BuildPhase::InspectingSource => "Checking the source packages and the selected recipes.",
-        BuildPhase::LoadingCatalog => "Loading the installed weapon and perk definitions.",
-        BuildPhase::CheckingRecipes => "Checking each recipe against its selected donors.",
+        BuildPhase::LoadingCatalog => "Loading the installed item and perk definitions.",
+        BuildPhase::CheckingRecipes => {
+            "Checking recipes that need donor compatibility checks. Recipes without catalog overrides skip this phase."
+        }
         BuildPhase::PreparingSource => "Preparing the stock package set for compilation.",
         BuildPhase::HashingSource => "Recording the original package checksums.",
         BuildPhase::RecheckingSource => {
             "Confirming the source packages did not change during compilation."
         }
         BuildPhase::CompilingProject => {
-            "Compiling weapon definitions, perks, artwork, Collections entries, and text."
+            "Compiling item definitions, perks, artwork, Collections entries, and text."
         }
         BuildPhase::BuildingPayloads => "Preparing, encoding, and validating each package payload.",
         BuildPhase::WritingPackages => {
@@ -297,7 +294,7 @@ fn install_detail(phase: InstallPhase) -> &'static str {
             "Checking Destiny 2, recovery state, runtime support, and staged package integrity."
         }
         InstallPhase::ReviewingAccount => {
-            "Comparing installed and incoming weapons, sockets, equipment slots, and account references."
+            "Comparing installed and incoming items, sockets, equipment slots, and account references."
         }
         InstallPhase::BackingUp => {
             "Saving existing packages, game caches, and recipe snapshots before replacement."
@@ -324,7 +321,7 @@ fn install_detail(phase: InstallPhase) -> &'static str {
             "Saving the committed transaction so recovery can recognize the installed set."
         }
         InstallPhase::SyncingCollections => {
-            "Synchronizing authored weapon unlocks with the selected account."
+            "Synchronizing authored item unlocks with the selected account."
         }
         InstallPhase::CleaningUp => {
             "Finalizing the recovery backup and applying automatic backup retention."

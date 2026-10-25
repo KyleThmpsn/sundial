@@ -15,7 +15,8 @@ pub mod consumers;
 pub mod controls;
 pub mod dispatch;
 pub mod markers;
-mod poses;
+pub mod motion;
+pub(crate) mod poses;
 pub mod profile;
 mod states;
 use crate::d2_mot::{
@@ -104,7 +105,7 @@ fn first_person(rig: &Value, lookup_class: &str) -> Result<Option<FirstPerson>> 
 /// both sides, and two source bones may never land on one native bone. Bones
 /// with no counterpart map to `u16::MAX`. Slot alignment independently rejects
 /// dropping animated tracks.
-fn bone_map(source: &[Value], native: &[Value]) -> Result<Vec<u16>> {
+pub(super) fn bone_map(source: &[Value], native: &[Value]) -> Result<Vec<u16>> {
     for (label, bones) in [("source", source), ("native", native)] {
         ensure!(
             bones
@@ -158,22 +159,17 @@ fn bone_map(source: &[Value], native: &[Value]) -> Result<Vec<u16>> {
 }
 
 /// Read a lookup owner's bank rows as clip tags with the clip names they carry.
-fn bank(r: &mut Reader, owner: u32, modern: bool) -> Result<(u32, Vec<(u32, u32)>)> {
-    let p = r.tag(owner, Some(if modern { 0x80809B06 } else { 0x80809C36 }))?;
-    let bank_tag = p.u32(p.pointer(24)? + if modern { 0xA8 } else { 0x90 })?;
-    let bank = r.tag(bank_tag, Some(if modern { 0x8080289F } else { 0x808036F6 }))?;
+pub(super) fn bank(r: &mut Reader, owner: u32, modern: bool) -> Result<(u32, Vec<(u32, u32)>)> {
+    if !modern {
+        return crate::tiger::animation::runtime::bank(r, owner);
+    }
+    let p = r.tag(owner, Some(0x80809B06))?;
+    let bank_tag = p.u32(p.pointer(24)? + 0xA8)?;
+    let bank = r.tag(bank_tag, Some(0x8080289F))?;
     let mut clips = Vec::new();
-    for row in bank.array(
-        8,
-        if modern { 16 } else { 4 },
-        Some(if modern { 0x80808BDF } else { 0x80808F48 }),
-    )? {
-        let tag = if modern {
-            r.ref64(&bank, row)?
-        } else {
-            bank.u32(row)?
-        };
-        let clip = r.tag(tag, Some(if modern { 0x80808BE0 } else { 0x80808F49 }))?;
+    for row in bank.array(8, 16, Some(0x80808BDF))? {
+        let tag = r.ref64(&bank, row)?;
+        let clip = r.tag(tag, Some(0x80808BE0))?;
         ensure!(
             clip.0.len() >= 0x190 && clip.u64(0)? == clip.0.len() as u64,
             "animation clip payload size differs"
@@ -220,7 +216,7 @@ fn word_occurrences(payload: &[u8], tag: u32) -> usize {
 
 /// A native clip and the source clip sharing its name: native tag, source tag,
 /// name hash, source payload and native payload.
-type ClipPair = (u32, u32, u32, Arc<Payload>, Arc<Payload>);
+pub(super) type ClipPair = (u32, u32, u32, Arc<Payload>, Arc<Payload>);
 
 /// An extra source clip's native template tag, source template tag, playback
 /// mode, converted payload and conversion report.
@@ -266,7 +262,7 @@ fn chain_files(
 }
 
 /// Pair every name-matched native clip with its source clip payloads.
-fn clip_pairs(
+pub(super) fn clip_pairs(
     sr: &mut Reader,
     nr: &mut Reader,
     native: &[(u32, u32)],
@@ -331,7 +327,7 @@ fn calibration_clips(
 
 /// The event library from every paired clip, the explicit event calibration
 /// pairs and the native bank.
-fn events(
+pub(super) fn events(
     sr: &mut Reader,
     nr: &mut Reader,
     calibration: Option<&Value>,
@@ -365,12 +361,13 @@ fn events(
     for &(tag, _) in native_clips {
         event_library.add_native(nr.tag(tag, Some(0x80808F49))?.as_ref());
     }
+    event_library.include_native_resources(nr)?;
     Ok(event_library)
 }
 
 /// Convert every paired source clip onto its native counterpart's slots. Returns
 /// the converted and unconverted reports with the count of clips carrying events.
-fn convert_pairs(
+pub(super) fn convert_pairs(
     pairs: &[ClipPair],
     event_library: &clips::EventLibrary,
     slots: &clips::slots::Table,
@@ -509,7 +506,12 @@ fn extra_clip(
         let Some(mode) = action_mode.or_else(|| extras.modes.get(native_tag).copied()) else {
             continue;
         };
-        if !static_pose && template.u16(0x142)? != source_clip.u16(0x142)? {
+        // A named action establishes playback independently of this event template.
+        // The slot table still checks the source clip's own calibrated rig shape.
+        if action_mode.is_none()
+            && !static_pose
+            && template.u16(0x142)? != source_clip.u16(0x142)?
+        {
             continue;
         }
         let attempt = if event_free {
@@ -742,7 +744,7 @@ pub fn prepare_with_rig(
     // any of them; a donor whose clips do not align cleanly keeps its native clips.
     let mut pairs = clip_pairs(&mut sr, &mut nr, &native_clips, &source_clips)?;
     let calibration_pairs = calibration_clips(&mut sr, &mut nr, &native_clips, calibration)?;
-    let slots = match clips::slots::Table::derive(
+    let mut slots = match clips::slots::Table::derive(
         pairs
             .iter()
             .chain(&calibration_pairs)
@@ -757,6 +759,15 @@ pub fn prepare_with_rig(
             )));
         }
     };
+    if let Some(reference) = calibration
+        && !slots
+            .shapes()
+            .contains_key(&u16::try_from(source.bones.len())?)
+    {
+        controls::owned_slots(
+            &mut sr, &mut nr, source_rig, native_rig, reference, &mut slots,
+        )?;
+    }
     let alignment = slots
         .shapes()
         .iter()
@@ -796,11 +807,6 @@ pub fn prepare_with_rig(
                 .push(markers);
         }
     }
-    let slot_markers = slots
-        .slot_markers()
-        .iter()
-        .map(|hash| format!("{hash:08X}"))
-        .collect::<Vec<_>>();
     let event_library = events(
         &mut sr,
         &mut nr,
@@ -814,7 +820,7 @@ pub fn prepare_with_rig(
     if calibration.is_some() {
         let profile =
             profile::requested_with_category(&mut sr, source_rig, native_rig, &attachments, true)?;
-        let (bindings, layers) = poses::bindings(
+        let (mut bindings, layers) = poses::bindings(
             &mut sr,
             &mut nr,
             source_rig,
@@ -824,6 +830,14 @@ pub fn prepare_with_rig(
             &profile,
             graph,
         )?;
+        bindings.extend(motion::bindings(
+            &mut sr,
+            &mut nr,
+            source_rig,
+            native_rig,
+            &source_clips,
+            &native_clips,
+        )?);
         pose_layers = layers;
         for (native_tag, source_tag, layer) in bindings {
             let source_clip = sr.tag(source_tag, Some(0x80808BE0))?;
@@ -949,6 +963,7 @@ pub fn prepare_with_rig(
                 &descriptor_map,
                 &[profile.category, profile.after, profile.before],
                 Some(profile.after),
+                Some((profile.after, profile.before)),
             )?
         } else {
             states::convert(
@@ -1025,7 +1040,6 @@ pub fn prepare_with_rig(
             "retargeted_bones": retargeted,
             "unmapped_source_bones": unmapped,
             "slot_alignment": alignment,
-            "slot_markers": slot_markers,
             "pose_bindings": pose_bindings,
             "pose_layers": pose_layers,
             "files": files,

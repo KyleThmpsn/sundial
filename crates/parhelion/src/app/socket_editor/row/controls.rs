@@ -8,37 +8,21 @@ use sundial::investment::PlugChoicePickerOptions;
 /// Width of the socket role column, shared by every row so the choices line up.
 const ROLE_WIDTH: f32 = 168.0;
 
-/// The socket's role, which a weapon's author can change. Gear keeps its base's sockets, so there
-/// the column names the socket instead.
+/// The socket's role, which the author can change.
 fn draw_role(
     ui: &mut egui::Ui,
     context: &SocketRowContext<'_>,
     role: &mut Option<u16>,
     width: f32,
 ) {
-    if context.recipe.kind.is_weapon() {
-        draw_socket_role_label(
-            ui,
-            context.catalog,
-            context.donor,
-            context.socket_index,
-            context.is_added,
-            role,
-            width,
-        );
-        return;
-    }
-    let label = &context.donor.sockets[context.socket_index].label;
-    let name = label
-        .split_once(". ")
-        .map_or(label.as_str(), |(_, name)| name);
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, ui.spacing().interact_size.y),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_width(width);
-            ui.add(egui::Label::new(name).truncate());
-        },
+    draw_socket_role_label(
+        ui,
+        context.catalog,
+        context.donor,
+        context.socket_index,
+        context.is_added,
+        role,
+        width,
     );
 }
 
@@ -105,7 +89,6 @@ pub(super) fn draw_active(
     let donor = context.donor;
     let socket_index = context.socket_index;
     let socket = &donor.sockets[socket_index];
-    let plug_selection_mode = context.plug_selection_mode;
     let RowChoices {
         socket_type_override,
         current_len,
@@ -148,16 +131,36 @@ pub(super) fn draw_active(
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(choice_area_width);
-                ui.horizontal_wrapped(|ui| {
-                    for (choice_offset, hash) in current_page.iter().copied().enumerate() {
-                        let choice_index = page_start + choice_offset;
-                        if let Some(command) =
-                            draw_choice(ui, context, choices, choice_index, hash, button_width)
-                        {
-                            selection = Some(command);
+                if current_len > 0 {
+                    ui.horizontal_wrapped(|ui| {
+                        for (choice_offset, hash) in current_page.iter().copied().enumerate() {
+                            let choice_index = page_start + choice_offset;
+                            if let Some(command) =
+                                draw_choice(ui, context, choices, choice_index, hash, button_width)
+                            {
+                                selection = Some(command);
+                            }
                         }
-                    }
-                });
+                    });
+                }
+                // An edited recipe needs a default for each random socket. Keep that warning
+                // in this socket's choice area, leaving it available as a drop target.
+                if current_len == 0
+                    && !choices.is_overridden
+                    && socket.randomized_plug_set_index.is_some()
+                    && !context.recipe.overrides.socket_columns.is_empty()
+                    && !egui::DragAndDrop::has_payload_of_type::<ChoiceDrag>(ui.ctx())
+                {
+                    let message = "Rolls at random with no default. Set a plug to build.";
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(message).color(ui.visuals().warn_fg_color),
+                            )
+                            .truncate(),
+                        );
+                    });
+                }
                 if current_len == 0
                     && can_add
                     && let Some(command) = draw_empty_choice_drop(
@@ -174,33 +177,41 @@ pub(super) fn draw_active(
         );
         if can_add {
             let choice_index = current_len;
-            match catalog.draw_supported_plug_choice_picker(
-                ui,
-                context.queries.entry(choice_index).or_default(),
-                PlugChoicePickerOptions {
-                    preview: context.preview,
-                    donor_hash: donor.summary.hash,
-                    socket_index: socket.index,
-                    socket_type_override,
-                    choice_index,
-                    current_hash: None,
-                    mode: plug_selection_mode,
-                    button: PlugChoicePickerButton {
-                        text: add_label,
-                        icon_hash: None,
-                        icon_override: None,
-                        tooltip: None,
-                        width: add_width as u16,
-                    },
-                },
-                |ui| {
-                    let clicked = offer_custom_perk && draw_custom_perk_action(ui);
-                    if clicked {
-                        custom_choice = Some(choice_index);
-                    }
-                    clicked
-                },
-            ) {
+            // Quiet like the row's role and menu, so a row leads with its perks. It takes its
+            // frame on hover and focus.
+            let picked = ui
+                .scope(|ui| {
+                    crate::app::style::quiet(ui);
+                    catalog.draw_supported_plug_choice_picker(
+                        ui,
+                        context.queries.entry(choice_index).or_default(),
+                        PlugChoicePickerOptions {
+                            preview: context.preview,
+                            donor_hash: donor.summary.hash,
+                            socket_index: socket.index,
+                            socket_type_override,
+                            choice_index,
+                            current_hash: None,
+                            mode: &mut *context.plug_selection_mode,
+                            button: PlugChoicePickerButton {
+                                text: add_label,
+                                icon_hash: None,
+                                icon_override: None,
+                                tooltip: None,
+                                width: add_width as u16,
+                            },
+                        },
+                        |ui| {
+                            let clicked = offer_custom_perk && draw_custom_perk_action(ui);
+                            if clicked {
+                                custom_choice = Some(choice_index);
+                            }
+                            clicked
+                        },
+                    )
+                })
+                .inner;
+            match picked {
                 Ok(Some(chosen)) => {
                     selection = Some(RowCommand::EditChoice {
                         index: choice_index,
@@ -310,7 +321,6 @@ fn draw_choice(
     let donor = context.donor;
     let socket = &donor.sockets[context.socket_index];
     let socket_type_override = choices.socket_type_override;
-    let plug_selection_mode = context.plug_selection_mode;
     let mut selection = None;
     let variant = recipe
         .overrides
@@ -321,9 +331,22 @@ fn draw_choice(
                 && usize::from(variant.choice_index) == choice_index
                 && variant.source_plug_hash.parse_u32().ok() == Some(hash)
         });
-    let button_label = variant
+    let label = variant
         .and_then(|variant| variant.name.clone())
         .unwrap_or_else(|| catalog.plug_label(hash, false));
+    // A choice past a rolling column's swappable ones is only in its roll pool.
+    let rolled = recipe
+        .overrides
+        .socket_columns
+        .get(socket.index)
+        .and_then(Option::as_ref)
+        .and_then(|column| column.reusable_choices)
+        .is_some_and(|count| choice_index >= usize::from(count));
+    let button_label = if rolled {
+        format!("{} {label}", egui_phosphor::regular::DICE_FIVE)
+    } else {
+        label
+    };
     let removable = choice_index > 0;
     let tooltip = variant.map(|variant| sundial::investment::PlugTooltip {
         classification_hash: variant
@@ -373,7 +396,11 @@ fn draw_choice(
                     },
                 )
                 .response
-                .on_hover_text("Drag to reorder or move to another socket.");
+                .on_hover_text(if rolled {
+                    "Rolled, not swappable. Drag to reorder or move to another socket."
+                } else {
+                    "Drag to reorder or move to another socket."
+                });
                 // The grip alone is too small to follow, so the perk trails the pointer instead.
                 if ui.ctx().is_being_dragged(drag_id)
                     && let Some(pointer) = ui.ctx().pointer_interact_pos()
@@ -398,7 +425,7 @@ fn draw_choice(
                     socket_type_override,
                     choice_index,
                     current_hash: variant.is_none().then_some(hash),
-                    mode: plug_selection_mode,
+                    mode: &mut *context.plug_selection_mode,
                     button: PlugChoicePickerButton {
                         tooltip,
                         text: &button_label,
@@ -490,13 +517,11 @@ fn draw_choice(
     choice_menu(ui, &tile.response, choice_index).or(selection)
 }
 
+/// The plug browser's custom perk action, at the right of its controls.
 fn draw_custom_perk_action(ui: &mut egui::Ui) -> bool {
-    let clicked = ui
-        .button("Use Custom Perk…")
-        .on_hover_text("Choose or create a custom perk.")
-        .clicked();
-    ui.separator();
-    clicked
+    ui.button("Use Custom Perk…")
+        .on_hover_text("Choose or create a custom perk")
+        .clicked()
 }
 
 fn choice_menu(
@@ -508,46 +533,42 @@ fn choice_menu(
     let removable = choice_index > 0;
     // The picker button owns pointer clicks inside the tile. Use its bounds
     // to open the context menu over that child as well.
-    let menu_id = ui.id().with("socket-choice-context-menu");
-    let mut menu = ui.ctx().data_mut(|data| {
-        data.get_temp::<egui::menu::MenuRootManager>(menu_id)
-            .unwrap_or_default()
-    });
-    egui::menu::MenuRoot::context_click_interaction(response, &mut menu);
-    if ui.rect_contains_pointer(response.rect)
+    let menu_id = response.id.with("socket-choice-context-menu");
+    let open = if ui.rect_contains_pointer(response.rect)
         && ui.input(|input| input.pointer.secondary_clicked())
     {
-        if let Some(position) = ui.input(|input| input.pointer.interact_pos()) {
-            egui::menu::MenuRoot::handle_menu_response(
-                &mut menu,
-                egui::menu::MenuResponse::Create(position, response.id),
-            );
-        }
-    }
-    menu.show(response, |ui| {
-        if ui.button("Edit as Custom Perk…").clicked() {
-            selection = Some(RowCommand::EditPerk(choice_index));
-            ui.close_menu();
-        }
-        if removable {
-            ui.separator();
-        }
-        if removable && ui.button("Make Default").clicked() {
-            selection = Some(RowCommand::MakeDefault(choice_index));
-            ui.close_menu();
-        }
-        if removable && ui.button("Remove Choice").clicked() {
-            selection = Some(RowCommand::EditChoice {
-                index: choice_index,
-                hash: None,
-            });
-            ui.close_menu();
-        }
-        if !removable {
-            ui.weak("Default Choice");
-        }
-    });
-    ui.ctx().data_mut(|data| data.insert_temp(menu_id, menu));
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if response.clicked() {
+        Some(egui::SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    egui::Popup::context_menu(response)
+        .id(menu_id)
+        .open_memory(open)
+        .show(|ui| {
+            if ui.button("Edit as Custom Perk…").clicked() {
+                selection = Some(RowCommand::EditPerk(choice_index));
+                ui.close();
+            }
+            if removable {
+                ui.separator();
+            }
+            if removable && ui.button("Make Default").clicked() {
+                selection = Some(RowCommand::MakeDefault(choice_index));
+                ui.close();
+            }
+            if removable && ui.button("Remove Choice").clicked() {
+                selection = Some(RowCommand::EditChoice {
+                    index: choice_index,
+                    hash: None,
+                });
+                ui.close();
+            }
+            if !removable {
+                ui.weak("Default Choice");
+            }
+        });
     selection
 }
 
@@ -592,20 +613,12 @@ fn draw_options(
     let is_overridden = choices.is_overridden;
     let is_added = context.is_added;
     let can_remove_added = context.can_remove_added;
-    // Gear keeps its base's sockets and their roles, so a gear socket only resets its choices.
-    let removable = context.recipe.kind.is_weapon();
-    let (reset, reset_hint, menu_hint) = if !removable {
-        (
-            "Reset Choices",
-            "Restore the base item's choices.",
-            "Reset this socket",
-        )
-    } else if is_added {
+    let (reset, reset_hint, menu_hint) = if is_added {
         ("", "", "Remove this socket")
     } else {
         (
             "Reset Choices & Role",
-            "Restore the base weapon's choices and role. Kept choices keep their overrides.",
+            "Restore the base item's choices and role. Kept choices keep their overrides.",
             "Remove or reset this socket",
         )
     };
@@ -626,19 +639,18 @@ fn draw_options(
                         .clicked()
                     {
                         command = Some(RowCommand::Remove);
-                        ui.close_menu();
+                        ui.close();
                     }
                 } else {
-                    if removable
-                        && ui
-                            .button("Remove Socket")
-                            .on_hover_text(
-                                "Remove its choices and custom perks. Other sockets stay in place.",
-                            )
-                            .clicked()
+                    if ui
+                        .button("Remove Socket")
+                        .on_hover_text(
+                            "Remove its choices and custom perks. Other sockets stay in place.",
+                        )
+                        .clicked()
                     {
                         command = Some(RowCommand::Remove);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(is_overridden, egui::Button::new(reset))
@@ -646,7 +658,7 @@ fn draw_options(
                         .clicked()
                     {
                         command = Some(RowCommand::Reset);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             })

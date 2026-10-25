@@ -61,7 +61,7 @@ pub(crate) fn runtime_settings_path(install: &Path) -> Option<(SettingsLayout, P
         return None;
     }
     let layout = SettingsLayout::ALL.into_iter().find(|layout| {
-        crate::paths::paths_equal(&settings_path_for_install(install, *layout), &path)
+        crate::system::paths::paths_equal(&settings_path_for_install(install, *layout), &path)
     })?;
     Some((layout, path))
 }

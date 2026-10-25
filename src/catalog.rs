@@ -7,25 +7,30 @@ use std::{
 
 use tiger_pkg::TagHash;
 
-use crate::{
-    hash::{format_hash_hex, parse_hash_hex},
-    unnamed_plugs,
-};
+use crate::hash::{format_hash_hex, parse_hash_hex};
 
+mod browse;
 mod cache;
+pub(crate) mod class_items;
 mod collections;
-mod icons;
+pub(crate) mod dummy_items;
+pub(crate) mod icons;
 mod items;
 pub use items::stock_subclass_list_classes;
-pub(crate) use items::{inventory_bucket_capacity, weapon_bucket_capacities};
+pub(crate) use items::translation_dye_rows;
+pub(crate) use items::{character_row_class, inventory_bucket_capacity, weapon_bucket_capacities};
+pub(crate) use items::{item_subtype_label, item_type_label};
 pub(crate) mod package;
 mod package_access;
 mod progression;
 mod reverse;
 mod scan;
 mod search;
+pub(crate) mod subclass;
+pub(crate) mod unnamed_plugs;
 
-use crate::investment_localization::resolve_string;
+use crate::investment::localization::resolve_string;
+pub(crate) use browse::{BrowseEntry, Shelf};
 pub(crate) use cache::cache_is_current;
 use cache::{CACHE_SCHEMA, CatalogCache, CatalogContents, SUNDIAL_VERSION};
 pub(crate) use collections::{
@@ -48,8 +53,8 @@ pub(crate) use items::{
     format_in_game_investment_stat, interpolate_investment_stat_display,
 };
 use items::{
-    GearKind, build_gear_type_options, build_socket_type_options, format_plug_label,
-    intern_socket_pools, sort_plug_options,
+    GearKind, SocketCarriers, build_gear_type_options, build_socket_type_carriers,
+    build_socket_type_options, format_plug_label, intern_socket_pools, sort_plug_options,
 };
 pub(crate) use items::{
     SUBCLASS_BUCKET_HASH, is_authorable_weapon_item, is_weapon_bucket, is_weapon_ornament_type_name,
@@ -219,6 +224,7 @@ pub(crate) struct Catalog {
     descriptions: HashMap<u64, String>,
     perk_descriptions: HashMap<u16, String>,
     icon_containers: HashMap<u64, u32>,
+    ammo_icon_containers: [Option<u32>; 3],
     item_package_metadata: HashMap<u64, ItemPackageMetadata>,
     item_structure_index: OnceLock<ItemStructureIndex>,
     item_stat_definitions: Vec<ItemStatDefinition>,
@@ -228,6 +234,7 @@ pub(crate) struct Catalog {
     trait_definitions: Vec<ObjectiveOwnerTraitDef>,
     reusable_plug_set_count: usize,
     socket_entry_list_count: usize,
+    ability_rows: Vec<crate::investment::AbilityRowSummary>,
     package_names: HashMap<u16, String>,
     pub cache_path: PathBuf,
     pub loaded_from_cache: bool,
@@ -262,7 +269,9 @@ pub(crate) struct Catalog {
     plug_pools: Vec<Vec<u64>>,
     socket_type_options: HashMap<u16, Vec<u64>>,
     socket_and_gear_type_options: HashMap<String, HashMap<u16, Vec<u64>>>,
-    gear_type_options: HashMap<GearKind, Vec<u64>>,
+    socket_type_carriers: HashMap<String, HashMap<u16, SocketCarriers>>,
+    gear_type_options: HashMap<String, Vec<u64>>,
+    gear_kind_options: HashMap<GearKind, Vec<u64>>,
     cosmetic_socket_pools: HashSet<u32>,
     cosmetic_socket_types: HashSet<u16>,
     all_plug_options: Vec<u64>,
@@ -284,17 +293,13 @@ impl CharacterInventoryCandidateBuckets {
     ) -> Self {
         let mut buckets = Self::default();
         for hash in inventory_hashes {
-            let Some(item) = item_indices.get(hash).and_then(|index| items.get(*index)) else {
+            let item = item_indices.get(hash).and_then(|index| items.get(*index));
+            let Some((metadata, class_type)) = metadata.get(hash).and_then(|metadata| {
+                character_row_class(item, metadata).map(|class_type| (*metadata, class_type))
+            }) else {
                 continue;
             };
-            let Some(metadata) = metadata
-                .get(hash)
-                .filter(|metadata| metadata.is_character_inventory_candidate())
-                .copied()
-            else {
-                continue;
-            };
-            let class_indices = match item.class_type {
+            let class_indices = match class_type {
                 0 => &[0][..],
                 1 => &[1][..],
                 2 => &[2][..],
@@ -303,7 +308,7 @@ impl CharacterInventoryCandidateBuckets {
             };
             for class_index in class_indices {
                 Self::push_unique(&mut buckets.including_dummy_items[*class_index], metadata);
-                if !crate::dummy_items::contains(*hash) {
+                if !crate::catalog::dummy_items::contains(*hash) {
                     Self::push_unique(&mut buckets.standard[*class_index], metadata);
                 }
             }
@@ -479,14 +484,6 @@ impl Catalog {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_test_presentation_nodes(mut self, nodes: Vec<PresentationNode>) -> Self {
-        self.presentation_node_hashes = nodes.iter().map(|node| node.hash).collect();
-        self.presentation_nodes = nodes;
-        self.reset_lazy_indexes();
-        self
-    }
-
-    #[cfg(test)]
     pub(crate) fn with_test_seasonal(
         mut self,
         definition: crate::investment::seasonal::Definition,
@@ -503,26 +500,8 @@ impl Catalog {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_test_stat_groups(mut self, groups: Vec<ItemStatGroup>) -> Self {
-        self.item_stat_groups = groups;
-        self.reset_lazy_indexes();
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_test_power_caps(mut self, caps: Vec<PowerCapDefinition>) -> Self {
-        self.power_cap_definitions = caps;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_test_item_package_metadata(
-        mut self,
-        hash: u64,
-        metadata: ItemPackageMetadata,
-    ) -> Self {
-        self.item_package_metadata.insert(hash, metadata);
-        self.reset_lazy_indexes();
+    pub(crate) fn with_test_character_stat_rows(mut self, rows: [u16; 6]) -> Self {
+        self.character_stat_rows = Some(rows);
         self
     }
 
@@ -579,25 +558,23 @@ impl Catalog {
         validate_install(install)?;
         let fingerprint = install_fingerprint(install)?;
         if !force && cache_is_current(&cache_path) {
-            if let Ok(raw) = fs::read(&cache_path) {
-                if let Ok(cache) = serde_json::from_slice::<CatalogCache>(&raw) {
-                    if cache.schema == CACHE_SCHEMA
-                        && cache.sundial_version == SUNDIAL_VERSION
-                        && cache.fingerprint == fingerprint
-                    {
-                        report(CatalogProgress {
-                            message: "Loaded the local catalog",
-                            completed: 1,
-                            total: 1,
-                        });
-                        return Ok(Self::finish(
-                            cache.contents,
-                            cache_path,
-                            install.to_path_buf(),
-                            true,
-                        ));
-                    }
-                }
+            let cached = fs::read(&cache_path).ok().and_then(|raw| {
+                crate::package_runtime::cache_file::read::<CatalogCache>(&raw).ok()
+            });
+            if let Some(cache) = cached.filter(|cache| {
+                cache.schema == CACHE_SCHEMA
+                    && cache.sundial_version == SUNDIAL_VERSION
+                    && cache.fingerprint == fingerprint
+            }) {
+                report(CatalogProgress {
+                    message: "Loaded the local catalog",
+                    completed: 1,
+                    total: 1,
+                });
+                let catalog = Self::finish(cache.contents, cache_path, install.to_path_buf(), true);
+                // The file and its inflated copy are gone once parsed.
+                crate::system::memory::release_free_memory();
+                return Ok(catalog);
             }
         }
         let mut contents = scan_packages(install, &mut report)?;
@@ -627,8 +604,10 @@ impl Catalog {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Could not create catalog cache: {e}"))?;
         }
-        let encoded =
-            serde_json::to_vec(&cache).map_err(|e| format!("Could not encode catalog: {e}"))?;
+        // Compressed like the native caches.
+        let mut encoded = Vec::new();
+        crate::package_runtime::cache_file::write(&mut encoded, &cache)
+            .map_err(|e| format!("Could not encode catalog: {e}"))?;
         report(CatalogProgress::stage("Saving the local catalog…"));
         crate::storage::replace_file(&cache_path, &encoded)
             .map_err(|e| format!("Could not save catalog cache: {e}"))?;
@@ -639,7 +618,7 @@ impl Catalog {
         });
         let catalog = Self::finish(cache.contents, cache_path, install.to_path_buf(), false);
         drop(encoded);
-        crate::memory::release_free_memory();
+        crate::system::memory::release_free_memory();
         Ok(catalog)
     }
 
@@ -658,6 +637,7 @@ impl Catalog {
             descriptions,
             perk_descriptions,
             icon_containers,
+            ammo_icon_containers,
             item_package_metadata,
             item_stat_definitions,
             character_stat_rows,
@@ -666,6 +646,7 @@ impl Catalog {
             trait_definitions,
             reusable_plug_set_count,
             socket_entry_list_count,
+            ability_rows,
             package_names,
             inventory_metadata,
             objectives,
@@ -687,8 +668,9 @@ impl Catalog {
         }
         let (socket_type_options, socket_and_gear_type_options) =
             build_socket_type_options(&items, &plug_pools, &names);
-        let (gear_type_options, cosmetic_socket_pools) =
-            build_gear_type_options(&items, &plug_pools, &names);
+        let socket_type_carriers = build_socket_type_carriers(&items);
+        let (gear_type_options, gear_kind_options, cosmetic_socket_pools) =
+            build_gear_type_options(&items, &plug_pools, &names, &type_names);
         let cosmetic_socket_types = items
             .iter()
             .flat_map(|item| &item.sockets)
@@ -761,6 +743,7 @@ impl Catalog {
             descriptions,
             perk_descriptions,
             icon_containers,
+            ammo_icon_containers,
             item_package_metadata,
             item_structure_index: OnceLock::new(),
             item_stat_definitions,
@@ -770,6 +753,7 @@ impl Catalog {
             trait_definitions,
             reusable_plug_set_count,
             socket_entry_list_count,
+            ability_rows,
             package_names,
             cache_path,
             loaded_from_cache,
@@ -804,7 +788,9 @@ impl Catalog {
             plug_pools,
             socket_type_options,
             socket_and_gear_type_options,
+            socket_type_carriers,
             gear_type_options,
+            gear_kind_options,
             cosmetic_socket_pools,
             cosmetic_socket_types,
             all_plug_options,
@@ -840,7 +826,7 @@ impl Catalog {
                     "Weapon"
                 };
             }
-            match crate::account_contract::EQUIPMENT_SLOTS
+            match crate::account::contract::EQUIPMENT_SLOTS
                 .iter()
                 .find(|(_, _, bucket)| *bucket == item.bucket_hash)
             {
@@ -1118,6 +1104,29 @@ impl Catalog {
         self.socket_entry_list_count
     }
 
+    pub(crate) fn ability_rows(&self) -> &[crate::investment::AbilityRowSummary] {
+        &self.ability_rows
+    }
+
+    /// Whether an item is a display-only dummy: on the curated list, or a weapon or armor piece
+    /// with a dummy's structure, no quality block (no Power cap groups) or no sockets above Common.
+    /// The structure only flags gear, since other kinds can legitimately lack both.
+    pub(crate) fn is_dummy(&self, hash: u64) -> bool {
+        if dummy_items::contains(hash) {
+            return true;
+        }
+        let Some(item) = self.item(hash) else {
+            return false;
+        };
+        if !matches!(items::item_type_label(item), "Weapon" | "Armor") {
+            return false;
+        }
+        let metadata = self.item_package_metadata.get(&hash);
+        metadata.is_some_and(|metadata| {
+            metadata.definition_size.is_some() && metadata.power_cap_groups.is_empty()
+        }) || (self.item_rarity(hash) > ItemRarity::Common && item.sockets.is_empty())
+    }
+
     pub(crate) fn item_package_name(&self, hash: u64) -> Option<&str> {
         let metadata = self.item_package_metadata.get(&hash)?;
         self.package_names
@@ -1173,7 +1182,7 @@ fn compatible(
         && (item.class_type == 3
             || item.class_type == class_type
             || (allow_cross_class_subclasses && item.bucket_hash == 3_284_755_031))
-        && (show_dummy_items || !crate::dummy_items::contains(item.hash))
+        && (show_dummy_items || !crate::catalog::dummy_items::contains(item.hash))
 }
 
 #[cfg(test)]

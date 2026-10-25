@@ -62,7 +62,7 @@ fn validate_rows(document: &Value, native: bool) -> Result<(), String> {
 pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
     ui.horizontal(|ui| {
         ui.strong("Server Entitlements");
-        crate::ui_help::info(ui, "Ownership may use a manifest handle or a numeric application ID. Save validates the complete table.");
+        crate::ui::help::info(ui, "Ownership may use a manifest handle or a numeric application ID. Save validates the complete table.");
     });
     match optional_value(document, PATH) {
         Err(error) => {

@@ -5,8 +5,9 @@ mod audio;
 mod effects;
 mod particle_program;
 mod particle_shaders;
-pub(crate) use audio::{decoded_wave, wave_duration};
-pub(crate) use particle_program::{Program, Registers};
+use audio::wave_info;
+pub(crate) use audio::{decoded_wave, decoded_wave_cancelable, wave_duration};
+pub(crate) use particle_program::{Program, Registers, Runtime, Sources};
 pub(crate) use particle_shaders::PixelKind;
 
 #[derive(Default)]
@@ -25,24 +26,13 @@ pub(crate) struct Assets {
     pub references: Vec<Reference>,
 }
 
-impl Assets {
-    pub fn is_empty(&self) -> bool {
-        self.particles.is_empty()
-            && self.sounds.is_empty()
-            && self.lights.is_empty()
-            && self.children.is_empty()
-            && self.components.is_empty()
-            && self.effect_nodes.is_empty()
-            && self.image.is_none()
-            && self.references.is_empty()
-    }
-}
-
 pub(crate) struct Particle {
     pub tag: u32,
     pub name: Option<String>,
     pub definition: Option<u32>,
     pub program: Option<Program>,
+    pub simulation: Option<super::particles::simulation::Timeline>,
+    pub simulation_notice: Option<String>,
     pub emitter: Option<u32>,
     pub emitter_model: Option<u32>,
     pub point_emitter: bool,
@@ -235,22 +225,22 @@ pub(super) fn generic(manager: &PackageManager, tag: u32) -> Result<Assets, Stri
     }
     if entry.file_size <= 2 * 1024 * 1024 {
         let bytes = manager.read_tag(tag)?;
-        if matches!(entry.file_type, 20..=22 | 26) {
-            if let Some((codec, channels, sample_rate)) = wave_info(&bytes) {
-                assets.sounds.push(Sound {
+        if matches!(entry.file_type, 20..=22 | 26)
+            && let Some((codec, channels, sample_rate)) = wave_info(&bytes)
+        {
+            assets.sounds.push(Sound {
+                tag,
+                name: manager.get_tag_name(tag),
+                clips: vec![AudioClip {
                     tag,
                     name: manager.get_tag_name(tag),
-                    clips: vec![AudioClip {
-                        tag,
-                        name: manager.get_tag_name(tag),
-                        size: entry.file_size,
-                        codec,
-                        channels,
-                        sample_rate,
-                    }],
-                    notice: None,
-                });
-            }
+                    size: entry.file_size,
+                    codec,
+                    channels,
+                    sample_rate,
+                }],
+                notice: None,
+            });
         }
         if matches!(entry.file_type, 8 | 16) {
             assets.references = declared_references(manager, &bytes, entry.reference)
@@ -354,10 +344,14 @@ fn particle(manager: &PackageManager, tag: u32) -> Particle {
             .is_some_and(|entry| entry.reference == 0x8080_6E2C && entry.file_type == 8)
         {
             particle.definition = Some(definition);
-            particle.program = Some(
-                Program::read(&manager.read_tag(definition)?)
-                    .map_err(|error| format!("Particle program 0x{definition:08X}: {error}"))?,
-            );
+            let definition_bytes = manager.read_tag(definition)?;
+            let program = Program::read(&definition_bytes)
+                .map_err(|error| format!("Particle program 0x{definition:08X}: {error}"))?;
+            match super::particles::simulation::Timeline::build(&program, &definition_bytes) {
+                Ok(timeline) => particle.simulation = Some(timeline),
+                Err(error) => particle.simulation_notice = Some(error),
+            }
+            particle.program = Some(program);
         }
         let emitter = u32_at(&bytes, 0x18)?;
         if manager
@@ -416,6 +410,8 @@ fn particle_summary(manager: &PackageManager, tag: u32) -> Particle {
         name: manager.get_tag_name(tag),
         definition: None,
         program: None,
+        simulation: None,
+        simulation_notice: None,
         emitter: None,
         emitter_model: None,
         point_emitter: false,
@@ -506,48 +502,15 @@ fn sound_clip_tags(bytes: &[u8], class: u32) -> Result<Vec<u32>, String> {
         .collect::<Result<Vec<_>, _>>()
 }
 
-/// Only native RIFF/WAVE payloads are playable clips. Wwise bank metadata shares file type 26.
-fn wave_info(bytes: &[u8]) -> Option<(u16, u16, u32)> {
-    if bytes.get(..4)? != b"RIFF" || bytes.get(8..12)? != b"WAVE" {
-        return None;
-    }
-    let declared =
-        8usize.checked_add(u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize)?;
-    if declared > bytes.len() {
-        return None;
-    }
-    let mut offset = 12usize;
-    let mut format = None;
-    let mut data = false;
-    while offset.checked_add(8)? <= declared {
-        let kind = bytes.get(offset..offset + 4)?;
-        let size = u32::from_le_bytes(bytes.get(offset + 4..offset + 8)?.try_into().ok()?) as usize;
-        let start = offset + 8;
-        let end = start.checked_add(size)?;
-        if end > declared {
-            return None;
-        }
-        if kind == b"fmt " {
-            if size < 16 {
-                return None;
-            }
-            let codec = u16::from_le_bytes(bytes.get(start..start + 2)?.try_into().ok()?);
-            let channels = u16::from_le_bytes(bytes.get(start + 2..start + 4)?.try_into().ok()?);
-            let sample_rate = u32::from_le_bytes(bytes.get(start + 4..start + 8)?.try_into().ok()?);
-            if !(1..=8).contains(&channels) || !(8_000..=192_000).contains(&sample_rate) {
-                return None;
-            }
-            format = Some((codec, channels, sample_rate));
-        } else if kind == b"data" {
-            data = true;
-        }
-        offset = end.checked_add(size & 1)?;
-    }
-    format.filter(|_| data)
-}
-
 pub(crate) fn clip_bytes(packages: &Path, tag: u32) -> Result<Vec<u8>, String> {
     let manager = crate::investment::discovery::open_packages(packages)?;
+    clip_bytes_with_manager(&manager, tag)
+}
+
+pub(super) fn clip_bytes_with_manager(
+    manager: &PackageManager,
+    tag: u32,
+) -> Result<Vec<u8>, String> {
     let entry = manager.get_entry(tag).ok_or("Audio clip is missing")?;
     if !matches!(entry.file_type, 20..=22 | 26) || entry.file_size > 32 * 1024 * 1024 {
         return Err("Unsupported audio clip type or size".into());

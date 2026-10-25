@@ -1,44 +1,6 @@
 use super::*;
 
 #[test]
-fn account_review_reports_its_work_and_finishes_before_backup() {
-    let fixture = Fixture::new();
-    let mut request = fixture.request();
-    fs::write(
-        fixture.target.parent().unwrap().join("settings.json"),
-        br#"{"version":8}"#,
-    )
-    .unwrap();
-    request.skip_replacement_review = false;
-    let mut events = Vec::new();
-    install_staged_packages_with_progress(&request, |event| events.push(event)).unwrap();
-    let review = events
-        .iter()
-        .filter(|event| event.phase == InstallPhase::ReviewingAccount)
-        .collect::<Vec<_>>();
-    assert!(review.len() >= 6);
-    assert_eq!(review.first().unwrap().completed, 0);
-    let complete = review.last().unwrap();
-    assert_eq!(complete.completed, complete.total);
-    assert!(
-        review
-            .windows(2)
-            .all(|pair| pair[0].completed < pair[1].completed)
-    );
-    let review_end = events
-        .iter()
-        .rposition(|event| event.phase == InstallPhase::ReviewingAccount)
-        .unwrap();
-    assert!(
-        events[..review_end]
-            .iter()
-            .all(|event| event.phase == InstallPhase::Checking
-                || event.phase == InstallPhase::ReviewingAccount)
-    );
-    assert_eq!(events.last().unwrap().phase, InstallPhase::Complete);
-}
-
-#[test]
 fn progress_follows_the_verified_transaction_and_reports_every_installed_file() {
     let fixture = Fixture::new();
     let mut events = Vec::new();
@@ -47,14 +9,26 @@ fn progress_follows_the_verified_transaction_and_reports_every_installed_file() 
             .unwrap();
     assert_eq!(events.first().unwrap().phase, InstallPhase::Checking);
     assert_eq!(events.last().unwrap().phase, InstallPhase::Complete);
-    let mut phases = events.iter().map(|event| event.phase).collect::<Vec<_>>();
-    phases.dedup();
-    let expected = InstallPhase::STAGES
+    let boundaries = [
+        InstallPhase::Checking,
+        InstallPhase::BackingUp,
+        InstallPhase::Preparing,
+        InstallPhase::Rechecking,
+        InstallPhase::Installing,
+        InstallPhase::Verifying,
+        InstallPhase::RefreshingCaches,
+        InstallPhase::Complete,
+    ];
+    let positions: Vec<_> = boundaries
         .iter()
-        .copied()
-        .filter(|phase| *phase != InstallPhase::ReviewingAccount)
-        .collect::<Vec<_>>();
-    assert_eq!(&phases[..phases.len() - 1], &expected);
+        .map(|phase| {
+            events
+                .iter()
+                .position(|event| event.phase == *phase)
+                .expect("transaction boundary must be reported")
+        })
+        .collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
     for artifact in &report.artifacts {
         assert!(
             events
@@ -64,7 +38,12 @@ fn progress_follows_the_verified_transaction_and_reports_every_installed_file() 
                     && event.completed > 0)
         );
         assert_eq!(
-            digest_file(&artifact.target_path).unwrap().sha256,
+            {
+                use sha2::Digest as _;
+                hex::encode_upper(sha2::Sha256::digest(
+                    &fixture.staged_bytes[&artifact.file_name],
+                ))
+            },
             artifact.sha256
         );
     }
@@ -84,7 +63,7 @@ fn failed_install_reports_recovery_without_claiming_completion() {
         &fixture.request(),
         Some(1),
         DEFAULT_CACHE_INVALIDATION_OPS,
-        sundial::package_authoring::replace_file_from_path_atomically,
+        publish_package,
         &mut |event| events.push(event),
     )
     .unwrap_err();

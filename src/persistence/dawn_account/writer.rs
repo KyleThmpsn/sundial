@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use sundial_account::ItemPlugs;
 
 use crate::persistence::native_account::snapshot;
@@ -29,18 +29,36 @@ pub(crate) struct DawnSaveReceipt {
 /// The revision the document loaded must still be the one on disk. Dawn advances that value on
 /// every commit, so a mismatch means the runtime wrote while the editor held the account and the
 /// save is refused rather than overwriting it.
+#[cfg(test)]
 pub(crate) fn save(
     document: &mut DawnAccountDocument,
 ) -> Result<DawnSaveReceipt, DawnAccountError> {
+    save_checked(document, || Ok(()))
+}
+
+/// [`save`], refused whenever `require_closed` reports the game running: before the backup, and
+/// again just before the commit, since a game started during the save must not receive it.
+pub(crate) fn save_checked(
+    document: &mut DawnAccountDocument,
+    mut require_closed: impl FnMut() -> Result<(), String>,
+) -> Result<DawnSaveReceipt, DawnAccountError> {
+    require_closed().map_err(DawnAccountError::Unwritable)?;
     let mut candidate = document.clone();
-    let receipt = save_candidate(&mut candidate)?;
+    let receipt = save_candidate(&mut candidate, &mut require_closed)?;
     *document = candidate;
     Ok(receipt)
 }
 
-fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt, DawnAccountError> {
+fn save_candidate(
+    document: &mut DawnAccountDocument,
+    require_closed: &mut impl FnMut() -> Result<(), String>,
+) -> Result<DawnSaveReceipt, DawnAccountError> {
     let backup = create_backup(&document.path)?;
-    let mut connection = Connection::open(&document.path)?;
+    // The active account must still exist after its backup was taken.
+    let mut connection = Connection::open_with_flags(
+        &document.path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     super::schema_guard::validate(&transaction)?;
@@ -57,17 +75,27 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
         });
     }
 
-    let before = snapshot::capture(&transaction).map_err(DawnAccountError::Unwritable)?;
+    let before_state = snapshot::snapshot(&transaction).map_err(DawnAccountError::Unwritable)?;
+    // Dawn advances the revision on its own commits, but another tool can change these rows
+    // without it. The save would then write the loaded rows back over that change.
+    if guarded_digest(&before_state) != document.loaded.guarded {
+        return Err(DawnAccountError::Unwritable(
+            "Dawn's account changed outside Sundial since it was loaded. Reload before saving"
+                .into(),
+        ));
+    }
+    let before = serde_json::to_vec(&before_state)
+        .map_err(|error| DawnAccountError::Unwritable(error.to_string()))?;
     document
         .progression
-        .save(&transaction, &document.loaded_progression)?;
+        .save(&transaction, &document.loaded.progression)?;
     super::dismantle::save(
         &transaction,
-        &document.loaded_dismantle,
+        &document.loaded.dismantle,
         &document.snapshot.profile,
     )?;
     let debts = super::rewards::save(&transaction, document)?;
-    if document.activity != document.loaded_activity {
+    if document.activity != document.loaded.activity {
         document
             .activity
             .validate(document)
@@ -75,11 +103,11 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     }
     document
         .activity
-        .save(&transaction, &document.loaded_activity)?;
+        .save(&transaction, &document.loaded.activity)?;
     document
         .validate_item_state()
         .map_err(DawnAccountError::Unwritable)?;
-    if super::carried::read(&transaction, &document.loaded_profile)? != document.loaded_carried {
+    if super::carried::read(&transaction, &document.loaded.profile)? != document.loaded.carried {
         return Err(DawnAccountError::Unwritable(
             "Dawn's inventory bookkeeping changed. Reload before saving".into(),
         ));
@@ -88,12 +116,26 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     write_allocators(&transaction, document)?;
     // The account graph has been replaced, so anything this build does not model goes back now.
     super::carried::restore(&transaction, &document.carried)?;
+    // A setting edited here that another writer changed since the load would be overwritten
+    // with no revision to show it, so each edited setting must still hold its loaded value.
+    let stored = match super::reader::settings(&transaction)? {
+        Ok((settings, _)) => settings,
+        Err(problem) => return Err(DawnAccountError::Unwritable(problem.to_string())),
+    };
+    for (key, value) in document.snapshot.settings.values() {
+        let loaded = document.loaded.settings.values().get(key);
+        if loaded != Some(value) && stored.values().get(key) != loaded {
+            return Err(DawnAccountError::Unwritable(format!(
+                "Dawn's setting {key:?} changed outside Sundial since it was loaded. Reload before saving"
+            )));
+        }
+    }
     // Settings live outside that graph: their tables are never deleted, so only what the user
     // changed is updated in place.
     super::settings::save(
         &transaction,
         &document.settings_index,
-        &document.loaded_settings,
+        &document.loaded.settings,
         &document.snapshot.settings,
     )?;
 
@@ -109,23 +151,29 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
     }
     // Capture the exact written bookkeeping before releasing the transaction lock.
     let committed_carried = super::carried::read(&transaction, document.profile())?;
-    let committed = snapshot::capture(&transaction).map_err(DawnAccountError::Unwritable)?;
+    let committed_state = snapshot::snapshot(&transaction).map_err(DawnAccountError::Unwritable)?;
+    super::schema_guard::extensions_unchanged(&before_state, &committed_state)?;
+    let committed = serde_json::to_vec(&committed_state)
+        .map_err(|error| DawnAccountError::Unwritable(error.to_string()))?;
+    require_closed().map_err(DawnAccountError::Unwritable)?;
     transaction.commit()?;
 
     document.metadata.account_revision = revision + 1;
-    document.loaded_settings = document.snapshot.settings.clone();
-    document.loaded_carried = committed_carried;
-    document.carried = document.loaded_carried.clone();
-    document.loaded_activity = document.activity.clone();
-    document.loaded_characters = document.snapshot.characters.clone();
-    document.loaded_profile = document.snapshot.profile.clone();
-    document.loaded_progression = document.progression.clone();
-    document.loaded_dismantle = super::dismantle::rows(&document.snapshot.profile);
+    document.loaded.settings = document.snapshot.settings.clone();
+    document.loaded.carried = committed_carried;
+    document.carried = document.loaded.carried.clone();
+    document.loaded.activity = document.activity.clone();
+    document.loaded.characters = document.snapshot.characters.clone();
+    document.loaded.profile = document.snapshot.profile.clone();
+    document.loaded.progression = document.progression.clone();
+    document.loaded.dismantle = super::dismantle::rows(&document.snapshot.profile);
+    document.loaded.guarded = guarded_digest(&committed_state);
     for debt in &debts {
         if debt.delivered
             && debt.credited == 0
             && !document
-                .loaded_reward_debts
+                .loaded
+                .reward_debts
                 .iter()
                 .any(|before| before.id == debt.id && before.delivered)
         {
@@ -133,13 +181,40 @@ fn save_candidate(document: &mut DawnAccountDocument) -> Result<DawnSaveReceipt,
         }
     }
     document.reward_debts = debts;
-    document.loaded_reward_debts = document.reward_debts.clone();
+    document.loaded.reward_debts = document.reward_debts.clone();
     Ok(DawnSaveReceipt {
         backup,
         revision: document.metadata.account_revision,
         before,
         committed,
     })
+}
+
+/// The tables a save rewrites whole. Settings are updated key by key and checked that way.
+const GUARDED: [&str; 6] = [
+    "account",
+    "characters",
+    "character_items",
+    "profile_items",
+    "item_sockets",
+    "item_rolls",
+];
+
+/// A digest of the rows a save rewrites whole, so a save can tell that they still hold what the
+/// document loaded or last saved.
+pub(super) fn guarded_digest(state: &snapshot::Snapshot) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for name in GUARDED {
+        hash.update(name.as_bytes());
+        if let Some(table) = state.tables.get(name)
+            && let Ok(rows) = serde_json::to_vec(table)
+        {
+            hash.update(rows);
+        }
+        hash.update([0]);
+    }
+    hash.finalize().to_vec()
 }
 
 /// Takes a verified copy into Sundial's backup folder, the way the investment account does.
@@ -203,7 +278,7 @@ fn write_account(
         .carried
         .profile_rows
         .values()
-        .chain(document.loaded_carried.profile_rows.values())
+        .chain(document.loaded.carried.profile_rows.values())
         .map(|row| row.serial)
         .max()
         .unwrap_or_default();
@@ -212,13 +287,15 @@ fn write_account(
         let carried = document.carried.profile_rows.get(&item.id);
         let mut serial = carried.map_or(0, |row| row.serial);
         let old = document
-            .loaded_profile
+            .loaded
+            .profile
             .profile_items()
             .iter()
             .find(|old| old.id == item.id);
         let changed = old.is_none_or(|old| old != item);
         let previous_serial = document
-            .loaded_carried
+            .loaded
+            .carried
             .profile_rows
             .get(&item.id)
             .map_or(0, |row| row.serial);

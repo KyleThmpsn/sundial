@@ -6,6 +6,8 @@ use crate::d2_mot::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
+mod scope;
+pub use scope::layout::normalize_scope;
 fn tag(v: &Value, field: &str) -> Result<u32> {
     Ok(u32::from_str_radix(v[field].as_str().context("tag")?, 16)?)
 }
@@ -14,7 +16,7 @@ fn patch(p: &mut [u8], o: usize, s: &str) -> Value {
     json!({"offset":o,"symbol":s})
 }
 // Shared property names: Bungie's 2019 documentation and modern Charm DyeInfo.
-const VECTORS: [(usize, usize); 21] = [
+pub(super) const VECTORS: [(usize, usize); 21] = [
     (0, 0),
     (1, 1),
     (2, 2),
@@ -51,8 +53,21 @@ fn convert_constants(mut constants: Vec<u8>, modern: &Value) -> Result<Vec<u8>> 
     }
     Ok(constants)
 }
+fn local_channel(channel: u64) -> Result<u64> {
+    match channel {
+        0..=2 => Ok(channel),
+        4.. => Ok((channel - 4) % 3),
+        _ => anyhow::bail!("Unsupported dye channel {channel}"),
+    }
+}
+
 pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Result<Value> {
     let mut g: Value = serde_json::from_slice(&fs::read(graph.join("asset-graph.json"))?)?;
+    let full_shader = g.get("kind").and_then(Value::as_str) == Some("shader_preset");
+    if full_shader {
+        g["shader_scope_layout"] = json!(scope::layout::REVISION);
+        g["render_lookups"] = scope::validate_lookups(source, native)?;
+    }
     let key_base = g["dye_key_base"].as_u64().unwrap_or(0xE2510000);
     let out = r.output.clone();
     let nodes = g["nodes"].as_array_mut().context("nodes")?;
@@ -63,6 +78,7 @@ pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Resu
     let modern: Value = serde_json::from_slice(&fs::read(source.join("dyes.json"))?)?;
     let old: Value = serde_json::from_slice(&fs::read(native.join("dyes.json"))?)?;
     let mut dyes = vec![];
+    let mut material_programs = vec![];
     for m in modern.as_array().context("modern dyes")? {
         let channel = m["channel"].as_u64().context("channel")?;
         let n = old
@@ -82,7 +98,25 @@ pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Resu
         let symbol = |s: &str| format!("{prefix}-{s}");
         let nh = tag(n, "buffer_header")?;
         let raw = r.reference(nh)?;
-        let constants = convert_constants(r.tag(raw, None)?.0.clone(), &m["constants"])?;
+        let scope_tag = native_scope_tag(n, native, channel, full_shader)?;
+        let mut scope = r.tag(scope_tag, Some(0x808071F3))?.0.clone();
+        let baseline = if full_shader {
+            let p = Payload(scope.clone());
+            p.array(0x88, 16, Some(0x80800090))?
+                .into_iter()
+                .flat_map(|at| p.0[at..at + 16].iter().copied())
+                .collect()
+        } else {
+            r.tag(raw, None)?.0.clone()
+        };
+        let mut constants = convert_constants(baseline, &m["constants"])?;
+        if full_shader {
+            // Native gear pixel shaders select emission RGB through separate Y lanes.
+            for (color, selector) in [(3, 25), (4, 26)] {
+                constants.copy_within(color * 16 + 12..color * 16 + 16, selector * 16 + 4);
+            }
+        }
+        let buffer_header = native_buffer_header(r, nh, m, full_shader)?;
         add(
             &out,
             nodes,
@@ -97,12 +131,10 @@ pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Resu
             nodes,
             &symbol("buffer"),
             nh,
-            &r.tag(nh, None)?.0,
+            &buffer_header,
             Some(&symbol("constants")),
             vec![],
         )?;
-        let scope_tag = tag(n, "scope")?;
-        let mut scope = r.tag(scope_tag, None)?.0.clone();
         let mut patches = vec![patch(&mut scope, 0xBC, &symbol("buffer"))];
         // Keep fallback constants consistent with the referenced buffer.
         let rows = Payload(scope.clone()).array(0x88, 16, None)?;
@@ -110,12 +142,28 @@ pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Resu
         for (i, &o) in rows.iter().enumerate() {
             scope[o..o + 16].copy_from_slice(&constants[i * 16..i * 16 + 16]);
         }
+        if full_shader {
+            let evidence = scope::convert(source, native, m, &mut scope)?;
+            material_programs.push(json!({"channel":channel,"conversion":evidence}));
+        }
         let mt = m["textures"].as_array().context("textures")?;
         let nt = n["textures"].as_array().context("textures")?;
         ensure!(
             mt.len() == 2 && nt.len() == 2,
             "dye requires diffuse and normal detail textures"
         );
+        if full_shader {
+            let local = local_channel(channel)?;
+            let bindings = (0..2u32)
+                .flat_map(|i| {
+                    (3 + local as u32 * 2 + i)
+                        .to_le_bytes()
+                        .into_iter()
+                        .chain(u32::MAX.to_le_bytes())
+                })
+                .collect::<Vec<_>>();
+            scope::append(&mut scope, 0x40, &bindings, 8, 0x80807211)?;
+        }
         for i in 0..2 {
             let mh = Payload(hex::decode(
                 mt[i]["header"].as_str().context("texture header")?,
@@ -152,11 +200,19 @@ pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Resu
                 vec![],
             )?;
             add(&out, nodes, &hs, th, &header, Some(&ds), vec![])?;
-            patches.push(patch(
-                &mut scope,
-                nt[i]["offset"].as_u64().context("slot")? as usize + 4,
-                &hs,
-            ));
+            let offset = if full_shader {
+                let p = Payload(scope.clone());
+                let local = local_channel(channel)?;
+                let slot = 3 + local as u32 * 2 + i as u32;
+                p.array(0x40, 8, Some(0x80807211))?
+                    .into_iter()
+                    .find(|&at| p.u32(at).ok() == Some(slot))
+                    .context("renderer texture slot missing")?
+                    + 4
+            } else {
+                nt[i]["offset"].as_u64().context("slot")? as usize + 4
+            };
+            patches.push(patch(&mut scope, offset, &hs));
         }
         add(
             &out,
@@ -169,6 +225,22 @@ pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Resu
         )?;
         let dt = tag(n, "dye")?;
         let mut dye = r.tag(dt, None)?.0.clone();
+        if full_shader {
+            let modern = Payload(fs::read(
+                source
+                    .join("raw")
+                    .join(format!("{}.bin", m["dye"].as_str().context("source dye")?)),
+            )?);
+            ensure!(
+                modern.u64(0)? == 32 && dye.len() == 24,
+                "unsupported dye definition layout"
+            );
+            ensure!(
+                modern.u32(12)? == modern.u32(16)?,
+                "source shader has a separate material scope requiring conversion"
+            );
+            dye[20..24].copy_from_slice(&modern.0[24..28]);
+        }
         let fix = patch(&mut dye, 12, &symbol("scope"));
         add(
             &out,
@@ -199,28 +271,37 @@ pub fn build(r: &mut Reader, source: &Path, native: &Path, graph: &Path) -> Resu
         dyes.push(json!({"channel":channel,"manifest":key,"parent":symbol("parent")}));
     }
     g["dyes"] = json!(dyes);
+    if !material_programs.is_empty() {
+        g["material_programs"] = json!(material_programs);
+    }
     write_json(&out.join("asset-graph.json"), &g)?;
     Ok(g)
 }
 
 fn validate_detail_mips(header: &Payload, bytes: usize) -> Result<()> {
-    // Both formats are already supported by the native plated texture path.
-    // The source format travels with its payload; a BC1 normal detail need
-    // not use the donor's BC7 encoding to sample as Texture2D<float4>.
-    let block = match header.u32(4)? {
-        71 | 72 => 8,
-        98 | 99 => 16,
+    // Shipped native dye scopes use BC4 and linear/sRGB RGBA8 as well as BC1
+    // and BC7. Preserve each source encoding and all mips without recompression.
+    let format = header.u32(4)?;
+    match format {
+        28 | 29 | 71 | 72 | 80 | 98 | 99 => {}
         other => anyhow::bail!("unsupported detail texture format {other}"),
-    };
+    }
     let width = usize::from(header.u16(34)?);
     let height = usize::from(header.u16(36)?);
     let mips = header.u8(45)?;
     ensure!(
-        width > 0 && height > 0 && (1..=16).contains(&mips),
+        width > 0 && height > 0 && (1..=15).contains(&mips),
         "invalid detail dimensions or mip count"
     );
     let expected: usize = (0..mips)
-        .map(|mip| (width >> mip).max(1).div_ceil(4) * (height >> mip).max(1).div_ceil(4) * block)
+        .map(|mip| {
+            let (width, height) = ((width >> mip).max(1), (height >> mip).max(1));
+            match format {
+                28 | 29 => width * height * 4,
+                71 | 72 | 80 => width.div_ceil(4) * height.div_ceil(4) * 8,
+                _ => width.div_ceil(4) * height.div_ceil(4) * 16,
+            }
+        })
         .sum();
     ensure!(
         expected == bytes && header.u32(0)? as usize == bytes,
@@ -228,6 +309,43 @@ fn validate_detail_mips(header: &Payload, bytes: usize) -> Result<()> {
     );
     Ok(())
 }
+
+fn native_scope_tag(n: &Value, native: &Path, channel: u64, full_shader: bool) -> Result<u32> {
+    Ok(if full_shader {
+        let context: Value =
+            serde_json::from_slice(&fs::read(native.join("render-context.json"))?)?;
+        let local = local_channel(channel)?;
+        let name = format!("gear_dye_{local}");
+        let global = context["scopes"]
+            .as_array()
+            .context("renderer scopes")?
+            .iter()
+            .find(|s| s["name"] == name)
+            .context("native dye renderer defaults missing")?;
+        tag(global, "tag")?
+    } else {
+        tag(n, "scope")?
+    })
+}
+
+fn native_buffer_header(r: &mut Reader, nh: u32, m: &Value, full_shader: bool) -> Result<Vec<u8>> {
+    let mut buffer_header = r.tag(nh, None)?.0.clone();
+    if full_shader {
+        let source_header = hex::decode(
+            m["buffer_header_bytes"]
+                .as_str()
+                .context("source buffer header")?,
+        )?;
+        ensure!(
+            source_header.len() == 16 && buffer_header.len() == 16,
+            "unsupported shader buffer allocation layout"
+        );
+        // Preserve the source allocation mode. Animated source buffers are writable.
+        buffer_header[4..].copy_from_slice(&source_header[4..]);
+    }
+    Ok(buffer_header)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

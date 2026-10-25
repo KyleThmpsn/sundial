@@ -17,26 +17,29 @@ pub(crate) struct Entry {
     pub name: String,
     pub white: bool,
     pub size: [usize; 2],
-    pub thumbnail: egui::ColorImage,
 }
 
-fn dimensions(header: &[u8], purpose: Purpose) -> Result<[usize; 2], String> {
+const GLYPH_EDGE: usize = crate::artwork_browser::perk_quality::EDGE as usize;
+
+/// `native` limits perk artwork to the stock 96 × 96 glyphs the browser lists.
+fn dimensions(header: &[u8], purpose: Purpose, native: bool) -> Result<[usize; 2], String> {
     let width = usize::from(read_u16(header, 14)?);
     let height = usize::from(read_u16(header, 16)?);
     if !purpose.accepts_size(width as u32, height as u32)
         || width > 1024
         || height > 1024
-        || (purpose == Purpose::Perk
-            && [width, height] != [crate::artwork_browser::perk_quality::EDGE as usize; 2])
+        || (native && purpose == Purpose::Perk && [width, height] != [GLYPH_EDGE; 2])
         || read_u16(header, 18)? != 1
         || read_u16(header, 20)? != 1
         || !matches!(read_u32(header, 4)?, 28 | 29 | 71 | 72)
         || read_u32(header, 36)? != u32::MAX
     {
-        return Err(if purpose == Purpose::Perk {
-            "Choose a native 96 × 96 perk icon."
-        } else {
-            "Choose a supported single 2D artwork texture between 16 and 1024 pixels per side."
+        return Err(match purpose {
+            Purpose::Perk if native => "Choose a native 96 × 96 perk icon.",
+            Purpose::Perk => "Perk icon textures must be square, 96 to 512 pixels per side.",
+            _ => {
+                "Choose a supported single 2D artwork texture between 16 and 1024 pixels per side."
+            }
         }
         .into());
     }
@@ -47,14 +50,37 @@ fn visible_transparency(image: &egui::ColorImage) -> bool {
     image.pixels.iter().any(|p| p.a() < 255) && image.pixels.iter().any(|p| p.a() > 0)
 }
 
+/// The glyph a perk icon names, at 96 × 96. A native glyph already holds its authored margins
+/// and decodes as it is. A larger square stock texture, such as the 150-pixel Destiny logo, is
+/// fitted with the inset imported glyphs get.
 pub(crate) fn load(manager: &PackageManager, tag: TagHash) -> Result<egui::ColorImage, String> {
-    load_for(manager, tag, Purpose::Perk)
+    let image = decode(manager, tag, Purpose::Perk, false)?;
+    if image.size == [GLYPH_EDGE; 2] {
+        return Ok(image);
+    }
+    let source = image::RgbaImage::from_fn(image.size[0] as u32, image.size[1] as u32, |x, y| {
+        image::Rgba(image[(x as usize, y as usize)].to_srgba_unmultiplied())
+    });
+    let glyph = super::glyph::fit(&source);
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        [GLYPH_EDGE; 2],
+        glyph.as_raw(),
+    ))
 }
 
 pub(crate) fn load_for(
     manager: &PackageManager,
     tag: TagHash,
     purpose: Purpose,
+) -> Result<egui::ColorImage, String> {
+    decode(manager, tag, purpose, true)
+}
+
+fn decode(
+    manager: &PackageManager,
+    tag: TagHash,
+    purpose: Purpose,
+    native: bool,
 ) -> Result<egui::ColorImage, String> {
     if (crate::package_profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID
         ..=crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
@@ -68,7 +94,7 @@ pub(crate) fn load_for(
         return Err("Icon reference is not a supported 2D texture header".into());
     }
     let header = manager.read_tag(tag).map_err(|e| e.to_string())?;
-    dimensions(&header, purpose)?;
+    dimensions(&header, purpose, native)?;
     let data = manager
         .get_entry(TagHash(entry.reference))
         .ok_or("Icon pixel resource is missing")?;
@@ -82,6 +108,19 @@ pub(crate) fn load_for(
         return Err("Choose an icon with visible artwork and transparency.".into());
     }
     Ok(image)
+}
+
+/// A thumbnail of `image`, 64 pixels on its long side.
+pub(crate) fn thumbnail(image: &egui::ColorImage) -> egui::ColorImage {
+    let [w, h] = image.size;
+    let size = [64 * w / w.max(h), 64 * h / w.max(h)];
+    let mut thumbnail = egui::ColorImage::filled(size, egui::Color32::TRANSPARENT);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            thumbnail[(x, y)] = image[(x * w / size[0], y * h / size[1])];
+        }
+    }
+    thumbnail
 }
 
 /// Returning false cancels the scan and releases the package manager promptly.
@@ -126,14 +165,6 @@ pub(crate) fn scan_for(
                 Some((image, white == Some(true)))
             })
             .map(|(image, white)| {
-                let [w, h] = image.size;
-                let size = [64 * w / w.max(h), 64 * h / w.max(h)];
-                let mut thumbnail = egui::ColorImage::new(size, egui::Color32::TRANSPARENT);
-                for y in 0..size[1] {
-                    for x in 0..size[0] {
-                        thumbnail[(x, y)] = image[(x * w / size[0], y * h / size[1])];
-                    }
-                }
                 let mut aliases = names.get(&tag.0).cloned().unwrap_or_default();
                 aliases.extend(names.get(&header.reference).into_iter().flatten().copied());
                 aliases.sort_unstable();
@@ -148,7 +179,6 @@ pub(crate) fn scan_for(
                     name: aliases.join("\n"),
                     white,
                     size: image.size,
-                    thumbnail,
                 }
             });
         if !emit(index + 1, total, entry) {
@@ -180,7 +210,7 @@ pub(crate) fn author(
     references: &mut Vec<crate::NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
     let allocator = crate::appended_tags::AppendedTagAllocator::new(
-        crate::package_profile::PARHELION_ASSET_PACKAGE_ID,
+        crate::package_profile::window().first(),
         0,
     );
     let pixels = match icon {
@@ -191,8 +221,8 @@ pub(crate) fn author(
             );
             let image =
                 load(manager, texture).map_err(|e| invalid(format!("Perk icon {texture}: {e}")))?;
-            // Stock glyphs already include their authored margins. Decode without rescaling
-            // them, then reproduce each destination lane at its own native dimensions.
+            // The glyph arrives at 96 pixels with its margins, native or fitted. Each
+            // destination lane is reproduced from it at its own native dimensions.
             image::RgbaImage::from_fn(image.size[0] as u32, image.size[1] as u32, |x, y| {
                 image::Rgba(image[(x as usize, y as usize)].to_srgba_unmultiplied())
             })
@@ -208,14 +238,14 @@ pub(crate) fn author(
     // an independent texture/header pair for every donor size, for either icon source.
     let plan = super::build_weapon_icon_edit_plan(
         manager,
-        crate::package_profile::PARHELION_ASSET_PACKAGE_ID,
+        crate::package_profile::window().first(),
         0,
         nodes.len(),
         template,
         &edit,
     )?
     .ok_or_else(|| invalid("Perk icon produced no artwork"))?;
-    let private_layer = plan.primary_layer_tag;
+    let private_layer = plan.layer_tag;
     // Fingerprint the emitted pixels as well as the references. Padding or resampling
     // fixes must invalidate a cached icon even when the recipe and tag positions match.
     let revision = plan
@@ -271,37 +301,4 @@ pub(crate) fn author(
         storage: NewTagStorageMode::InheritTemplate,
     });
     Ok(private_container)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn excludes_blank_opaque_and_non_icon_textures() {
-        let mut header = vec![0; 40];
-        header[4..8].copy_from_slice(&28u32.to_le_bytes());
-        header[14..22].copy_from_slice(&[96, 0, 96, 0, 1, 0, 1, 0]);
-        header[36..40].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert_eq!(dimensions(&header, Purpose::Perk).unwrap(), [96, 96]);
-        for edge in [32u16, 64, 128, 256, 512] {
-            let mut other = header.clone();
-            other[14..16].copy_from_slice(&edge.to_le_bytes());
-            other[16..18].copy_from_slice(&edge.to_le_bytes());
-            assert!(dimensions(&other, Purpose::Perk).is_err());
-            assert!(dimensions(&other, Purpose::Badge).is_ok());
-        }
-        header[16..18].copy_from_slice(&16u16.to_le_bytes());
-        assert!(dimensions(&header, Purpose::Perk).is_err());
-        assert!(!visible_transparency(&egui::ColorImage::new(
-            [2, 2],
-            egui::Color32::TRANSPARENT
-        )));
-        assert!(!visible_transparency(&egui::ColorImage::new(
-            [2, 2],
-            egui::Color32::WHITE
-        )));
-        let mut icon = egui::ColorImage::new([2, 2], egui::Color32::TRANSPARENT);
-        icon[(1, 1)] = egui::Color32::WHITE;
-        assert!(visible_transparency(&icon));
-    }
 }

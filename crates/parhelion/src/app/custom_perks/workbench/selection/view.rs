@@ -10,11 +10,9 @@ pub(super) fn show(
 ) -> Option<Action> {
     let mut open = true;
     let mut action = None;
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     // Escape leaves as Cancel does, once no dropdown is open to take it first.
-    if ctx.input(|input| input.key_pressed(egui::Key::Escape))
-        && !ctx.memory(egui::Memory::any_popup_open)
-    {
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) && !egui::Popup::is_any_open(ctx) {
         return Some(Action::Cancel);
     }
     egui::Window::new("Select Custom Perk")
@@ -141,9 +139,9 @@ fn draw_choices(
             }
             if !visible {
                 ui.label(if picker.choices.is_empty() {
-                    "No custom perks yet."
+                    "No Custom Perks"
                 } else {
-                    "No matching custom perks."
+                    "No Matching Results"
                 });
             }
         });

@@ -8,6 +8,7 @@ use tiger_pkg::TagHash;
 mod grants;
 mod placement;
 mod sockets;
+pub(crate) use grants::SHADER_STACK;
 pub(super) use grants::{GrantedItem, grant_items, installed_grants};
 pub(super) use placement::slot_replacement;
 #[cfg(test)]
@@ -18,6 +19,29 @@ pub(super) fn installed_identities(
     target: &Path,
 ) -> Result<(BTreeSet<u32>, Vec<AuthoredCollectionUnlock>), String> {
     generation_identities(target, target)
+}
+
+/// The installed authored item hashes, as the active runtime loads them. An installation whose
+/// packages carry no authored investment tables, such as one with only other mods or nothing
+/// installed, has none.
+pub(super) fn installed_item_hashes(target: &Path) -> Result<BTreeSet<u32>, String> {
+    let generation = Generation::loaded(target)?;
+    let result = (|| {
+        let globals = resolve_live_named_tag(&generation.manager, "investment_globals", None)?;
+        let profile = canonical_package(globals.pkg_id()).ok_or_else(|| {
+            format!("Ownership table {globals} is outside the recognized package chains")
+        })?;
+        if !generation
+            .directory
+            .join(profile.authored_file_name)
+            .try_exists()
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(BTreeSet::new());
+        }
+        read_identities(&generation).map(|(hashes, _)| hashes)
+    })();
+    generation.finish(result)
 }
 
 /// Read an authored generation against the same installation's stock baseline.
@@ -46,21 +70,46 @@ impl Generation {
     ) -> Result<Self, String> {
         super::validation::decoder::ensure_initialized(target)?;
         if paths_equal(target, authored_directory) {
+            let manager =
+                sundial::package_authoring::open_managed_shadowkeep_package_manager(target)?;
+            let directory = manager.package_dir.clone();
             return Ok(Self {
-                manager: open_shadowkeep_package_manager(target)?,
-                directory: target.to_path_buf(),
+                manager,
+                directory,
                 view: None,
             });
         }
         // Authored overlays can reference physical blocks in older stock generations.
         // Reopen the staged generation in a complete read-only view; never assume its
         // output directory alone contains those stock blocks.
-        let ignored = all_authored_packages()
+        let profiles = all_authored_packages_in(&[target, authored_directory]);
+        let ignored = profiles
+            .iter()
             .map(|p| p.file_name.to_owned())
             .collect::<Vec<_>>();
         let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
         let manager = (|| {
-            for profile in all_authored_packages() {
+            let manifest_path = authored_directory.join(MANIFEST_FILE_NAME);
+            if manifest_path.is_file() {
+                let manifest: ManifestDocument = sundial::package_authoring::read_json(
+                    File::open(&manifest_path).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                manifest.validate()?;
+                if !manifest.mods.is_empty() {
+                    for artifact in &manifest.artifacts {
+                        let path = crate::mod_family::source(
+                            &manifest.mods,
+                            authored_directory,
+                            target,
+                            &artifact.file_name,
+                        )?;
+                        view.add_overlay(&path)?;
+                    }
+                    return open_shadowkeep_package_manager(view.path());
+                }
+            }
+            for profile in &profiles {
                 let path = authored_directory.join(profile.file_name);
                 if path.is_file() {
                     view.add_overlay(&path)?;
@@ -76,6 +125,28 @@ impl Generation {
             }),
             Err(error) => view.finish(Err(error), drop),
         }
+    }
+
+    /// The installation as the active runtime loads it. Dawn and Sunrise before 0.6 ignore
+    /// Parhelion's mod folder, so there it is stock `packages` with any Parhelion files in them,
+    /// whatever the folder holds. Installation and removal read [`Self::open`] instead, which
+    /// includes the folder on any runtime, since they replace or remove it wherever it is.
+    fn loaded(target: &Path) -> Result<Self, String> {
+        let install = target.parent().ok_or("Missing game root")?;
+        let runtime = sundial::package_authoring::installed_runtime(install)
+            .map_err(|error| error.to_string())?;
+        if runtime
+            .uses_mod_loader()
+            .map_err(|error| error.to_string())?
+        {
+            return Self::open(target, target);
+        }
+        super::validation::decoder::ensure_initialized(target)?;
+        Ok(Self {
+            manager: open_shadowkeep_package_manager(target)?,
+            directory: target.to_path_buf(),
+            view: None,
+        })
     }
 
     /// Releases the generation, removing its view, and returns what was read from it.
@@ -138,6 +209,33 @@ pub(in crate::install) fn read_identities(
     identify(&stock_items, &items, &stock_unlocks, &unlocks)
 }
 
+/// Every available definition in the effective incoming package view, including stock items.
+pub(in crate::install) fn read_available_definitions(
+    generation: &Generation,
+) -> Result<BTreeSet<u32>, String> {
+    available_definitions(&generation.manager)
+}
+
+pub(in crate::install) fn available_definitions(
+    manager: &sundial::package_authoring::PackageManager,
+) -> Result<BTreeSet<u32>, String> {
+    let (_, table) = placement::tables(manager)?;
+    let rows = rows(&table, ITEM_DEFINITION_INDEX_ROW_CLASS, ITEM_INDEX_ROW_SIZE)?;
+    if rows.is_empty() {
+        return Err("The incoming native item definition table is empty".into());
+    }
+    let mut definitions = BTreeSet::new();
+    for row in rows {
+        let hash = read_u32(row, 0).map_err(|e| e.to_string())?;
+        if !definitions.insert(hash) {
+            return Err(format!(
+                "The incoming native item definition table repeats 0x{hash:08X}"
+            ));
+        }
+    }
+    Ok(definitions)
+}
+
 fn payload(target: &Path, tag: TagHash, authored: bool) -> Result<Vec<u8>, String> {
     let profile = canonical_package(tag.pkg_id())
         .ok_or_else(|| format!("Ownership table {tag} is outside the recognized package chains"))?;
@@ -198,12 +296,12 @@ fn identify(
     // Item indices and unlock compact addresses are append-only authoring contracts.
     for (stock, current) in stock_items.iter().zip(&items) {
         if stock != current {
-            return Err("A stock item index row changed; automatic cleanup is unsafe".into());
+            return Err("A stock item index row changed. Automatic cleanup is unsafe".into());
         }
     }
     for (stock, current) in stock_unlocks.iter().zip(&unlocks) {
         if stock.get(..8) != current.get(..8) {
-            return Err("A stock unlock identity changed; automatic cleanup is unsafe".into());
+            return Err("A stock unlock identity changed. Automatic cleanup is unsafe".into());
         }
     }
     let hash = |row: &[u8]| read_u32(row, 0).map_err(|e| e.to_string());
@@ -250,7 +348,8 @@ fn identify(
             slot,
         });
     }
-    if hashes.is_empty() || owned_unlocks.is_empty() {
+    // A set of maps alone authors neither items nor unlocks.
+    if hashes.is_empty() != owned_unlocks.is_empty() {
         return Err("The installed set has no provable authored item/unlock identities".into());
     }
     Ok((hashes, owned_unlocks))
@@ -312,9 +411,7 @@ mod tests {
     #[test]
     #[ignore = "requires an installed native package set; read-only"]
     fn native_account_cleanup_review_is_read_only() {
-        let path = PathBuf::from(
-            std::env::var("PARHELION_UNINSTALL_REVIEW_PACKAGES").expect("set native packages path"),
-        );
+        let path = crate::test_support::install().join("packages");
         let before = preview_uninstall(&path).unwrap();
         let plan = preview_uninstall_with_account_cleanup(&path).unwrap();
         let cleanup = plan.account_cleanup().unwrap_or_else(|| {
