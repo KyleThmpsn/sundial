@@ -12,13 +12,31 @@ mod texture;
 mod vertex;
 use resources::{program, vectors};
 
+/// Whether the weapon hides everything but its reticle once aimed. See [`scope::hidden_when_aimed`].
+fn hidden_when_aimed(mesh: &geometry::Mesh) -> bool {
+    mesh.surfaces
+        .values()
+        .any(|surface| surface.lens.as_ref().is_some_and(|lens| lens.enclosed))
+}
+
+/// The source aimed view of an enclosed sight. See [`reticle::framed`].
+fn framing(mesh: &geometry::Mesh) -> Option<&geometry::Framing> {
+    mesh.surfaces
+        .values()
+        .find_map(|surface| surface.lens.as_ref()?.framing.as_ref())
+}
+
 pub(super) fn bind_channels(
     source: &mut Reader,
     native: &mut Reader,
     graph: &mut Graph,
     mesh: &geometry::Mesh,
 ) -> Result<BTreeMap<String, u8>> {
+    use crate::tiger::channel::inherited::AIM_VISIBILITY;
     let mut requested = BTreeSet::new();
+    if hidden_when_aimed(mesh) {
+        requested.insert(AIM_VISIBILITY);
+    }
     let mut entities = BTreeSet::new();
     for surface in mesh.surfaces.values().filter(|s| s.lens.is_none()) {
         if entities.insert(surface.entity) {
@@ -27,6 +45,15 @@ pub(super) fn bind_channels(
                     requested.insert(declaration.name);
                 }
             }
+        }
+        // A reticle fades with the aim visibility Shadowkeep's reticles read, directly or through
+        // its bank's own channels.
+        if surface.stage == 17
+            && channel::bank(source, surface.entity)?
+                .iter()
+                .any(|declaration| declaration.name == AIM_VISIBILITY)
+        {
+            requested.insert(AIM_VISIBILITY);
         }
         let material = source.tag(surface.material, Some(0x808031D8))?;
         let code = material
@@ -40,11 +67,15 @@ pub(super) fn bind_channels(
             if matches!(name, 0x32CC5402 | 0x9F7F13A9) {
                 requested.insert(name);
             }
+            if name == expression::SIGHT_DISPLAY {
+                requested.insert(AIM_VISIBILITY);
+            }
         }
     }
     crate::presentation::channel::inherit(native, graph, &requested.into_iter().collect::<Vec<_>>())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pixel(
     listing: Option<&str>,
     surface: &geometry::Surface,
@@ -52,6 +83,8 @@ fn pixel(
     values: &[[u8; 16]],
     written: &BTreeSet<usize>,
     viewports: &BTreeSet<u32>,
+    depth: Option<(u32, u32)>,
+    material_slots: &BTreeSet<u32>,
 ) -> Result<String> {
     let Some(listing) = listing else {
         ensure!(
@@ -77,6 +110,7 @@ fn pixel(
             })
             .map(|f| f.index)
             .collect(),
+        depth_source: depth.map(|(register, row)| (register, 0, row)),
         ..Default::default()
     };
     options.constants.insert((12, 16), "cb12[12]".into());
@@ -159,6 +193,7 @@ fn pixel(
         if (16..=18).all(|slot| bindings.get(&(0, slot)).is_some_and(|&(kind, _)| kind == 4)) {
             lighting::adapt(&mut options, surface);
         }
+        lighting::local_probe(&mut options, &bindings, material_slots)?;
     }
     if surface.stage == 17 {
         reticle::pixel(listing, &parsed, &mut options)?;
@@ -239,9 +274,12 @@ pub(super) fn build(
     graph: &mut Graph,
     mesh: &geometry::Mesh,
 ) -> Result<Vec<Value>> {
+    use crate::tiger::channel::inherited::AIM_VISIBILITY;
     resources::view_scalars(source, native)?;
     let globals = channel::Globals::read(source, native)?;
     let objects = bind_channels(source, native, graph, mesh)?;
+    let hidden = hidden_when_aimed(mesh);
+    let framed = framing(mesh).filter(|_| hidden);
     let root = mesh
         .surfaces
         .values()
@@ -282,8 +320,12 @@ pub(super) fn build(
             }
             shader_tags.push(Some(tag));
         }
+        // Aimed glass draws in the reticle pass, so it takes the reticle template's header, whose
+        // word +0x0C (4) and flags +0x14 the glass template lacks. A glass-template material in
+        // that pass did not draw in gameplay.
         let template = match surface.stage {
             2 => 0x80ba7713,
+            8 if surface.framed.is_some() => 0x8152C441,
             8 => 0x815246aa,
             17 => 0x8152C441,
             4 | 13 => 0x80ec271d,
@@ -293,7 +335,7 @@ pub(super) fn build(
         if surface.stage == 17 {
             reticle::validate(native, &material, &shell)?;
         }
-        let values = resources::values(source, &material, 0x278)?;
+        let mut values = resources::values(source, &material, 0x278)?;
         let code = material
             .array(0x298, 1, None)?
             .into_iter()
@@ -301,6 +343,12 @@ pub(super) fn build(
             .collect::<Result<Vec<_>>>()?;
         let mut written = expression::written(&code)?;
         let (metadata, samplers) = resources::inputs(source, &material)?;
+        // The material row after the source table carries aim visibility for a hidden surface,
+        // framed glass and a framed reticle.
+        let aim_row = (hidden && (surface.stage != 17 || framed.is_some()))
+            .then(|| u8::try_from(values.len()))
+            .transpose()
+            .context("Aim visibility row capacity")?;
         if let std::collections::btree_map::Entry::Vacant(entry) = banks.entry(surface.entity) {
             entry.insert(channel::bank(source, surface.entity)?);
         }
@@ -315,6 +363,8 @@ pub(super) fn build(
             authored: BTreeMap::new(),
             full_viewport: matches!(surface.stage, 8 | 17),
             reticle: surface.stage == 17,
+            scene_depth: surface.stage == 8,
+            live_display: true,
         };
         let all_outputs = written.iter().map(|&row| row as u32).collect();
         let planned = context.clone().lower(&code, &values, &all_outputs, false)?;
@@ -323,6 +373,24 @@ pub(super) fn build(
             specialized[row] = value;
             written.remove(&row);
         }
+        // A transparent material can bind scene depth to its own register and write the
+        // projection vector to its own row, as the scope does for t10 and CB2[0].
+        let depth_registers = planned.depth.iter().copied().collect::<Vec<_>>();
+        let depth_rows = planned.depth_rows.iter().copied().collect::<Vec<_>>();
+        let material_depth = match (depth_registers.as_slice(), depth_rows.as_slice()) {
+            ([], _) => None,
+            ([register], [row]) => Some((*register, *row)),
+            _ => anyhow::bail!(
+                "Marathon material {:08X} binds scene depth without one register and one projection row",
+                surface.material
+            ),
+        };
+        let mut material_slots = material
+            .array(0x280, 24, None)?
+            .into_iter()
+            .map(|row| material.u32(row))
+            .collect::<Result<BTreeSet<_>>>()?;
+        material_slots.extend(&planned.resources);
         let pixel_text = pixel(
             shader_tags[1].map(|tag| listings[&tag].as_str()),
             surface,
@@ -330,6 +398,8 @@ pub(super) fn build(
             &specialized,
             &written,
             &planned.viewports,
+            material_depth,
+            &material_slots,
         )
         .with_context(|| {
             format!(
@@ -346,6 +416,15 @@ pub(super) fn build(
             scope::cutout(pixel_text, lens)?
         } else {
             pixel_text
+        };
+        let pixel_text = match (aim_row, framed) {
+            (Some(row), Some(framing)) if surface.stage == 17 => {
+                reticle::framed(pixel_text, row, framing)?
+            }
+            (Some(row), _) if surface.framed.is_some() => scope::shown_when_aimed(pixel_text, row)?,
+            (Some(row), _) => scope::hidden_when_aimed(pixel_text, row)?,
+            (None, _) if hidden && surface.stage == 17 => reticle::unmasked(pixel_text)?,
+            (None, _) => pixel_text,
         };
         let pixel_name = format!("pixel-{key:08X}");
         let pixel_code = program(
@@ -383,6 +462,27 @@ pub(super) fn build(
             );
             resources::scene_depth(source, native)?;
         }
+        if let Some((register, _)) = material_depth {
+            ensure!(
+                pixel_text.contains("/* Native reciprocal depth */")
+                    && inspection.resources.get(&register).map(String::as_str)
+                        == Some("dcl_resource_texture2d (float,float,float,float) @")
+                    && inspection.constant_reads.get(&12).is_none_or(|reads| reads
+                        .iter()
+                        .all(|r| r.index != Some(13) || !r.lanes.contains('y'))),
+                "Material depth projection differs from the native reciprocal-depth contract"
+            );
+            ensure!(
+                material
+                    .array(0x280, 24, None)?
+                    .into_iter()
+                    .all(|row| material.u32(row).is_ok_and(|slot| slot != register)),
+                "Material scene depth conflicts with a fixed texture"
+            );
+            // The scope programs establish the source and native depth resources this
+            // material binds.
+            resources::scene_depth(source, native)?;
+        }
         let scene_color = surface.stage == 8 && inspection.resources.contains_key(&18);
         let forward_lighting = surface.stage == 8
             && inspection
@@ -410,12 +510,14 @@ pub(super) fn build(
         }
         let vertex_tag = shader_tags[0].context("Missing source vertex program")?;
         let source_vertex = &listings[&vertex_tag];
-        let vertex_values = resources::values(source, &material, 0x58)?;
+        let mut vertex_values = resources::values(source, &material, 0x58)?;
         let vertex_expression = material
             .array(0x78, 1, None)?
             .into_iter()
             .map(|at| material.u8(at))
             .collect::<Result<Vec<_>>>()?;
+        let mut vertex_context = context.clone();
+        vertex_context.live_display = false;
         let reticle_vertex = if surface.stage == 17 {
             Some(reticle::vertex(
                 native,
@@ -423,19 +525,40 @@ pub(super) fn build(
                 &shell,
                 &vertex_expression,
                 &vertex_values,
-                context.clone(),
+                vertex_context.clone(),
+                framed.filter(|_| aim_row.is_some()),
             )?)
         } else {
             None
         };
         let reticle_plane = reticle_vertex.as_ref().map(|vertex| vertex.plane.clone());
         let projection = reticle_vertex.as_ref().map(|vertex| vertex.projection);
+        let glass_vertex = surface
+            .framed
+            .as_ref()
+            .map(|_| reticle::native_vertex(native, &shell))
+            .transpose()?;
+        let aimed = glass_vertex.as_ref().map(|vertex| vertex.projection);
         let vertex_written = if let Some(projection) = projection {
             (usize::from(projection.matrix)..=usize::from(projection.depth)).collect()
         } else {
-            expression::written(&vertex_expression)?
+            let mut written = expression::written(&vertex_expression)?;
+            // A closed vertex expression specializes its rows as the pixel stage does, so a vertex
+            // condition on one resolves. Rows with a live producer, and every row of an expression
+            // the lowering cannot read, stay dynamic and such conditions refuse them.
+            vertex_context.constants = vectors(&material, 0x88)?;
+            vertex_context.authored.clear();
+            if let Ok(closed) =
+                vertex_context.lower(&vertex_expression, &vertex_values, &BTreeSet::new(), false)
+            {
+                for (&row, &value) in &closed.constants {
+                    vertex_values[row] = value;
+                    written.remove(&row);
+                }
+            }
+            written
         };
-        let (vertex_text, uses_colors) = vertex::hlsl(source_vertex, &pixel_code, surface, &vertex_values, &vertex_written, (&mesh.motion, mesh.bones), projection)
+        let (vertex_text, uses_colors) = vertex::hlsl(source_vertex, &pixel_code, surface, &vertex_values, &vertex_written, (&mesh.motion, mesh.bones), projection, aimed)
             .with_context(|| {
                 format!(
                     "Marathon material {:08X}, model {:08X}, stage {}: translating vertex shader {:08X}",
@@ -453,7 +576,7 @@ pub(super) fn build(
         )?;
         shader::inputs::verify_linkage(&vertex_code, &pixel_code)?;
         let mut bytes = resources::fresh(&shell, &material, surface.stage)?;
-        if let Some(vertex) = reticle_vertex {
+        if let Some(vertex) = reticle_vertex.or(glass_vertex) {
             vertex.append(&mut bytes)?;
         }
         let mut patches = vec![
@@ -470,6 +593,9 @@ pub(super) fn build(
         }
         let bindings = resources::bindings(source, native, graph, &material, &inspection)?;
         bindings.append(native, &mut bytes, &mut patches)?;
+        if aim_row.is_some() {
+            values.push([0; 16]);
+        }
         let live = inspection
             .constant_reads
             .get(&0)
@@ -481,7 +607,13 @@ pub(super) fn build(
             live.iter().all(|i| (*i as usize) < values.len()),
             "Source material constant buffer is truncated"
         );
-        let lowered = context.lower(&code, &values, &live, true)?;
+        let mut lowered = context.lower(&code, &values, &live, true)?;
+        if let Some(row) = aim_row {
+            let input = objects
+                .get(&format!("{AIM_VISIBILITY:08X}"))
+                .context("Aim visibility model input")?;
+            lowered.code.extend([0x4d, *input, 0x43, row]);
+        }
         for slot in &lowered.resources {
             ensure!(
                 inspection.resources.get(slot).is_none_or(|kind| kind
@@ -564,7 +696,7 @@ pub(super) fn build(
             graph.nodes.last_mut().context("Authored material node")?["material_inputs"] =
                 json!(authored);
         }
-        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"specialized_inputs":planned.evidence.iter().filter(|row| row["output"].as_u64().is_some_and(|i| planned.constants.contains_key(&(i as usize)))).collect::<Vec<_>>(),"pixel_bindings":inspection,"aperture_cutout":surface.cutout.as_ref().map(|lens|json!({"center":lens.center,"axes":lens.axes,"edges":lens.outline})),"reticle_plane":reticle_plane,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"ambient_visibility":if surface.stage==0{json!("Source target-two W vertex term replaced by native per-object visibility from TEXCOORD0.w")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null}}));
+        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"specialized_inputs":planned.evidence.iter().filter(|row| row["output"].as_u64().is_some_and(|i| planned.constants.contains_key(&(i as usize)))).collect::<Vec<_>>(),"pixel_bindings":inspection,"aperture_cutout":surface.cutout.as_ref().map(|lens|json!({"center":lens.center,"axes":lens.axes,"edges":lens.outline})),"hidden_at_full_aim":aim_row.is_some() && surface.stage != 17 && surface.framed.is_none(),"aimed_glass":surface.framed.is_some(),"reticle_unmasked":hidden && surface.stage == 17,"aimed_framing":framed.filter(|_| surface.stage == 17 && aim_row.is_some()).map(|framing|json!({"view_tangent":framing.tangent,"eye":framing.eye,"window":framing.window})),"reticle_plane":reticle_plane,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"ambient_visibility":if surface.stage==0{json!("Source target-two W vertex term replaced by native per-object visibility from TEXCOORD0.w")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null}}));
     }
     write_json(&graph.root.join("material-report.json"), &json!(reports))?;
     Ok(reports)

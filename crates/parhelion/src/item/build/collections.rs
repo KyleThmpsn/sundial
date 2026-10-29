@@ -1,4 +1,5 @@
-//! Build badge membership and acquired-count programs from completed weapon rows.
+//! Build badge membership and acquired-count programs from completed weapon rows, and the pages
+//! emission puts linked ornaments on.
 use super::*;
 mod pages;
 
@@ -10,6 +11,8 @@ pub(super) struct Tables {
     pub record_strings: Vec<u8>,
     pub objectives: Vec<u8>,
     pub pools: Vec<u8>,
+    /// Where emission puts each ordinary weapon's linked ornaments, by the weapon's item hash.
+    pub ornament_targets: BTreeMap<u32, placements::OrnamentTarget>,
 }
 
 pub(super) fn author(
@@ -32,6 +35,7 @@ pub(super) fn author(
             record_strings: std::mem::take(&mut sources.stock_record_strings),
             objectives: std::mem::take(&mut sources.stock_objectives),
             pools: std::mem::take(&mut sources.stock_pools),
+            ornament_targets: BTreeMap::new(),
         });
     }
     let badge_placements = project_rows
@@ -114,7 +118,12 @@ pub(super) fn author(
         &nodes,
         &page_members,
     )?;
-    pages::add_counts(&mut objectives, &nodes, project_rows, &sources.stock_pools)?;
+    crate::progression::add_direct_acquired_counts(
+        &mut objectives,
+        &nodes,
+        project_rows,
+        &sources.stock_pools,
+    )?;
     let authored_unlock_indices = sunrise_members
         .iter()
         .map(|row| row.authored_unlock_index)
@@ -150,5 +159,6 @@ pub(super) fn author(
         record_strings,
         objectives,
         pools,
+        ornament_targets: plan.ornament_targets(),
     })
 }

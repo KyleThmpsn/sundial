@@ -39,13 +39,13 @@ pub fn author_sights(
     {
         return Ok(());
     }
-    let mut presentation = Graph {
-        root: directory.to_path_buf(),
-        nodes: graph["nodes"]
+    let mut presentation = Graph::new(
+        directory.to_path_buf(),
+        graph["nodes"]
             .as_array()
             .context("Marathon graph nodes")?
             .clone(),
-    };
+    );
     let template = crate::tiger::shadowkeep::extract(native, hash(graph, "native_item")?)?;
     if graph["inventory_slot"].is_null() {
         let item = native.tag(hash(&template, "item_tag")?, Some(0x80807BEA))?;
@@ -115,10 +115,10 @@ pub fn author_sights(
     }
     presentation.replace("model", &encoded.header, encoded.patches)?;
     material::bind_channels(source, native, &mut presentation, &mesh)?;
-    let mut materials = Graph {
-        root: directory.to_path_buf(),
-        nodes: vec![presentation.node("owner")?.clone()],
-    };
+    let mut materials = Graph::new(
+        directory.to_path_buf(),
+        vec![presentation.node("owner")?.clone()],
+    );
     let reports = material::build(source, native, &mut materials, &mesh)?;
     for node in materials
         .nodes

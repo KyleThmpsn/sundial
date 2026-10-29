@@ -23,8 +23,8 @@ pub fn refresh_optics(prepared: &Path, graph: &Path, out: &Path) -> Result<Value
         &prepared.join("render-inputs/shaders"),
         &refs.join("shaders"),
     )?;
-    let source = load(&prepared.join("source/source-manifest.json"))?;
-    let native = load(&prepared.join("native/source-manifest.json"))?;
+    let source = load(&crate::d2_mot::profile::source(prepared)?.join("source-manifest.json"))?;
+    let native = load(&crate::d2_mot::profile::native(prepared)?.join("source-manifest.json"))?;
     let bindings = out.join("source-bindings");
     crate::d2_mot::support::export_with_progress(
         prepared,
@@ -111,9 +111,7 @@ pub(crate) fn build(
         native,
         progress,
     )?;
-    // Link immutable rips into the layout expected by the established full converter.
-    references::link_inputs(source, &prepared.join("source"))?;
-    references::link_inputs(native, &prepared.join("native"))?;
+    crate::d2_mot::profile::Extracted { source, native }.record(prepared)?;
     let refs = prepared.join("render-inputs");
     references::export(prepared, &refs, progress)?;
     let source_manifest = load(&source.join("source-manifest.json"))?;

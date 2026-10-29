@@ -33,12 +33,8 @@ pub(crate) fn prepare_one(
 /// a rebuilt or updated install starts a fresh index.
 fn carrier_cache(native: &Path) -> Result<Option<crate::cache::Generation>> {
     let stamp = super::service::package_stamp(native)?;
-    Ok(std::env::var_os("LOCALAPPDATA").and_then(|root| {
-        crate::cache::Generation::file(
-            &PathBuf::from(root).join("Sundial/parhelion/importer/cache/native-carriers"),
-            &stamp,
-        )
-    }))
+    Ok(crate::cache::importer_cache("d2_mot", "native-carriers")
+        .and_then(|root| crate::cache::Generation::file(&root, &stamp)))
 }
 
 /// Add rendering templates from elsewhere in the packages for source models
@@ -132,9 +128,33 @@ pub(crate) fn prepare_one_reusing(
     progress: &mut dyn FnMut(String),
 ) -> Result<Value> {
     let hash = profile::hash(row, "hash")?;
-    let donor = profile::hash(row, "native_item")?;
     let folder = out.join(format!("{hash:08X}"));
-    fs::create_dir(&folder)?;
+    prepare_in(
+        row,
+        ordinal,
+        (modern, native),
+        (out, &folder),
+        source_cache,
+        shared_native,
+        progress,
+    )
+}
+
+/// [`prepare_one_reusing`] with the weapon's working folder named by the caller instead of by
+/// its hash, for an import that has a conversion folder of its own. The recipe still goes in
+/// `out`'s `recipes` folder.
+pub(crate) fn prepare_in(
+    row: &Value,
+    ordinal: u32,
+    (modern, native): (&Path, &Path),
+    (out, folder): (&Path, &Path),
+    source_cache: Option<&Path>,
+    shared_native: Option<&Reader>,
+    progress: &mut dyn FnMut(String),
+) -> Result<Value> {
+    let hash = profile::hash(row, "hash")?;
+    let donor = profile::hash(row, "native_item")?;
+    fs::create_dir(folder)?;
     let source_path = source_cache.map_or_else(|| folder.join("source"), Path::to_owned);
     let (source, source_rig) = if source_cache.is_some() {
         (
@@ -158,8 +178,10 @@ pub(crate) fn prepare_one_reusing(
         r.finish()?;
         (source, source_rig)
     };
+    // A row without a name, such as an ornament's stock weapon, names its weapon by hash alone.
     ensure!(
-        source["item_hash"].as_u64() == Some(u64::from(hash)) && source["name"] == row["name"],
+        source["item_hash"].as_u64() == Some(u64::from(hash))
+            && (row["name"].is_null() || source["name"] == row["name"]),
         "source weapon identity differs"
     );
     let glaive = super::glaive::exported_glaive(&source_path)?;
@@ -191,7 +213,7 @@ pub(crate) fn prepare_one_reusing(
             &native_path,
             &source_rig,
             &native_rig,
-            &folder,
+            folder,
         ) {
             Ok(prepared) => (Some(prepared), json!({"mode":"source"})),
             Err(error) => {
@@ -229,6 +251,17 @@ pub(crate) fn prepare_one_reusing(
     );
     let id = crate::graph::import_identity(&namespace)?;
     let use_rig = source_owned || !(rigid_root(mapping) && has_rigid_carrier(&template)?);
+    let mut profile = json!({"source_item":hash,"native_item":donor,"target_item":id["item_hash"],"art_key":0xE2A00000u32.checked_add(ordinal).context("art key overflow")?,"dye_key_base":0xE2B00000u32.checked_add(ordinal.checked_mul(16).context("dye key overflow")?).context("dye key overflow")?,"model_index":0,"plated":true,"convert_dyes":true});
+    if use_rig {
+        profile["rig"] = rig.clone();
+    }
+    // An ornament converts on its weapon's base: this profile, the rig match and the native
+    // export beside it. Its own models find their carriers and channel host, so the checks of
+    // the weapon's own models below do not apply to it.
+    if row["base_only"] == true {
+        write_json(&folder.join("profile.json"), &profile)?;
+        return Ok(json!({"hash":hash,"native_item":donor,"folder":folder,"status":"base"}));
+    }
     progress("Checking all model parts against donor materials…".into());
     let stride = if use_rig { 24 } else { 20 };
     let mut template = template;
@@ -276,10 +309,6 @@ pub(crate) fn prepare_one_reusing(
         )?;
         super::native::effects::check_channels(&source_path, &native_path, owner)
             .context("source channel adaptation")?;
-    }
-    let mut profile = json!({"source_item":hash,"native_item":donor,"target_item":id["item_hash"],"art_key":0xE2A00000u32.checked_add(ordinal).context("art key overflow")?,"dye_key_base":0xE2B00000u32.checked_add(ordinal.checked_mul(16).context("dye key overflow")?).context("dye key overflow")?,"model_index":0,"plated":true,"convert_dyes":true});
-    if use_rig {
-        profile["rig"] = rig.clone();
     }
     write_json(&folder.join("profile.json"), &profile)?;
     let prepared = folder.join("prepared");
@@ -552,11 +581,18 @@ pub fn donors(
     donors_with_progress(source, catalog, kind, native, out, &mut |_| {})
 }
 
+/// The format of the cached native rig reports. A change starts a new generation beside the old
+/// ones, which retention then removes.
+const NATIVE_RIG_SCHEMA: u32 = 1;
+
 fn native_rig_cache(native: &Path) -> Option<crate::cache::Generation> {
     let stamp = super::service::package_stamp(native).ok()?;
-    let root = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-        .join("Sundial/parhelion/importer/cache/native-rigs-v1");
-    crate::cache::Generation::directory(&root, &stamp)
+    // Earlier builds kept a folder per format.
+    let _ = fs::remove_dir_all(crate::cache::importer_folder()?.join("cache/native-rigs-v1"));
+    crate::cache::Generation::directory(
+        &crate::cache::importer_cache("d2_mot", "native-rigs")?,
+        &format!("{NATIVE_RIG_SCHEMA}-{stamp}"),
+    )
 }
 
 fn cached_rig(path: &Path, item: u32) -> Option<Value> {

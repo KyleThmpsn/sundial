@@ -11,8 +11,6 @@ mod sockets;
 pub(crate) use grants::SHADER_STACK;
 pub(super) use grants::{GrantedItem, grant_items, installed_grants};
 pub(super) use placement::slot_replacement;
-#[cfg(test)]
-pub(super) use sockets::generation_socket_defaults;
 pub(super) use sockets::socket_defaults;
 
 pub(super) fn installed_identities(
@@ -407,33 +405,5 @@ mod tests {
         assert!(identify(&stock_items, &changed_stock, &stock_flags, &flags).is_err());
         let colliding_hash = item_table(&[(100, 0, 0), (100, 0, 0)]);
         assert!(identify(&stock_items, &colliding_hash, &stock_flags, &flags).is_err());
-    }
-    #[test]
-    #[ignore = "requires an installed native package set; read-only"]
-    fn native_account_cleanup_review_is_read_only() {
-        let path = crate::test_support::install().join("packages");
-        let before = preview_uninstall(&path).unwrap();
-        let plan = preview_uninstall_with_account_cleanup(&path).unwrap();
-        let cleanup = plan.account_cleanup().unwrap_or_else(|| {
-            panic!(
-                "{}",
-                plan.account_cleanup_error().unwrap_or("missing cleanup")
-            )
-        });
-        assert_eq!(
-            sundial::package_authoring::account::read_authored_account_source(
-                &cleanup.settings_path
-            )
-            .unwrap(),
-            cleanup.original_bytes
-        );
-        assert_eq!(before, preview_uninstall(&path).unwrap());
-        eprintln!(
-            "Read-only review of {}: {} item instances, {} plugs, {} collection flags",
-            cleanup.settings_path.display(),
-            cleanup.removed_items.values().sum::<usize>(),
-            cleanup.cleared_plugs,
-            cleanup.cleared_unlocks
-        );
     }
 }

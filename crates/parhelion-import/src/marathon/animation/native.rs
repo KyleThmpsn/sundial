@@ -33,23 +33,25 @@ pub(super) struct Carrier {
     pub clip_template: u32,
 }
 
-fn hex(value: &Value) -> Result<u32> {
+pub(super) fn hex(value: &Value) -> Result<u32> {
     Ok(u32::from_str_radix(
         value.as_str().context("Native rig identity")?,
         16,
     )?)
 }
 
-/// The weapon's rig report and the first-person attachment owner and entity its content key
-/// selects.
-fn first_person(native: &mut Reader, item_tag: u32) -> Result<(Value, u32, u32)> {
+/// The weapon's rig report and the first-person attachment rows its content key selects, each as
+/// the attachment owner, the arms rig entity at `+78`, the hold category at `+68` and the
+/// animation profile at `+6C` that the arms rig's state selectors test. Every row of one owner
+/// names the same entity, so the profile decides what each action plays.
+pub(super) fn rows(native: &mut Reader, item_tag: u32) -> Result<(Value, Vec<[u32; 4]>)> {
     let report = crate::tiger::rig::inspect(native, item_tag, false)?;
     let runtime = hex(&report["runtime_entity"])?;
     let content = hex(&report["content_key"])?;
     let components = report["components"]
         .as_array()
         .context("Native weapon components")?;
-    let mut chains = Vec::new();
+    let mut rows = Vec::new();
     for component in components
         .iter()
         .filter(|c| c["class"] == "80804221" && hex(&c["entity"]).ok() == Some(runtime))
@@ -62,10 +64,24 @@ fn first_person(native: &mut Reader, item_tag: u32) -> Result<(Value, u32, u32)>
             content,
             false,
         )? {
-            chains.push((owner, attachments.u32(row + 0x78)?));
+            rows.push([
+                owner,
+                attachments.u32(row + 0x78)?,
+                attachments.u32(row + 0x68)?,
+                attachments.u32(row + 0x6C)?,
+            ]);
         }
     }
-    chains.sort_unstable();
+    rows.sort_unstable();
+    rows.dedup();
+    Ok((report, rows))
+}
+
+/// The weapon's rig report and the first-person attachment owner and entity its content key
+/// selects.
+fn first_person(native: &mut Reader, item_tag: u32) -> Result<(Value, u32, u32)> {
+    let (report, rows) = rows(native, item_tag)?;
+    let mut chains = rows.iter().map(|r| (r[0], r[1])).collect::<Vec<_>>();
     chains.dedup();
     ensure!(
         chains.len() == 1,
@@ -73,6 +89,21 @@ fn first_person(native: &mut Reader, item_tag: u32) -> Result<(Value, u32, u32)>
     );
     let (attachment, entity) = chains[0];
     Ok((report, attachment, entity))
+}
+
+/// The single owner of a component class on an entity of a rig report.
+pub(super) fn owner(report: &Value, class: &str, entity: u32) -> Result<u32> {
+    let owners = report["components"]
+        .as_array()
+        .context("Native weapon components")?
+        .iter()
+        .filter(|c| c["class"] == class && hex(&c["entity"]).ok() == Some(entity))
+        .map(|c| hex(&c["owner"]))
+        .collect::<Result<Vec<_>>>()?;
+    let [owner] = owners.as_slice() else {
+        anyhow::bail!("Native component {class} is absent or ambiguous");
+    };
+    Ok(*owner)
 }
 
 /// The native weapon's equipment bone names and parent indices in palette order. A model drawn on
@@ -222,7 +253,7 @@ fn poses(payload: &Payload) -> Result<Vec<Pose>> {
         .collect()
 }
 
-fn names(payload: &Payload) -> Result<Vec<(u32, i32)>> {
+pub(super) fn names(payload: &Payload) -> Result<Vec<(u32, i32)>> {
     payload
         .array(payload.pointer(24)? + 0x80, 16, Some(0x80808A08))?
         .into_iter()

@@ -26,6 +26,7 @@ mod rotation;
 pub mod still;
 mod window;
 pub use crate::model_preview::PackageRead;
+pub use crate::model_preview::timing;
 pub use window::show;
 pub use window::{pause_source, stop_reads};
 
@@ -514,6 +515,7 @@ impl Preview {
             let read = model_preview::PackageRead::start();
             std::thread::spawn(move || {
                 let _read = read;
+                let label = format!("viewer load {:?}", selection.1);
                 let load = || match selection.1 {
                     Target::Object(tag) => {
                         model_preview::load_reported(&selection.0, tag, &progress, clip)
@@ -528,10 +530,16 @@ impl Preview {
                         appearance.load(&selection.0, &progress, object, clip)
                     }
                 };
-                let result = match access {
-                    Some(access) => access.read(load),
-                    None => load(),
-                };
+                let result = model_preview::timing::measure(
+                    || label,
+                    "worker",
+                    "geometry and other",
+                    std::time::Duration::ZERO,
+                    || match access {
+                        Some(access) => access.read(load),
+                        None => load(),
+                    },
+                );
                 let _ = sender.send(result);
                 repaint.request_repaint_of(repaint_viewport);
             });
@@ -1236,7 +1244,13 @@ impl Preview {
             self.camera.zoom = (self.camera.zoom * (scroll * 0.002).exp()).clamp(0.25, 5.0);
         }
         let orbit = self.advance_rotation(ui.ctx(), &response);
-        if model_preview::gpu::available() && self.gpu.fallback(model).is_none() {
+        let gpu = model_preview::gpu::available() && self.gpu.fallback(model).is_none();
+        // Until the GPU draws the model, while its programs link and its images upload, the
+        // software image stands in. It is painted first, so the GPU's first frame covers it.
+        if !(gpu && self.gpu.drawn(model)) {
+            self.draw_software(ui, rect, model, size, orbit);
+        }
+        if gpu {
             self.gpu.paint(
                 ui,
                 rect,
@@ -1251,10 +1265,34 @@ impl Preview {
                     dyes: None,
                 },
             );
-            self.draw_fps(ui, rect);
-            self.draw_overlays(ui, rect, model);
-            return;
+            if !self.gpu.drawn(model) && self.texture.is_none() {
+                let spinner = egui::Rect::from_min_size(
+                    rect.left_bottom() + egui::vec2(10.0, -26.0),
+                    egui::vec2(16.0, 16.0),
+                );
+                egui::Spinner::new().paint_at(ui, spinner);
+                ui.painter().text(
+                    spinner.right_center() + egui::vec2(6.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    "Loading Model",
+                    egui::FontId::proportional(12.0),
+                    ui.visuals().weak_text_color(),
+                );
+            }
         }
+        self.draw_fps(ui, rect);
+        self.draw_overlays(ui, rect, model);
+    }
+
+    /// Paints the software image of `model`, asking for a new one when the view changed.
+    fn draw_software(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        model: &Arc<Model>,
+        size: egui::Vec2,
+        orbit: bool,
+    ) {
         let pixels = render_size(size, ui.ctx().pixels_per_point());
         // Limit software rendering to 30 FPS even when the surrounding app repaints faster.
         let seconds = (self.seconds * 30.0).floor() / 30.0;
@@ -1295,8 +1333,6 @@ impl Preview {
                 egui::Color32::WHITE,
             );
         }
-        self.draw_fps(ui, rect);
-        self.draw_overlays(ui, rect, model);
     }
 
     fn draw_fps(&mut self, ui: &egui::Ui, rect: egui::Rect) {

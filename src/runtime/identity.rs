@@ -248,6 +248,15 @@ pub fn native_members(schema: u32) -> Vec<NativeMember> {
 /// A type's size and its native layout entries as `(offset, code)`.
 pub type PointerLayout = (usize, Vec<(usize, u32)>);
 
+/// Direct declared base, distinct from a transitive ancestry check.
+pub fn native_type_parent(schema: u32) -> Option<u32> {
+    runtime_registry()
+        .ok()?
+        .records
+        .get(&schema)
+        .map(|record| record.base_type)
+}
+
 /// A type's size and its native layout entries as `(offset, code)` in offset order, including
 /// those its base types declare. Code 3 is a signed 64-bit offset from the field to an array
 /// header or to an object after its class word, and code 1 the same offset to string bytes.
@@ -274,6 +283,25 @@ pub fn native_pointer_layout(schema: u32) -> Result<Option<PointerLayout>, Strin
     entries.sort_unstable();
     entries.dedup();
     Ok(Some((record.struct_size as usize, entries)))
+}
+
+/// Native storage fields after repeat expansion. Codes 1 and 2 are self-relative string
+/// and raw pointers, 3 is a typed pointer, 4 a resource word, and 9 a sixteen-byte object
+/// reference. Identifier operands and repeat arguments are not address fields.
+/// This includes inherited storage once, as serialized in the native declaration.
+pub fn native_relocation_layout(schema: u32) -> Result<Option<PointerLayout>, String> {
+    let registry = runtime_registry()?;
+    let Some(record) = registry.records.get(&schema) else {
+        return Ok(None);
+    };
+    let layout = record
+        .native_layout
+        .iter()
+        .map(|entry| (entry.byte_offset as usize, entry.type_code))
+        .collect::<Vec<_>>();
+    let size = record.struct_size as usize;
+    let fields = crate::package_runtime::references::schema::expand_layout(size, &layout, true)?;
+    Ok(Some((size, fields.into_iter().collect())))
 }
 
 /// Every reflected member, in any type, that holds a `schema`.

@@ -21,8 +21,10 @@ use std::{
 };
 use tiger_pkg::{TagHash, manager::PackagePath};
 
+mod provenance;
 mod resolution;
 mod shared;
+pub use provenance::{Provenance, Source};
 pub(super) use resolution::valid_id;
 pub use shared::Coexistence;
 
@@ -184,6 +186,7 @@ pub(super) struct Plan {
     pub actions: Vec<config::Action>,
     pub notices: Vec<String>,
     pub coexistence: Coexistence,
+    pub provenance: Provenance,
 }
 
 impl Plan {
@@ -196,6 +199,7 @@ impl Plan {
             actions: Vec::new(),
             notices: Vec::new(),
             coexistence: Coexistence::default(),
+            provenance: Provenance::default(),
         }
     }
 
@@ -250,7 +254,7 @@ impl Plan {
             match checked {
                 Ok(mut staged) => {
                     notices.append(&mut staged.notices);
-                    stage.commit(&item.id, staged);
+                    stage.commit(&item.id, item.name(), staged);
                 }
                 Err(reason) => {
                     let notice = format!("{} was left out: {reason}", item.id);
@@ -446,6 +450,8 @@ struct Stage {
     actions: Vec<config::Action>,
     /// In load order.
     admitted: Vec<String>,
+    /// The admitted mods' manifest names, in the same order.
+    names: Vec<String>,
 }
 
 impl Stage {
@@ -485,6 +491,7 @@ impl Stage {
             bound: HashMap::new(),
             actions: Vec::new(),
             admitted: Vec::new(),
+            names: Vec::new(),
         })
     }
 
@@ -619,7 +626,7 @@ impl Stage {
         Ok(staged)
     }
 
-    fn commit(&mut self, owner: &str, staged: Staged) {
+    fn commit(&mut self, owner: &str, name: &str, staged: Staged) {
         for (id, generations) in staged.packages {
             let paths = generations.iter().map(|added| added.path.clone()).collect();
             self.added.extend(generations);
@@ -637,6 +644,29 @@ impl Stage {
         self.claims.extend(staged.claims);
         self.actions.extend(staged.actions);
         self.admitted.push(owner.to_owned());
+        self.names.push(name.to_owned());
+    }
+
+    /// The packages each admitted mod adds and the installed entries each changes.
+    fn provenance(&self) -> Provenance {
+        let mut provenance = Provenance::default();
+        for (id, name) in self.admitted.iter().zip(&self.names) {
+            provenance.admit(id, name);
+        }
+        let owner = |id: &str| self.admitted.iter().position(|admitted| admitted == id);
+        for added in &self.added {
+            if let Some(owner) = owner(&added.owner) {
+                provenance.add_package(owner, added.package);
+            }
+        }
+        for claim in &self.claims {
+            if let Some(owner) = owner(&claim.owner) {
+                for &tag in &claim.changed {
+                    provenance.change(owner, tag);
+                }
+            }
+        }
+        provenance
     }
 
     /// Shows each mod's new packages in the view, and for each patched package one patch,
@@ -644,6 +674,7 @@ impl Stage {
     /// read in layers, each serving the entries no later mod changes. Entries the loader merges
     /// are read merged.
     fn compose(self, mut notices: Vec<String>) -> Plan {
+        let provenance = self.provenance();
         let mut groups = BTreeMap::<u16, Vec<&Claim>>::new();
         for claim in &self.claims {
             groups.entry(claim.package).or_default().push(claim);
@@ -701,6 +732,7 @@ impl Stage {
             actions: self.actions,
             notices,
             coexistence: merged.coexistence,
+            provenance,
         }
     }
 }

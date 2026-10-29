@@ -352,6 +352,7 @@ pub(in crate::model_preview) fn load_opaque(
     uv: [f32; 4],
     model: &mut Model,
 ) -> Result<Option<Material>, String> {
+    let _stage = crate::model_preview::timing::stage("materials");
     let bytes = checked(manager, tag, 0x8080_71E8)?;
     let pixel = u32_at(&bytes, 0x2C8)?;
     if matches!(pixel, 0 | u32::MAX) {

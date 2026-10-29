@@ -80,6 +80,7 @@ pub fn decompile(
         chance_permyriad,
         actions,
         native_asset_patches: Vec::new(),
+        damage_profiles: Vec::new(),
         imported_assets: Vec::new(),
         imported_labels: None,
         removal_key: ending.removal_key,

@@ -189,7 +189,10 @@ pub(crate) fn art(r: &mut Reader, report: &Value, modern: bool) -> Result<Value>
     // Ghosts and vehicles bind their art to a separate equipment runtime. Its FK hierarchy
     // supplies the mesh palette even when the art entity has no skeleton component of its own.
     let bucket = item.u8(if modern { 0x98 } else { 0xB8 })?;
-    let runtime = if (3..=7).contains(&bucket) {
+    // Armor, and the universal ornaments any armor piece takes, follow the character.
+    let armor =
+        (3..=7).contains(&bucket) || super::universal_ornament::is_universal(&item, modern)?;
+    let runtime = if armor {
         Some(character::inspect(r, modern)?)
     } else if item.u16(translation + 0x58)? != u16::MAX {
         Some(inspect(r, item_tag, modern)?)
@@ -236,11 +239,7 @@ pub(crate) fn art(r: &mut Reader, report: &Value, modern: bool) -> Result<Value>
     result["components"] = json!(components);
     result["skeletons"] = json!(skeletons);
     result["installed"] = json!(false);
-    result["runtime_kind"] = json!(if (3..=7).contains(&bucket) {
-        "character"
-    } else {
-        "equipment"
-    });
+    result["runtime_kind"] = json!(if armor { "character" } else { "equipment" });
     if result["runtime_kind"] == "equipment" && result["content_key"].is_string() {
         super::audio::add_to_rig(r, &mut result, modern)?;
     }

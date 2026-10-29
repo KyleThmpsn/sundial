@@ -2,7 +2,7 @@
 use super::super::{
     LogEntry, PlugChoicePickerButton, draw_socket_role_label, named_control, socket_choice_columns,
 };
-use super::{RowChoices, RowCommand, SocketRowContext};
+use super::{RowChoices, RowCommand, SocketRowContext, SocketView};
 use sundial::investment::PlugChoicePickerOptions;
 
 /// Width of the socket role column, shared by every row so the choices line up.
@@ -92,18 +92,29 @@ pub(super) fn draw_active(
     let RowChoices {
         socket_type_override,
         current_len,
+        view,
         page_start,
         page_end,
         can_add,
         ..
     } = *choices;
+    let randomized = view == SocketView::Randomized;
     let current_page = &choices.current_page;
     let mut selected_type = socket_type_override;
     let mut selection = None;
     let mut options_command = None;
     let mut custom_choice = None;
     // A gear perk is built on the plug it replaces, so on gear a custom perk never adds a choice.
-    let offer_custom_perk = context.recipe.kind.is_weapon();
+    // A custom perk added here joins the end of the column, as a randomized choice of a lane that
+    // rolls and a reusable one of a lane that does not, so it is offered in that list's view.
+    let offer_custom_perk = context.recipe.kind.is_weapon() && randomized == choices.rolls();
+    let shows_base_roll = randomized
+        && current_len > 0
+        && page_end == current_len
+        && choices
+            .stock_roll
+            .as_ref()
+            .is_some_and(|roll| !roll.randomized.is_empty());
     ui.horizontal_top(|ui| {
         let spacing = ui.spacing().item_spacing.x;
         let available_width = ui.available_width();
@@ -131,7 +142,7 @@ pub(super) fn draw_active(
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(choice_area_width);
-                if current_len > 0 {
+                if !current_page.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         for (choice_offset, hash) in current_page.iter().copied().enumerate() {
                             let choice_index = page_start + choice_offset;
@@ -143,12 +154,21 @@ pub(super) fn draw_active(
                         }
                     });
                 }
-                // An edited recipe needs a default for each random socket. Keep that warning
-                // in this socket's choice area, leaving it available as a drop target.
-                if current_len == 0
+                if shows_base_roll
+                    && let Some(command) = draw_base_roll(ui, context, choices, choice_area_width)
+                {
+                    selection = Some(command);
+                }
+                if randomized && current_len == 0 {
+                    ui.weak("Set a reusable plug first.");
+                }
+                // A build that replaces a random socket's roll with its reusable plugs needs a
+                // default for it. Keep that warning in this socket's choice area, leaving it
+                // available as a drop target.
+                if !randomized
+                    && current_len == 0
                     && !choices.is_overridden
-                    && socket.randomized_plug_set_index.is_some()
-                    && !context.recipe.overrides.socket_columns.is_empty()
+                    && choices.stock_roll.as_ref().is_some_and(|roll| !roll.kept)
                     && !egui::DragAndDrop::has_payload_of_type::<ChoiceDrag>(ui.ctx())
                 {
                     let message = "Rolls at random with no default. Set a plug to build.";
@@ -161,7 +181,7 @@ pub(super) fn draw_active(
                         );
                     });
                 }
-                if current_len == 0
+                if current_page.is_empty()
                     && can_add
                     && let Some(command) = draw_empty_choice_drop(
                         ui,
@@ -331,23 +351,34 @@ fn draw_choice(
                 && usize::from(variant.choice_index) == choice_index
                 && variant.source_plug_hash.parse_u32().ok() == Some(hash)
         });
-    let label = variant
+    let button_label = variant
         .and_then(|variant| variant.name.clone())
         .unwrap_or_else(|| catalog.plug_label(hash, false));
-    // A choice past a rolling column's swappable ones is only in its roll pool.
-    let rolled = recipe
-        .overrides
-        .socket_columns
-        .get(socket.index)
-        .and_then(Option::as_ref)
-        .and_then(|column| column.reusable_choices)
-        .is_some_and(|count| choice_index >= usize::from(count));
-    let button_label = if rolled {
-        format!("{} {label}", egui_phosphor::regular::DICE_FIVE)
-    } else {
-        label
-    };
     let removable = choice_index > 0;
+    // A choice leaves the socket, so a reusable choice of a lane that rolls leaves both lists.
+    let remove_hint = if !choices.rolls() {
+        "Remove this additional choice"
+    } else if choice_index < choices.reusable {
+        "Remove from Reusable and Randomized"
+    } else {
+        "Remove from Randomized"
+    };
+    let icon_override = crate::artwork_browser::preview::icon(
+        ui,
+        catalog,
+        variant.and_then(|variant| variant.icon.as_ref()),
+    );
+    // An imported ornament takes the place of a stock one and shows its own render and rarity.
+    #[cfg(feature = "d2-model-importer")]
+    let ornament =
+        crate::app::imported_view::ornament(recipe, ui.ctx(), (socket.index, choice_index, hash));
+    #[cfg(feature = "d2-model-importer")]
+    let (icon_override, rarity) = (
+        icon_override.or(ornament.as_ref().map(|ornament| ornament.icon)),
+        ornament.and_then(|ornament| ornament.rarity),
+    );
+    #[cfg(not(feature = "d2-model-importer"))]
+    let rarity = None;
     let tooltip = variant.map(|variant| sundial::investment::PlugTooltip {
         classification_hash: variant
             .classification_donor_hash
@@ -355,6 +386,7 @@ fn draw_choice(
             .and_then(|hash| hash.parse_u32().ok()),
         name: variant.name.as_deref(),
         description: variant.description.as_deref(),
+        rarity,
     });
     let tile = ui.allocate_ui_with_layout(
         egui::vec2(f32::from(button_width), ui.spacing().interact_size.y),
@@ -396,11 +428,7 @@ fn draw_choice(
                     },
                 )
                 .response
-                .on_hover_text(if rolled {
-                    "Rolled, not swappable. Drag to reorder or move to another socket."
-                } else {
-                    "Drag to reorder or move to another socket."
-                });
+                .on_hover_text("Drag to reorder or move to another socket.");
                 // The grip alone is too small to follow, so the perk trails the pointer instead.
                 if ui.ctx().is_being_dragged(drag_id)
                     && let Some(pointer) = ui.ctx().pointer_interact_pos()
@@ -430,11 +458,7 @@ fn draw_choice(
                         tooltip,
                         text: &button_label,
                         icon_hash: Some(hash),
-                        icon_override: crate::artwork_browser::preview::icon(
-                            ui,
-                            catalog,
-                            variant.and_then(|variant| variant.icon.as_ref()),
-                        ),
+                        icon_override,
                         width: picker_width,
                     },
                 },
@@ -467,7 +491,7 @@ fn draw_choice(
                     ),
                     format!("Remove additional choice: {button_label}"),
                 )
-                .on_hover_text("Remove this additional choice")
+                .on_hover_text(remove_hint)
                 .clicked()
             {
                 selection = Some(RowCommand::EditChoice {
@@ -514,7 +538,90 @@ fn draw_choice(
             }
         });
     }
-    choice_menu(ui, &tile.response, choice_index).or(selection)
+    choice_menu(ui, &tile.response, choice_index, choices).or(selection)
+}
+
+/// The base's randomized plugs past a weapon lane's choices, on a lane that does not roll from its
+/// own choices. The build drops them. They form a group of their own under the weapon's perks:
+/// a heading with Add to Randomized Plug Set, which makes them the lane's own randomized choices,
+/// then the plugs, outlined rather than filled and laid out in their own columns.
+fn draw_base_roll(
+    ui: &mut egui::Ui,
+    context: &mut SocketRowContext<'_>,
+    choices: &RowChoices,
+    width: f32,
+) -> Option<RowCommand> {
+    let roll = choices.stock_roll.as_ref()?;
+    ui.add_space(ui.spacing().item_spacing.y);
+    // A plain row, not a wrapping one: a scoped button in a wrapping line never moves to the next
+    // line, and its label wraps per glyph in what is left.
+    let command = ui
+        .horizontal(|ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new("Base Weapon Roll · Not Built").weak())
+                    .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+            ui.scope(|ui| {
+                crate::app::style::quiet(ui);
+                ui.add(
+                    egui::Button::new("Add to Randomized Plug Set")
+                        .wrap_mode(egui::TextWrapMode::Truncate),
+                )
+            })
+            .inner
+            .clicked()
+            .then_some(RowCommand::RollFromBase)
+        })
+        .inner;
+    let spacing = ui.spacing().item_spacing.x;
+    let columns = socket_choice_columns(width, roll.randomized.len());
+    let button_width = ((width - spacing * columns.saturating_sub(1) as f32) / columns as f32)
+        .max(96.0)
+        .floor() as u16;
+    let socket_index = context.donor.sockets[context.socket_index].index;
+    ui.horizontal_wrapped(|ui| {
+        for (offset, &hash) in roll.randomized.iter().enumerate() {
+            let label = context.catalog.plug_label(hash, false);
+            ui.allocate_ui_with_layout(
+                egui::vec2(f32::from(button_width), ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min),
+                |ui| {
+                    ui.painter().rect_stroke(
+                        ui.max_rect(),
+                        ui.visuals().widgets.inactive.corner_radius,
+                        ui.visuals().widgets.noninteractive.bg_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.add_enabled_ui(false, |ui| {
+                        // The picker's button would fill the tile and hide the outline.
+                        crate::app::style::quiet(ui);
+                        context.catalog.draw_supported_plug_choice_picker(
+                            ui,
+                            &mut String::new(),
+                            PlugChoicePickerOptions {
+                                preview: context.preview,
+                                donor_hash: context.donor.summary.hash,
+                                socket_index,
+                                socket_type_override: choices.socket_type_override,
+                                choice_index: choices.current_len + offset,
+                                current_hash: Some(hash),
+                                mode: &mut *context.plug_selection_mode,
+                                button: PlugChoicePickerButton {
+                                    text: &label,
+                                    icon_hash: Some(hash),
+                                    icon_override: None,
+                                    tooltip: None,
+                                    width: button_width,
+                                },
+                            },
+                            |_| false,
+                        )
+                    })
+                },
+            );
+        }
+    });
+    command
 }
 
 /// The plug browser's custom perk action, at the right of its controls.
@@ -528,9 +635,29 @@ fn choice_menu(
     ui: &mut egui::Ui,
     response: &egui::Response,
     choice_index: usize,
+    choices: &RowChoices,
 ) -> Option<RowCommand> {
     let mut selection = None;
     let removable = choice_index > 0;
+    // Every choice rolls once a lane rolls, so these change only whether it is reusable too. The
+    // default always stays reusable, and a choice left randomized alone starts a roll on a lane
+    // that has none.
+    let split = match choices.view {
+        SocketView::Randomized => (choice_index >= choices.reusable).then_some((
+            "Make Reusable",
+            true,
+            "Offer it in Reusable too. It keeps rolling.",
+        )),
+        SocketView::Reusable => (removable && choices.can_roll).then_some((
+            "Remove from Reusable",
+            false,
+            if choices.rolls() {
+                "It keeps rolling in Randomized."
+            } else {
+                "It stays in Randomized, so the socket rolls."
+            },
+        )),
+    };
     // The picker button owns pointer clicks inside the tile. Use its bounds
     // to open the context menu over that child as well.
     let menu_id = response.id.with("socket-choice-context-menu");
@@ -558,6 +685,15 @@ fn choice_menu(
                 selection = Some(RowCommand::MakeDefault(choice_index));
                 ui.close();
             }
+            if let Some((label, reusable, hint)) = split
+                && ui.button(label).on_hover_text(hint).clicked()
+            {
+                selection = Some(RowCommand::SetReusable {
+                    index: choice_index,
+                    reusable,
+                });
+                ui.close();
+            }
             if removable && ui.button("Remove Choice").clicked() {
                 selection = Some(RowCommand::EditChoice {
                     index: choice_index,
@@ -577,7 +713,7 @@ fn draw_paging(ui: &mut egui::Ui, page: &mut usize, choices: &RowChoices) {
         page_count,
         page_start,
         page_end,
-        current_len,
+        shown_len,
         ..
     } = *choices;
     if page_count > 1 {
@@ -592,7 +728,7 @@ fn draw_paging(ui: &mut egui::Ui, page: &mut usize, choices: &RowChoices) {
                 "Choices {}–{} of {}",
                 page_start + 1,
                 page_end,
-                current_len
+                shown_len
             ));
             if ui
                 .add_enabled(*page + 1 < page_count, egui::Button::new("Next"))

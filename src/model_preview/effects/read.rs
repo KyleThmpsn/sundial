@@ -74,6 +74,7 @@ pub(in crate::model_preview) fn load(
     surface: u8,
     model: &mut Model,
 ) -> Result<Material, String> {
+    let _stage = crate::model_preview::timing::stage("materials");
     let bytes = checked(manager, tag, 0x8080_71E8)?;
     if *bytes.get(0x20).ok_or("Truncated effect state")? != 0x88 {
         return Err("The transparent blend state is not decoded".into());
@@ -315,14 +316,14 @@ pub(super) fn stage_constants(
             .get_entry(external)
             .ok_or("The effect constant buffer is missing")?;
         let data = manager.read_tag(entry.reference)?;
-        if data.len() % 16 != 0 || data.len() > 128 * 16 {
+        if data.len() % 16 != 0 || data.len() > ROWS * 16 {
             return Err("Invalid effect constant buffer length".into());
         }
         return (0..data.len() / 16)
             .map(|index| shader_vector(&data, index * 16))
             .collect();
     }
-    let (count, rows) = vertex::table(bytes, stage + 0x50, 0x8080_0090, 16, 128)?;
+    let (count, rows) = vertex::table(bytes, stage + 0x50, 0x8080_0090, 16, ROWS)?;
     (0..count)
         .map(|index| shader_vector(bytes, rows + index * 16))
         .collect()

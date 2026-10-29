@@ -22,6 +22,18 @@ pub struct Weapon {
 
 impl Source {
     pub fn weapons(&self) -> Result<Vec<Weapon>> {
+        let weapons = match self.weapons.get() {
+            Some(weapons) => weapons,
+            None => {
+                let read = self.read_weapons()?;
+                self.weapons.get_or_init(|| read)
+            }
+        };
+        self.unchanged()?;
+        Ok(weapons.clone())
+    }
+
+    fn read_weapons(&self) -> Result<Vec<Weapon>> {
         ensure!(
             self.report.selected.iter().all(|p| p.platform == 8),
             "Weapon discovery currently supports Xbox One Rise of Iron packages"
@@ -103,7 +115,6 @@ impl Source {
             "No equippable weapons in the Rise of Iron source"
         );
         result.sort_by(|a, b| (&a.name, a.hash).cmp(&(&b.name, b.hash)));
-        self.unchanged()?;
         Ok(result)
     }
 
@@ -189,7 +200,7 @@ impl Source {
             &json!({"source":"d1_roi","native_conversion":false,
             "item":item,"art":art,"talents":talents,"stats":stats,"runtime":runtime,"dyes":dyes,
             "builds":self.report.builds,"package_stamp":self.report.stamp,"assets":assets,
-            "limits":["Source records preserve original references. Export does not establish native behavior or in-game acceptance."]}),
+            "limits":["Source records preserve original references. Export does not establish native behavior."]}),
         )?;
         Ok(path)
     }

@@ -330,6 +330,11 @@ impl WeaponRecipeOverrides {
             remove_lore: self.remove_lore,
             #[cfg(feature = "d2-model-importer")]
             imported_graph: self.imported_graph.clone(),
+            ornament_weapon: self
+                .ornament_weapon
+                .as_ref()
+                .map(|hash| parse_recipe_hash("ornament weapon", hash))
+                .transpose()?,
             icon_edit: self.icon_edit.clone(),
             hud_icon: self.hud_icon.clone(),
             badge: self.badge.clone(),
@@ -391,6 +396,11 @@ impl WeaponRecipeOverrides {
                 .type_marker_donor
                 .as_ref()
                 .map(|donor| parse_recipe_hash("type marker donor", &donor.item_hash))
+                .transpose()?,
+            behavior_donor: self
+                .behavior_donor
+                .as_ref()
+                .map(|donor| parse_recipe_hash("behavior donor", &donor.item_hash))
                 .transpose()?,
             marker_offsets: self
                 .marker_offsets

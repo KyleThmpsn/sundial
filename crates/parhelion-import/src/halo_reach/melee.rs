@@ -1,6 +1,7 @@
 //! Bind translated strikes to private weapon melee activation and source swing audio.
 use super::*;
 use crate::tiger::reader::Reader;
+pub(super) mod slam;
 
 pub(super) fn prepare(
     native: &mut Reader,

@@ -417,7 +417,7 @@ fn stored_payload_size(bytes: &[u8], layout: &PackageLayout) -> usize {
 fn native_installed_asset_compressed_copy_round_trips_without_source_changes() {
     let fixture = NativeFixture::new();
     let packages = configured_packages();
-    let path = packages.join("w64_parhelion_assets_0aa0_0.pkg");
+    let path = packages.join(crate::package_profile::PARHELION_ASSET_FILE_NAME);
     let before =
         fs::read(&path).expect("the configured view must contain the authored asset package");
     let modified = fs::metadata(&path).unwrap().modified().unwrap();

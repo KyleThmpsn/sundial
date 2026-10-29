@@ -100,8 +100,9 @@ impl ItemKind {
         !matches!(self, Self::Shader | Self::Emblem | Self::Mod)
     }
 
-    /// Whether the item has a Collections entry and an unlock. A subclass is granted on install
-    /// and a mod is offered by the sockets of its type, so neither has one.
+    /// Whether the kind has a Collections entry and an unlock. A subclass is granted on install
+    /// and a mod is offered by the sockets of its type, so neither has one, except an imported
+    /// ornament, which `WeaponRecipe::has_collections` adds.
     #[must_use]
     pub const fn has_collections(self) -> bool {
         !matches!(self, Self::Subclass | Self::Mod)

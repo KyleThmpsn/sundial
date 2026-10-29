@@ -24,6 +24,81 @@ fn template(reader: &mut Reader, art: &Value) -> Result<(Value, u32, Payload)> {
     anyhow::bail!("Native carrier has no sight component")
 }
 
+/// Sights keep their source eye. A graph can still record a moved eye in
+/// `source_optics.framing`, with the optic and its source rear point. A build returns that optic
+/// to the source rear point, replacing an already bound payload or reading the node's file. A
+/// graph without the record keeps its optic unchanged.
+pub fn restore_source_eye(
+    graph: &Value,
+    folder: &Path,
+    bound: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    let framing = &graph["source_optics"]["framing"];
+    let Some(symbol) = framing["optic"].as_str() else {
+        return Ok(());
+    };
+    let mut owner = match bound.remove(symbol) {
+        Some(bytes) => Payload(bytes),
+        None => {
+            let node = graph["nodes"]
+                .as_array()
+                .context("Marathon graph nodes")?
+                .iter()
+                .find(|node| node["symbol"] == symbol)
+                .context("Framed optic node")?;
+            Payload(fs::read(
+                folder.join(node["file"].as_str().context("Framed optic file")?),
+            )?)
+        }
+    };
+    let (rear, _, front) = points(&owner)?;
+    ensure!(
+        front == coordinates(&framing["front"])?,
+        "Framed optic differs from its recorded sight"
+    );
+    write(&mut owner, rear, coordinates(&framing["source_rear"])?)?;
+    bound.insert(symbol.to_owned(), owner.0);
+    Ok(())
+}
+
+/// A private optic's rear position offset, rear point and front point.
+fn points(owner: &Payload) -> Result<(usize, [f32; 3], [f32; 3])> {
+    let data = owner.pointer(24)?;
+    ensure!(
+        owner.u32(data - 4)? == 0x8080393B,
+        "Framed sight is not a native optic"
+    );
+    let rear = owner.array(data + 0x198, 64, Some(0x80809C00))?;
+    let front = owner.array(data + 0x228, 64, Some(0x80809C00))?;
+    ensure!(
+        rear.len() == 1 && front.len() == 1,
+        "Private optic needs one rear and one front point"
+    );
+    let point = |at: usize| -> Result<[f32; 3]> {
+        Ok([owner.f32(at)?, owner.f32(at + 4)?, owner.f32(at + 8)?])
+    };
+    Ok((rear[0] + 32, point(rear[0] + 32)?, point(front[0] + 32)?))
+}
+
+fn write(owner: &mut Payload, at: usize, point: [f32; 3]) -> Result<()> {
+    for (lane, value) in point.iter().enumerate() {
+        put(&mut owner.0, at + lane * 4, &value.to_le_bytes())?;
+    }
+    Ok(())
+}
+
+fn coordinates(value: &Value) -> Result<[f32; 3]> {
+    let lanes = value
+        .as_array()
+        .filter(|lanes| lanes.len() == 3)
+        .context("Sight framing point")?;
+    let mut point = [0.; 3];
+    for (lane, value) in point.iter_mut().zip(lanes) {
+        *lane = value.as_f64().context("Sight framing coordinate")? as f32;
+    }
+    Ok(point)
+}
+
 fn aligned(original: &Payload, sight: &Sight) -> Result<Payload> {
     let mut owner = original.clone();
     let data = owner.pointer(24)?;
@@ -224,18 +299,24 @@ pub(super) fn build(
         let position = alternative["placement"]["position"]
             .as_u64()
             .context("Sight alternative position")?;
-        // A source optic can serve several authored items in the same package batch.
-        let mut key = format!("parhelion/imported-model/{item:08X}/sight-{position}")
-            .bytes()
-            .fold(0x811C9DC5u32, |h, b| {
-                h.wrapping_mul(0x1000193) ^ u32::from(b)
-            });
-        if [0, u32::MAX, 0x811C9DC5].contains(&key) {
-            key ^= 0x10000;
-        }
+        let key = sight_key(item, position);
         placements.push(json!({"assignment":hash(alternative,"assignment")?,"key":key,"parent":"optic-parent","native_region":true,
             "selector":alternative["placement"]["selector"],"position":position}));
     }
     ensure!(!placements.is_empty(), "Missing native sight alternatives");
     Ok(json!(placements))
+}
+
+/// The art key of `item`'s sight placement at `position`. A source optic can serve several
+/// authored items in the same package batch, so each item keys its own.
+pub(in crate::marathon) fn sight_key(item: u32, position: u64) -> u32 {
+    let mut key = format!("parhelion/imported-model/{item:08X}/sight-{position}")
+        .bytes()
+        .fold(0x811C9DC5u32, |h, b| {
+            h.wrapping_mul(0x1000193) ^ u32::from(b)
+        });
+    if [0, u32::MAX, 0x811C9DC5].contains(&key) {
+        key ^= 0x10000;
+    }
+    key
 }

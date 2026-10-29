@@ -1,6 +1,9 @@
 //! Base investment inputs and bounded numeric outputs from the source weapon's own tables.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod perk;
+mod translator;
+pub use perk::{apply_perks, author_perks, release_lane};
 
 fn table(r: &mut Reader, class: u32) -> Result<std::sync::Arc<Payload>> {
     let tags = r.classes(class);
@@ -8,15 +11,18 @@ fn table(r: &mut Reader, class: u32) -> Result<std::sync::Arc<Payload>> {
     r.tag(tags[0], Some(class))
 }
 
-fn stats(r: &mut Reader, identity: u32) -> Result<Vec<Value>> {
+fn definition(r: &mut Reader, identity: u32) -> Result<std::sync::Arc<Payload>> {
     let items = table(r, 0x80809685)?;
     let rows = items.array(8, 32, Some(0x80809689))?;
     let item = rows
         .into_iter()
         .find(|&at| items.u32(at).ok() == Some(identity))
         .context("Source weapon stat identity")?;
-    let item = r.tag(items.u32(item + 16)?, Some(0x8080968B))?;
-    let block = crate::tiger::shadowkeep::resource(&item, 0x70, 0x80809245)?;
+    r.tag(items.u32(item + 16)?, Some(0x8080968B))
+}
+
+fn stats(r: &mut Reader, item: &Payload) -> Result<Vec<Value>> {
+    let block = crate::tiger::shadowkeep::resource(item, 0x70, 0x80809245)?;
     let definitions = table(r, 0x80806E50)?;
     let definitions_rows = definitions.array(8, 48, Some(0x80806E54))?;
     let mut seen = BTreeSet::new();
@@ -122,35 +128,26 @@ fn sample(p: &Payload, row: usize, value: i32) -> Result<Vec<f32>> {
 
 /// Write a source baseline. Runtime perks, attachments and source trigger controllers are
 /// separate contracts. Only conventional capacities and single-shot cadence are exported.
+///
+/// Source scores are not on the native scale. Nearly every source weapon scores 10 in its
+/// handling stats, and each weapon's own curves give that score its effect. A stat is carried
+/// only where the donor value with the same effect can be found. Every other score keeps the
+/// donor's value.
 pub fn author_gameplay(
     source: &mut Reader,
     native: &mut Reader,
     graph: &mut Value,
     identity: u32,
 ) -> Result<()> {
-    let values = stats(source, identity)?;
+    let item = definition(source, identity)?;
+    // Weapons name no tier, and how the game ranks them is not traced, so they are Legendary.
+    let (tier, rarity) = match super::tier::grade(&item).and_then(super::tier::tier) {
+        Some((tier, rarity)) => (Some(tier), rarity),
+        None => (None, "legendary"),
+    };
+    let values = stats(source, &item)?;
     let definitions = crate::tiger::shadowkeep::stat_definitions(native)?;
-    let mut mapped = Vec::new();
-    let mut omitted = Vec::new();
-    for stat in &values {
-        let name = hash(stat, "hash")?;
-        // Range changed identity. Weight Reduction shares Move Speed's old identity and
-        // must not be copied. Unit-bearing inputs below require the source's curves.
-        let target = match name {
-            0xA1A5E46F => Some(0x49F1F137),
-            0x0946A299 | 0x5EDB5727 | 0x383D6DBC | 0xF9A04987 | 0x50345F6F | 0xA1E06B6C => {
-                Some(name)
-            }
-            _ => None,
-        };
-        if stat["literal"] == true
-            && let Some(index) = target.and_then(|h| definitions.get(&h))
-        {
-            mapped.push(json!({"definition_index":index,"value":stat["value"]}));
-        } else {
-            omitted.push(json!({"stat":name,"reason":"Source units or controller require a separate translation"}));
-        }
-    }
+    let donor = hash(graph, "native_item")?;
     let parts = graph["source_assembly"]
         .as_array()
         .context("Source gameplay assembly")?;
@@ -158,11 +155,30 @@ pub fn author_gameplay(
         parts.first().context("Empty source gameplay assembly")?,
         "entity",
     )?;
+    let curves = curves(source, root)?;
+    let mut mapped = Vec::new();
+    let mut matched = Vec::new();
+    let mut omitted = Vec::new();
+    if let Some((p, group)) = &curves {
+        let (chosen, evidence, skipped) = translator::matched(native, donor, p, *group, &values);
+        for (stat, value) in chosen {
+            let index = definitions.get(&stat).context("Native stat definition")?;
+            mapped.push(json!({"definition_index":index,"value":value}));
+        }
+        matched = evidence;
+        omitted = skipped;
+    }
+    for stat in &values {
+        let name = hash(stat, "hash")?;
+        if curves.is_none() || !translator::translates(name) {
+            omitted.push(json!({"stat":name,"reason":"The source score follows the source weapon's own curves, so the donor keeps its native value"}));
+        }
+    }
     let mut inputs = Vec::new();
     let mut sampled = Vec::new();
     let mut aim = Value::Null;
-    let mut display = crate::stat_group::native(native, hash(graph, "native_item")?)?;
-    if let Some((p, group)) = curves(source, root)? {
+    let mut display = crate::stat_group::native(native, donor)?;
+    if let Some((p, group)) = curves {
         let mut used = BTreeSet::new();
         for row in p.array(group, 56, Some(0x80803F8E))? {
             let input = p.u32(row + 32)?;
@@ -202,12 +218,16 @@ pub fn author_gameplay(
         omitted.push(json!({"reason":"No unique single-group source stat translator"}));
     }
     graph["source_item_identity"] = json!(identity);
-    graph["source_gameplay"] = json!({"source":"marathon","revision":1,"stats":values,
-        "investment_stats":mapped,"display_group":display,"inputs":inputs,"sampled":sampled,"omitted":omitted,
-        "limits":"Base source curves only. Donor firing mode, damage, perks, charge and energy consumption are retained. Source sampling between exact tiers is a format inference. Gameplay is unverified."});
+    graph["source_gameplay"] = json!({"source":"marathon","revision":2,"stats":values,
+        "investment_stats":mapped,"matched":matched,"display_group":display,"inputs":inputs,"sampled":sampled,"omitted":omitted,
+        "limits":"Base source curves only. Matched stats compare directly copied curve outputs at whole donor values. Donor firing mode, damage, perks, charge and energy consumption are retained. Source sampling between exact tiers is a format inference. Gameplay is unverified."});
     if !aim.is_null() {
         graph["source_gameplay"]["aim"] = aim;
     }
+    if let Some(tier) = tier {
+        graph["source_gameplay"]["tier"] = json!(tier);
+    }
+    graph["source_gameplay"]["rarity"] = json!(rarity);
     Ok(())
 }
 
@@ -254,6 +274,9 @@ pub fn apply_gameplay(recipe: &mut Value, graph: &Value) -> Result<()> {
     {
         recipe["overrides"]["custom_stat_group"] =
             graph["source_gameplay"]["display_group"].clone();
+    }
+    if recipe["overrides"]["rarity"].is_null() && graph["source_gameplay"]["rarity"].is_string() {
+        recipe["overrides"]["rarity"] = graph["source_gameplay"]["rarity"].clone();
     }
     Ok(())
 }

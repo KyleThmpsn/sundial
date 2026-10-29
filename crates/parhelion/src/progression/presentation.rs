@@ -411,6 +411,93 @@ pub(crate) fn add_collectible_children_to_node(
     write_relative_pointer(nodes, descriptor + 8, new_header)
 }
 
+/// The child row that names `collectible` among a node's collectible children.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn collectible_child_row(
+    nodes: &[u8],
+    parent_index: usize,
+    collectible: usize,
+) -> AuthoringResult<[u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]> {
+    let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
+    if parent_index >= node_count {
+        return Err(invalid("Presentation node is outside the table"));
+    }
+    let (count, _, rows, class) = array_at(
+        nodes,
+        node_rows
+            + parent_index * PRESENTATION_NODE_ROW_SIZE
+            + PRESENTATION_NODE_COLLECTIBLES_OFFSET,
+    )?;
+    if class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS {
+        return Err(invalid(
+            "Presentation node has incompatible collectible children",
+        ));
+    }
+    clone_collectible_child(nodes, rows, count, collectible, collectible)?
+        .try_into()
+        .map_err(|_| invalid("Presentation collectible child row has the wrong size"))
+}
+
+/// Adds collectibles to a node's children, each row a copy of `template` naming its collectible,
+/// before or after the node's own children. The node may have none yet, as a Weapon Ornaments page
+/// the build added has before its ornaments join it.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn add_templated_collectible_children(
+    nodes: &mut Vec<u8>,
+    parent_index: usize,
+    authored: &[usize],
+    template: [u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE],
+    first: bool,
+) -> AuthoringResult<()> {
+    let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
+    if parent_index >= node_count {
+        return Err(invalid("Presentation node is outside the table"));
+    }
+    let descriptor = node_rows
+        + parent_index * PRESENTATION_NODE_ROW_SIZE
+        + PRESENTATION_NODE_COLLECTIBLES_OFFSET;
+    let existing = if read_u64(nodes, descriptor)? == 0 {
+        Vec::new()
+    } else {
+        let (count, header, rows, class) = array_at(nodes, descriptor)?;
+        if class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS {
+            return Err(invalid(
+                "Presentation node has incompatible collectible children",
+            ));
+        }
+        let end = rows + count * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE;
+        validate_presentation_child_array_terminator_at(nodes, header, end)?;
+        nodes[rows..end].to_vec()
+    };
+    let mut added = Vec::with_capacity(authored.len() * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE);
+    for &collectible in authored {
+        let mut row = template;
+        write_u16(
+            &mut row,
+            0,
+            u16::try_from(collectible)
+                .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?,
+        )?;
+        added.extend_from_slice(&row);
+    }
+    let rows = if first {
+        [added, existing].concat()
+    } else {
+        [existing, added].concat()
+    };
+    let count = (rows.len() / PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE) as u64;
+    let header = (nodes.len() + 19) & !15;
+    nodes.resize(header - 4, 0);
+    nodes.extend_from_slice(&PRESENTATION_CHILD_ARRAY_SENTINEL.to_le_bytes());
+    nodes.extend_from_slice(&count.to_le_bytes());
+    nodes.extend_from_slice(&PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS.to_le_bytes());
+    nodes.extend_from_slice(&0u32.to_le_bytes());
+    nodes.extend_from_slice(&rows);
+    append_presentation_child_array_terminator(nodes)?;
+    write_u64(nodes, descriptor, count)?;
+    write_relative_pointer(nodes, descriptor + 8, header)
+}
+
 fn clone_collectible_child(
     nodes: &[u8],
     rows: usize,

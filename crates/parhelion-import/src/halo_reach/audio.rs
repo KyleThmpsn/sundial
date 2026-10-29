@@ -15,6 +15,7 @@ use std::{
 pub(super) mod clips;
 mod firing;
 mod looping;
+pub(super) mod once;
 mod selection;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

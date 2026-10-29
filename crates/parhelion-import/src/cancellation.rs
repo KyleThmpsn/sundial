@@ -129,6 +129,84 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(
     Ok(done.into_iter().map(|(_, result)| result).collect())
 }
 
+type Job<R> = Box<dyn FnOnce() -> Result<R> + Send>;
+
+/// Workers that evaluate pure jobs beside the caller's own serial work, with the caller's
+/// cancellation scope. [`Background::finish`] returns the results in submission order, and the
+/// caller commits graph mutations from them only then.
+pub(crate) struct Background<R> {
+    jobs: Option<mpsc::Sender<(usize, Job<R>)>>,
+    results: mpsc::Receiver<(usize, Result<R>)>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+    submitted: usize,
+}
+
+impl<R: Send + 'static> Background<R> {
+    pub(crate) fn new() -> Result<Self> {
+        let token = ACTIVE.with(|active| active.borrow().clone());
+        let (jobs, queue) = mpsc::channel::<(usize, Job<R>)>();
+        let queue = Arc::new(Mutex::new(queue));
+        let (sender, results) = mpsc::channel();
+        let workers = (0..workers()?)
+            .map(|_| {
+                let queue = queue.clone();
+                let sender = sender.clone();
+                let token = token.clone();
+                std::thread::spawn(move || {
+                    loop {
+                        let job = queue.lock().ok().and_then(|queue| queue.recv().ok());
+                        let Some((index, job)) = job else {
+                            return;
+                        };
+                        let result = match &token {
+                            Some(token) => run(token.clone(), job),
+                            None => job(),
+                        };
+                        if sender.send((index, result)).is_err() {
+                            return;
+                        }
+                    }
+                })
+            })
+            .collect();
+        Ok(Self {
+            jobs: Some(jobs),
+            results,
+            workers,
+            submitted: 0,
+        })
+    }
+
+    pub(crate) fn submit(&mut self, job: impl FnOnce() -> Result<R> + Send + 'static) {
+        if let Some(jobs) = &self.jobs {
+            let _ = jobs.send((self.submitted, Box::new(job)));
+        }
+        self.submitted += 1;
+    }
+
+    /// Waits for every submitted job. The first failed job's error, in submission order, is
+    /// returned.
+    pub(crate) fn finish(mut self) -> Result<Vec<R>> {
+        drop(self.jobs.take());
+        let mut done = Vec::with_capacity(self.submitted);
+        while done.len() < self.submitted {
+            check()?;
+            match self.results.recv_timeout(Duration::from_millis(25)) {
+                Ok(result) => done.push(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("Conversion worker stopped")
+                }
+            }
+        }
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+        done.sort_by_key(|(index, _)| *index);
+        done.into_iter().map(|(_, result)| result).collect()
+    }
+}
+
 /// Evaluate a bounded pure batch with the caller's cancellation scope and retain input order.
 /// Callers commit graph mutations only after all workers have joined successfully.
 pub(crate) fn parallel<T: Sync, R: Send>(

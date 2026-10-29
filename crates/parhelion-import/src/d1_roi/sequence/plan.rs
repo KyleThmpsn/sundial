@@ -1,5 +1,7 @@
 //! Whole event preparation has one commit boundary for topology, bodies and allocation data.
-use super::{animation::Animation, completion::Completion, numeric::Numeric, sound::Sound, *};
+use super::{
+    animation::Animation, completion::Completion, hud::Hud, numeric::Numeric, sound::Sound, *,
+};
 use crate::d1_roi::{Source, ability::dependency};
 
 enum Body {
@@ -7,6 +9,7 @@ enum Body {
     Animation(Animation),
     Completion(Completion),
     Sound(Sound),
+    Hud(Hud),
 }
 
 /// Action names belong to an owner route and lane. The same source name can be selected by
@@ -18,6 +21,9 @@ pub struct Bindings {
     pub actions: BTreeMap<ActionKey, u32>,
     /// Completed private cue roots, indexed by source resource identity.
     pub cues: BTreeMap<u32, String>,
+    /// Private symbols for generated HUD override resources, indexed by source identity.
+    pub overrides: BTreeMap<u32, String>,
+    pub hud_keys: Option<hud::Keys>,
     pub inputs: BTreeMap<u32, u32>,
     pub locators: BTreeMap<u8, u8>,
     pub dependencies: Vec<dependency::Asset>,
@@ -34,7 +40,7 @@ pub struct Plan {
 pub struct Prepared {
     pub topology: Written,
     pub actions: Vec<animation::Action>,
-    pub resources: Vec<sound::CuePatch>,
+    pub resources: Vec<ResourcePatch>,
     pub dependencies: Vec<dependency::Asset>,
 }
 
@@ -63,6 +69,9 @@ impl Plan {
                     }
                     (Domain::External, 0x80801F00, 2) => {
                         Body::Sound(Sound::read(source, owner, event.offset)?)
+                    }
+                    (Domain::External, 0x80802573, 8) => {
+                        Body::Hud(Hud::read(source, owner, event.offset)?)
                     }
                     _ => anyhow::bail!("No complete body converter"),
                 })
@@ -109,6 +118,75 @@ impl Plan {
             .collect()
     }
 
+    pub fn overrides(&self) -> BTreeSet<u32> {
+        self.bodies
+            .values()
+            .filter_map(|body| match body {
+                Body::Hud(event) => Some(event.resource()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn dependencies(&self, bindings: &Bindings) -> Result<Vec<dependency::Asset>> {
+        ensure!(
+            self.cues() == bindings.cues.keys().copied().collect(),
+            "Sequence cue bindings do not cover exactly the source resources"
+        );
+        ensure!(
+            self.overrides() == bindings.overrides.keys().copied().collect()
+                && bindings.overrides.is_empty() == bindings.hud_keys.is_none(),
+            "Sequence HUD bindings do not cover exactly the source resources"
+        );
+        let mut dependencies = bindings.dependencies.clone();
+        let mut converted = BTreeSet::new();
+        for body in self.bodies.values() {
+            if let Body::Hud(event) = body
+                && converted.insert(event.resource())
+            {
+                dependencies.push(
+                    event.translate(
+                        &bindings.overrides[&event.resource()],
+                        bindings
+                            .hud_keys
+                            .as_ref()
+                            .context("Native HUD keys are absent")?,
+                    )?,
+                );
+            }
+        }
+        let roots = bindings
+            .cues
+            .values()
+            .chain(bindings.overrides.values())
+            .cloned()
+            .collect::<Vec<_>>();
+        if roots.is_empty() {
+            ensure!(
+                dependencies.is_empty(),
+                "Sequence has unused effect dependencies"
+            );
+        } else {
+            dependency::validate(&dependencies, &roots)?;
+            for (root, class) in bindings
+                .cues
+                .values()
+                .map(|s| (s, 0x80809802))
+                .chain(bindings.overrides.values().map(|s| (s, 0x80803F26)))
+            {
+                let asset = dependencies
+                    .iter()
+                    .find(|asset| &asset.symbol == root)
+                    .context("Sequence resource dependency is absent")?;
+                ensure!(
+                    asset.class == class,
+                    "Sequence resource has the wrong native class"
+                );
+            }
+        }
+        Ok(dependencies)
+    }
+
     /// Complete every supported event on copies, then replace both caller buffers together.
     /// No unsupported body or missing typed resource is treated as an empty event.
     pub fn write(
@@ -127,30 +205,7 @@ impl Plan {
             bindings.actions.iter().all(|(key, &name)| key.0 != name),
             "Imported sequence animation must use a private action name"
         );
-        ensure!(
-            self.cues() == bindings.cues.keys().copied().collect(),
-            "Sequence cue bindings do not cover exactly the source resources"
-        );
-        if bindings.cues.is_empty() {
-            ensure!(
-                bindings.dependencies.is_empty(),
-                "Sequence has unused effect dependencies"
-            );
-        } else {
-            let roots = bindings.cues.values().cloned().collect::<Vec<_>>();
-            dependency::validate(&bindings.dependencies, &roots)?;
-            for root in roots {
-                let cue = bindings
-                    .dependencies
-                    .iter()
-                    .find(|asset| asset.symbol == root)
-                    .context("Sequence cue dependency is absent")?;
-                ensure!(
-                    cue.class == 0x80809802,
-                    "Sequence cue has the wrong native class"
-                );
-            }
-        }
+        let dependencies = self.dependencies(bindings)?;
         let outputs = target.array(target.pointer(24)? + 0x178, 48, Some(0x808084DF))?;
         ensure!(
             outputs.len() == self.outputs.len(),
@@ -170,6 +225,7 @@ impl Plan {
                 Body::Animation(event) => Some(event.mapping()),
                 Body::Completion(event) => Some(event.mapping()),
                 Body::Sound(event) => Some(event.mapping()),
+                Body::Hud(event) => Some(event.mapping()),
             })
             .collect();
         let mut output = target.clone();
@@ -199,6 +255,11 @@ impl Plan {
                     &bindings.inputs,
                     &bindings.locators,
                 )?),
+                Body::Hud(event) => resources.push(event.write(
+                    &mut output,
+                    to,
+                    &bindings.overrides[&event.resource()],
+                )?),
             }
         }
         let size = u64::try_from(output.0.len())?;
@@ -209,7 +270,7 @@ impl Plan {
             topology,
             actions,
             resources,
-            dependencies: bindings.dependencies.clone(),
+            dependencies,
         })
     }
 }

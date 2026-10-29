@@ -190,7 +190,7 @@ pub(super) fn recover(
         }
     }
     let row = gain.indices[1].base as usize;
-    if row >= constants.len() || row >= 128 {
+    if row >= constants.len() || row >= crate::model_preview::effects::ROWS {
         return Err(fail());
     }
     Ok(Some(Gain {

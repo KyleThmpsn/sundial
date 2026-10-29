@@ -1,6 +1,7 @@
 //! Keep armor families together, ordered by native equipment bucket.
 use super::{ARMOR_SET_SIZE, Classes, GearPage};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::LazyLock;
 
 mod origin;
 pub(crate) use origin::Origin;
@@ -30,6 +31,28 @@ impl Slot {
             .position(|&bucket| bucket == hash)
             .map(|slot| Self(slot as u8))
     }
+
+    /// The class and armor slot a universal ornament serves. Its plug category is the FNV-1 hash
+    /// of `armor_skins_{class}_{slot}`, as all 15 Shadowkeep categories are.
+    pub(crate) fn of_ornament(category: u32) -> Option<(u8, Self)> {
+        static CATEGORIES: LazyLock<Vec<(u32, u8, Slot)>> = LazyLock::new(|| {
+            let slots = ["head", "arms", "chest", "legs", "class"];
+            (0u8..)
+                .zip(["titan", "hunter", "warlock"])
+                .flat_map(|(class, class_name)| {
+                    (0u8..).zip(slots).map(move |(slot, slot_name)| {
+                        let name = format!("armor_skins_{class_name}_{slot_name}");
+                        let hash = sundial::package_authoring::fnv1_name_hash(&name);
+                        (hash, class, Slot(slot))
+                    })
+                })
+                .collect()
+        });
+        CATEGORIES
+            .iter()
+            .find(|(hash, ..)| *hash == category)
+            .map(|&(_, class, slot)| (class, slot))
+    }
 }
 
 pub(crate) struct Piece {
@@ -45,14 +68,16 @@ pub(crate) struct Set {
     pub members: Vec<usize>,
 }
 
-pub(crate) fn sets(pieces: &[Piece]) -> Vec<Set> {
+/// Rows of up to one piece per slot for each class, as armor sets or, given
+/// [`GearPage::ornament_set`], as sets of the universal ornaments that apply to those slots.
+pub(crate) fn sets(pieces: &[Piece], page: fn(u8, usize) -> GearPage) -> Vec<Set> {
     (0..3)
         .flat_map(|class| {
             class_sets(pieces, class)
                 .into_iter()
                 .enumerate()
                 .map(move |(index, members)| Set {
-                    page: GearPage::armor_set(class, index),
+                    page: page(class, index),
                     members,
                 })
         })

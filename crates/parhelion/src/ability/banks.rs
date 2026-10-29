@@ -21,12 +21,13 @@ use std::sync::atomic::AtomicBool;
 use sundial::package_authoring::{
     PackageManager,
     ability_bank::{
-        AbilityTarget, CHARGE_ROWS, Modifier, bank_owner, handler_slot, parameters, property_rows,
-        retarget_references, slot_banks, with_property_row, with_property_row_mode,
+        AbilityTarget, CHARGE_ROWS, FixedRow, Modifier, bank_owner, handler_slot, membership_keys,
+        ordered_rows_match, parameters, property_rows, retarget_references, slot_banks,
+        with_ordered_rows, with_property_row, with_property_row_mode,
     },
     referrers,
     sandbox_perk::program::{
-        AbilityInput, AbilityRow, AbilityTuning, Program, ability_properties_in,
+        AbilityInput, AbilityRow, AbilityRowModifier, AbilityTuning, Program, ability_properties_in,
     },
 };
 use tiger_pkg::TagHash;
@@ -62,15 +63,30 @@ pub(crate) struct Plan {
 
 pub(crate) struct Row {
     key: u32,
-    modifier: Modifier,
+    value: RowValue,
     mode: Option<u8>,
+}
+
+#[derive(Clone)]
+enum RowValue {
+    Single(Modifier),
+    Ordered(Vec<FixedRow>),
+}
+
+impl From<Modifier> for RowValue {
+    fn from(value: Modifier) -> Self {
+        Self::Single(value)
+    }
 }
 
 impl Row {
     fn append(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
-        match self.mode {
-            Some(mode) => with_property_row_mode(payload, self.key, self.modifier, mode),
-            None => with_property_row(payload, self.key, self.modifier),
+        match &self.value {
+            RowValue::Ordered(members) => with_ordered_rows(payload, self.key, members),
+            RowValue::Single(modifier) => match self.mode {
+                Some(mode) => with_property_row_mode(payload, self.key, *modifier, mode),
+                None => with_property_row(payload, self.key, *modifier),
+            },
         }
     }
 }
@@ -130,10 +146,35 @@ pub(crate) fn plan<'a>(
             }
         }
     }
-    let mut wanted: Vec<(u32, Vec<u32>, Modifier)> = CHARGE_ROWS
+    let legacy_gates = scoped
+        .values()
+        .filter_map(|row| {
+            let key = match row.modifier {
+                AbilityRowModifier::Fixed {
+                    selection: Some(selection),
+                    ..
+                }
+                | AbilityRowModifier::Attack { selection, .. } => selection.required_key,
+                _ => return None,
+            };
+            (key != 0).then_some((row.slot, key))
+        })
+        .chain(rows.iter().filter_map(|&(bank, _, value)| {
+            let key = match value {
+                Modifier::Fixed(body) => body.selection?.required_key,
+                Modifier::Attack(body) => body.selection.required_key,
+                _ => return None,
+            };
+            if key == 0 {
+                return None;
+            }
+            sundial::package_authoring::ability_modifier::bank_slot(bank).map(|slot| (slot, key))
+        }))
+        .collect::<BTreeSet<_>>();
+    let mut wanted: Vec<(u32, Vec<u32>, RowValue)> = CHARGE_ROWS
         .iter()
         .filter(|row| applied.contains(&(row.slot, row.key)))
-        .map(|row| (row.key, row.banks.to_vec(), Modifier::Charges(1)))
+        .map(|row| (row.key, row.banks.to_vec(), Modifier::Charges(1).into()))
         .collect();
     for tuning in tunings.values() {
         if !applied.contains(&(tuning.slot, tuning.key)) {
@@ -146,16 +187,19 @@ pub(crate) fn plan<'a>(
                 name: tuning.parameter,
                 applied: f32::from_bits(tuning.value_bits),
                 add: tuning.add,
-            },
+            }
+            .into(),
         ));
     }
     let mut impact_keys = BTreeMap::new();
     for row in scoped.values() {
+        let ordered = matches!(row.modifier, AbilityRowModifier::Ordered { .. });
         if !applied.contains(&(row.slot, row.key))
             || tunings.contains_key(&row.key)
             || inputs.contains_key(&row.key)
             || impacts.iter().any(|v| v.key == row.key)
             || rows.iter().any(|v| v.1 == row.key)
+            || (ordered && legacy_gates.contains(&(row.slot, row.key)))
         {
             return Err(invalid(
                 "Private ability row has no unique activating property",
@@ -171,9 +215,13 @@ pub(crate) fn plan<'a>(
                 .map_err(invalid)?
                 .iter()
                 .any(|r| r.key == row.key)
+                || (ordered
+                    && membership_keys(&payload)
+                        .map_err(invalid)?
+                        .contains(&row.key))
             {
                 return Err(invalid(
-                    "Private ability row collides with an existing bank property",
+                    "Private ability row collides with an existing bank property or membership",
                 ));
             }
         }
@@ -181,8 +229,44 @@ pub(crate) fn plan<'a>(
             .read_tag(TagHash(row.bank))
             .map_err(|e| invalid(e.to_string()))?;
         row.check_bank(&payload).map_err(invalid)?;
-        let modifier = attack::resolve(manager, row, &payload, allocator, tags)?;
-        wanted.push((row.key, vec![row.bank], modifier));
+        for (key, origin) in row.memberships() {
+            if tunings.contains_key(&key)
+                || legacy_gates.contains(&(row.slot, key))
+                || inputs.contains_key(&key)
+                || impacts.iter().any(|impact| impact.key == key)
+                || rows.iter().any(|explicit| explicit.1 == key)
+                || scoped.get(&key).is_some_and(|producer| {
+                    producer.bank != row.bank
+                        || producer.slot != row.slot
+                        || !matches!(&producer.modifier,
+                            AbilityRowModifier::Ordered { origin: actual, .. } if *actual == origin)
+                })
+            {
+                return Err(invalid(
+                    "Private Jump membership collides with another authored property",
+                ));
+            }
+            for &bank in slot_banks(row.slot) {
+                let bytes = manager
+                    .read_tag(TagHash(bank))
+                    .map_err(|error| invalid(error.to_string()))?;
+                if property_rows(&bytes)
+                    .map_err(invalid)?
+                    .iter()
+                    .any(|existing| existing.key == key)
+                    || membership_keys(&bytes).map_err(invalid)?.contains(&key)
+                {
+                    return Err(invalid(
+                        "Private Jump membership collides with a stock property",
+                    ));
+                }
+            }
+        }
+        let value = match &row.modifier {
+            AbilityRowModifier::Ordered { rows, .. } => RowValue::Ordered(rows.clone()),
+            _ => attack::resolve(manager, row, &payload, allocator, tags)?.into(),
+        };
+        wanted.push((row.key, vec![row.bank], value));
     }
     for input in inputs.values() {
         if !applied.contains(&(input.slot, input.key)) || tunings.contains_key(&input.key) {
@@ -197,7 +281,8 @@ pub(crate) fn plan<'a>(
                 input: input.input,
                 value: f32::from_bits(input.value_bits),
                 multiply: input.multiply,
-            },
+            }
+            .into(),
         ));
     }
     for impact in impacts {
@@ -220,18 +305,19 @@ pub(crate) fn plan<'a>(
             Modifier::Melee {
                 damage: impact.damage,
                 responses: impact.responses,
-            },
+            }
+            .into(),
         ));
     }
     // A Subclass ability modifier's row goes to the one bank its ability reads.
     for &(bank, key, modifier) in rows {
-        wanted.push((key, vec![bank], modifier));
+        wanted.push((key, vec![bank], modifier.into()));
     }
     // A bank may take several rows, so each edit starts from the bank's latest payload.
     let mut edited: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
     let mut added: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
     let mut filed = BTreeSet::new();
-    for (key, banks, modifier) in wanted {
+    for (key, banks, value) in wanted {
         for &bank in &banks {
             // A key names what its row does, so a second request for it is the same row.
             if !filed.insert((bank, key)) {
@@ -239,7 +325,7 @@ pub(crate) fn plan<'a>(
             }
             let row = Row {
                 key,
-                modifier,
+                value: value.clone(),
                 mode: scoped.get(&key).map(|r| r.mode),
             };
             if let Some(next) = with_row(manager, &edited, bank, &row)? {
@@ -292,6 +378,13 @@ pub(crate) fn sync_private_banks(
                 .iter()
                 .any(|existing| existing.key == row.key)
             {
+                if let RowValue::Ordered(members) = &row.value
+                    && !ordered_rows_match(&after, row.key, members).map_err(context)?
+                {
+                    return Err(context(
+                        "An existing ordered ability group is incomplete or different".into(),
+                    ));
+                }
                 continue;
             }
             after = row.append(&after).map_err(context)?;
@@ -330,7 +423,7 @@ fn with_row(
     bank: u32,
     row: &Row,
 ) -> AuthoringResult<Option<Vec<u8>>> {
-    let (key, modifier) = (row.key, row.modifier);
+    let key = row.key;
     let tag = TagHash(bank);
     if crate::package_profile::canonical_package(tag.pkg_id()).is_none() {
         return Err(invalid(format!(
@@ -344,6 +437,24 @@ fn with_row(
             .map_err(|error| invalid(format!("Could not read ability bank {tag}: {error}")))?,
     };
     let context = |error: String| invalid(format!("Ability bank {tag}: {error}"));
+    let modifier = match &row.value {
+        RowValue::Ordered(members) => {
+            if property_rows(&payload)
+                .map_err(context)?
+                .iter()
+                .any(|row| row.key == key)
+            {
+                if ordered_rows_match(&payload, key, members).map_err(context)? {
+                    return Ok(None);
+                }
+                return Err(context(format!(
+                    "Existing ordered property {key:08X} has a different complete group"
+                )));
+            }
+            return row.append(&payload).map(Some).map_err(context);
+        }
+        RowValue::Single(modifier) => *modifier,
+    };
     if let Some(existing) = property_rows(&payload)
         .map_err(context)?
         .into_iter()

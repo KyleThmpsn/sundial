@@ -13,24 +13,37 @@ pub(super) fn check(
     assert_eq!(source.u32(source_row + 8)?, 255);
     assert_eq!(source.u64(source_row + 24)?, 0);
     let key = source.u32(source_row)?;
-    let witnesses = stock
+    let candidates = stock
         .array(stock.pointer(24)? + 0x88, 56, Some(0x8080453B))?
         .into_iter()
         .filter(|&r| {
-            stock.u32(r + 16).ok() == Some(key)
-                && stock
-                    .pointer(r + 48)
-                    .ok()
-                    .and_then(|m| stock.u32(m + 4).ok())
-                    == Some(0x80804520)
+            stock
+                .pointer(r + 48)
+                .ok()
+                .and_then(|m| stock.u32(m + 4).ok())
+                == Some(0x80804520)
+                && stock.u32(r + 24).ok() == Some(255)
+                && stock.u32(r + 32).ok() == source.u32(source_row + 16).ok()
+                && stock.u64(r + 40).ok() == Some(0)
         })
         .collect::<Vec<_>>();
+    let mut witnesses = candidates
+        .iter()
+        .copied()
+        .filter(|&r| stock.u32(r + 16).ok() == Some(key))
+        .collect::<Vec<_>>();
+    if witnesses.is_empty() {
+        witnesses = candidates;
+    }
     assert_eq!(witnesses.len(), 1);
     let witness = witnesses[0];
+    let template_key = stock.u32(witness + 16)?;
     assert_eq!(stock.u32(witness + 24)?, 255);
     assert_eq!(stock.u64(witness + 40)?, 0);
     assert_eq!(emitted.u32(row + 28)?, stock.u32(witness + 28)?);
     assert_eq!(emitted.u32(row + 24)?, 255);
+    assert_eq!(emitted.u32(row + 20)?, source.u32(source_row + 4)?);
+    assert_eq!(emitted.u32(row + 32)?, source.u32(source_row + 16)?);
     assert_eq!(emitted.u64(row + 40)?, 0);
     let body = emitted.pointer(row + 48)?;
     let twin = usize::try_from(emitted.u64(body + 8)?)?;
@@ -69,7 +82,7 @@ pub(super) fn check(
         .array(split + 0x88, 56, Some(0x8080453B))?
         .into_iter()
         .find(|&r| {
-            emitted.u32(r + 16).ok() == Some(key)
+            emitted.u32(r + 16).ok() == Some(template_key)
                 && emitted
                     .pointer(r + 48)
                     .ok()

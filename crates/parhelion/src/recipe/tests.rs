@@ -272,8 +272,8 @@ fn rename_updates_name_namespace_and_all_hashes_atomically() {
 #[test]
 fn name_namespace_normalization_has_explicit_boundaries() {
     assert_eq!(
-        namespace_for_weapon_name("  Every__END...Again!  ").unwrap(),
-        "parhelion.every-end-again"
+        namespace_for_weapon_name("  Every__END... Silimar’s Wrath!  ").unwrap(),
+        "parhelion.every-end-silimars-wrath"
     );
     assert_eq!(
         namespace_for_weapon_name(&"a".repeat(54)).unwrap().len(),

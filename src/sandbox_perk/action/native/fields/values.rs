@@ -540,7 +540,7 @@ pub fn contract(class: u32, field: &Field) -> ValueContract {
             result.description = "The signal that ends the effect. The compiler writes an always-active effect's own end key here, and the named values are the signals stock perks end on.";
         }
         (0x80803E1C, 4) => {
-            result.description = "The key written over the weapon property while the effect is active. Every stock use writes the full auto key.";
+            result.description = "The name written to an animation input while the effect is active. Full Auto Trigger System and Close the Gap use different names. Fan Fire selects the default profile.";
         }
         (0x80803E4D, 8) => {
             result.description = "Adjustment equals this scale multiplied by the value-program output. The result uses the selected component's native units. Do not assume every target uses percentages."

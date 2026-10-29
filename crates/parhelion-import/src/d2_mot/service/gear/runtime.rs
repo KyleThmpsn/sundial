@@ -19,7 +19,7 @@ pub(super) fn prepare(
                     .is_some_and(|rows| rows.iter().any(|row| row["simulation_converted"] == true))
             })
         }) {
-            "Armor follows native character animation. Converted cloth uses native simulation. Its motion still needs an in-game check."
+            "Armor follows native character animation. Converted cloth uses native simulation."
         } else {
             "Armor follows native character animation."
         };

@@ -18,6 +18,7 @@ pub(in crate::item) struct ImportedParticles {
     pub(in crate::item) source_trajectory: bool,
     attachments: BTreeSet<String>,
     presentation: Option<Presentation>,
+    sword: Option<super::sword_profiles::Imported>,
 }
 
 struct Presentation {
@@ -131,6 +132,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
         "attachments",
         "runtime_presentation",
         "audio_assets",
+        "sword",
     ] {
         if let Some(part) = value.get(section) {
             if part["installable"] != true {
@@ -252,6 +254,7 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
         projectile,
         attachments,
         presentation,
+        sword: super::sword_profiles::Imported::load(value)?,
     };
     if let Some(root) = &assets.projectile {
         assets.projectile(root)?;
@@ -259,10 +262,31 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
     for root in &assets.attachments {
         assets.attachment(root)?;
     }
+    if let Some(sword) = &assets.sword {
+        sword.validate(&assets.nodes)?;
+    }
     Ok((!assets.nodes.is_empty()).then_some(assets))
 }
 
 impl ImportedParticles {
+    pub(in crate::item) fn sword_patches(
+        &self,
+        manager: &PackageManager,
+        entity: &[u8],
+        symbols: &BTreeMap<String, TagHash>,
+        keyed_override: bool,
+    ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+        let Some(sword) = &self.sword else {
+            return Ok(Vec::new());
+        };
+        if keyed_override {
+            return Err(invalid(
+                "Imported sword mechanics already own the attack profiles",
+            ));
+        }
+        sword.patches(manager, entity, symbols)
+    }
+
     /// Include older graphs' mutable arrays in the native loader's instance copy.
     fn repair_instances(&mut self, manager: &PackageManager) -> AuthoringResult<()> {
         for node in &mut self.nodes {
@@ -526,6 +550,11 @@ impl ImportedParticles {
                 "More than one imported group supplies the fired projectile",
             ));
         }
+        if self.sword.is_some() && other.sword.is_some() {
+            return Err(invalid(
+                "More than one imported group supplies sword mechanics",
+            ));
+        }
         let existing = self
             .nodes
             .iter()
@@ -543,6 +572,7 @@ impl ImportedParticles {
         self.source_trajectory |= other.source_trajectory;
         self.projectile = self.projectile.take().or(other.projectile);
         self.presentation = self.presentation.take().or(other.presentation);
+        self.sword = self.sword.take().or(other.sword);
         Ok(())
     }
 
@@ -588,6 +618,11 @@ impl ImportedParticles {
             .iter()
             .chain(runtime)
             .map(String::as_str)
+            .chain(
+                self.sword
+                    .as_ref()
+                    .map(super::sword_profiles::Imported::root),
+            )
             .collect::<Vec<_>>();
         let entities = roots
             .iter()

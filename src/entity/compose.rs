@@ -86,7 +86,8 @@ fn extend(
     let source_masks = rows(source, 0x78, 2)?;
     for entity in [target.as_slice(), source] {
         let mask_array = native_array(entity, 0x78)?;
-        if read_u32(entity, mask_array.rows - 8)? != 0x8080_0006 {
+        // Omitted arrays have no typed header. Allocated arrays still require u16 rows.
+        if !mask_array.omitted && mask_array.row_class != 0x8080_0006 {
             return Err("Component condition mask array has an unexpected type".into());
         }
     }

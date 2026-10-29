@@ -464,7 +464,7 @@ pub(super) fn plain_field_label(class: u32, label: &str) -> &'static str {
         (0x80803DEA, "Event Value") | (0x80802D00, "Named Event Key") => "Event",
         (0x80803DEA, "Context Key") => "Context",
         (0x80803DEC | 0x80803DEB, "Event Key") => "Signal",
-        (0x80803E1C, "Replacement Key") => "Firing Mode",
+        (0x80803E1C, "Replacement Key") => "Animation Key",
         (0x808029ED | 0x80803E1D, "Property Key") => "Property",
         (0x80803E1D, "Target Selector") => "Ability",
         (0x80803E39, "Property Key") => "Counter",

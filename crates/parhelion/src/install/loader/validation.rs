@@ -344,9 +344,8 @@ pub(crate) fn other_mods_change(target: &Path, tag: u32) -> Result<bool, Install
 pub(crate) fn uses_mod_loader(target: &Path) -> bool {
     target
         .parent()
-        .and_then(|install| sundial::package_authoring::installed_runtime(install).ok())
-        .and_then(|runtime| runtime.uses_mod_loader().ok())
-        .unwrap_or(false)
+        .and_then(sundial::package_authoring::installed_runtime_kind)
+        .is_some_and(|(_, mods)| mods)
 }
 
 /// The installation's own package files by id, with their generation.

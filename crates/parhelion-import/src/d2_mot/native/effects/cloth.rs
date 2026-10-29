@@ -29,6 +29,7 @@ pub(super) fn build(
     prepared: &Path,
     progress: &mut dyn FnMut(String),
 ) -> Result<()> {
+    component::remove_native(c, prepared)?;
     let models = c.source.report["models"]
         .as_array()
         .context("Cloth source models")?
@@ -44,7 +45,7 @@ pub(super) fn build(
         c.source.report["independent_art_entity"].is_string(),
         "Cloth requires an independently converted art entity"
     );
-    let manifest = load(&prepared.join("native/source-manifest.json"))?;
+    let manifest = load(&crate::d2_mot::profile::native(prepared)?.join("source-manifest.json"))?;
     let packages = Path::new(
         manifest["packages"]
             .as_str()

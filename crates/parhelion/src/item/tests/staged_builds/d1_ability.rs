@@ -8,8 +8,11 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use sundial::package_authoring::{ability_definition, sandbox_perk::program};
+mod callback;
 mod event;
+mod hud;
 mod lifecycle;
+mod revival;
 
 fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -386,7 +389,11 @@ fn saved_radiance_reaches_private_controller_bank_and_fireborn_property() {
     let (bank_live, bank_definition) = pair(bank, *bank_tag, (0x8080417A, 0x8080417B));
     let property_readback = bank_rows(&source_bank, bank, *bank_tag, bank_definition, &staged);
     let sequence_readback = sequence_inputs(&source, controller, *controller_tag, &graph, &staged);
-    let event_readback = event::readback(&source, &graph, &staged);
+    let event_readback = event::readback(&source, &graph, &stock, &staged);
+    let callback_readback = [
+        callback::readback(controller, *controller_tag, false),
+        callback::readback(bank, *bank_tag, true),
+    ];
     let lifecycle_readback = lifecycle::readback(&source, &graph, &staged);
     let controller_boundary = controller.pointer(24).unwrap();
     let bank_boundary = bank.pointer(24).unwrap();
@@ -484,7 +491,7 @@ fn saved_radiance_reaches_private_controller_bank_and_fireborn_property() {
         "revision":revision,"source_packages":source_packages,"source_bank_sha256":sha(&source_bank.0),
         "recipe":recipe_path,"manifest":build.manifest_path,"row":row,"identity":pairs[usize::from(row)].identity,
         "pattern":pairs[usize::from(row)].pattern,"root":root,"controller":controller_tag,"bank":bank_tag,
-        "fireborn_rows":flag_rows,"property_readback":property_readback,"sequence_readback":sequence_readback,"event_readback":event_readback,"lifecycle_readback":lifecycle_readback,"root_sha256":sha(&graph.0),"controller_sha256":sha(&controller.0),"bank_sha256":sha(&bank.0),
+        "fireborn_rows":flag_rows,"property_readback":property_readback,"sequence_readback":sequence_readback,"event_readback":event_readback,"callback_readback":callback_readback,"lifecycle_readback":lifecycle_readback,"root_sha256":sha(&graph.0),"controller_sha256":sha(&controller.0),"bank_sha256":sha(&bank.0),
         "executable_sha256":sha(&fs::read(std::env::current_exe().unwrap()).unwrap()),"installed":false,"gameplay_verified":false
     })).unwrap()).unwrap();
 }

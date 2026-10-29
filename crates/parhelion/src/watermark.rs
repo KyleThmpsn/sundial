@@ -263,6 +263,8 @@ fn build_watermark_plan_with_context(
             texture_index * TAGS_PER_TEXTURE + 1,
             "watermark texture header",
         )?;
+        AppendedTagAllocator::destination(destination_package_id, current_entry_count)
+            .reserve(data_ordinal, 2)?;
         let data_tag = assigned_tag(destination_package_id, current_entry_count, data_ordinal)?;
         let header_tag = assigned_tag(destination_package_id, current_entry_count, header_ordinal)?;
         let (mut header, donor_pixels) = read_and_validate_texture_header(
@@ -413,6 +415,8 @@ fn build_watermark_plan_with_context(
                 local_ordinal,
                 "watermarked icon container",
             )?;
+            AppendedTagAllocator::destination(destination_package_id, current_entry_count)
+                .reserve(ordinal, 2)?;
             let tag = assigned_tag(destination_package_id, current_entry_count, ordinal)?;
             let companion_ordinal = AppendedTagAllocator::checked_ordinal(
                 appended_ordinal_base,
@@ -601,7 +605,7 @@ fn assigned_tag(
     current_entry_count: usize,
     ordinal: usize,
 ) -> AuthoringResult<TagHash> {
-    AppendedTagAllocator::new(package_id, current_entry_count).assigned_tag(
+    AppendedTagAllocator::destination(package_id, current_entry_count).assigned_tag(
         ordinal,
         "Watermark destination entry",
         "watermark tag",

@@ -1,10 +1,12 @@
-//! Literal modifier bodies require a matching existing property and reciprocal pairs.
+//! Literal modifier bodies require a qualified bank-local witness and reciprocal pairs.
 use super::*;
 mod duration;
 mod protection;
+pub(super) mod rate;
 pub use protection::constant_protection_definition;
 
-/// Selection metadata witnessed on one stock row. A zero required key means no inner gate.
+/// Selection metadata for the private row. A zero required key means no inner gate.
+/// Protection and active rates preserve source names under their qualified native storage routes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixedSelection {
@@ -28,7 +30,13 @@ impl FixedModifier {
             0x808044D6 => Ok(16),
             duration::CLASS => Ok(12),
             0x8080442E | 0x808044D4 | protection::CLASS => Ok(8),
-            0x80804528 | 0x8080411F | 0x808042A5 | 0x8080411B | 0x80804127 | 0x808044D2 => Ok(4),
+            0x80804528
+            | 0x8080411F
+            | 0x808042A5
+            | 0x8080411B
+            | 0x80804127
+            | 0x808044D2
+            | rate::CLASS => Ok(4),
             _ => Err("Unqualified fixed ability modifier class".into()),
         }
     }
@@ -55,7 +63,16 @@ impl FixedModifier {
                     }))
             || (self.class == protection::CLASS
                 && (self.words[0] != (-1.0f32).to_bits()
-                    || !(0.0..=1.0).contains(&f32::from_bits(self.words[1]))))
+                    || !(0.0..=1.0).contains(&f32::from_bits(self.words[1]))
+                    || self
+                        .selection
+                        .is_some_and(|s| s.priority != 255 || s.required_key != 0)))
+            || (self.class == rate::CLASS
+                && (f32::from_bits(self.words[0]) < 0.0
+                    || self.selection.is_none()
+                    || self
+                        .selection
+                        .is_some_and(|s| s.priority != 255 || s.required_key != 0)))
             || (self.class == 0x808042A5
                 && (self.selection.is_none() || !(1..=16).contains(&self.words[0])))
             || (self.class == duration::CLASS
@@ -65,8 +82,15 @@ impl FixedModifier {
             || self.selection.is_some_and(|s| {
                 !matches!(
                     self.class,
-                    0x808042A5 | 0x808044D2 | 0x808044D4 | 0x808044D6 | duration::CLASS
-                ) || !matches!(s.priority, 1 | 2 | 255)
+                    0x808042A5
+                        | 0x808044D2
+                        | 0x808044D4
+                        | 0x808044D6
+                        | duration::CLASS
+                        | protection::CLASS
+                        | rate::CLASS
+                ) || (!matches!(s.priority, 1 | 2 | 255)
+                    && !(self.class == 0x808042A5 && s.priority == 0))
                     || [u32::MAX, 0x811C9DC5].contains(&s.required_key)
             })
             || (self.class == 0x80804399
@@ -80,6 +104,9 @@ impl FixedModifier {
     pub fn check_bank(self, payload: &[u8]) -> Result<(), String> {
         self.validate()?;
         let layout = layout(payload)?;
+        if self.class == rate::CLASS {
+            return rate::check(payload, &layout, self);
+        }
         if matches!(self.class, 0x808044D2 | 0x808044D4 | 0x808044D6)
             && (u32_at(payload, layout.definition - 4)? != 0x8080429E
                 || u32_at(payload, layout.instance - 4)? != 0x8080429F)
@@ -97,7 +124,8 @@ impl FixedModifier {
                 continue;
             }
             if let Some(selection) = self.selection {
-                if u32_at(payload, row + ROW_NAME)? != selection.name
+                if (self.class != protection::CLASS
+                    && u32_at(payload, row + ROW_NAME)? != selection.name)
                     || u32_at(payload, row + ROW_FLAGS)? != u32::from(selection.priority)
                 {
                     continue;

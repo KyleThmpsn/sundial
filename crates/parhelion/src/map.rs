@@ -185,6 +185,29 @@ pub struct MapSource {
     /// Whole meters the level moves by.
     #[serde(default)]
     pub offset: [i32; 3],
+    /// How the level's decorators draw: as Destiny's own instanced decorators, or as copies among
+    /// the level's static pieces.
+    #[serde(default, skip_serializing_if = "Decorators::is_default")]
+    pub decorators: Decorators,
+}
+
+/// How a level's grass, bushes, vines and pebbles draw.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Decorators {
+    /// Destiny's instanced decorators: each type's model once and one row per instance, faded
+    /// with distance. A build without the stock decorator records copies them instead.
+    #[default]
+    Native,
+    /// One copy of its model per instance among the level's static pieces, at every distance and
+    /// within the level's triangle budget.
+    Static,
+}
+
+impl Decorators {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

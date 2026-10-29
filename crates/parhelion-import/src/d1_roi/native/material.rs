@@ -2,13 +2,88 @@ use super::super::expression;
 use super::*;
 use crate::tiger::shader::identity::Stage;
 
-/// Stock sight materials `80BA7DA2` and `80EF364B`, whose reticle quads match the D1
-/// quad's dimensions, subtract this from the quad's z before the reticle projection.
-const NATIVE_SIGHT_DEPTH: f32 = 2.5;
-
 pub(super) struct Equipment {
     pub plates: [String; 3],
     pub dyes: BTreeMap<u8, u32>,
+}
+
+/// What the source gear-dye extern holds when a draw selects an unset local dye slot.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Retained {
+    /// No earlier draw of the component and stage wrote a dye, so the zeroed allocation remains.
+    Zeroed,
+    /// Every earlier write stored this local slot's dye and color lane.
+    Dye { slot: u8, secondary: bool },
+    /// Earlier writes differ, or none of them passes the same draw filters as this draw.
+    Unresolved,
+}
+
+impl Equipment {
+    /// What the gear-dye extern holds for each unset-slot draw of a source model, by stage, dye
+    /// byte and material. Source `00862CB2` allocates the extern zeroed for each art component and
+    /// stage, and `007F8010` draws the component's meshes in order. `00884FE0` rewrites it when the
+    /// dye byte changes: channels 0 to 2 copy their own local slot, channel 4 copies slot 0, and an
+    /// unset slot writes only specular and normal W. `007F7EA0` draws a part only if its group
+    /// (`+1F`) and flags (`+1C`) pass the view's filters, so an earlier write certainly precedes a
+    /// draw only when it shares both. Per-part visibility bits (`+1A`) are taken as set, as in the
+    /// default appearance.
+    pub fn retained(
+        &self,
+        source: &Payload,
+        meshes: &[usize],
+    ) -> Result<BTreeMap<(usize, u8, u32), Retained>> {
+        let mut result = BTreeMap::new();
+        for stage in 0..19 {
+            let mut writes = Vec::new();
+            for &mesh in meshes {
+                let parts = source.array(mesh + 0x48, 36, Some(0x80801AEF))?;
+                let range = usize::from(source.u16(mesh + 0x58 + stage * 2)?)
+                    ..usize::from(source.u16(mesh + 0x5A + stage * 2)?);
+                for &part in parts
+                    .get(range)
+                    .context("Source stage exceeds its draw records")?
+                {
+                    let byte = source.u8(part + 0x1E)?;
+                    let channel = byte >> 1;
+                    let filter = (source.u16(part + 0x1C)?, source.u8(part + 0x1F)?);
+                    let write = match channel {
+                        0..=2 => Some(channel),
+                        4 => Some(0),
+                        _ => None,
+                    }
+                    .filter(|slot| self.dyes.contains_key(slot));
+                    if let Some(slot) = write {
+                        // Channel 4 stores the primary color at +40.
+                        writes.push((filter, (slot, channel != 4 && byte & 1 != 0)));
+                        continue;
+                    }
+                    if self.dyes.contains_key(&channel) {
+                        continue;
+                    }
+                    let state = match writes.first() {
+                        // Other channels do not share this extern's absent-slot path.
+                        _ if channel > 2 && !self.dyes.is_empty() => Retained::Unresolved,
+                        _ if channel > 2 => Retained::Zeroed,
+                        None => Retained::Zeroed,
+                        Some(&(_, (slot, secondary)))
+                            if writes.iter().all(|w| w.1 == (slot, secondary))
+                                && writes.iter().any(|w| w.0 == filter) =>
+                        {
+                            Retained::Dye { slot, secondary }
+                        }
+                        Some(_) => Retained::Unresolved,
+                    };
+                    let entry = result
+                        .entry((stage, byte, source.u32(part)?))
+                        .or_insert(state);
+                    if *entry != state {
+                        *entry = Retained::Unresolved;
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
 }
 
 pub(super) struct Draw {
@@ -16,6 +91,8 @@ pub(super) struct Draw {
     pub dye: u8,
     pub simulated: bool,
     pub layout: u16,
+    /// The extern this draw sees if its local dye slot is unset.
+    pub retained: Retained,
 }
 
 /// The native state a D1 decal's blend state becomes, and whether it replaces target 0's color.
@@ -81,6 +158,18 @@ fn scope_masks(
     Ok(masks)
 }
 
+/// The native stage and packed stage number of a material's shader slot.
+fn shader_slot(index: usize) -> (Stage, u8) {
+    match index {
+        0 => (Stage::Vertex, 2),
+        1 => (Stage::Hull, 4),
+        2 => (Stage::Domain, 6),
+        3 => (Stage::Geometry, 3),
+        4 => (Stage::Pixel, 1),
+        _ => unreachable!(),
+    }
+}
+
 impl Assembly<'_> {
     fn detail_textures(&mut self, dye: Option<&Payload>) -> Result<[String; 2]> {
         let mut detail = [String::new(), String::new()];
@@ -128,6 +217,27 @@ impl Assembly<'_> {
         })
     }
 
+    /// The sight quad's z is offset by this row before view matrix six, which both builds fill
+    /// from the corresponding camera block. The depth is each weapon's reticle size (0.15 on a
+    /// Rise of Iron sidearm to 26 on its snipers, 1.2 to 25 across stock Shadowkeep sights), so
+    /// the source value is kept.
+    fn sight_depth(&mut self, shader: u32, values: &[u8]) -> Result<Value> {
+        let program = self.source.read(shader)?;
+        let range = program.array_range(8, 1, Some(0x80800009))?;
+        let row = usize::from(super::super::shader::sight_depth_row(&program.0[range])?);
+        let at = row * 16;
+        ensure!(
+            values.len() >= at + 16,
+            "Source sight depth row exceeds the initial vectors"
+        );
+        let depth = f32::from_le_bytes(values[at..at + 4].try_into()?);
+        ensure!(
+            depth.is_finite() && depth > 0.0,
+            "Source sight depth is not positive"
+        );
+        Ok(json!({"stage":"vertex","sight_depth_row":row,"sight_depth":depth}))
+    }
+
     pub(super) fn material(
         &mut self,
         tag: u32,
@@ -143,15 +253,32 @@ impl Assembly<'_> {
             dye,
             simulated,
             layout,
+            retained,
         } = draw;
         ensure!(
             self.source.reference(tag)? == 0x80801C32,
             "Source material class differs"
         );
         let source = self.source.read(tag)?;
-        let dye_tag = equipment.dyes.get(&(dye / 2)).copied();
+        // The palette holds one dye per local slot. A draw through an unset slot reads what an
+        // earlier draw of its component and stage left in the gear-dye extern.
+        let selected = equipment.dyes.get(&(dye / 2)).copied();
+        let (dye_tag, secondary) = match (selected, retained) {
+            (Some(tag), _) => (Some(tag), dye % 2 != 0),
+            (None, Retained::Dye { slot, secondary }) => {
+                (equipment.dyes.get(&slot).copied(), secondary)
+            }
+            (None, _) => (None, false),
+        };
         let dye_data = dye_tag.map(|tag| self.source.read(tag)).transpose()?;
         let detail = self.detail_textures(dye_data.as_ref())?;
+        let dye_input = match (selected, retained, dye_data.as_ref()) {
+            (Some(_), _, Some(dye)) => expression::Dye::Selected { dye, secondary },
+            (None, Retained::Zeroed | Retained::Dye { .. }, data) => {
+                expression::Dye::Unset(data.map(|dye| (dye, secondary)))
+            }
+            _ => expression::Dye::Unresolved,
+        };
         let mut out = vec![0; 0x408];
         put(&mut out, 8, &source.bytes::<32>(8)?)?;
         // Platform pipeline cache bits are not authored D3D state selectors.
@@ -190,38 +317,16 @@ impl Assembly<'_> {
             if matches!(shader, 0 | u32::MAX) {
                 continue;
             }
-            let (stage, packed) = match index {
-                0 => (Stage::Vertex, 2),
-                1 => (Stage::Hull, 4),
-                2 => (Stage::Domain, 6),
-                3 => (Stage::Geometry, 3),
-                4 => (Stage::Pixel, 1),
-                _ => unreachable!(),
-            };
+            let (stage, packed) = shader_slot(index);
             let StageInputs {
                 mut textures,
                 samplers,
-                mut values,
+                values,
                 code,
                 constants,
             } = self.material_inputs(&source, from)?;
             if pass == 16 && index == 0 {
-                // The sight quad's z is offset by this row before reticle matrix six. Stock
-                // sights carry a per-weapon constant (2.5 on the two stock sights whose quad
-                // has this quad's dimensions, 1.2 to 25 across all 18), and the game builds
-                // the matrix for that plane. D1's own 1.0 belongs to D1's projection and
-                // drew the quad 2.5 times too large with a corner on the lens centre.
-                let program = self.source.read(shader)?;
-                let range = program.array_range(8, 1, Some(0x80800009))?;
-                let row = usize::from(super::super::shader::sight_depth_row(&program.0[range])?);
-                let at = row * 16;
-                ensure!(
-                    values.len() >= at + 16,
-                    "Source sight depth row exceeds the initial vectors"
-                );
-                values[at..at + 4].copy_from_slice(&NATIVE_SIGHT_DEPTH.to_le_bytes());
-                evidence.push(json!({"stage":"vertex","sight_depth_row":row,
-                    "native_sight_depth":NATIVE_SIGHT_DEPTH,"approximation":"stock_sight_with_matching_quad"}));
+                evidence.push(self.sight_depth(shader, &values)?);
             }
             let objects = source.u32(from + 0x78)? as usize;
             ensure!(
@@ -233,9 +338,7 @@ impl Assembly<'_> {
                 constants,
                 &expression::Inputs {
                     globals: &self.globals,
-                    dye: dye_data.as_ref(),
-                    empty_palette: equipment.dyes.is_empty(),
-                    secondary: dye % 2 != 0,
+                    dye: dye_input,
                     plates: &equipment.plates,
                     detail: &detail,
                     objects,

@@ -138,11 +138,13 @@ impl Session {
         if std::env::var_os("PARHELION_DISABLE_RUNTIME_CACHE").is_some() {
             return Err(Reason::Disabled);
         }
-        let root = std::env::var_os("PARHELION_RUNTIME_CACHE_DIRECTORY")
+        let configured = std::env::var_os("PARHELION_RUNTIME_CACHE_DIRECTORY");
+        let root = configured
+            .clone()
             .map(PathBuf::from)
             .or_else(|| {
                 sundial::package_authoring::parhelion_data_directory()
-                    .map(|p| p.join("cache/runtime-v2"))
+                    .map(|p| p.join("cache/runtime"))
             })
             .ok_or(Reason::NoDirectory)?;
         fs::create_dir_all(&root).map_err(|error| Reason::Directory(error.to_string()))?;
@@ -156,6 +158,11 @@ impl Session {
         // A second concurrent compiler simply works without caching.
         lock.try_lock_exclusive()
             .map_err(|error| Reason::Locked(error.to_string()))?;
+        if configured.is_none()
+            && let Some(cache) = root.parent()
+        {
+            remove_former_folders(cache);
+        }
         static COMPILER: OnceLock<Option<Hash>> = OnceLock::new();
         let compiler = COMPILER.get_or_init(|| file_hash(&std::env::current_exe().ok()?));
         let compiler = compiler.as_ref().ok_or(Reason::CompilerUnavailable)?;
@@ -369,6 +376,31 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.prune();
+    }
+}
+
+/// Removes the folders earlier builds kept fragments in, one per cache format. A fragment
+/// records the cache identity, which names its format, so a change of format only misses and
+/// replaces fragments in `cache/runtime`. A former folder another build still holds stays.
+fn remove_former_folders(cache: &Path) {
+    for name in ["runtime-v1", "runtime-v2"] {
+        let folder = cache.join(name);
+        match File::options()
+            .read(true)
+            .write(true)
+            .open(folder.join(".lock"))
+        {
+            Ok(lock) => {
+                if lock.try_lock_exclusive().is_err() {
+                    continue;
+                }
+                // Windows cannot delete the lock file while it is open.
+                drop(lock);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => continue,
+        }
+        let _ = fs::remove_dir_all(&folder);
     }
 }
 

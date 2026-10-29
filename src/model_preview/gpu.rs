@@ -28,6 +28,7 @@ mod order;
 mod output;
 mod particle;
 mod pose;
+mod program;
 mod resolve;
 mod resource;
 mod upload;
@@ -39,6 +40,13 @@ pub fn set_available(available: bool) {
 
 pub fn available() -> bool {
     AVAILABLE.load(Ordering::Relaxed)
+}
+
+/// Runs this process as the preview's program compiler when it was started as one, returning its
+/// exit code. `None` for an ordinary start.
+#[cfg(windows)]
+pub(crate) fn serve_compiler() -> Option<i32> {
+    program::serve_compiler()
 }
 
 /// What one frame draws.
@@ -75,13 +83,31 @@ impl Shared {
                 .map(|(_, reason)| reason.clone())
         })
     }
+
+    /// Whether a frame of `model` has been drawn. Until then its programs link or its buffers
+    /// and images upload.
+    pub fn drawn(&self, model: &Arc<Model>) -> bool {
+        self.0.lock().is_ok_and(|state| {
+            state
+                .model
+                .as_ref()
+                .is_some_and(|uploaded| Arc::ptr_eq(&uploaded.model, model) && uploaded.drawn)
+        })
+    }
     pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect, frame: Frame) {
         let state = self.0.clone();
         let (repaint, viewport) = (ui.ctx().clone(), ui.ctx().viewport_id());
         let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             if let Ok(mut state) = state.lock() {
-                // SAFETY: the painter hands us its own current context on the paint thread.
-                if unsafe { state.draw(painter.gl(), &info, &frame) } {
+                let drawn = super::timing::measure(
+                    || "paint".to_owned(),
+                    "paint",
+                    "gpu draw",
+                    std::time::Duration::from_millis(1),
+                    // SAFETY: the painter hands us its own current context on the paint thread.
+                    || unsafe { state.draw(painter.gl(), &info, &frame) },
+                );
+                if drawn {
                     state.completed_frames = state.completed_frames.saturating_add(1);
                 } else {
                     repaint
@@ -101,8 +127,7 @@ struct State {
     exports: jobs::Worker,
     completed_frames: u64,
     fallback: Option<(Arc<Model>, String)>,
-    program: Option<(glow::Program, Uniforms)>,
-    program_model: Option<Arc<Model>>,
+    programs: Option<program::Programs>,
     model: Option<Uploaded>,
     target: Option<Target>,
     preparation: upload::Preparation,
@@ -110,6 +135,7 @@ struct State {
 
 struct Uniforms {
     deformed: Option<glow::UniformLocation>,
+    geometry: Option<glow::UniformLocation>,
     center: Option<glow::UniformLocation>,
     rotate: Option<glow::UniformLocation>,
     scale: Option<glow::UniformLocation>,
@@ -149,6 +175,8 @@ struct Uniforms {
     effect: Option<glow::UniformLocation>,
     effect_constants: Option<glow::UniformLocation>,
     effect_textures: [Option<glow::UniformLocation>; 3],
+    /// Native samplers past the ninth, on the units [`effects::native::gl_unit`] gives them.
+    native_textures: [Option<glow::UniformLocation>; 3],
     scene_depth: Option<glow::UniformLocation>,
     native_index: Option<glow::UniformLocation>,
     native_quaternion: Option<glow::UniformLocation>,
@@ -183,6 +211,8 @@ struct Uploaded {
     hide_emitter: bool,
     samplers: Vec<Vec<glow::Sampler>>,
     pending: Option<upload::Pending>,
+    /// A frame of this upload has been drawn.
+    drawn: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -252,22 +282,7 @@ impl State {
                 ));
                 return false;
             }
-            if self
-                .program_model
-                .as_ref()
-                .is_some_and(|model| !Arc::ptr_eq(model, &frame.model))
-                && let Some((program, _)) = self.program.take()
-            {
-                gl.delete_program(program);
-            }
-            if self.program.is_none() {
-                self.program = compile(gl, &frame.model);
-                self.program_model = Some(frame.model.clone());
-            }
-            if self.program.is_none() {
-                self.fallback = Some((frame.model.clone(), "Software rendering is active because this model's GPU shader could not initialize.".into()));
-                return false;
-            }
+            // A model's programs and upload are made together and replaced together.
             if self
                 .model
                 .as_ref()
@@ -277,9 +292,13 @@ impl State {
                 old.delete(gl);
             }
             if self.model.is_none() {
-                let Some(prepared) = self.preparation.poll(&frame.model) else {
+                self.programs = None;
+                let Some(mut prepared) = self.preparation.poll(&frame.model) else {
                     return false;
                 };
+                // The programs link while the buffers and images upload.
+                self.programs = prepared.sources.take().map(program::Programs::new);
+                let _stage = super::timing::stage("gpu upload");
                 match upload::begin(gl, prepared) {
                     Ok(uploaded) => self.model = Some(uploaded),
                     Err(error) => {
@@ -291,10 +310,25 @@ impl State {
                     }
                 }
             }
+            let linked = {
+                let _stage = super::timing::stage("gpu shader compile");
+                match self.programs.as_mut().map(|programs| programs.poll(gl)) {
+                    Some(Ok(linked)) => linked,
+                    Some(Err(error)) => {
+                        self.fallback = Some((frame.model.clone(), error));
+                        return false;
+                    }
+                    None => {
+                        self.fallback = Some((frame.model.clone(), "Software rendering is active because this model's GPU shader could not initialize.".into()));
+                        return false;
+                    }
+                }
+            };
             let Some(uploaded) = self.model.as_mut() else {
                 return false;
             };
-            uploaded.advance(gl)
+            let _stage = super::timing::stage("gpu upload");
+            uploaded.advance(gl) && linked
         }
     }
 
@@ -333,7 +367,7 @@ impl State {
             if !self.prepare(gl, frame) {
                 return false;
             }
-            let (program, uniforms) = self.program.as_ref().expect("prepared program");
+            let programs = self.programs.as_ref().expect("prepared programs");
             let uploaded = self.model.as_mut().expect("prepared model");
             pose::upload(gl, uploaded, frame);
             let deformed = frame.animate && frame.pose.is_none() && uploaded.deformation.is_some();
@@ -423,31 +457,6 @@ impl State {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
                 return false;
             }
-            gl.use_program(Some(*program));
-            gl.bind_vertex_array(Some(uploaded.vao));
-            gl.uniform_1_i32(uniforms.deformed.as_ref(), i32::from(deformed));
-            // samplerBuffer and sampler2D uniforms must have distinct texture units even
-            // when the dynamic branch does not sample the deformation buffer.
-            gl.uniform_1_i32(gl.get_uniform_location(*program, "uGeometry").as_ref(), 11);
-            if deformed {
-                uploaded.deformation.as_ref().unwrap().bind(gl, *program);
-            }
-            gl.uniform_3_f32(uniforms.native_direction.as_ref(), -cp * sy, -cp * cy, sp);
-            gl.uniform_1_f32(uniforms.native_distance.as_ref(), (radius * 4.0).max(1.0));
-            gl.uniform_3_f32(uniforms.center.as_ref(), center[0], center[1], center[2]);
-            gl.uniform_matrix_3_f32_slice(uniforms.rotate.as_ref(), false, &rotate);
-            gl.uniform_2_f32(
-                uniforms.scale.as_ref(),
-                2.0 * scale / size[0] as f32,
-                2.0 * scale / size[1] as f32,
-            );
-            gl.uniform_1_f32(uniforms.depth_scale.as_ref(), (1.0 - 1e-4) / depth_radius);
-            // Pan is a fraction of the viewport; clip space spans two units and points up.
-            gl.uniform_2_f32(
-                uniforms.pan.as_ref(),
-                frame.camera.pan[0] * 2.0,
-                -frame.camera.pan[1] * 2.0,
-            );
             let key = frame.scene.light;
             // The highlight sits halfway between the key and the fixed head-on view direction.
             let half = {
@@ -455,33 +464,37 @@ impl State {
                 let length = sum.iter().map(|v| v * v).sum::<f32>().sqrt().max(0.0001);
                 sum.map(|v| v / length)
             };
-            gl.uniform_3_f32(uniforms.key_dir.as_ref(), key[0], key[1], key[2]);
-            gl.uniform_3_f32(uniforms.half_dir.as_ref(), half[0], half[1], half[2]);
-            gl.uniform_1_f32(uniforms.key.as_ref(), frame.scene.key);
-            gl.uniform_1_f32(uniforms.fill.as_ref(), frame.scene.fill);
-            gl.uniform_1_f32(uniforms.exposure.as_ref(), frame.scene.exposure);
-            gl.uniform_1_i32(
-                uniforms.style.as_ref(),
-                match frame.style {
+            let view = draw::View {
+                deformed,
+                direction: [-cp * sy, -cp * cy, sp],
+                distance: (radius * 4.0).max(1.0),
+                center,
+                rotate,
+                scale: [2.0 * scale / size[0] as f32, 2.0 * scale / size[1] as f32],
+                depth_scale: (1.0 - 1e-4) / depth_radius,
+                // Pan is a fraction of the viewport; clip space spans two units and points up.
+                pan: [frame.camera.pan[0] * 2.0, -frame.camera.pan[1] * 2.0],
+                key,
+                half,
+                strength: frame.scene.key,
+                fill: frame.scene.fill,
+                exposure: frame.scene.exposure,
+                style: match frame.style {
                     Style::Textured => 0,
                     Style::Solid => 1,
                     Style::Wireframe => 2,
                 },
-            );
-            let flat = frame
-                .pose
-                .as_ref()
-                .map_or(frame.model.normals.is_empty(), |pose| {
-                    pose.normals.is_empty()
-                });
-            gl.uniform_1_i32(uniforms.flat.as_ref(), i32::from(flat));
-            for (unit, location) in uniforms.samplers.iter().enumerate() {
-                gl.uniform_1_i32(location.as_ref(), unit as i32);
-            }
+                flat: frame
+                    .pose
+                    .as_ref()
+                    .map_or(frame.model.normals.is_empty(), |pose| {
+                        pose.normals.is_empty()
+                    }),
+            };
             if frame.style == Style::Wireframe {
                 gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
             }
-            if let Err(error) = order::update(gl, uniforms, uploaded, frame, target) {
+            if let Err(error) = order::update(gl, programs, &view, uploaded, frame, target) {
                 self.fallback = Some((
                     frame.model.clone(),
                     format!("Software rendering is active. {error}"),
@@ -507,7 +520,7 @@ impl State {
             let remaining = study.then(|| groups[split..].to_vec());
             draw::groups(
                 gl,
-                uniforms,
+                (programs, &view),
                 uploaded,
                 frame,
                 target,
@@ -534,12 +547,10 @@ impl State {
                     gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
                     return false;
                 }
-                gl.use_program(Some(*program));
-                gl.bind_vertex_array(Some(uploaded.vao));
                 gl.enable(glow::DEPTH_TEST);
                 draw::groups(
                     gl,
-                    uniforms,
+                    (programs, &view),
                     uploaded,
                     frame,
                     target,
@@ -570,7 +581,8 @@ impl State {
             gl.disable(glow::FRAMEBUFFER_SRGB);
             gl.disable(glow::BLEND);
             gl.depth_mask(true);
-            for unit in 0..10 {
+            // Native samplers and scene depth, including the native units past the ninth.
+            for unit in (0..10).chain(12..15) {
                 gl.bind_sampler(unit, None);
             }
             gl.bind_vertex_array(None);
@@ -589,6 +601,12 @@ impl State {
                     ..frame.scene
                 },
             );
+            if let Some(uploaded) = self.model.as_mut()
+                && !uploaded.drawn
+            {
+                uploaded.drawn = true;
+                super::timing::mark(|| "first frame".to_owned(), "paint");
+            }
             true
         }
     }
@@ -959,32 +977,13 @@ unsafe fn link_feedback(
     }
 }
 
-unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, Uniforms)> {
-    // SAFETY: live context; shaders are deleted after linking and the program on failure.
-    unsafe {
-        let mut fragment = FRAGMENT.replace(
-            "// EFFECT FUNCTIONS",
-            &format!(
-                "{}\n{}",
-                include_str!("effects/shader.glsl"),
-                super::effects::native::source(model, false)
-            ),
-        );
-        if fragment.contains("dFdxFine(") || fragment.contains("dFdyFine(") {
-            fragment = fragment.replacen(
-                "#version 330 core",
-                "#version 330 core\n#extension GL_ARB_derivative_control : require",
-                1,
-            );
-        }
-        let vertex = VERTEX.replace(
-            "// NATIVE VERTEX FUNCTIONS",
-            &super::effects::native::source(model, true),
-        );
-        let program = link_feedback(gl, &vertex, &fragment, &["vSortDepth"])?;
-        let location = |name: &str| gl.get_uniform_location(program, name);
-        let uniforms = Uniforms {
+impl Uniforms {
+    unsafe fn locate(gl: &glow::Context, program: glow::Program) -> Self {
+        // SAFETY: the caller supplies the context the linked program belongs to.
+        let location = |name: &str| unsafe { gl.get_uniform_location(program, name) };
+        Uniforms {
             deformed: location("uDeformed"),
+            geometry: location("uGeometry"),
             center: location("uCenter"),
             rotate: location("uRotate"),
             scale: location("uScale"),
@@ -1045,6 +1044,11 @@ unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, U
                 location("uEffectTexture1"),
                 location("uEffectTexture2"),
             ],
+            native_textures: [
+                location("uNativeTexture9"),
+                location("uNativeTexture10"),
+                location("uNativeTexture11"),
+            ],
             scene_depth: location("uSceneDepth"),
             native_index: location("uNativeIndex"),
             native_quaternion: location("uNativeQuaternion"),
@@ -1053,8 +1057,7 @@ unsafe fn compile(gl: &glow::Context, model: &Model) -> Option<(glow::Program, U
             native_direction: location("uNativeDirection"),
             native_distance: location("uNativeDistance"),
             native_present: location("uNativePresent[0]"),
-        };
-        Some((program, uniforms))
+        }
     }
 }
 
@@ -1130,6 +1133,7 @@ uniform sampler2D uNormal;
 uniform sampler2D uDetail;
 uniform sampler2D uDetailNormal;
 uniform sampler2D uIridescence;
+uniform sampler2D uNativeTexture9, uNativeTexture10, uNativeTexture11;
 uniform sampler2D uDyeMap;
 uniform int uHasDyeMap, uMapSlot;
 uniform int uNativeDetail;

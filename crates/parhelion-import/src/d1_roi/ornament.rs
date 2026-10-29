@@ -1,6 +1,20 @@
-//! Resolve armor appearance choices through their original talent grid.
+//! Resolve armor and weapon appearance choices through their original talent grid.
 use super::*;
 use serde_json::{Value, json};
+
+/// One appearance item a talent grid step offers, with where the grid lists it.
+struct Appearance {
+    hash: u32,
+    /// The item's own name, empty when it has none.
+    name: String,
+    kind: String,
+    rarity: u8,
+    definition: u32,
+    strings: u32,
+    /// The art arrangements of the owner's class, or the class-neutral ones of a weapon.
+    arrangements: Vec<u16>,
+    provenance: Value,
+}
 
 impl Source {
     pub(super) fn ornaments(
@@ -8,7 +22,77 @@ impl Source {
         armor: &Armor,
         assets: &mut BTreeMap<u32, Payload>,
     ) -> Result<Vec<Value>> {
-        let definition = self.read(armor.definition)?;
+        let mut result = Vec::new();
+        for appearance in self.appearances(armor.definition, Some(armor.class_type), assets)? {
+            let item = Armor {
+                collection_set: None,
+                hash: appearance.hash,
+                name: if appearance.name.is_empty() {
+                    format!("{} Ornament", armor.name)
+                } else {
+                    appearance.name
+                },
+                kind: appearance.kind,
+                class_type: armor.class_type,
+                slot: armor.slot,
+                rarity: appearance.rarity,
+                definition: appearance.definition,
+                strings: appearance.strings,
+                arrangements: appearance.arrangements,
+            };
+            let bodies = self.armor_bodies(&item, assets)?;
+            let mut row = appearance.provenance;
+            row["target_armor"] = json!(armor.hash);
+            row["item"] = serde_json::to_value(&item)?;
+            row["bodies"] = json!(bodies);
+            result.push(row);
+        }
+        Ok(result)
+    }
+
+    /// The ornaments `weapon`'s talent grid offers, each as a weapon of its own art with where
+    /// the grid lists it.
+    pub(super) fn weapon_ornaments(
+        &self,
+        weapon: &Weapon,
+        assets: &mut BTreeMap<u32, Payload>,
+    ) -> Result<Vec<(Weapon, Value)>> {
+        let mut result = Vec::new();
+        for appearance in self.appearances(weapon.definition, None, assets)? {
+            let item = Weapon {
+                hash: appearance.hash,
+                name: if appearance.name.is_empty() {
+                    format!("{} Ornament", weapon.name)
+                } else {
+                    appearance.name
+                },
+                kind: appearance.kind,
+                flavor: String::new(),
+                slot: weapon.slot,
+                rarity: appearance.rarity,
+                definition: appearance.definition,
+                strings: appearance.strings,
+                pattern: weapon.pattern,
+                arrangements: appearance.arrangements,
+            };
+            let mut row = appearance.provenance;
+            row["target_weapon"] = json!(weapon.hash);
+            row["item"] = serde_json::to_value(&item)?;
+            result.push((item, row));
+        }
+        Ok(result)
+    }
+
+    /// The appearance items the talent grid of the item definition `definition` offers. An
+    /// arrangement belongs to every class (`255`) or to one, and `class` names the one accepted
+    /// besides the class-neutral ones.
+    fn appearances(
+        &self,
+        definition: u32,
+        class: Option<u8>,
+        assets: &mut BTreeMap<u32, Payload>,
+    ) -> Result<Vec<Appearance>> {
+        let definition = self.read(definition)?;
         if definition.u64(0x58)? == 0 {
             return Ok(Vec::new());
         }
@@ -57,8 +141,8 @@ impl Source {
                         .array(gear, 4, Some(0x8080101A))?
                         .into_iter()
                         .filter_map(|row| {
-                            let class = data.u8(row).ok()? as i8;
-                            (class == -1 || class == armor.class_type as i8)
+                            let row_class = data.u8(row).ok()?;
+                            (row_class == u8::MAX || Some(row_class) == class)
                                 .then(|| data.u16(row + 2))
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -69,26 +153,18 @@ impl Source {
                     let text_tag = strings
                         .u32(*string_rows.get(index).context("Ornament strings ordinal")? + 8)?;
                     let text = self.read(text_tag)?;
-                    let source_name = labels.text(self, &text, 0x78)?;
-                    let item = Armor {
-                        collection_set: None,
+                    result.push(Appearance {
                         hash,
-                        name: if source_name.is_empty() {
-                            format!("{} Ornament", armor.name)
-                        } else {
-                            source_name
-                        },
+                        name: labels.text(self, &text, 0x78)?,
                         kind: labels.text(self, &text, 0x80)?.trim().to_owned(),
-                        class_type: armor.class_type,
-                        slot: armor.slot,
                         rarity: data.u8(0x8A)?,
                         definition: tag,
                         strings: text_tag,
                         arrangements,
-                    };
-                    let bodies = self.armor_bodies(&item, assets)?;
-                    result.push(json!({"target_armor":armor.hash,"grid":grid_tag,"node":node,"step":step,
-                        "appearance_offset":appearance,"item_ordinal":index,"definition_table":definitions_tag,"item":item,"bodies":bodies}));
+                        provenance: json!({"grid":grid_tag,"node":node,"step":step,
+                            "appearance_offset":appearance,"item_ordinal":index,
+                            "definition_table":definitions_tag}),
+                    });
                     assets.insert(tag, data);
                     assets.insert(text_tag, text);
                 }

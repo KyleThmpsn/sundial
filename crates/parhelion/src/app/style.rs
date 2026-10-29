@@ -360,8 +360,18 @@ pub(crate) fn reset_icon(ui: &mut egui::Ui, name: &str) -> bool {
 
 /// A warning line: the warning glyph and `text` in the warning colour.
 pub(crate) fn warning(ui: &mut egui::Ui, text: &str) {
+    let color = ui.visuals().warn_fg_color;
+    notice(ui, text, color);
+}
+
+/// A problem that stops the build: the warning glyph and `text` in the error colour.
+pub(crate) fn problem(ui: &mut egui::Ui, text: &str) {
+    let color = ui.visuals().error_fg_color;
+    notice(ui, text, color);
+}
+
+fn notice(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
     ui.horizontal_wrapped(|ui| {
-        let color = ui.visuals().warn_fg_color;
         // Painted, as in `missing`, so a screen reader reads the text and not the glyph.
         let glyph = egui::WidgetText::from(icon(ui, egui_phosphor::regular::WARNING).color(color))
             .into_galley(

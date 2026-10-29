@@ -1,4 +1,4 @@
-//! Declarations recovered from build 86657.20.08.23 and exercised by stock perk data.
+//! Declarations recovered from build 86657.20.08.23 with stock or original consumer evidence.
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::OnceLock,
@@ -110,6 +110,11 @@ pub fn inline(class: u32) -> Result<Vec<(usize, u32, Vec<u32>)>, String> {
 type Template = (bool, u8, u32, usize, String);
 static TEMPLATES: OnceLock<Vec<Template>> = OnceLock::new();
 pub(super) fn template(kind: super::NodeKind) -> Option<Vec<u8>> {
+    if kind == super::NodeKind::Condition(33) {
+        // Original typed copying accepts this blockless condition allocation and
+        // dispatch consumes its explicit kind and byte. It has no stock template.
+        return super::super::layout::blank_condition(33);
+    }
     let rows = TEMPLATES.get_or_init(|| {
         serde_json::from_str(include_str!("templates.json")).expect("validated native templates")
     });

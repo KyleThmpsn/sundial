@@ -119,6 +119,15 @@ fn declarations(
                 preserved_pointers.push((32, p.pointer(row + 32)?));
             }
             for (field, class, stride) in [(16, 0x80800009, 1usize), (64, 0x80800007, 4)] {
+                // A procedure that writes no output, such as one of The Last Word's, has a null
+                // output array, so it has none to keep.
+                if field == 64 && p.u64(row + field)? == 0 {
+                    ensure!(
+                        p.u64(row + 56)? == 0,
+                        "native procedure output count differs"
+                    );
+                    continue;
+                }
                 let target = p.pointer(row + field)?;
                 let count = usize::try_from(p.u64(target)?)?;
                 ensure!(
@@ -375,7 +384,9 @@ fn source_channels(
             // Keep its validated authored rest value until that provider is ported.
             let mut bank = bank;
             let mut resting_procedure = None;
-            if hash == "59E4FF8D" {
+            // Elsewhere, such as on One Thousand Voices ornaments, the same channel is plain storage
+            // that no procedure writes, and converts like any numeric channel.
+            if hash == "59E4FF8D" && rows.iter().any(|at| bank.u32(*at).ok() == Some(0x774501CA)) {
                 let deps = dependency::read(&bank, row + 80, rows.len())?;
                 let index = rows
                     .iter()
@@ -600,7 +611,8 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
         return Ok(());
     }
     let entity = c.graph.read("entity")?;
-    let native_manifest = load(&prepared.join("native/source-manifest.json"))?;
+    let native_reads = crate::d2_mot::profile::native(prepared)?;
+    let native_manifest = load(&native_reads.join("source-manifest.json"))?;
     let components = entity.array(16, 12, Some(0x80809C04))?;
     let mut banks = vec![];
     for at in &components {
@@ -608,9 +620,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
         if native_manifest["tags"][format!("{tag:08X}")]["reference"].as_u64() != Some(0x80809C36) {
             continue;
         }
-        let candidate = Payload(fs::read(
-            prepared.join(format!("native/raw/{tag:08X}.bin")),
-        )?);
+        let candidate = Payload(fs::read(native_reads.join(format!("raw/{tag:08X}.bin")))?);
         let instance = candidate.pointer(16)?;
         if instance >= 4 && candidate.u32(instance - 4)? == 0x8080979F {
             banks.push(tag);
@@ -619,7 +629,7 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     ensure!(banks.len() == 1, "native owner has no unique channel bank");
     let old_tag = banks[0];
     let old_bank = Payload(fs::read(
-        prepared.join(format!("native/raw/{old_tag:08X}.bin")),
+        native_reads.join(format!("raw/{old_tag:08X}.bin")),
     )?);
     let has_procedure = extra.values().any(|v| v.procedure.is_some());
     let computed_outputs = extra

@@ -388,6 +388,19 @@ impl Properties {
                         ui.colored_label(ui.visuals().error_fg_color, error);
                     }
                 }
+                let id = ui.id().with(("tracking-error", asset.graph));
+                if let Some(result) =
+                    parameters::tracking::draw(ui, &loaded, asset.graph, &mut asset.values)
+                {
+                    ui.ctx().data_mut(|data| data.insert_temp(id, result.err()));
+                }
+                if let Some(error) = ui
+                    .ctx()
+                    .data(|data| data.get_temp::<Option<String>>(id))
+                    .flatten()
+                {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
                 self.card_values(ui, asset, &loaded);
             }
             Some(Err(error)) => {

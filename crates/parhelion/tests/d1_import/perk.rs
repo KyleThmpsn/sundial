@@ -2,9 +2,14 @@
 // Each readback walks one native record field by field, which reads best as one function.
 #![allow(clippy::cognitive_complexity)]
 use super::*;
+mod direct;
 mod event;
+mod feedback;
+mod fraction;
 mod grant;
+mod hud;
 mod pattern;
+mod timer;
 mod transfer;
 mod weighted;
 type CheckResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -47,6 +52,29 @@ pub(super) fn check(
     let translated = receipt["graph"]["perk_translation"]["translated"]
         .as_array()
         .ok_or("Perk translation report")?;
+    let mut behaviors = Vec::new();
+    // Unsupported source talents must not leave an active default or a donor roll pool.
+    // The same contract applies when the source grid contributes no supported choices.
+    for (lane, column) in recipe.overrides.socket_columns.iter().enumerate() {
+        let Some(column) = column else { continue };
+        if column.choices.is_empty() {
+            let socket = *sockets.get(lane).ok_or("Disabled socket lane")?;
+            for offset in [0, 2, 12, 32] {
+                assert_eq!(definition.u16(socket + offset)?, u16::MAX);
+            }
+            assert!(
+                definition
+                    .array(socket + 0x40, 32, Some(0x80802E03))?
+                    .is_empty()
+            );
+            behaviors.push(json!({"disabled_socket":lane,
+                "socket_type":definition.u16(socket)?,
+                "default_plug":definition.u16(socket + 2)?,
+                "reusable_set":definition.u16(socket + 12)?,
+                "randomized_set":definition.u16(socket + 32)?,
+                "embedded_choices":definition.array(socket + 0x40,32,Some(0x80802E03))?.len()}));
+        }
+    }
     let source_reader = source;
     // Discover mutually exclusive damage steps from the source payloads, independently of
     // the translator's report. Every alternative must resolve through one selectable socket.
@@ -89,6 +117,93 @@ pub(super) fn check(
             }
         }
     }
+    // Every damage effect any source talent carries, beside other perks and stat rows or not.
+    // Rise of Iron applies an element only through such an effect.
+    let mut damage_nodes = BTreeSet::new();
+    let mut source_modes = BTreeSet::new();
+    for node in source_grid["talents"]["nodes"]
+        .as_array()
+        .ok_or("Source talent nodes")?
+    {
+        for step in node["steps"].as_array().ok_or("Source talent steps")? {
+            for variant in step["variants"].as_array().ok_or("Source variants")? {
+                for perk in variant["perks"].as_array().into_iter().flatten() {
+                    let Some(tag) = perk["action"].as_u64() else {
+                        continue;
+                    };
+                    if perk["action_class"] != 0x80802711u32 {
+                        continue;
+                    }
+                    let bytes = source.read(u32::try_from(tag)?)?;
+                    for row in bytes.array(0x38, 8, None)? {
+                        let at = bytes.pointer(row)?;
+                        if bytes.u32(at - 4)? == 0x80802AC6 && bytes.u8(at)? == 5 {
+                            assert_eq!(bytes.u8(at + 1)?, 1);
+                            damage_nodes.insert(node["index"].as_u64().ok_or("Node index")?);
+                            source_modes.insert(bytes.u8(at + 2)?);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Native damage markers: elemental perks and type-68 socket defaults, none for Kinetic.
+    let native_damage = definition
+        .array(definition.pointer(0x70)? + 16, 24, Some(0x808077BC))?
+        .iter()
+        .filter_map(|&at| match definition.u16(at).ok()? {
+            83 | 449 => Some(1),
+            84 | 450 => Some(2),
+            85 | 451 => Some(3),
+            _ => None,
+        })
+        .chain(sockets.iter().filter_map(|&at| {
+            (definition.u16(at).ok()? == 68)
+                .then(|| match definition.u16(at + 2).ok()? {
+                    1505 => Some(1),
+                    1506 => Some(2),
+                    1507 => Some(3),
+                    _ => None,
+                })
+                .flatten()
+        }))
+        .collect::<Vec<_>>();
+    if receipt["graph"]["kind"] != "armor" && source_modes.len() <= 1 {
+        // One source type, or none at all, fixes the weapon's damage. Source selectors are
+        // Kinetic 0, Solar 1, Arc 2 and Void 3. Native markers number Arc 1, Solar 2, Void 3.
+        let mode = match source_modes.first().copied().unwrap_or(0) {
+            0 => 0,
+            1 => 2,
+            2 => 1,
+            3 => 3,
+            _ => return Err("Unsupported source damage selector".into()),
+        };
+        assert_eq!(
+            native_damage,
+            if mode == 0 { Vec::new() } else { vec![mode] },
+            "Native weapon damage differs from the source talent effects"
+        );
+        behaviors.push(json!({"weapon_damage_mode":mode,
+            "source_damage_effects":!source_modes.is_empty()}));
+    }
+    // A talent that sets the damage type never stands in for an exotic's trait.
+    let report = &receipt["graph"]["perk_translation"];
+    if report["intrinsic"] == "signature" {
+        let socket = report["intrinsic_socket"]
+            .as_u64()
+            .ok_or("Intrinsic socket")?;
+        let held = translated
+            .iter()
+            .filter(|r| r["socket"].as_u64() == Some(socket))
+            .collect::<Vec<_>>();
+        assert_eq!(held.len(), 1, "The intrinsic socket offers a choice");
+        let node = held[0]["node"].as_u64().ok_or("Trait node")?;
+        assert!(
+            !damage_nodes.contains(&node),
+            "A damage talent took the intrinsic socket"
+        );
+        behaviors.push(json!({"intrinsic_trait_node":node,"intrinsic_socket":socket}));
+    }
     if damage_steps
         .iter()
         .map(|v| v.2)
@@ -119,7 +234,6 @@ pub(super) fn check(
         }
         assert_eq!(choice_ids.len(), damage_steps.len());
     }
-    let mut behaviors = Vec::new();
     for translated in translated {
         if let Some(kind) = translated["damage_type"].as_str() {
             let (source_mode, mode) = match kind {
@@ -142,28 +256,8 @@ pub(super) fn check(
                     [5, 1, source_mode]
                 );
             }
-            let perks = definition.array(definition.pointer(0x70)? + 16, 24, Some(0x808077BC))?;
-            let markers = perks
-                .iter()
-                .filter_map(|&at| match definition.u16(at).ok()? {
-                    83 | 449 => Some(1),
-                    84 | 450 => Some(2),
-                    85 | 451 => Some(3),
-                    _ => None,
-                })
-                .chain(sockets.iter().filter_map(|&at| {
-                    (definition.u16(at).ok()? == 68)
-                        .then(|| match definition.u16(at + 2).ok()? {
-                            1505 => Some(1),
-                            1506 => Some(2),
-                            1507 => Some(3),
-                            _ => None,
-                        })
-                        .flatten()
-                }))
-                .collect::<Vec<_>>();
             assert_eq!(
-                markers,
+                native_damage,
                 if mode == 0 { Vec::new() } else { vec![mode] },
                 "Native weapon damage differs from source talent"
             );
@@ -392,9 +486,29 @@ pub(super) fn check(
             assert_eq!(assigned.len(), 1);
             let action_tag = runtime.u32(assigned[0] + 4)?;
             let action = readback.tag(action_tag, Some(0x808040B5))?;
+            if receipt["graph"]["kind"] == "armor" {
+                for row in source.array(0x38, 8, None)? {
+                    let at = source.pointer(row)?;
+                    if source.u8(at)? == 34 {
+                        assert_eq!(source.u8(at + 0x94)?, 0);
+                    }
+                }
+                for row in action.array(0x38, 8, None)? {
+                    let at = action.pointer(row)?;
+                    if action.u8(at)? == 40 {
+                        assert_eq!(action.u8(at + 0xB8)?, 0);
+                    }
+                }
+            }
             check_action(source_reader, stock, readback, &source, &action)?;
             behaviors.push(
-                json!({"plug":plug_hash,"source_action":source_tag,"native_action":action_tag}),
+                json!({"plug":plug_hash,"source_action":source_tag,"native_action":action_tag,
+                    "direct_profiles": direct::evidence(readback, &action)?,
+                    "counters": event::counter_evidence(&action)?,
+                    "ammunition_fractions": fraction::evidence(&action)?,
+                    "attachment_modifiers": pattern::evidence(readback, &action)?,
+                    "status_audio": pattern::audio_evidence(source_reader, readback, &action, recipe)?,
+                    "timer_extensions": timer::evidence(&source, &action)?}),
             );
         }
     }
@@ -409,6 +523,7 @@ fn check_action(
     source: &Payload,
     action: &Payload,
 ) -> CheckResult<()> {
+    feedback::check(source_reader, stock, readback, source, action)?;
     assert_eq!(source.u8(0xB0)?, action.u8(0xB8)?);
     assert_eq!(source.u8(0xB1)?, action.u8(0xB9)?);
     if source.u8(0xB0)? == 1 {
@@ -469,6 +584,7 @@ fn check_action(
             action.pointer(*at)?
         };
         match source.u8(s)? {
+            3 => direct::check(source_reader, stock, readback, source, s, action, n)?,
             12 => weighted::check(source, s, action, n)?,
             4 => {
                 assert_eq!(action.u32(n - 4)?, 0x80803E42);
@@ -501,7 +617,7 @@ fn check_action(
                 assert_eq!(action.u32(n + 28)?, 0);
             }
             28 => {
-                event::incoming(stock, source, s, action, n)?;
+                event::incoming(source_reader, stock, source, s, action, n)?;
                 let owner = readback.tag(action.u32(n + 0xA8)?, Some(0x808040B5))?;
                 assert_eq!(
                     owner.0, action.0,
@@ -532,15 +648,21 @@ fn check_action(
                 let nested = action.array(n + 16, 8, Some(0x808040BA))?;
                 assert!(!original.is_empty());
                 assert_eq!(original.len(), nested.len());
-                let mut mask = 0u64;
+                let (mut source_mask, mut mask) = (0u64, 0u64);
                 for (s, n) in original.into_iter().zip(nested) {
                     let s = source.pointer(s)?;
                     let n = action.pointer(n)?;
+                    assert!(matches!(source.u8(s + 5)?, 2 | 12 | 19));
+                    if source.u8(s + 5)? != 2 {
+                        assert_eq!(source.u8(s + 6)?, 0);
+                    }
                     assert_eq!(source.bytes::<7>(s)?, action.bytes::<7>(n)?);
                     assert_eq!(action.u8(n + 7)?, 255);
+                    source_mask |= 1 << source.u8(s + 5)?;
                     mask |= 1 << action.u8(n + 5)?;
                     event::check(source_reader, stock, source, s, action, n)?;
                 }
+                assert_eq!(source.u64(s + 32)?, source_mask);
                 assert_eq!(action.u64(n + 32)?, mask);
             }
             19 => {
@@ -625,13 +747,7 @@ fn check_action(
                 assert_eq!(action.u8(n + 0x4A)?, 1);
                 assert_eq!(action.u32(n + 0x4C)?, 0);
             }
-            14 => {
-                assert_eq!(action.u8(n)?, 15);
-                assert_eq!(source.u32(s + 8)?, action.u32(n + 0x6C)?);
-                assert_eq!(source.u8(s + 2)?, action.u8(n + 0x68)?);
-                assert_eq!(source.u8(s + 4)?, action.u8(n + 0x6A)?);
-                assert!(action.0[n + 0x70..n + 0x88].iter().all(|b| *b == 0));
-            }
+            14 => fraction::check(readback, source, s, action, n)?,
             15 => transfer::check(readback, source, s, action, n)?,
             24 | 25 => {
                 assert_eq!(action.u8(n)?, source.u8(s)? + 4);
@@ -678,7 +794,7 @@ fn check_action(
             assert_eq!(
                 action.u8(n + 5)?,
                 match kind {
-                    14..=18 | 32 | 33 | 36 => kind - 1,
+                    14..=18 | 30..=36 => kind - 1,
                     _ => kind,
                 }
             );
@@ -687,6 +803,26 @@ fn check_action(
                 assert_eq!(source.u32(s + 8)?, action.u32(n + 8)?);
             }
             event::check(source_reader, stock, source, s, action, n)?;
+            if kind == 34 {
+                let mask = match group {
+                    0x20 => 0x88,
+                    0x48 => 0x90,
+                    0x58 => 0x98,
+                    _ => return Err("Unexpected condition group".into()),
+                };
+                assert_ne!(action.u64(mask)? & (1u64 << 33), 0);
+            }
+            if matches!(kind, 30 | 31) {
+                assert_eq!(group, if kind == 30 { 0x20 } else { 0x48 });
+                if source.u32(s + 8)? == 0x3B210AE5 {
+                    event::duration_stock(source_reader, stock, readback, action.u32(n + 8)?)?;
+                } else {
+                    assert_eq!(kind, 31, "Unqualified external Duration start key");
+                    event::duration_end(readback, action, n)?;
+                }
+                let mask = if group == 0x20 { 0x88 } else { 0x90 };
+                assert_ne!(action.u64(mask)? & (1u64 << (kind - 1)), 0);
+            }
         }
     }
     Ok(())

@@ -68,6 +68,7 @@ pub(crate) fn build_presented_watermark_plan(
                 &mut plan,
                 artwork.as_ref(),
                 branding,
+                destination_package_id,
                 current_entry_count,
                 base,
             )
@@ -102,6 +103,7 @@ fn apply_artwork(
     plan: &mut WatermarkPlan,
     artwork: Option<&Artwork>,
     branding: crate::branding::Branding,
+    destination_package_id: u16,
     current_entry_count: usize,
     appended_ordinal_base: usize,
 ) -> AuthoringResult<()> {
@@ -124,7 +126,10 @@ fn apply_artwork(
     }
     let revision = revision.finalize();
     for tag in &plan.icon_container_tags {
-        let index = usize::from(tag.entry_index()) - current_entry_count - appended_ordinal_base;
+        let index = AppendedTagAllocator::destination(destination_package_id, current_entry_count)
+            .ordinal(*tag)?
+            .checked_sub(appended_ordinal_base)
+            .ok_or_else(|| validation("Corner icon precedes its artwork allocation"))?;
         let payload = &mut plan.new_tags[index].payload;
         let fingerprint = private_icon_fingerprint(payload, revision.as_slice());
         write_u32(payload, ICON_CONTENT_FINGERPRINT_OFFSET, fingerprint)?;

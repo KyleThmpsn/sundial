@@ -759,11 +759,16 @@ impl PackageAuthoringApp {
             .or(items.first())
             .copied();
         let label = item.map_or("Choose Item", |(item, _)| item.name.as_str());
+        // A chosen gear type offers only its own items. All Gear offers every one.
+        let only = self.shader_dye_gear;
         let picked = catalog.draw_weapon_donor_dropdown_picker(
             ui,
             "shader-preview-item",
             &mut self.shader_preview_query,
-            items.iter().map(|(item, _)| *item),
+            items
+                .iter()
+                .filter(|(_, gear)| only.is_none_or(|only| only == *gear))
+                .map(|(item, _)| *item),
             WeaponDonorPickerOptions {
                 selected_hash: item.map(|(item, _)| item.hash),
                 selected_label: label,
@@ -1078,7 +1083,8 @@ impl PackageAuthoringApp {
     }
 
     /// The gear types as tabs, All Gear first, each marked once it has edits of its own. Choosing
-    /// one moves the preview to an item of that type. Returns the chosen one.
+    /// one moves the preview to an item of that type and offers only that type's items. Returns
+    /// the chosen one.
     fn draw_gear_tabs(&mut self, ui: &mut egui::Ui) -> Option<GearType> {
         let overrides = &self.recipe.overrides;
         let edited = |gear: Option<GearType>| {

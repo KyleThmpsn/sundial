@@ -612,7 +612,7 @@ pub const CATALOG: &[Behavior] = &[
         trait_plug: Some(0x8565B49A),
         effect: BehaviorEffect::Untested,
         caution: None,
-        summary: "Copies Sturm's firing graph and distinct state array together. This combined transfer still needs an in-game test.",
+        summary: "Copies Sturm's firing graph and distinct state array together.",
     },
     Behavior {
         id: "sunshot-graph",

@@ -73,6 +73,7 @@ fn set_vehicle_summoning(payload: &mut [u8], allowed: bool) -> AuthoringResult<(
 }
 
 /// A donor type-16 owner and its companion.
+#[derive(Clone)]
 pub(super) struct Owner {
     pub(super) tag: TagHash,
     pub(super) payload: Vec<u8>,
@@ -445,11 +446,13 @@ impl World {
                 .collect())
         };
         report("Reading Map Registry");
+        let mut donor_registry = super::registry::Donor::default();
         let registry = match (&slice_set, &geometry) {
             (Some(slice_set), Some(geometry)) => Some(super::registry::Registry::load(
                 directory,
                 manager,
                 companions,
+                &mut donor_registry,
                 &slice_set.payload,
                 SLICE_SET_REGISTRY,
                 geometry.spawns(),
@@ -506,6 +509,7 @@ impl World {
                     directory,
                     manager,
                     companions,
+                    &mut donor_registry,
                     &slice_set
                         .as_ref()
                         .ok_or_else(|| invalid("Streaming slice set is missing"))?
@@ -916,7 +920,9 @@ impl World {
                 bubble,
                 previous_entry,
                 geometry.occlusion(),
+                geometry.clusters(),
                 geometry.bounds()?,
+                geometry.visible(),
             )?;
             let assignments = cells.assignments(geometry.occlusion());
             let (mut tags, _, overrides) = geometry.split_tags_at(

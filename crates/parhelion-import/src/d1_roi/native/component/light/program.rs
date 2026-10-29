@@ -54,9 +54,7 @@ impl Assembly<'_> {
             constants,
             &expression::Inputs {
                 globals: &self.globals,
-                dye: None,
-                empty_palette: true,
-                secondary: false,
+                dye: expression::Dye::Unset(None),
                 plates: &empty,
                 detail: &Default::default(),
                 objects: names.len(),

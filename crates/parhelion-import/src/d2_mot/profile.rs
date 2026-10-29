@@ -17,6 +17,92 @@ pub(crate) struct Extracted<'a> {
     pub native: &'a Path,
 }
 
+/// Names the exports a prepared folder reads, relative to it where they share a root.
+const READS: &str = "reads.json";
+
+impl Extracted<'_> {
+    /// Records the exports in the prepared folder, so later steps read them in place rather than
+    /// through a linked copy of every file.
+    pub(crate) fn record(&self, prepared: &Path) -> Result<()> {
+        let name = |export: &Path| -> Result<Value> {
+            let export = fs::canonicalize(export)?;
+            Ok(json!(
+                relative(&fs::canonicalize(prepared)?, &export).unwrap_or(export)
+            ))
+        };
+        write_json(
+            &prepared.join(READS),
+            &json!({"source":name(self.source)?,"native":name(self.native)?}),
+        )
+    }
+}
+
+/// The source export a prepared folder reads.
+pub(crate) fn source(prepared: &Path) -> Result<std::path::PathBuf> {
+    reads(prepared, "source")
+}
+
+/// The native export a prepared folder reads.
+pub(crate) fn native(prepared: &Path) -> Result<std::path::PathBuf> {
+    reads(prepared, "native")
+}
+
+/// A folder that names no exports holds its own: an export made in place, or a linked copy
+/// from before the exports were named.
+fn reads(prepared: &Path, side: &str) -> Result<std::path::PathBuf> {
+    let path = prepared.join(READS);
+    if !path.exists() {
+        return Ok(prepared.join(side));
+    }
+    let reads: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let named = Path::new(
+        reads[side]
+            .as_str()
+            .with_context(|| format!("{} names no {side} export", path.display()))?,
+    );
+    let export = if named.is_absolute() {
+        named.to_path_buf()
+    } else {
+        // The name was made from the canonical folder. Resolve `..` here: Windows takes it
+        // literally in a `\\?\` path.
+        let mut export = fs::canonicalize(prepared)?;
+        for part in named.components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    export.pop();
+                }
+                std::path::Component::CurDir => {}
+                part => export.push(part),
+            }
+        }
+        export
+    };
+    ensure!(
+        export.is_dir(),
+        "The {side} export {} this import reads is missing",
+        export.display()
+    );
+    Ok(export)
+}
+
+/// `to` as a path from `from`, when both are on one root.
+fn relative(from: &Path, to: &Path) -> Option<std::path::PathBuf> {
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    if from.first()? != to.first()? {
+        return None;
+    }
+    let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut path = std::path::PathBuf::new();
+    for _ in shared..from.len() {
+        path.push("..");
+    }
+    for part in &to[shared..] {
+        path.push(part);
+    }
+    Some(path)
+}
+
 pub(crate) fn prepare_reusing(
     profile: &Path,
     modern: &Path,
@@ -213,7 +299,7 @@ pub(crate) fn prepare_reusing(
     progress("Saving converted model…".into());
     write_json(&out.join("profile.json"), &p)?;
     Ok(
-        json!({"graph":final_graph,"source_icon":modern_out.join("item-icon.png"),"source_item":source,"native_item":donor,"target_item":target,"private_nodes":graph_report["nodes"].as_array().unwrap().len(),"installed":false,"limits":"rigid bone-zero mesh; matching native material stages; native donor animations and shader programs; in-game test required"}),
+        json!({"graph":final_graph,"source_icon":modern_out.join("item-icon.png"),"source_item":source,"native_item":donor,"target_item":target,"private_nodes":graph_report["nodes"].as_array().unwrap().len(),"installed":false,"limits":"rigid bone-zero mesh; matching native material stages; native donor animations and shader programs"}),
     )
 }
 #[cfg(test)]

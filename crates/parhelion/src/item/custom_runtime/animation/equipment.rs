@@ -62,12 +62,6 @@ pub(in crate::item) struct EquipmentAnimation {
     preserve_timing: bool,
 }
 
-impl EquipmentAnimation {
-    pub(in crate::item) fn asset_bounds(&self) -> Vec<usize> {
-        self.clips.iter().map(|clip| clip.payload.len()).collect()
-    }
-}
-
 pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<EquipmentAnimation>> {
     let value = graph.value();
     let section = &value["equipment_animation"];
@@ -263,6 +257,7 @@ pub(in crate::item) fn author(
         let private = if let Some(private) = cache.get(&key) {
             *private
         } else {
+            assets.reserve_payload(asset_tags.len(), bytes.len())?;
             let private = assets
                 .assigned_tag(asset_tags.len(), "Equipment animation", "clip")?
                 .0;

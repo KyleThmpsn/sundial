@@ -368,9 +368,12 @@ impl PackageAuthoringApp {
                         .iter()
                         .find(|weapon| weapon.hash == source && !weapon.is_shader())
                         .ok_or("Source weapon missing from this build")?;
-                    let folder =
-                        service::model_directory(&root.join("models"), &weapon.name, source)
-                            .map_err(|error| error.to_string())?;
+                    let folder = service::item_directory(
+                        &root.join(service::IMPORTS),
+                        Source::D2Modern.folder(),
+                        source,
+                    )
+                    .map_err(|error| error.to_string())?;
                     let donors = serde_json::json!({"weapons":[{"hash":donor.hash,"name":donor.name,"weapon_type":donor.type_name,"present_in_native":true}]});
                     let path = service::prepare_with_progress(
                         weapon,
@@ -398,8 +401,16 @@ impl PackageAuthoringApp {
                     .item_hash
                     .parse_u32()
                     .map_err(|error| error.to_string())?;
-                let folder = service::model_directory(&root.join("models"), &baseline.name, target)
-                    .map_err(|error| error.to_string())?;
+                // The copy sits with its model's importer, under the recipe it is the appearance
+                // of. A model recipe whose namespace names no importer, such as a hand-made one,
+                // is a modern Destiny 2 conversion.
+                let importer = Source::of_namespace(&recipe.namespace).unwrap_or(Source::D2Modern);
+                let folder = service::item_directory(
+                    &root.join(service::IMPORTS),
+                    importer.folder(),
+                    target,
+                )
+                .map_err(|error| error.to_string())?;
                 let folder = service::reserve_assets(&folder, "appearance")
                     .map_err(|error| error.to_string())?
                     .join("graph");

@@ -406,7 +406,7 @@ impl Assembly {
             json!({"source_tracks":source,"layers":layers.len(),"recordings":ids.len(),"flow_owner":format!("{owner:08X}"),
             "event":event,"rpm_input":rpm,"rpm_channel":channel.index,"engine_method":7,"output_bus":BUS,
             "blend":"Authored idle, low, medium and high crossfades driven by native engine RPM",
-            "limits":["The source PCM, track gains and lifecycle fades are translated. Pitch-range selection is an authored blend, not verified Reach playback parity. Coasting alternate tracks and distant LOD audio are not used. Native occupancy transitions and cleanup need gameplay acceptance."]}),
+            "limits":["The source PCM, track gains and lifecycle fades are translated. Pitch-range selection is an authored blend, not verified Reach playback parity. Coasting alternate tracks and distant LOD audio are not used."]}),
         )
     }
 }

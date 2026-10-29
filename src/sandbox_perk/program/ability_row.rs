@@ -5,6 +5,11 @@ use crate::ability::bank::{self, Modifier};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AbilityRowModifier {
+    /// One logical imported property retains all its ordered rows under one applied key.
+    Ordered {
+        origin: AbilityRowOrigin,
+        rows: Vec<bank::FixedRow>,
+    },
     Attack {
         #[serde(with = "super::hex_key")]
         template_key: u32,
@@ -49,6 +54,45 @@ pub enum AbilityRowModifier {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AbilityRowOrigin {
+    pub domain: String,
+    #[serde(with = "super::hex_key")]
+    pub bank: u32,
+    #[serde(with = "super::hex_key")]
+    pub key: u32,
+}
+
+impl AbilityRowOrigin {
+    fn valid(&self) -> bool {
+        !self.domain.is_empty()
+            && self.domain.len() <= 64
+            && self
+                .domain
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            && ![0, u32::MAX, EMPTY_KEY].contains(&self.bank)
+            && ![0, u32::MAX, EMPTY_KEY].contains(&self.key)
+    }
+
+    /// Stable logical membership can be named before its producer is selected. The full
+    /// ordered definition is compared separately, so two unequal definitions cannot share it.
+    pub fn identity(&self, bank: u32, slot: AbilityTarget) -> u32 {
+        crate::hash::fnv1_name_hash(&format!(
+            "parhelion.ability.ordered.v1.{}.{:08x}.{:08x}.{bank:08x}.{slot}",
+            self.domain, self.bank, self.key
+        ))
+    }
+
+    pub fn property(&self, key: u32) -> Self {
+        Self {
+            key,
+            ..self.clone()
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AbilityRow {
     #[serde(with = "super::hex_key")]
     pub key: u32,
@@ -75,6 +119,9 @@ impl AbilityRow {
 
     fn identity(&self) -> u32 {
         let body = match self.modifier {
+            AbilityRowModifier::Ordered { ref origin, .. } => {
+                return origin.identity(self.bank, self.slot);
+            }
             AbilityRowModifier::Attack {
                 template_key,
                 selection,
@@ -150,6 +197,25 @@ impl AbilityRow {
             return Err("Private ability row has an invalid identity or bank scope".into());
         }
         let valid = match self.modifier {
+            AbilityRowModifier::Ordered {
+                ref origin,
+                ref rows,
+            } => {
+                self.slot == AbilityTarget::Jump
+                    && self.mode == 255
+                    && origin.valid()
+                    && ![0, u32::MAX, EMPTY_KEY].contains(&self.key)
+                    && !rows.is_empty()
+                    && rows.iter().all(|row| {
+                        row.validate().is_ok()
+                            && (row.selection.required_key == row.witness.selection.required_key
+                                || (row.witness.selection.required_key != 0
+                                    && row.selection.required_key
+                                        == origin
+                                            .property(row.witness.selection.required_key)
+                                            .identity(self.bank, self.slot)))
+                    })
+            }
             AbilityRowModifier::Attack {
                 template_key,
                 selection,
@@ -216,12 +282,35 @@ impl AbilityRow {
         Ok(())
     }
 
+    /// Private gate dependencies use the same logical source scope as their future producer.
+    /// An absent producer is allowed, but an unrelated definition at that key is a conflict.
+    pub fn memberships(&self) -> Vec<(u32, AbilityRowOrigin)> {
+        let AbilityRowModifier::Ordered { origin, rows } = &self.modifier else {
+            return Vec::new();
+        };
+        rows.iter()
+            .filter(|row| row.selection.required_key != row.witness.selection.required_key)
+            .map(|row| {
+                (
+                    row.selection.required_key,
+                    origin.property(row.witness.selection.required_key),
+                )
+            })
+            .collect()
+    }
+
     /// Checks the bank's current handler and reset contract before requesting a mutation.
     pub fn check_bank(&self, payload: &[u8]) -> Result<(), String> {
         self.validate()?;
-        if bank::bank_owner(payload)? != self.bank
-            || bank::handler_slot(payload, self.value())?.is_none()
-        {
+        if bank::bank_owner(payload)? != self.bank {
+            return Err("Private ability row has no compatible bank handler".into());
+        }
+        if let AbilityRowModifier::Ordered { ref rows, .. } = self.modifier {
+            bank::with_ordered_rows(payload, self.key, rows)?;
+            return Ok(());
+        }
+        let value = self.value()?;
+        if bank::handler_slot(payload, value)?.is_none() {
             return Err("Private ability row has no compatible bank handler".into());
         }
         if let AbilityRowModifier::Parameter { name, reset, .. } = self.modifier {
@@ -243,13 +332,16 @@ impl AbilityRow {
             // Exercise the shared writer's structural checks. Numeric rows require
             // flattened inputs and a local provider. Fixed bodies require reciprocal
             // pairs and a matching bank-local handler witness.
-            bank::with_property_row_mode(payload, self.key, self.value(), self.mode)?;
+            bank::with_property_row_mode(payload, self.key, value, self.mode)?;
         }
         Ok(())
     }
 
-    pub fn value(&self) -> Modifier {
-        match self.modifier {
+    pub fn value(&self) -> Result<Modifier, String> {
+        Ok(match self.modifier {
+            AbilityRowModifier::Ordered { .. } => {
+                return Err("An ordered ability group has no single modifier value".into());
+            }
             AbilityRowModifier::Attack {
                 template_key,
                 selection,
@@ -296,6 +388,6 @@ impl AbilityRow {
                 applied: f32::from_bits(value),
                 add,
             },
-        }
+        })
     }
 }

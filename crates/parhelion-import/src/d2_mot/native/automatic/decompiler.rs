@@ -24,10 +24,28 @@ fn matches(bytes: &[u8], expected: &str) -> bool {
 
 fn root() -> Result<PathBuf> {
     ensure!(cfg!(windows), "Source shader conversion requires Windows");
-    let root = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("Local app data folder")?)
-        .join("Sundial/parhelion/importer/tools/3dmigoto-1.3.16");
+    let root =
+        crate::tools::installed(crate::tools::Tool::Decompiler).context("Parhelion data folder")?;
+    if !root.exists() {
+        adopt(&root);
+    }
     fs::create_dir_all(&root)?;
     Ok(root)
+}
+
+/// Moves a folder beside `root` that already holds every pinned file into place, such as one an
+/// earlier version unpacked the same release into, so the tool is not fetched again.
+fn adopt(root: &Path) {
+    let Some(entries) = root.parent().and_then(|tools| fs::read_dir(tools).ok()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && complete(&path) {
+            let _ = fs::rename(&path, root);
+            return;
+        }
+    }
 }
 
 fn complete(root: &Path) -> bool {

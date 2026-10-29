@@ -42,6 +42,15 @@ impl PlugClassification {
         read_u32(definition, category_offset(definition)?)
     }
 
+    /// Moves a private plug into another plug category, leaving its rarity and type text.
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn set_category(definition: &mut [u8], category: u32) -> AuthoringResult<()> {
+        if matches!(category, 0 | u32::MAX) {
+            return Err(invalid("A plug category must be active"));
+        }
+        write_u32(definition, category_offset(definition)?, category)
+    }
+
     pub fn from_template(definition: &[u8], strings: &[u8]) -> AuthoringResult<Self> {
         let category = Self::category(definition)?;
         let rarity = *definition

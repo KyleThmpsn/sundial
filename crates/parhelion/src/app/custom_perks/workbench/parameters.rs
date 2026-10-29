@@ -18,6 +18,7 @@ mod references;
 mod structure;
 #[cfg(test)]
 pub(in crate::app) mod tests;
+pub(super) mod tracking;
 mod validation;
 
 pub(super) use native::{draw_card_values, unlisted_changes};
@@ -36,6 +37,8 @@ pub(crate) struct PrivatePerkRuntimeGraph {
     pub(super) projectile_slots: Vec<(u32, u32)>,
     pub(super) projectile_catalog: Arc<entity::catalog::Catalog>,
     pub(super) native_assets: Vec<sundial::package_authoring::tft::Reference>,
+    /// The tracking settings of each loaded graph, read with the packages at load.
+    pub(super) tracking: Vec<(u32, sundial::package_authoring::ability_settings::Setting)>,
 }
 
 pub(super) enum PrivatePerkGraphEvent {
@@ -128,10 +131,12 @@ pub(super) fn load_entity_parameters(
     let mut graph = load_weapon_runtime_graph_for_entity(&manager, 0, 0, entity, &payload)?;
     graph.scope_fields();
     let names = sundial::package_authoring::tft::cached_only(packages)?;
+    let graphs = vec![(entity, graph)];
     Ok(PrivatePerkRuntimeGraph {
         action_tag: 0,
         action_payload: Vec::new(),
-        graphs: vec![(entity, graph)],
+        tracking: tracking::discover(&manager, &graphs),
+        graphs,
         graph_errors: Vec::new(),
         warnings: index_warnings(names.as_deref()),
         loading_issues: loading_issues(&manager, [("Asset", entity, false)]),
@@ -208,6 +213,7 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
         projectile_slots,
         projectile_catalog,
         native_assets,
+        tracking: Vec::new(),
     };
     // Action-only perks are valid. A failed graph must not hide editable action values.
     for source in graphs {
@@ -227,6 +233,7 @@ pub(in crate::app) fn load_private_perk_runtime_graph(
                 .push(format!("Graph {}: {error}", source.tag)),
         }
     }
+    loaded.tracking = tracking::discover(&manager, &loaded.graphs);
     Ok(loaded)
 }
 

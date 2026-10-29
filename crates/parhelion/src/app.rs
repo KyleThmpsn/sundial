@@ -185,6 +185,8 @@ struct PackageAuthoringApp {
     catalog_load_requested: bool,
     catalog_reload_pending: bool,
     catalog_force_rebuild: bool,
+    /// Which installed Sunrise mods add or change the catalog's items.
+    item_sources: item_sources::ItemSources,
     donor_summaries: Vec<WeaponDonorSummary>,
     /// Stock bases for each non-weapon kind, in catalog order.
     gear_donors: BTreeMap<ItemKind, Vec<WeaponDonorSummary>>,
@@ -250,6 +252,7 @@ struct PackageAuthoringApp {
     open_sundial_preferences: bool,
     show_internal_stats: bool,
     show_technical_socket_rows: bool,
+    socket_view: socket_editor::SocketView,
     perk_request: Option<custom_perks::workbench::Request>,
     icon_editor: Option<WeaponIconEditor>,
     hud_icon_editor: crate::hud_icon::ui::Editor,
@@ -385,6 +388,7 @@ impl Default for PackageAuthoringApp {
             catalog_load_requested: false,
             catalog_reload_pending: false,
             catalog_force_rebuild: false,
+            item_sources: item_sources::ItemSources::default(),
             donor_summaries: Vec::new(),
             gear_donors: BTreeMap::new(),
             subclasses: Vec::new(),
@@ -433,6 +437,7 @@ impl Default for PackageAuthoringApp {
             open_sundial_preferences: false,
             show_internal_stats: false,
             show_technical_socket_rows: false,
+            socket_view: socket_editor::SocketView::default(),
             perk_request: None,
             icon_editor: None,
             hud_icon_editor: crate::hud_icon::ui::Editor::default(),
@@ -649,10 +654,27 @@ impl PackageAuthoringApp {
     }
 
     fn has_background_work(&self) -> bool {
+        self.importer_busy() || self.has_other_background_work()
+    }
+
+    /// Whether the only background work is the importer's sweep setting aside unused
+    /// conversions, or its read of a source. Saved recipes can be opened then: the sweep keeps
+    /// every conversion a saved recipe names, a read touches neither the library nor imported
+    /// models, and the importer work that adds conversions waits for both.
+    fn recipes_open_during_work(&self) -> bool {
         #[cfg(feature = "d2-model-importer")]
-        if self.importer.busy() {
-            return true;
+        {
+            (self.importer.setting_aside() || self.importer.reading_source())
+                && !self.has_other_background_work()
         }
+        #[cfg(not(feature = "d2-model-importer"))]
+        {
+            false
+        }
+    }
+
+    /// Background work other than the D2 Importer's.
+    fn has_other_background_work(&self) -> bool {
         self.uninstall.busy()
             || self.upgrade.busy()
             || self.installed.busy()
@@ -710,6 +732,7 @@ impl PackageAuthoringApp {
         self.appearance_ornaments = donor_view::ornaments::Ornaments::default();
         self.catalog = None;
         self.catalog_revision = self.catalog_revision.wrapping_add(1);
+        self.item_sources = item_sources::ItemSources::default();
         self.donor_summaries.clear();
         self.gear_donors.clear();
         self.subclasses.clear();
@@ -892,6 +915,7 @@ mod image_files;
 #[cfg(feature = "d2-model-importer")]
 mod imported_view;
 mod installed;
+mod item_sources;
 mod jobs;
 mod mod_view;
 mod preferences_view;

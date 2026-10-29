@@ -141,10 +141,67 @@ pub struct NativeAssetPatch {
     /// another owner still sends events into is refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remove_owners: Vec<u32>,
+    /// Complete unconnected component owners added after removals. Each keeps its
+    /// source allocation and lifecycle, with private checked resource edits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<NativeAssetComponent>,
     /// Controllers owned by this attachment. Each child is compiled privately and bound to
     /// its declared action reference without merging its lifecycle with the parent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub programs: Vec<NativeAssetProgram>,
+}
+
+/// One complete owner from an unconnected single-owner native graph. Its resource
+/// selectors address that source graph, before composition into the private asset.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAssetComponent {
+    pub source_graph: u32,
+    pub patches: Vec<NativeAssetResourcePatch>,
+    /// Native replication resource containing a complete row for this owner's
+    /// instance class and allocation. Required when replacing a replicated owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replication: Option<u32>,
+}
+
+/// An outgoing profile copied privately for one direct resource effect.
+/// Damage uses a neutral template. Health uses the checked mode-three response family.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixedDamageProfile {
+    pub action_index: usize,
+    pub template: u32,
+    #[serde(with = "super::float_bit")]
+    pub amount_bits: u32,
+    /// Native ordering: Kinetic 0, Solar 1, Arc 2, Void 3.
+    pub damage_type: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthResponse>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthResponse {
+    #[serde(with = "super::float_bit")]
+    pub amount_bits: u32,
+    #[serde(with = "super::float_bit")]
+    pub overflow_bits: u32,
+}
+
+impl HealthResponse {
+    pub fn amounts(&self) -> [u32; 2] {
+        [self.amount_bits, self.overflow_bits]
+    }
+
+    pub fn valid(&self) -> bool {
+        self.amounts()
+            .iter()
+            .all(|&bits| f32::from_bits(bits).is_finite() && f32::from_bits(bits) >= 0.0)
+            && self
+                .amounts()
+                .iter()
+                .any(|&bits| f32::from_bits(bits) > 0.0)
+    }
 }
 
 /// A private child controller referenced by an existing native component resource.

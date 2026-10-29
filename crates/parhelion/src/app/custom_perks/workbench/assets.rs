@@ -207,7 +207,7 @@ impl Workbench {
         }
         self.discovery.poll();
         self.refresh_item_names(catalog);
-        self.refresh_asset_labels();
+        self.refresh_asset_labels(ctx);
     }
 
     pub(in crate::app) fn asset_catalog(&self) -> Option<&entity::catalog::Catalog> {
@@ -321,7 +321,7 @@ impl Workbench {
         asset: &mut Asset,
         scope: AssetScope,
     ) {
-        self.refresh_asset_labels();
+        self.refresh_asset_labels(ui.ctx());
         let (empty_label, title, use_label) = scope.picker_labels();
         let label = asset_label(asset, &self.asset_labels, empty_label);
         // Optional references such as a drop's effect store all bits set for none.

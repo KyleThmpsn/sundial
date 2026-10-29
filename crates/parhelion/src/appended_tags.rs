@@ -5,6 +5,13 @@ use crate::package_profile::{PRIVATE_PERK_RUNTIME_PACKAGE_ID, is_authored_standa
 use crate::{AuthoringError, AuthoringResult};
 
 pub(crate) const MAX_PACKAGE_ENTRY_COUNT: usize = 8192;
+mod records;
+pub(crate) use records::checkpoint;
+
+pub(crate) fn clear() {
+    records::clear();
+    crate::asset_packages::stream::clear();
+}
 
 /// Appended tags by package: the allocation's own package's, then each overflow package's with
 /// its id.
@@ -20,6 +27,9 @@ pub(crate) struct AppendedTagAllocator {
     /// after it, every one from its first entry, and whether those count up. Without one, those
     /// tags are refused.
     overflow: Option<(u16, bool)>,
+    /// Logical investment records or private runtime, sharing build-scoped package reservations.
+    paged: Option<bool>,
+    stream: Option<usize>,
 }
 
 impl AppendedTagAllocator {
@@ -28,19 +38,83 @@ impl AppendedTagAllocator {
             package_id,
             current_entry_count,
             overflow: None,
+            paged: None,
+            stream: None,
         }
     }
 
-    /// Where a build's private runtime goes: the private perk-runtime package's table after its
-    /// historical high-water mark `start`, then fresh standalone packages. Without a mod loader
-    /// those count from the far end of the build's window toward its first id, where the asset
-    /// packages start, so the two meet only once the window is spent. On a mod loader each takes
-    /// the highest id still free (`mod_family::build::private_runtime`).
-    pub(crate) fn private_runtime(start: usize) -> Self {
-        let window = crate::package_profile::window();
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn assets(id: usize) -> Self {
         Self {
-            overflow: Some((window.last(), window.descending)),
+            stream: Some(id),
+            ..Self::new(0, 0)
+        }
+    }
+
+    /// Editor validation does not append to the installed host. Use a free, temporary identity
+    /// so a full legacy host table cannot reject a valid in-memory runtime edit.
+    pub(crate) fn scratch(
+        manager: &sundial::package_authoring::PackageManager,
+    ) -> AuthoringResult<Self> {
+        (crate::package_profile::MIN_AUTHORED_STANDALONE_PACKAGE_ID
+            ..=crate::package_profile::MAX_AUTHORED_STANDALONE_PACKAGE_ID)
+            .find(|id| !manager.lookup.tag32_entries_by_pkg.contains_key(id))
+            .map(|id| Self::new(id, 0))
+            .ok_or_else(|| {
+                AuthoringError::InvalidInput(
+                    "No unused package identity is available for editor validation".into(),
+                )
+            })
+    }
+
+    /// Streaming assets reserve their actual payload before its address becomes observable.
+    /// Fixed record allocations keep their existing entry planning.
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn reserve_payload(self, ordinal: usize, size: usize) -> AuthoringResult<()> {
+        if let Some(id) = self.stream {
+            crate::asset_packages::stream::reserve(id, ordinal, size)?;
+        }
+        Ok(())
+    }
+
+    /// Where a build's private runtime goes: the private perk-runtime package's table after its
+    /// historical high-water mark `start`, then fresh standalone packages. Each takes the
+    /// highest free ID, sharing reservations with investment records and imported content.
+    pub(crate) fn private_runtime(start: usize) -> Self {
+        Self {
+            paged: Some(true),
             ..Self::new(PRIVATE_PERK_RUNTIME_PACKAGE_ID, start)
+        }
+    }
+
+    pub(crate) fn records(start: usize) -> Self {
+        Self {
+            paged: Some(false),
+            ..Self::new(crate::package_profile::host().id, start)
+        }
+    }
+
+    /// Artwork also targets strict asset packages. Only the build's record host may spill.
+    pub(crate) fn destination(package: u16, start: usize) -> Self {
+        if crate::package_profile::holding() && package == crate::package_profile::host().id {
+            Self::records(start)
+        } else {
+            Self::new(package, start)
+        }
+    }
+
+    pub(crate) fn reserve(self, ordinal: usize, count: usize) -> AuthoringResult<()> {
+        let index = Self::checked_ordinal(self.current_entry_count, ordinal, "Record group")?;
+        if let Some(private) = self.paged {
+            records::reserve(private, self.current_entry_count, index, count)
+        } else {
+            self.assigned_tag(ordinal, "Record group", "first record")?;
+            self.assigned_tag(
+                Self::checked_ordinal(ordinal, count.saturating_sub(1), "Record group")?,
+                "Record group",
+                "last record",
+            )?;
+            Ok(())
         }
     }
 
@@ -62,6 +136,9 @@ impl AppendedTagAllocator {
     /// `tags`, which this allocation assigned in order, by the package each went to: its own
     /// package's, then each overflow package's with its id.
     pub(crate) fn split<T>(self, mut tags: Vec<T>) -> AuthoringResult<Split<T>> {
+        if let Some(private) = self.paged {
+            return records::split(private, self.current_entry_count, tags);
+        }
         let mut spilled = tags.split_off(self.capacity().min(tags.len())).into_iter();
         let mut overflow = Vec::new();
         loop {
@@ -81,8 +158,13 @@ impl AppendedTagAllocator {
         Ok((tags, overflow))
     }
 
-    #[cfg(feature = "d2-model-importer")]
     pub(crate) fn ordinal(self, tag: TagHash) -> AuthoringResult<usize> {
+        if let Some(id) = self.stream {
+            return crate::asset_packages::stream::ordinal(id, tag);
+        }
+        if let Some(private) = self.paged {
+            return records::ordinal(private, self.current_entry_count, tag);
+        }
         if tag.pkg_id() != self.package_id
             || (tag.entry_index() as usize) < self.current_entry_count
         {
@@ -109,12 +191,18 @@ impl AppendedTagAllocator {
         destination_description: &str,
         tag_description: &str,
     ) -> AuthoringResult<TagHash> {
+        if let Some(id) = self.stream {
+            return crate::asset_packages::stream::tag(id, ordinal);
+        }
         let index = self
             .current_entry_count
             .checked_add(ordinal)
             .ok_or_else(|| {
                 AuthoringError::InvalidInput(format!("{destination_description} index overflowed"))
             })?;
+        if let Some(private) = self.paged {
+            return records::tag(private, self.current_entry_count, index);
+        }
         if index >= MAX_PACKAGE_ENTRY_COUNT {
             let Some((start, upward)) = self.overflow else {
                 return Err(AuthoringError::InvalidInput(format!(

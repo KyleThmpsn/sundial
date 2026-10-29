@@ -261,7 +261,7 @@ pub(super) fn build(
         "native_maneuvers":maneuvers,
         "hover_boost_release":if maneuvers {Some("Release clears boost without the replaced hover motion clock")}else{None},
         "gameplay_verified":false,
-        "limits":["Authored native flight response using source speed, acceleration, cruise and bank limits. Reverse demand preserves the source reverse-to-forward speed ratio against the authored quadratic drag response. A compatible carrier's left and right maneuver states drive roll surfaces with its original action timing and costs. Full roll travel and recovery need gameplay acceptance. Independent strafing, gravity transition and dive scaling are not reproduced. Live handling needs calibration."]
+        "limits":["Authored native flight response using source speed, acceleration, cruise and bank limits. Reverse demand preserves the source reverse-to-forward speed ratio against the authored quadratic drag response. A compatible carrier's left and right maneuver states drive roll surfaces with its original action timing and costs. Independent strafing, gravity transition and dive scaling are not reproduced. Live handling needs calibration."]
     }))?;
     motion.inputs = inputs;
     motion.retain_hover_update = maneuvers;

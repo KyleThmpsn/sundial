@@ -4,6 +4,7 @@ mod emblems;
 mod family;
 mod gear;
 mod shaders;
+mod stock_ornament;
 pub use crate::d2_mot::catalog::ScanProgress;
 use crate::d2_mot::{
     GraphReference, batch, catalog, extract, profile,
@@ -38,6 +39,9 @@ pub struct Weapon {
     pub bucket_hash: Option<u32>,
     #[serde(default)]
     pub class_type: Option<u8>,
+    /// A plug's category. A universal ornament's names the armor class and slot it serves.
+    #[serde(default)]
+    pub plug_category: Option<u32>,
     /// Source presentation metadata for browsing, independent of the native donor.
     #[serde(default)]
     pub rarity: Option<u8>,
@@ -49,6 +53,10 @@ pub struct Weapon {
     /// identity and edits whichever naming scheme made it. Unset for a new import.
     #[serde(skip)]
     pub namespace: Option<String>,
+    /// A weapon import also converts the weapon's own ornaments and offers them in its ornament
+    /// socket. Each ornament converts a model of its own.
+    #[serde(skip)]
+    pub ornaments: bool,
 }
 
 impl Weapon {
@@ -86,7 +94,7 @@ pub fn type_base(weapon_type: &str) -> Option<u32> {
     (weapon_type == "Glaive").then_some(super::glaive::BASE)
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
     pub enabled: bool,
@@ -96,13 +104,43 @@ pub struct Settings {
     /// Experimental. Marathon imports play the source weapon's own animation instead of the
     /// donor's.
     pub marathon_animations: bool,
+    /// Marathon imports bring the weapon's camos as ornaments. Off by default, since each camo
+    /// translates a model of its own. A library reimport follows each recipe instead.
+    pub marathon_ornaments: bool,
+    /// Modern Destiny 2 weapon imports bring the weapon's own ornaments. Off by default, since each
+    /// ornament converts a model of its own. A library reimport follows each recipe instead.
+    pub modern_ornaments: bool,
     pub d1_roi: Option<PathBuf>,
+    /// Rise of Iron weapon and armor imports bring the item's talent grid ornaments. On by
+    /// default. A library reimport follows each recipe instead.
+    pub d1_roi_ornaments: bool,
     /// Retained when saving existing preferences. Texture conversion no longer loads this DLL.
     pub d1_xg_library: Option<PathBuf>,
     pub d1_oodle: Option<PathBuf>,
     pub ffmpeg: Option<PathBuf>,
     pub vgmstream: Option<PathBuf>,
     pub dxc: Option<PathBuf>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            modern_packages: None,
+            reach_maps: None,
+            marathon_packages: None,
+            marathon_animations: false,
+            marathon_ornaments: false,
+            modern_ornaments: false,
+            d1_roi: None,
+            d1_roi_ornaments: true,
+            d1_xg_library: None,
+            d1_oodle: None,
+            ffmpeg: None,
+            vgmstream: None,
+            dxc: None,
+        }
+    }
 }
 
 impl Settings {
@@ -144,32 +182,17 @@ pub fn packages_path(path: &Path) -> Result<PathBuf> {
         .context("Open modern Destiny 2 packages")
 }
 
-pub fn model_directory(root: &Path, name: &str, hash: u32) -> Result<PathBuf> {
-    let name: String = name
-        .chars()
-        .map(|c| {
-            if c.is_control() || "<>:\"/\\|?*".contains(c) {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let name = name.trim().trim_end_matches('.');
-    ensure!(
-        !name.is_empty() && name != "." && name != "..",
-        "Item name cannot form a model folder"
-    );
-    let reserved = name.split('.').next().unwrap_or("").to_ascii_uppercase();
-    ensure!(
-        ![
-            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
-        ]
-        .contains(&reserved.as_str()),
-        "Reserved model folder name"
-    );
-    let parent = root.join(name);
+/// The data folder's folder of what imports produce, `imports/<importer>/<HASH>/<kind>-<n>`.
+pub const IMPORTS: &str = "imports";
+
+/// The folders of `IMPORTS` that hold each importer's items, named for its module.
+pub const IMPORTERS: [&str; 4] = ["d1_roi", "d2_mot", "halo_reach", "marathon"];
+
+/// The stable folder of one source item, `<imports>/<importer>/<HASH>`. The hash names the item
+/// within its importer, so an item the game renames keeps its folder.
+pub fn item_directory(imports: &Path, importer: &str, hash: u32) -> Result<PathBuf> {
+    ensure!(IMPORTERS.contains(&importer), "Unknown importer folder");
+    let parent = imports.join(importer);
     fs::create_dir_all(&parent)?;
     Ok(parent.join(format!("{hash:08X}")))
 }
@@ -183,7 +206,16 @@ pub fn reserve_assets(root: &Path, kind: &str) -> Result<PathBuf> {
     fs::create_dir_all(root)?;
     for index in 0..u32::MAX {
         let path = root.join(format!("{kind}-{index}"));
-        match fs::create_dir(&path) {
+        // A cleanup removes an item folder it emptied, which can happen between the two calls.
+        let made = fs::create_dir(&path).or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                fs::create_dir_all(root)?;
+                fs::create_dir(&path)
+            } else {
+                Err(error)
+            }
+        });
+        match made {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
@@ -247,10 +279,10 @@ fn previous_model_donor(output: &Path, source: u32) -> Option<u32> {
         return u32::try_from(hash).ok();
     }
     let recipe = Path::new(result["recipe"].as_str()?);
-    let candidate = recipe.parent()?.parent()?.file_name()?.to_str()?;
-    let index: u32 = candidate.strip_prefix("candidate-")?.parse().ok()?;
+    let attempt = recipe.parent()?.parent()?.file_name()?.to_str()?;
+    let index: u32 = attempt.strip_prefix("weapon-")?.parse().ok()?;
     let profile = output
-        .join(format!("candidate-{index}"))
+        .join(format!("weapon-{index}"))
         .join(format!("{source:08X}"))
         .join("profile.json");
     let profile: Value = serde_json::from_slice(&fs::read(profile).ok()?).ok()?;
@@ -273,8 +305,10 @@ pub fn prepare_with_progress(
         shaders::prepare
     } else if weapon.family() == Family::Emblem {
         emblems::prepare
-    } else if weapon.family().is_model_gear() {
+    } else if weapon.family().is_model_gear() || weapon.family() == Family::Ornament {
         gear::prepare
+    } else if weapon.family() == Family::WeaponOrnament {
+        stock_ornament::prepare
     } else {
         prepare_steps
     };
@@ -404,9 +438,10 @@ struct Inputs<'a> {
     native: &'a Path,
     source: &'a Path,
     output: &'a Path,
+    donors: &'a Value,
 }
 
-/// Convert the weapon against one donor in a fresh candidate folder. A rejected attempt's
+/// Convert the weapon against one donor in a fresh `weapon-<n>` folder. A rejected attempt's
 /// folder is removed, since nothing refers to it. An error returned here ends the import.
 fn try_donor(
     inputs: &Inputs,
@@ -414,7 +449,7 @@ fn try_donor(
     native_reader: &Reader,
     progress: &mut dyn FnMut(String),
 ) -> Result<Attempt> {
-    let attempt = reserve_assets(inputs.output, "candidate")?;
+    let attempt = reserve_assets(inputs.output, "weapon")?;
     let result = convert_with_donor(inputs, donor, native_reader, &attempt, progress);
     if !matches!(result, Ok(Attempt::Prepared(_))) {
         // Removing an unused attempt only saves space, so a failure here is not an error.
@@ -438,16 +473,16 @@ fn convert_with_donor(
         native,
         source,
         output,
+        donors,
     } = *inputs;
     fs::create_dir_all(attempt.join("recipes"))?;
     let row = json!({"hash":weapon.hash,"name":weapon.name,"namespace":weapon.namespace(),
         "native_item":donor["hash"],"native_donor":donor["name"]});
-    let prepared = match batch::prepare_one_reusing(
+    let prepared = match batch::prepare_in(
         &row,
         weapon.hash & 0xffff,
-        modern,
-        native,
-        attempt,
+        (modern, native),
+        (attempt, &attempt.join("base")),
         Some(source),
         Some(native_reader),
         progress,
@@ -522,13 +557,59 @@ fn convert_with_donor(
     document["overrides"]["imported_graph"] =
         serde_json::to_value(GraphReference::new(&graph, item)?)?;
     write_json(&recipe, &document)?;
-    let graph_manifest: Value = serde_json::from_slice(&fs::read(graph.join("asset-graph.json"))?)?;
+    let ornaments = if weapon.ornaments {
+        let folder = PathBuf::from(
+            prepared["folder"]
+                .as_str()
+                .context("Missing import folder")?,
+        );
+        let base = profile::hash(donor, "hash")?;
+        let kin = kin(donors, base);
+        super::weapon_ornament::import_all(
+            &super::weapon_ornament::Ornaments {
+                modern,
+                native,
+                source: weapon.hash,
+                donor: base,
+                kin: &kin,
+                weapon: &folder,
+                recipe: &recipe,
+                ordinal: weapon.hash & 0xffff,
+                out: &attempt.join("ornaments"),
+            },
+            progress,
+        )?
+    } else {
+        json!({"skipped":"Ornaments were not imported"})
+    };
+    write_json(&attempt.join("ornaments.json"), &ornaments)?;
+    crate::graph::settle(&recipe, attempt)?;
+    let graph_manifest: Value = serde_json::from_slice(&fs::read(
+        attempt.join(crate::graph::GRAPH).join("asset-graph.json"),
+    )?)?;
     let audio = &graph_manifest["audio"];
     write_json(
         &output.join("result.json"),
-        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing. New conversions require an in-game test."}),
+        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing."}),
     )?;
     Ok(Attempt::Prepared(recipe))
+}
+
+/// The stock weapons of the base's type in catalog order, which can lend a base without an
+/// ornament socket the socket type of theirs.
+fn kin(donors: &Value, base: u32) -> Vec<u32> {
+    let rows = donors["weapons"].as_array().map_or(&[][..], Vec::as_slice);
+    let Some(kind) = rows
+        .iter()
+        .find(|row| row["hash"] == base)
+        .and_then(|row| row["weapon_type"].as_str())
+    else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter(|row| row["weapon_type"] == kind)
+        .filter_map(|row| u32::try_from(row["hash"].as_u64()?).ok())
+        .collect()
 }
 
 /// Record a rejected donor. A limit of the source itself ends the import, because every
@@ -587,6 +668,7 @@ fn prepare_steps(
         native,
         source: &source,
         output,
+        donors,
     };
     // Shadowkeep has no glaive, so a glaive is built on the glaive base without a donor search.
     let glaive = super::glaive::exported_glaive(&source)?;
@@ -766,20 +848,20 @@ mod tests {
     #[test]
     fn previous_success_is_found_without_following_saved_recipe_paths() {
         let root = tempfile::tempdir().unwrap();
-        let candidate = root.path().join("candidate-7");
-        let profile = candidate.join("0000002A").join("profile.json");
+        let attempt = root.path().join("weapon-7");
+        let profile = attempt.join("0000002A").join("profile.json");
         fs::create_dir_all(profile.parent().unwrap()).unwrap();
         write_json(&profile, &json!({"native_item":77})).unwrap();
         write_json(
             &root.path().join("result.json"),
-            &json!({"recipe":candidate.join("recipes").join("weapon.json")}),
+            &json!({"recipe":attempt.join("recipes").join("weapon.json")}),
         )
         .unwrap();
         assert_eq!(previous_model_donor(root.path(), 42), Some(77));
         assert_eq!(previous_model_donor(root.path(), 43), None);
         write_json(
             &root.path().join("result.json"),
-            &json!({"donor_hash":91,"recipe":"outside/candidate-9/weapon.json"}),
+            &json!({"donor_hash":91,"recipe":"outside/weapon-9/weapon.json"}),
         )
         .unwrap();
         assert_eq!(previous_model_donor(root.path(), 42), Some(91));
@@ -822,26 +904,17 @@ mod tests {
     #[test]
     fn model_cache_uses_stable_hash_and_preserves_previous_assets() {
         let root = tempfile::tempdir().unwrap();
-        let first = model_directory(root.path(), "Half-Truths", 42).unwrap();
-        let assets = reserve_assets(&first, "candidate").unwrap();
+        let first = item_directory(root.path(), "d2_mot", 42).unwrap();
+        let assets = reserve_assets(&first, "weapon").unwrap();
         fs::write(assets.join("model.bin"), [1, 2, 3]).unwrap();
-        let second = model_directory(root.path(), "Half-Truths", 42).unwrap();
-        assert_eq!(
-            first.parent(),
-            Some(root.path().join("Half-Truths").as_path())
-        );
+        let second = item_directory(root.path(), "d2_mot", 42).unwrap();
+        assert_eq!(first.parent(), Some(root.path().join("d2_mot").as_path()));
         assert_eq!(first, second);
         assert_eq!(first.file_name().unwrap(), "0000002A");
-        let next = reserve_assets(&second, "candidate").unwrap();
+        let next = reserve_assets(&second, "weapon").unwrap();
         assert_ne!(assets, next);
         assert_eq!(fs::read(assets.join("model.bin")).unwrap(), [1, 2, 3]);
         assert!(reserve_assets(&second, "../escape").is_err());
-        assert!(model_directory(root.path(), "..", 42).is_err());
-        assert!(model_directory(root.path(), "CON", 42).is_err());
-        assert!(
-            model_directory(root.path(), "../Weapon", 42)
-                .unwrap()
-                .starts_with(root.path())
-        );
+        assert!(item_directory(root.path(), "..", 42).is_err());
     }
 }

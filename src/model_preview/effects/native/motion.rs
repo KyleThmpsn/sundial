@@ -12,7 +12,7 @@ pub(crate) struct Motion {
 
 impl Motion {
     pub(in crate::model_preview) fn frame(&self, seconds: f32) -> Option<Frame> {
-        let mut frame = [[0.0; 4]; 128];
+        let mut frame = [[0.0; 4]; crate::model_preview::effects::ROWS];
         frame[..self.constants.len()].copy_from_slice(&self.constants);
         if let Some(expression) = &self.expression {
             expression
@@ -49,7 +49,7 @@ impl Motion {
     }
 
     pub fn apply(&self, model: &Model, seconds: f32, pose: &mut animation::Deformed) {
-        let mut frame = [[0.0; 4]; 128];
+        let mut frame = [[0.0; 4]; crate::model_preview::effects::ROWS];
         frame[..self.constants.len()].copy_from_slice(&self.constants);
         if self.expression.as_ref().is_some_and(|p| {
             p.run_shader_into(&mut frame[..self.constants.len()], seconds)
@@ -352,6 +352,7 @@ pub(in crate::model_preview) fn load(
     tag: u32,
     objects: ObjectInputs<'_>,
 ) -> Result<Option<Motion>, String> {
+    let _stage = crate::model_preview::timing::stage("materials");
     let bytes = checked(manager, tag, 0x8080_71E8)?;
     let vertex = u32_at(&bytes, 0x48)?;
     if matches!(vertex, 0 | u32::MAX) {

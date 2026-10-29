@@ -4,7 +4,11 @@ use anyhow::{Context, Result, ensure};
 use parhelion_import::tiger::audio::bank::{self, Namespace};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, env, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs,
+    path::PathBuf,
+};
 
 fn word(bytes: &[u8], at: usize) -> Result<u32> {
     Ok(u32::from_le_bytes(
@@ -12,7 +16,7 @@ fn word(bytes: &[u8], at: usize) -> Result<u32> {
     ))
 }
 
-fn hierarchy(bytes: &[u8]) -> Result<BTreeMap<u32, (u8, &[u8])>> {
+fn hierarchy(bytes: &[u8], version: u32) -> Result<BTreeMap<u32, (u8, &[u8])>> {
     let mut at = 0;
     let mut header = false;
     let mut result = None;
@@ -23,7 +27,7 @@ fn hierarchy(bytes: &[u8]) -> Result<BTreeMap<u32, (u8, &[u8])>> {
         let body = bytes.get(at + 8..end).context("chunk bounds")?;
         match &bytes[at..at + 4] {
             b"BKHD" => {
-                ensure!(!header && word(body, 0)? == 113, "native bank header");
+                ensure!(!header && word(body, 0)? == version, "bank version differs");
                 header = true;
             }
             b"HIRC" => {
@@ -60,7 +64,7 @@ fn id(value: &Value) -> Result<u32> {
 }
 
 #[test]
-#[ignore = "Requires PARHELION_EARLY_AUDIO_CORPUS and PARHELION_EARLY_AUDIO_OUTPUT"]
+#[ignore = "Requires PARHELION_EARLY_AUDIO_CORPUS, PARHELION_EARLY_AUDIO_OUTPUT and SUNDIAL_TEST_REVISION"]
 fn early_banks_preserve_event_actions_and_private_streams() -> Result<()> {
     let corpus =
         PathBuf::from(env::var_os("PARHELION_EARLY_AUDIO_CORPUS").context("audio corpus")?);
@@ -104,13 +108,26 @@ fn early_banks_preserve_event_actions_and_private_streams() -> Result<()> {
     let mut events = 0;
     let mut actions = 0;
     let mut sounds = 0;
-    for (row, bank) in rows.iter().zip(&banks) {
+    let mut generators = 0;
+    for ((row, bank), original) in rows.iter().zip(&banks).zip(&inputs) {
         let bytes = namespace.instantiate(bank, &media, &sizes)?;
         let file = format!("{:08X}.bnk", bank.bank_id);
         fs::write(output.join(&file), &bytes)?;
         let persisted = fs::read(output.join(&file))?;
-        let objects = hierarchy(&persisted)?;
-        ensure!(objects.len() == bank.objects.len(), "converted object loss");
+        let objects = hierarchy(&persisted, 113)?;
+        let source_objects = hierarchy(original, 89)?;
+        ensure!(
+            objects.len() == source_objects.len(),
+            "converted object loss"
+        );
+        for (&source_id, (kind, _)) in &source_objects {
+            ensure!(
+                objects
+                    .get(&namespace.object(source_id)?)
+                    .is_some_and(|(actual, _)| actual == kind),
+                "Source object disappeared or changed kind"
+            );
+        }
         for event in row["events"]
             .as_array()
             .context("independent event oracle")?
@@ -170,6 +187,52 @@ fn early_banks_preserve_event_actions_and_private_streams() -> Result<()> {
             );
             sounds += 1;
         }
+        let actual_generators = source_objects
+            .iter()
+            .filter(|(_, (kind, bytes))| *kind == 2 && word(bytes, 4).ok() == Some(0x00650002))
+            .map(|(&id, _)| id)
+            .collect::<BTreeSet<_>>();
+        let mut observed = BTreeSet::new();
+        for generator in row["generators"].as_array().into_iter().flatten() {
+            let source_id = id(&generator["id"])?;
+            ensure!(observed.insert(source_id), "Repeated generator oracle");
+            let source_preset = id(&generator["preset"])?;
+            let preset = namespace.object(source_preset)?;
+            let (kind, payload) = objects
+                .get(&namespace.object(source_id)?)
+                .context("Persisted generator")?;
+            ensure!(
+                *kind == 2
+                    && word(payload, 4)? == 0x00650002
+                    && payload.get(8) == Some(&0)
+                    && word(payload, 9)? == preset
+                    && word(payload, 13)? == 0
+                    && payload.get(17) == Some(&0)
+                    && word(payload, 18)? == 0,
+                "Generated source lost its private preset or acquired media"
+            );
+            let (kind, payload) = objects.get(&preset).context("Persisted source preset")?;
+            let expected = hex::decode(
+                generator["parameters"]
+                    .as_str()
+                    .context("Independent generator parameters")?,
+            )?;
+            ensure!(
+                expected.len() == 12
+                    && *kind == 19
+                    && payload.len() == 29
+                    && word(payload, 4)? == 0x00650002
+                    && word(payload, 8)? == 12
+                    && payload.get(12..24) == Some(expected.as_slice())
+                    && payload.get(24..29) == Some(&[0; 5][..]),
+                "Generated source preset changed parameters or state"
+            );
+            generators += 1;
+        }
+        ensure!(
+            observed == actual_generators,
+            "Independent oracle does not cover every generated source"
+        );
         artifacts.push(
             json!({"source":row,"file":file,"sha256":hex::encode(Sha256::digest(&persisted))}),
         );
@@ -182,7 +245,9 @@ fn early_banks_preserve_event_actions_and_private_streams() -> Result<()> {
         output.join("readback.json"),
         serde_json::to_vec_pretty(&json!({
             "source_build":manifest["source_build"],"target_build":manifest["target_build"],
-            "banks":artifacts,"events":events,"actions":actions,"sounds":sounds,
+            "banks":artifacts,"events":events,"actions":actions,"sounds":sounds,"generators":generators,
+            "revision":env::var("SUNDIAL_TEST_REVISION").context("source revision")?,
+            "test_binary_sha256":hex::encode(Sha256::digest(fs::read(env::current_exe()?)?)),
             "namespace":namespace,"media":media,"gameplay_verified":false
         }))?,
     )?;

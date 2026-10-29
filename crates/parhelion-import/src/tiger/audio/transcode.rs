@@ -228,10 +228,17 @@ fn opus_mapping(fmt: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+/// The store name of `pcm_wem` results. Change it whenever the decoded media would differ.
+const PCM_RECIPE: &str = "ffmpeg-pcm-1";
+
 /// Decode Wwise Opus into 16-bit PCM RIFF media with ffmpeg. The output is not
 /// independently playable in Dawn until its legacy bank and event are authored.
+/// Media an earlier import decoded is taken from the store without starting ffmpeg.
 pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     crate::cancellation::check()?;
+    if let Some(pcm) = crate::store::recall(PCM_RECIPE, media) {
+        return Ok(pcm);
+    }
     let ogg = opus_ogg(media).context(
         "Source Wwise Opus adaptation failed before FFmpeg started. The source media layout could not be converted",
     )?;
@@ -321,7 +328,9 @@ pub fn pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         data.len() / (usize::from(channels) * 2),
         dword(fmt, 24)?
     );
-    riff_pcm_layout(channels, rate, dword(fmt, 20)? >> 12, data)
+    let pcm = riff_pcm_layout(channels, rate, dword(fmt, 20)? >> 12, data)?;
+    crate::store::remember(PCM_RECIPE, media, &pcm);
+    Ok(pcm)
 }
 
 const PCM_SUBFORMAT: [u8; 16] = [

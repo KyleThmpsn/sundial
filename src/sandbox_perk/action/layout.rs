@@ -398,6 +398,10 @@ pub const CONDITION_LAYOUTS: &[Layout] = &[
         fields: EVENT_KEY,
     },
     Layout {
+        kind: 33,
+        fields: EVENT_BYTE,
+    },
+    Layout {
         kind: 34,
         fields: &[
             Field::new("Event Key", 0x10, Key),

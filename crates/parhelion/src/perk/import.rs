@@ -281,6 +281,7 @@ fn modifier(
             source_graph: MODIFIER_GRAPH,
             appends: Vec::new(),
             remove_owners: Vec::new(),
+            components: Vec::new(),
             programs: Vec::new(),
             patches: vec![NativeAssetResourcePatch {
                 binding_hash: MODIFIER_BINDING,

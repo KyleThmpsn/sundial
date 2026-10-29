@@ -4,6 +4,16 @@ use std::{fs, path::Path};
 
 /// Metadata changes, additions, removals and a different configured build invalidate the cache.
 pub fn package_stamp(packages: &Path) -> Result<String> {
+    stamp(packages, true)
+}
+
+/// The stamp of the packages alone, wherever their folder lies. A view of hard links to the same
+/// packages, which import batches read through, has the same stamp as their own folder.
+pub fn package_files_stamp(packages: &Path) -> Result<String> {
+    stamp(packages, false)
+}
+
+fn stamp(packages: &Path, folder: bool) -> Result<String> {
     let packages = packages.canonicalize()?;
     let mut files = Vec::new();
     for entry in fs::read_dir(&packages)? {
@@ -26,7 +36,9 @@ pub fn package_stamp(packages: &Path) -> Result<String> {
         packages.display()
     );
     let mut hash = Sha256::new();
-    hash.update(packages.to_string_lossy().as_bytes());
+    if folder {
+        hash.update(packages.to_string_lossy().as_bytes());
+    }
     for (name, length, modified) in files {
         hash.update(name.to_string_lossy().as_bytes());
         hash.update([0]);

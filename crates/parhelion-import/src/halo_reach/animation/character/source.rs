@@ -260,7 +260,12 @@ impl Source {
         output
     }
 
-    pub fn action(&self, action: &Action, frames: usize) -> Result<Vec<Vec<Pose>>> {
+    pub fn action(
+        &self,
+        action: &Action,
+        frames: usize,
+        contact: Option<(usize, usize)>,
+    ) -> Result<Vec<Vec<Pose>>> {
         ensure!(frames > 0, "Character action has no output frames");
         let names = action.names(&self.graph)?;
         let mut samples = Vec::new();
@@ -273,10 +278,26 @@ impl Source {
             );
         }
         ensure!(!samples.is_empty(), "Character action is empty");
+        if let Some((source, native)) = contact {
+            ensure!(
+                source > 0 && source < samples.len() - 1 && native > 0 && native < frames - 1,
+                "Character contact is outside its source or native interval"
+            );
+        }
         (0..frames)
             .map(|frame| {
                 let time = if frames == 1 {
                     0.
+                } else if let Some((source, native)) = contact {
+                    // Retain both endpoints and place the source primary pose on
+                    // the existing contact event, without moving native events.
+                    if frame <= native {
+                        frame as f32 * source as f32 / native as f32
+                    } else {
+                        source as f32
+                            + (frame - native) as f32 * (samples.len() - 1 - source) as f32
+                                / (frames - 1 - native) as f32
+                    }
                 } else {
                     frame as f32 * (samples.len() - 1) as f32 / (frames - 1) as f32
                 };

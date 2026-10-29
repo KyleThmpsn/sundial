@@ -12,6 +12,7 @@ use super::{
         choices,
         material::Material,
         model::{self, Primitive},
+        native::material::{CHANGE_COLORS, change_colors as change_colors_of},
         object::Object,
         resource::{Absent, Pages},
         rig,
@@ -67,6 +68,20 @@ const PLACEMENT_SCALE: usize = 0x20;
 const PLACEMENT_VARIANT: usize = 0x58;
 /// A placement the scenario never creates.
 const NEVER_PLACED: u32 = 1 << 6;
+/// A placement's permutation data after its variant name, from Assembly's ReachMCC scenario
+/// layout: a flag for each of its four change colors that it sets itself, then the four colors,
+/// each a 32-bit color with alpha in the high byte, then red, green and blue. Readback of the
+/// crate, scenery, control and machine rows of every campaign and multiplayer scenario checked
+/// found every flag clear, and the few nonzero colors read `FF000000`.
+const PLACEMENT_CHANGE_COLORS: usize = 0x5C;
+const PLACEMENT_COLORS: usize = 0x60;
+/// An object's change colors, one row each from primary to quaternary, and each row's initial
+/// permutations: a weight, a color's lower and upper bounds and the model variant name it serves,
+/// empty for any. Every object group the level draws shares this offset.
+const OBJECT_CHANGE_COLORS: (usize, usize) = (0x134, 0x18);
+const INITIAL_PERMUTATION_SIZE: usize = 0x20;
+/// An object's default model variant name.
+const OBJECT_DEFAULT_VARIANT: usize = 0x60;
 const PALETTE_SIZE: usize = 0x10;
 /// A device row's power and position groups, `-1` for none, and its device flags.
 const DEVICE_POWER_GROUP: usize = 0x70;
@@ -118,6 +133,67 @@ pub struct Objects {
     pub sky: Vec<(Primitive, Vec<[f32; 3]>)>,
     /// The objects left out because their render geometry holds no data in the cache.
     pub absent: BTreeSet<String>,
+    /// Each colored variant among `materials`, by the material it copies and its change colors'
+    /// bits.
+    colored: BTreeMap<(usize, [u32; 12]), usize>,
+}
+
+/// Change colors as an object starts with them, primary to quaternary, `None` for one it leaves to
+/// the shader.
+type ChangeColors = [Option<[f32; 3]>; 4];
+
+/// The change colors object `tag` starts with when placed with model variant `variant`, empty for
+/// its default, by the scenario row `row`, when one places it. A color the row flags is the row's.
+/// Any other is the midpoint of the bounds of the object's initial permutation for that color that
+/// serves the variant or every variant, the heaviest and then the first of them. Reach picks one of
+/// those permutations at random by weight and a random color between its bounds, and its change
+/// color functions can scale and darken the result at runtime, which a static surface leaves out.
+/// The row's colors are taken in the same space as the object's, a byte over 255 each.
+fn change_colors(
+    cache: &Cache,
+    tag: &Tag,
+    row: Option<usize>,
+    variant: &str,
+) -> Result<ChangeColors> {
+    let at = tag.address()?;
+    let variant = if variant.is_empty() {
+        cache.string_id(cache.u32(at + OBJECT_DEFAULT_VARIANT)?)?
+    } else {
+        variant.to_owned()
+    };
+    let flags = match row {
+        Some(row) => cache.u8(row + PLACEMENT_CHANGE_COLORS)?,
+        None => 0,
+    };
+    let rows = cache.block(at + OBJECT_CHANGE_COLORS.0, OBJECT_CHANGE_COLORS.1)?;
+    let mut colors = [None; 4];
+    for (index, color) in colors.iter_mut().enumerate() {
+        if let Some(row) = row
+            && flags & (1 << index) != 0
+        {
+            let packed = cache.u32(row + PLACEMENT_COLORS + index * 4)?;
+            *color = Some([16, 8, 0].map(|shift| f32::from((packed >> shift) as u8) / 255.));
+            continue;
+        }
+        let Some(&entry) = rows.get(index) else {
+            continue;
+        };
+        let mut best: Option<(f32, [f32; 3])> = None;
+        for permutation in cache.block(entry, INITIAL_PERMUTATION_SIZE)? {
+            let name = cache.u32(permutation + 0x1C)?;
+            if name != 0 && cache.string_id(name).ok().as_deref() != Some(variant.as_str()) {
+                continue;
+            }
+            let weight = cache.f32(permutation)?;
+            let lower = cache.floats::<3>(permutation + 4)?;
+            let upper = cache.floats::<3>(permutation + 0x10)?;
+            if best.is_none_or(|(heaviest, _)| weight > heaviest) {
+                best = Some((weight, std::array::from_fn(|k| (lower[k] + upper[k]) * 0.5)));
+            }
+        }
+        *color = best.map(|(_, color)| color);
+    }
+    Ok(colors)
 }
 
 /// Whether a surface drawn with `material` is solid: neither blended nor a decal, water or
@@ -271,15 +347,67 @@ fn section_colors(
 }
 
 impl Objects {
-    /// Adds `model`'s primitives moved by `transform`, naming its materials from `base`, and
-    /// its solid triangles as collision when `collides`. A primitive whose material `hidden`
-    /// marks as never drawn is left out of both.
+    /// The material at `index` with change colors `colors`: a variant of it holding them as the
+    /// constants its change-color albedo reads ([`CHANGE_COLORS`]), shared by every placement
+    /// with the same colors, or `index` itself when its albedo takes none or `colors` holds none
+    /// of those it takes. A `four_change_color_applying_to_specular` albedo's tertiary and
+    /// quaternary colors also stand in for its normal and glancing specular tints, as Reach's
+    /// material models define them for that option.
+    fn colored(&mut self, index: usize, colors: &ChangeColors) -> usize {
+        let Some(material) = self.materials.get(index) else {
+            return index;
+        };
+        let count = change_colors_of(material);
+        if count == 0
+            || colors[..count].iter().all(Option::is_none)
+            || material.properties.is_empty()
+        {
+            return index;
+        }
+        let bits = std::array::from_fn(|i| colors[i / 3].map_or(u32::MAX, |c| c[i % 3].to_bits()));
+        if let Some(&variant) = self.colored.get(&(index, bits)) {
+            return variant;
+        }
+        let mut variant = material.clone();
+        let specular = variant.options.get("albedo").map(String::as_str)
+            == Some("four_change_color_applying_to_specular");
+        let phong =
+            variant.options.get("material_model").map(String::as_str) == Some("two_lobe_phong");
+        let constants = &mut variant.properties[0].constants;
+        for (name, color) in CHANGE_COLORS.iter().zip(colors) {
+            if let Some([r, g, b]) = *color {
+                constants.insert((*name).to_owned(), [r, g, b, 1.]);
+            }
+        }
+        if specular {
+            let (normal, glancing) = if phong {
+                ("normal_specular_tint", "glancing_specular_tint")
+            } else {
+                ("specular_tint", "fresnel_color")
+            };
+            for (name, color) in [(normal, colors[2]), (glancing, colors[3])] {
+                if let Some([r, g, b]) = color {
+                    constants.insert(name.to_owned(), [r, g, b, 1.]);
+                }
+            }
+        }
+        let at = self.materials.len();
+        self.materials.push(variant);
+        self.colored.insert((index, bits), at);
+        at
+    }
+
+    /// Adds `model`'s primitives moved by `transform`, naming its materials from `base` in
+    /// variants with change colors `colors` ([`Objects::colored`]), and its solid triangles as
+    /// collision when `collides`. A primitive whose material `hidden` marks as never drawn is left
+    /// out of both.
     #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
         path: &str,
         model: &model::Model,
         base: usize,
+        colors: &ChangeColors,
         transform: &[f32; 16],
         collides: bool,
         hidden: &[bool],
@@ -295,7 +423,9 @@ impl Objects {
                 continue;
             }
             let mut primitive = source.clone();
-            primitive.material = source.material.map(|material| base + material);
+            primitive.material = source
+                .material
+                .map(|material| self.colored(base + material, colors));
             primitive.instance = Some(format!("{path}#{count}"));
             primitive.bsps = bsps;
             for vertex in &mut primitive.vertices {
@@ -440,6 +570,7 @@ pub fn read(
         poses: super::mission::pose::read(mission)?,
         sky: Vec::new(),
         absent: BTreeSet::new(),
+        colored: BTreeMap::new(),
     };
     let mut models = BTreeMap::new();
     for block in [&CRATES, &SCENERY, &CONTROLS, &MACHINES] {
@@ -471,6 +602,7 @@ pub fn read(
                 continue;
             }
             let name = cache.string_id(cache.u32(row + PLACEMENT_VARIANT)?)?;
+            let colors = change_colors(cache, tag, Some(row), &name)?;
             let object = cache.i16(row + 2)?;
             let pose = u16::try_from(object)
                 .ok()
@@ -498,7 +630,9 @@ pub fn read(
             let transform = placement(position, cache.floats(row + PLACEMENT_ROTATION)?, scale);
             let bsps = placement_bsps(cache, row)?;
             let first = objects.primitives.len();
-            objects.place(&tag.path, model, *base, &transform, true, hidden, bsps)?;
+            objects.place(
+                &tag.path, model, *base, &colors, &transform, true, hidden, bsps,
+            )?;
             if pose.is_some() && objects.primitives.len() > first {
                 objects.props.push(objects.primitives.split_off(first));
             }
@@ -511,6 +645,7 @@ pub fn read(
         if !VARIANT_GROUPS.contains(&tag.group.as_str()) || tag.path.starts_with(MARKERS) {
             continue;
         }
+        let colors = change_colors(cache, tag, None, &placement.variant)?;
         let Some((model, base, hidden)) = model_for(
             cache,
             pages,
@@ -524,7 +659,9 @@ pub fn read(
             continue;
         };
         let transform = transform(placement.position, placement.axes, 1.);
-        objects.place(&tag.path, model, *base, &transform, true, hidden, 0)?;
+        objects.place(
+            &tag.path, model, *base, &colors, &transform, true, hidden, 0,
+        )?;
     }
     read_skies(cache, pages, scenario, loaded, &mut objects)?;
     Ok(objects)
@@ -566,7 +703,16 @@ fn read_skies(
             objects.materials.extend(model.materials.iter().cloned());
             let start = objects.primitives.len();
             // Every sky primitive stays, so each keeps its vertex colors.
-            objects.place(&tag.path, &model, base, &rig::IDENTITY, false, &[], active)?;
+            objects.place(
+                &tag.path,
+                &model,
+                base,
+                &[None; 4],
+                &rig::IDENTITY,
+                false,
+                &[],
+                active,
+            )?;
             let sky = objects.primitives.split_off(start);
             objects.sky.extend(sky.into_iter().zip(colors));
         }

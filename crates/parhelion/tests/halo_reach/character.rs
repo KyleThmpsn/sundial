@@ -1,6 +1,13 @@
 //! Follow the staged human pose into every descriptor-indexed correction table.
 use super::*;
+mod actions;
+mod grip;
 mod rider;
+
+pub(super) fn finish(output: &Path) -> Result<()> {
+    grip::finish(output)?;
+    actions::finish(output)
+}
 
 fn selected(owner: &Payload, content: u32) -> Result<Vec<usize>> {
     let table = owner.pointer(24)? + 0x588;
@@ -23,6 +30,8 @@ pub(super) fn verify(
     runtime: &Value,
 ) -> Result<Value> {
     rider::verify(staged, stock, graph, runtime)?;
+    grip::verify(staged, stock, graph)?;
+    actions::verify(staged, stock, graph)?;
     let Some(character) = graph["animation"]
         .get("character")
         .filter(|value| !value.is_null())

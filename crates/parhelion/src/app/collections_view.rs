@@ -3,7 +3,7 @@ use crate::collection::{
     Ammo, BASE_NODE_COUNT, Destination, Family, GearPage, NODE_CAPACITY, NodeBudget,
     custom_node_hashes, gear_page_node_hashes,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy)]
 struct GearEntry<'a> {
@@ -12,6 +12,8 @@ struct GearEntry<'a> {
     rarity: Option<crate::RecipeRarity>,
     class: Option<crate::ArmorClass>,
     origin: Option<&'a crate::collection::armor::Origin>,
+    /// An imported universal ornament, which joins an ornament set of its class.
+    ornament: bool,
 }
 
 impl PackageAuthoringApp {
@@ -28,11 +30,19 @@ impl PackageAuthoringApp {
                 rarity: entry.rarity,
                 class: entry.armor_class,
                 origin: entry.armor_origin.as_ref(),
+                // Only importers make mods from a converted graph.
+                ornament: entry.kind == crate::ItemKind::Mod && entry.import_revision.is_some(),
             })
             .collect::<Vec<_>>();
+        // Drawn every frame, so each included recipe finds its donors by hash rather than by
+        // searching every donor.
+        let mut donors = BTreeMap::new();
+        for donor in &self.donor_summaries {
+            donors.entry(donor.hash).or_insert(donor);
+        }
+        let summary = |hash: u32| donors.get(&hash).copied();
         let mut members = entries
             .map(|entry| {
-                let summary = |hash: u32| self.donor_summaries.iter().find(|d| d.hash == hash);
                 (
                     entry.badge.as_ref().map(|badge| badge.name.as_str()),
                     entry
@@ -75,6 +85,7 @@ impl PackageAuthoringApp {
             rarity: self.recipe.overrides.rarity,
             class: self.recipe.overrides.armor_class,
             origin: current_origin.as_ref(),
+            ornament: self.recipe.is_imported_ornament(),
         };
         if included {
             members.push(current);
@@ -171,8 +182,11 @@ impl PackageAuthoringApp {
     fn gear_collection_pages(&self, entries: &[GearEntry<'_>]) -> BTreeSet<GearPage> {
         let mut pages = BTreeSet::new();
         let mut armor = Vec::new();
+        let mut ornaments = Vec::new();
         for (index, entry) in entries.iter().enumerate() {
-            if entry.kind == crate::ItemKind::Armor {
+            if entry.ornament {
+                ornaments.extend(self.ornament_piece(index, entry.donor));
+            } else if entry.kind == crate::ItemKind::Armor {
                 if self.collection_is_exotic(entry.rarity, entry.donor) {
                     continue;
                 }
@@ -207,13 +221,31 @@ impl PackageAuthoringApp {
                 pages.extend(GearPage::for_kind(entry.kind));
             }
         }
-        for set in crate::collection::armor::sets(&armor) {
+        for set in crate::collection::armor::sets(&armor, GearPage::armor_set) {
             if let Some(class) = set.page.class() {
                 pages.insert(GearPage::armor(class));
             }
             pages.insert(set.page);
         }
+        pages.extend(
+            crate::collection::armor::sets(&ornaments, GearPage::ornament_set)
+                .into_iter()
+                .map(|set| set.page),
+        );
         pages
+    }
+
+    /// An imported universal ornament's place in the sets of its class, from its base's plug
+    /// category. A base the catalog can't name places nothing, and the build reports it.
+    fn ornament_piece(&self, index: usize, donor: u32) -> Option<crate::collection::armor::Piece> {
+        let category = self.catalog.as_ref()?.plug_category(donor)?;
+        let (class, slot) = crate::collection::armor::Slot::of_ornament(category)?;
+        Some(crate::collection::armor::Piece {
+            index,
+            slot: Some(slot),
+            classes: crate::collection::Classes::one(class),
+            group: None,
+        })
     }
 
     pub(super) fn draw_collection_destination(&mut self, ui: &mut egui::Ui) {
@@ -225,7 +257,8 @@ impl PackageAuthoringApp {
     }
 
     /// Whether an item joins a stock Collections page: weapons, exotic armor and items beside
-    /// their base. Armor categories and gear pages are Parhelion's own.
+    /// their base. Armor categories, ornament sets and gear pages are Parhelion's own, and other
+    /// mods have no entry.
     pub(super) fn joins_stock_page(
         &self,
         kind: crate::ItemKind,
@@ -236,6 +269,8 @@ impl PackageAuthoringApp {
             true
         } else if kind == crate::ItemKind::Armor {
             self.collection_is_exotic(rarity, donor_hash)
+        } else if kind == crate::ItemKind::Mod {
+            false
         } else {
             GearPage::for_kind(kind).is_none()
         }

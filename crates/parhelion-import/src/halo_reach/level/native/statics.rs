@@ -5,9 +5,12 @@
 //! connected area's switch then created hundreds at once.
 //!
 //! A static mesh (`808071A7`) names its mesh data (`80807194`), one technique per draw group,
-//! and transparent draws as special meshes. Each surface draws in the depth prepass and shadow
-//! stages with the donor's own static depth and shadow techniques, as stock statics do, then in
-//! its own stage with the level's surface. The instance set (`8080966D`) holds the transforms,
+//! and transparent draws as special meshes. Each solid surface draws in the depth prepass and
+//! shadow stages with the donor's own static depth and shadow techniques, as stock statics do,
+//! then in its own stage with the level's surface. An alpha-tested surface draws in both with
+//! techniques of its own that clip its texels, the shadow one drawing both faces as stock
+//! alpha-tested statics do, and a decorator's in the prepass alone. The instance set
+//! (`8080966D`) holds the transforms,
 //! the statics, one instance group per static and a bounds record (`80809671`) with each
 //! instance's world box, and the group's preheader (`80806EF4`) names the set.
 use super::{Graph, Payload, Reader, put};
@@ -75,13 +78,15 @@ pub struct Templates {
 }
 
 /// One drawn group of a piece: its surface key, the stage its surface draws in, whether it also
-/// draws in the depth prepass and shadow stages, which hold every pixel of its triangles, and
-/// whether it is alpha tested, so it draws the depth prepass with its own surface.
+/// draws in the depth prepass and shadow stages, which hold every pixel of its triangles, whether
+/// it is alpha tested, so it draws the depth prepass with its own surface, and whether that alpha
+/// tested surface casts through its own shadow technique ([`casters`]).
 pub(super) struct Draw {
     pub key: u32,
     pub stage: u8,
     pub solid: bool,
     pub clipped: bool,
+    pub casts: bool,
 }
 
 /// One instance of the map's statics: its static mesh's symbol, where its geometry's origin sits
@@ -96,8 +101,28 @@ pub(super) struct Instance<'a> {
 /// The bounds-row identifiers of group `name`'s `count` instances. The bubble's visibility record
 /// keys each instance by its identifier, so the map writes the same ones there.
 pub(super) fn identifiers(name: &str, count: usize) -> Vec<u32> {
+    distinct(
+        &format!("parhelion/statics/{name}"),
+        count,
+        &mut BTreeSet::new(),
+    )
+}
+
+/// `count` nonzero identifiers for the rows under `prefix`, none in `taken`, each added to it. An
+/// identifier is the FNV-1a hash of the row's path with its low bit set. A hash already taken
+/// moves to a salted path, since a visibility record refuses a repeated key and a 31-bit hash of
+/// tens of thousands of decorator clusters repeats within a few maps.
+pub(super) fn distinct(prefix: &str, count: usize, taken: &mut BTreeSet<u32>) -> Vec<u32> {
     (0..count)
-        .map(|index| fnv1a32(&format!("parhelion/statics/{name}/{index}")) | 1)
+        .map(|index| {
+            let mut id = fnv1a32(&format!("{prefix}/{index}")) | 1;
+            let mut salt = 0u32;
+            while !taken.insert(id) {
+                salt += 1;
+                id = fnv1a32(&format!("{prefix}/{index}/{salt}")) | 1;
+            }
+            id
+        })
         .collect()
 }
 
@@ -223,11 +248,24 @@ pub(super) fn mesh(
             passes[0].push((part, DEPTH_STAGE, POSITION_LAYOUT, Ok(templates.depth)));
             passes[1].push((part, SHADOW_STAGE, POSITION_LAYOUT, Ok(templates.shadow)));
         } else if draw.clipped {
-            // Stock statics draw every part in the depth prepass, an alpha-tested one with a
-            // pixel program of its own. Left out of it, Paradiso's pine branches drew from afar
-            // and vanished as the camera neared them, while their solid trunks stayed. The
-            // surface's own technique clips the same texels in the prepass as in its stage.
+            // Distant Shore's alpha-tested static parts draw in their surface and shadow stages
+            // and in no depth prepass. Left out of the prepass here, Paradiso's pine branches drew
+            // from afar and vanished as the camera neared them, while their solid trunks stayed.
+            // The surface's own technique clips the same texels in the prepass as in its stage.
             passes[0].push((part, DEPTH_STAGE, SURFACE_LAYOUT, Err(surface.clone())));
+            // Its shadow technique clips them in the shadow stage from both faces, as 280 of the
+            // 282 alpha-tested shadow groups of Distant Shore's main static group draw. Those read
+            // a position and texture coordinate layout (121), and this one reads the surface's.
+            // Reach's lightmaps hold these surfaces' shadows, but near the camera a surface under
+            // Destiny's sun takes its sun shadows from the cascades.
+            if draw.casts {
+                passes[1].push((
+                    part,
+                    SHADOW_STAGE,
+                    SURFACE_LAYOUT,
+                    Err(format!("material-{:08X}-shadow", draw.key)),
+                ));
+            }
         }
         passes[2].push((part, SURFACE_STAGE, SURFACE_LAYOUT, Err(surface)));
     }
@@ -480,11 +518,8 @@ pub(super) fn group(
 }
 
 /// The solid surface keys: opaque surfaces that are not decals, whose every triangle pixel draws,
-/// so the depth prepass and shadow stages may draw them whole. An alpha-tested surface casts no
-/// shadow, since the shared shadow technique draws every triangle solid: Forge World's 113,424
-/// ground cover cards then shadowed the grass they stand in, so sunlit slopes and shores drew in
-/// Destiny's shadow beside Reach's lighter baked tree shadows. Reach's lightmaps already hold its
-/// foliage's shadows on the structure.
+/// so the depth prepass and shadow stages may draw them whole. The shared shadow technique draws
+/// every triangle solid, so an alpha-tested surface casts through its own instead ([`casters`]).
 pub(super) fn solid(materials: &BTreeMap<u32, super::Material>) -> BTreeSet<u32> {
     materials
         .iter()
@@ -499,6 +534,17 @@ pub(super) fn clipped(materials: &BTreeMap<u32, super::Material>) -> BTreeSet<u3
     materials
         .iter()
         .filter(|(_, material)| material.alpha_mode() == "MASK" && !material.decal())
+        .map(|(&key, _)| key)
+        .collect()
+}
+
+/// The alpha-tested surface keys that cast a sun shadow through their own alpha-tested shadow
+/// technique, which the level's material build adds for each as `material-{key}-shadow`: every
+/// clipped surface but a decorator's ([`super::native::material::clipped_caster`]).
+pub(super) fn casters(materials: &BTreeMap<u32, super::Material>) -> BTreeSet<u32> {
+    materials
+        .iter()
+        .filter(|(_, material)| super::native::material::clipped_caster(material))
         .map(|(&key, _)| key)
         .collect()
 }

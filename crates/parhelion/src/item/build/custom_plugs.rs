@@ -179,12 +179,19 @@ fn read_private_plug_source(
                 "Private plug already supplies additional perk {index}"
             )));
         }
-        load_sandbox_perk_runtime_action(
-            &sources.manager,
-            &sources.globals_data,
-            usize::from(index),
-        )
-        .map_err(invalid)?;
+        // An added effect is checked as the plug builds it. A declaration-only row, such as a
+        // marker a stock plug carries, has no action and keeps its stock identity.
+        effect_action(
+            sources,
+            &WeaponSandboxPerkRuntimeOverride {
+                program: None,
+                projectiles: Vec::new(),
+                source_perk_index: index,
+                activation: None,
+                runtime_values: Vec::new(),
+                action_float_values: Vec::new(),
+            },
+        )?;
     }
     let icon_index = read_u16(&strings, ITEM_STRING_ICON_INDEX_OFFSET)?;
     validate_reused_stock_item_icon(&sources.stock_item_icons, &strings, icon_index)?;
@@ -424,11 +431,11 @@ pub(super) fn plan(
                     let identity = donor.weapon.identity;
                     let host = crate::package_profile::host();
                     let tag = |offset: usize| -> AuthoringResult<TagHash> {
-                        Ok(TagHash::new(
-                            host.id,
-                            u16::try_from(host.first + weapon_ordinal * 2 + offset)
-                                .map_err(|_| invalid("Mod tag index does not fit 16 bits"))?,
-                        ))
+                        AppendedTagAllocator::records(host.first).assigned_tag(
+                            weapon_ordinal * 2 + offset,
+                            "Mod",
+                            "record",
+                        )
                     };
                     let placement = Placement {
                         roles: "mod".into(),
@@ -489,18 +496,11 @@ pub(super) fn plan(
                     )
                     .ok_or_else(|| invalid("Private socket-plug tag index overflowed"))?;
                 let host = crate::package_profile::host();
-                let authored_definition_tag = TagHash::new(
-                    host.id,
-                    u16::try_from(host.first + tag_ordinal).map_err(|_| {
-                        invalid("Private socket-plug definition tag does not fit 16 bits")
-                    })?,
-                );
-                let authored_string_tag = TagHash::new(
-                    host.id,
-                    u16::try_from(host.first + tag_ordinal + 1).map_err(|_| {
-                        invalid("Private socket-plug string tag does not fit 16 bits")
-                    })?,
-                );
+                let allocator = AppendedTagAllocator::records(host.first);
+                let authored_definition_tag =
+                    allocator.assigned_tag(tag_ordinal, "Private socket plug", "definition")?;
+                let authored_string_tag =
+                    allocator.assigned_tag(tag_ordinal + 1, "Private socket plug", "strings")?;
                 let placement = Placement {
                     roles: format!(
                         "socket/{}/choice/{}",

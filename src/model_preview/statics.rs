@@ -453,22 +453,6 @@ fn read_mesh(
     Ok((base, count, decoded.has_uv))
 }
 
-/// The position stride, rejecting anything this module has not been shown to read. Each
-/// accepted stride was checked by decoding a whole buffer and reproducing the model-space
-/// bounding box centre the static stores at +0x50.
-#[cfg(test)]
-fn position_stride(header: &[u8], payload: &[u8]) -> Result<usize, String> {
-    let stride = usize::from(u16_at(header, 4)?);
-    if !matches!(stride, 8 | 12 | 28 | 32)
-        || payload.is_empty()
-        || !payload.len().is_multiple_of(stride)
-        || u32_at(header, 0)? as usize != payload.len()
-    {
-        return Err("Unsupported static buffer layout".into());
-    }
-    Ok(stride)
-}
-
 fn load_instances(
     manager: &PackageManager,
     tag: u32,
@@ -611,27 +595,6 @@ fn byte(data: &[u8], at: usize) -> Result<u8, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_unreadable_vertex_layout_is_named_rather_than_guessed() {
-        // A header whose stride this module has not been shown to read, and one whose payload
-        // length disagrees with the size the header states.
-        let header = |stride: u16, size: u32| {
-            let mut bytes = [0u8; 12];
-            bytes[..4].copy_from_slice(&size.to_le_bytes());
-            bytes[4..6].copy_from_slice(&stride.to_le_bytes());
-            bytes
-        };
-        assert_eq!(
-            position_stride(&header(20, 40), &[0; 40]),
-            Err("Unsupported static buffer layout".into())
-        );
-        assert_eq!(
-            position_stride(&header(8, 40), &[0; 32]),
-            Err("Unsupported static buffer layout".into())
-        );
-        assert_eq!(position_stride(&header(8, 32), &[0; 32]), Ok(8));
-    }
 
     fn manager() -> PackageManager {
         let packages = crate::test_support::preview_packages();

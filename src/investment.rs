@@ -55,12 +55,12 @@ pub use controls::{
     draw_plug_safety_warning, progress_bar, show_plug_safety_warnings, tooltip_title,
 };
 pub use definitions::{
-    AbilityKey, AbilityParameter, AbilityRowSummary, PowerCapChoice, SubclassSummary,
-    WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily, WeaponDamageProfile,
-    WeaponDamageType, WeaponDonor, WeaponDonorSummary, WeaponDyeReference, WeaponInventorySlot,
-    WeaponInvestmentStat, WeaponOrnament, WeaponOrnamentAppearance, WeaponRarity,
-    WeaponSandboxPerkChoice, WeaponSocket, WeaponSocketTypeChoice, WeaponStatDisplayPoint,
-    WeaponSupportedPlugSet, WeaponTraitChoice,
+    AbilityKey, AbilityParameter, AbilityRowSummary, PowerCapChoice, SharedWeaponOrnament,
+    SubclassSummary, WeaponAmmoType, WeaponArtArrangement, WeaponDamageCarrierFamily,
+    WeaponDamageProfile, WeaponDamageType, WeaponDonor, WeaponDonorSummary, WeaponDyeReference,
+    WeaponInventorySlot, WeaponInvestmentStat, WeaponOrnament, WeaponOrnamentAppearance,
+    WeaponRarity, WeaponSandboxPerkChoice, WeaponSocket, WeaponSocketTypeChoice,
+    WeaponStatDisplayPoint, WeaponSupportedPlugSet, WeaponTraitChoice,
 };
 pub use perk_patterns::PerkPatternUse;
 
@@ -274,6 +274,14 @@ impl InvestmentCatalog {
             .map(|metadata| metadata.definition_tag)
     }
 
+    /// The tag of an installed item's string record, beside its definition.
+    #[must_use]
+    pub fn item_string_tag(&self, hash: u32) -> Option<u32> {
+        self.catalog
+            .item_package_metadata(u64::from(hash))
+            .and_then(|metadata| metadata.string_definition_tag)
+    }
+
     /// Returns every native cap-table row from the loaded installation, including
     /// duplicate values and large limits. Legacy "version group" fields hold table indices.
     #[must_use]
@@ -358,6 +366,61 @@ impl InvestmentCatalog {
             )
         });
         appearances
+    }
+
+    /// Lists the stock ornaments an imported weapon ornament can be built on: each plug a weapon's
+    /// ornament socket, the one offering Default Ornament, offers from its shared plug set. A
+    /// socket that lists its ornaments only in the weapon's own definition offers none, since a
+    /// private plug cannot join that list.
+    #[must_use]
+    pub fn shared_weapon_ornaments(&self) -> Vec<SharedWeaponOrnament> {
+        const DEFAULT_ORNAMENT: u64 = 0xAEBA_E371;
+        let mut found = BTreeMap::new();
+        for weapon in self
+            .catalog
+            .items
+            .iter()
+            .filter(|item| is_authorable_weapon_item(item))
+        {
+            let Ok(weapon_hash) = u32::try_from(weapon.hash) else {
+                continue;
+            };
+            for socket in weapon.sockets.iter().filter(|socket| {
+                socket
+                    .sources
+                    .iter()
+                    .any(|source| source.ordered_members.contains(&DEFAULT_ORNAMENT))
+            }) {
+                for &plug in socket.ordered_reusable_choices() {
+                    let (Ok(hash), Some(metadata)) = (
+                        u32::try_from(plug),
+                        self.catalog.item_package_metadata(plug),
+                    ) else {
+                        continue;
+                    };
+                    let Some(plug_category) = metadata
+                        .plug_category_hash
+                        .and_then(|category| u32::try_from(category).ok())
+                    else {
+                        continue;
+                    };
+                    if plug == DEFAULT_ORNAMENT {
+                        continue;
+                    }
+                    found
+                        .entry((weapon_hash, hash))
+                        .or_insert_with(|| SharedWeaponOrnament {
+                            hash,
+                            name: self.catalog.plug_label(plug, false),
+                            plug_category,
+                            art_rows: metadata.art_arrangements.len(),
+                            weapon: weapon_hash,
+                            weapon_name: weapon.name.clone(),
+                        });
+                }
+            }
+        }
+        found.into_values().collect()
     }
 
     /// Lists the ornaments offered by an installed weapon's own sockets.
@@ -834,6 +897,15 @@ impl InvestmentCatalog {
             .is_some_and(is_stock_shader)
     }
 
+    /// The plug category an installed plug declares.
+    #[must_use]
+    pub fn plug_category(&self, hash: u32) -> Option<u32> {
+        self.catalog
+            .item_package_metadata(u64::from(hash))
+            .and_then(|metadata| metadata.plug_category_hash)
+            .and_then(|category| u32::try_from(category).ok())
+    }
+
     /// The class an armor piece is for: 0 Titan, 1 Hunter, 2 Warlock, 3 any.
     #[must_use]
     pub fn item_class_type(&self, hash: u32) -> Option<u8> {
@@ -921,6 +993,12 @@ impl InvestmentCatalog {
                     compatible_plug_count,
                     reusable_plug_set_index: socket.reusable_set_index(),
                     randomized_plug_set_index: socket.randomized_set_index(),
+                    ordered_randomized_choices: socket
+                        .ordered_randomized_choices()
+                        .iter()
+                        .copied()
+                        .filter_map(|hash| u32::try_from(hash).ok())
+                        .collect(),
                 }
             })
             .collect();

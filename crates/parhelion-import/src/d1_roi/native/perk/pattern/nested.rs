@@ -98,7 +98,7 @@ pub(super) fn read(
     // Original source methods 111B2E0/111B430 and native EFA440/EFA010 retain
     // the recipient and register/remove the referenced controller. Source definition
     // +68 becomes native +50. The child keeps its own events and retained effects.
-    let (program, omitted_presentation) = super::super::program_inner(
+    let (program, omitted_feedback) = super::super::program_inner(
         source,
         action,
         "Nested Source Effect",
@@ -176,6 +176,6 @@ pub(super) fn read(
             expected_action,
             program: Box::new(program),
         },
-        omitted_presentation,
+        omitted_feedback,
     ))
 }

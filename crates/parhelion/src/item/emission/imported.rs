@@ -13,11 +13,17 @@ mod ornament_collections;
 mod ornament_icon;
 mod ornaments;
 mod shader;
+mod sharing;
+mod streaming;
 
 struct Shared {
     companions: linking::Companions,
     characters: BTreeMap<(u32, u32), [u8; 32]>,
+    identities: sharing::Identities,
     timings: Timings,
+    /// The runtime the build is for, whose watermark imported ornament icons take. The packages
+    /// a build reads can be a filtered view outside the install, so it is not read from them.
+    branding: crate::branding::Branding,
 }
 
 /// Where linking the imported graphs spent its time, summed over every graph.
@@ -244,53 +250,91 @@ fn replace(
         place_regions(slots, kept)
     })
 }
+/// One recipe's imported graph to check: its kind, item, graph and name.
+type Checked<'a> = (ItemKind, u32, &'a parhelion_import::GraphReference, &'a str);
+
 /// Checks every imported graph against the fingerprint taken when it was selected. Each
 /// graph hashes tens of megabytes of its own files, so the graphs are checked side by side.
+/// The build log names each recipe's model after `verb` in recipe order as the check waits on
+/// it, and the first failing graph in that order is reported, as a sequential check would.
 /// The build checks before [`apply`] links them and again after.
-pub(super) fn validate_graphs(weapons: &[WeaponCloneSpec]) -> AuthoringResult<()> {
+pub(super) fn validate_graphs(
+    weapons: &[WeaponCloneSpec],
+    progress: &mut crate::item::build::Progress<'_>,
+    verb: &str,
+) -> AuthoringResult<()> {
     let graphs = weapons
         .iter()
         .filter_map(|weapon| {
-            weapon
-                .overrides
-                .imported_graph
-                .as_ref()
-                .map(|graph| (weapon.kind, weapon.identity.item_hash, graph))
+            weapon.overrides.imported_graph.as_ref().map(|graph| {
+                let name = weapon.text.name.as_str();
+                (weapon.kind, weapon.identity.item_hash, graph, name)
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<Checked<'_>>>();
     let workers = std::thread::available_parallelism()
         .map_or(4, std::num::NonZeroUsize::get)
-        .clamp(1, 8);
-    let results = std::thread::scope(|scope| {
-        graphs
-            .chunks(graphs.len().div_ceil(workers).max(1))
-            .map(|chunk| {
-                scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|(kind, item, graph)| {
-                            if let Some(kind) = crate::imported::kind(*kind) {
-                                graph.validate_reusable(kind)
-                            } else {
-                                graph.validate(*item)
-                            }
-                            .map_err(|e| e.to_string())
-                        })
-                        .collect::<Vec<_>>()
-                })
+        .clamp(1, 8)
+        .min(graphs.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let stopped = || invalid("An imported graph check stopped unexpectedly");
+    std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let handles = (0..workers)
+            .map(|_| {
+                let sender = sender.clone();
+                let (graphs, next) = (&graphs, &next);
+                scope.spawn(move || check_graphs(graphs, next, &sender))
             })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|worker| worker.join())
-            .collect::<Vec<_>>()
-    });
-    // Report the first failing graph in recipe order, as a sequential check would.
-    for chunk in results {
-        for result in chunk.map_err(|_| invalid("An imported graph check stopped unexpectedly"))? {
-            result.map_err(invalid)?;
+            .collect::<Vec<_>>();
+        drop(sender);
+        let mut finished = BTreeMap::new();
+        let checked = graphs
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, &(.., name))| {
+                progress.start(&format!("{verb} Model for {name}"));
+                while !finished.contains_key(&index) {
+                    let (done, result) = receiver.recv().map_err(|_| stopped())?;
+                    finished.insert(done, result);
+                }
+                finished
+                    .remove(&index)
+                    .ok_or_else(stopped)?
+                    .map_err(invalid)
+            });
+        // A worker still checking stops at its next result.
+        drop(receiver);
+        // Every worker is joined, even after one fails.
+        let mut joined = true;
+        for handle in handles {
+            joined &= handle.join().is_ok();
+        }
+        if joined { checked } else { Err(stopped()) }
+    })
+}
+
+/// One worker's share of [`validate_graphs`]: graphs taken in recipe order, so the one the log
+/// waits on is checked first, until none remain or the log stops waiting.
+fn check_graphs(
+    graphs: &[Checked<'_>],
+    next: &std::sync::atomic::AtomicUsize,
+    sender: &std::sync::mpsc::Sender<(usize, Result<(), String>)>,
+) {
+    loop {
+        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(&(kind, item, graph, _)) = graphs.get(index) else {
+            return;
+        };
+        let result = match crate::imported::kind(kind) {
+            Some(kind) => graph.validate_reusable(kind),
+            None => graph.validate(item),
+        }
+        .map_err(|e| e.to_string());
+        if sender.send((index, result)).is_err() {
+            return;
         }
     }
-    Ok(())
 }
 
 pub(super) fn apply(
@@ -298,6 +342,8 @@ pub(super) fn apply(
     manager: &sundial::package_authoring::PackageManager,
     emission: &mut PackageEmission,
     weapons: &[WeaponCloneSpec],
+    branding: crate::branding::Branding,
+    progress: &mut crate::item::build::Progress<'_>,
 ) -> AuthoringResult<(Vec<ReplacementSpec>, Timings)> {
     let mut timings = Timings::default();
     let started = std::time::Instant::now();
@@ -341,14 +387,19 @@ pub(super) fn apply(
                 .map(|graph| (weapon, graph))
         })
         .flat_map(|(weapon, graph)| {
-            std::iter::once((graph.directory.as_path(), Some(weapon))).chain(
-                graph.attachments.iter().map(move |attachment| {
-                    (
-                        attachment.directory.as_path(),
-                        (weapon.kind == ItemKind::Armor).then_some(weapon),
-                    )
-                }),
-            )
+            let owner = weapon.text.name.as_str();
+            std::iter::once(Target {
+                folder: graph.directory.as_path(),
+                owner,
+                spec: Some(weapon),
+                recipe: weapon,
+            })
+            .chain(graph.attachments.iter().map(move |attachment| Target {
+                folder: attachment.directory.as_path(),
+                owner,
+                spec: (weapon.kind == ItemKind::Armor).then_some(weapon),
+                recipe: weapon,
+            }))
         })
         .collect::<Vec<_>>();
     timings.read = started.elapsed();
@@ -358,7 +409,9 @@ pub(super) fn apply(
     let mut shared = Shared {
         companions: linking::Companions::new(),
         characters: BTreeMap::new(),
+        identities: sharing::Identities::default(),
         timings,
+        branding,
     };
     let mut replacements = BTreeMap::new();
     // Custom shader dyes already extend the dye table, so imported dyes follow them.
@@ -367,17 +420,18 @@ pub(super) fn apply(
     }
     let accounted =
         |timings: &Timings| timings.read + timings.nodes + timings.companions + timings.link;
-    for (folder, spec) in folders {
+    for target in folders {
         let started = std::time::Instant::now();
         let before = accounted(&shared.timings);
+        let folder = target.folder;
         let applied = apply_one(
             directory,
             emission,
-            folder,
+            target,
             &replacements,
             manager,
             &mut shared,
-            spec,
+            progress,
         )
         .map_err(|error| error.context(format!("Imported graph {}", folder.display())))?;
         for replacement in applied {
@@ -386,6 +440,15 @@ pub(super) fn apply(
         let staged = accounted(&shared.timings) - before;
         shared.timings.tables += started.elapsed().saturating_sub(staged);
         shared.timings.graphs += 1;
+    }
+    let identities = &shared.identities;
+    if identities.reused + identities.within > 0 {
+        eprintln!(
+            "Shared {} resources with earlier imported graphs and {} within their own, {:.1} MB not repeated",
+            identities.reused,
+            identities.within,
+            identities.bytes as f64 / 1048576.0
+        );
     }
     let replacements = replacements
         .into_iter()
@@ -501,21 +564,84 @@ fn graph_node(
     Ok(node)
 }
 
+/// Make a weapon model graph a mod carries, an imported weapon ornament, the mod's own plug, with
+/// the art, dye and kept part keys an imported model copy takes from its item. Renaming the mod
+/// changes its identity, and keys hashed from the whole item are far less likely to repeat another
+/// import's than keys from its low 16 bits.
+fn bind_mod(graph: &mut Value, spec: &WeaponCloneSpec) {
+    let item = spec.identity.item_hash;
+    let key = |role: &str| {
+        let hash = fnv1_name_hash(&format!("parhelion/imported-model/{item:08X}/{role}"));
+        if [0, u32::MAX, 0x811C9DC5].contains(&hash) {
+            hash ^ 0x10000
+        } else {
+            hash
+        }
+    };
+    graph["item_hash"] = item.into();
+    graph["art_key"] = key("art").into();
+    for (field, role) in [
+        ("dyes", "dye"),
+        ("kept_parts", "kept"),
+        ("source_parts", "source-part"),
+    ] {
+        let target = if field == "dyes" { "manifest" } else { "key" };
+        for (index, row) in graph[field]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            row[target] = key(&format!("{role}-{index}")).into();
+        }
+    }
+}
+
+/// One graph to link: its folder, the name of the recipe it belongs to, and that recipe when the
+/// graph is the recipe's own or an armor appearance. A weapon appearance with gear art of its
+/// own binds to its socket choice through `recipe`, the recipe it belongs to, and is otherwise
+/// linked without it.
+struct Target<'a> {
+    folder: &'a Path,
+    owner: &'a str,
+    spec: Option<&'a WeaponCloneSpec>,
+    recipe: &'a WeaponCloneSpec,
+}
+
+/// The build log's line while a graph links: an appearance by its ornament name, else its
+/// recipe's model.
+fn linking_label(graph: &Value, owner: &str) -> String {
+    match graph.get("ornament") {
+        Some(link) => match link["name"].as_str() {
+            Some(name) => format!("Linking {name} for {owner}"),
+            None => format!("Linking Appearance for {owner}"),
+        },
+        None => format!("Linking Model for {owner}"),
+    }
+}
+
 fn apply_one(
     directory: &Path,
     emission: &mut PackageEmission,
-    folder: &Path,
+    target: Target<'_>,
     previous: &BTreeMap<u32, Vec<u8>>,
     manager: &sundial::package_authoring::PackageManager,
     shared: &mut Shared,
-    spec: Option<&WeaponCloneSpec>,
+    progress: &mut crate::item::build::Progress<'_>,
 ) -> AuthoringResult<Vec<ReplacementSpec>> {
+    let Target {
+        folder,
+        owner,
+        spec,
+        recipe,
+    } = target;
     let started = std::time::Instant::now();
     let mut graph: Value = serde_json::from_slice(
         &fs::read(folder.join("asset-graph.json")).map_err(|e| invalid(e.to_string()))?,
     )
     .map_err(|e| invalid(e.to_string()))?;
     shared.timings.read += started.elapsed();
+    progress.start(&linking_label(&graph, owner));
     if graph["source"] == "d1_roi"
         && graph["kind"] == "armor"
         && graph["converter_revision"].as_u64().unwrap_or(0) < 48
@@ -540,16 +666,14 @@ fn apply_one(
             spec.ok_or_else(|| invalid("Source shader recipe missing"))?,
         )?;
     } else if graph.get("gear_art").is_some() {
-        gear::bind(
-            &mut graph,
-            spec.ok_or_else(|| invalid("Imported gear recipe missing"))?,
-            emission,
-        )?;
+        gear::bind(&mut graph, recipe, emission)?;
+    } else if let Some(spec) = spec.filter(|spec| spec.kind == ItemKind::Mod) {
+        bind_mod(&mut graph, spec);
     }
     let json_nodes = graph["nodes"]
         .as_array()
         .ok_or_else(|| invalid("Asset nodes missing"))?;
-    let branding = crate::branding::Branding::for_packages(directory);
+    let branding = shared.branding;
     let shader = graph["kind"] == "shader";
     let origin = crate::package_profile::host()
         .is_standalone()
@@ -577,21 +701,10 @@ fn apply_one(
                     .push(crate::mod_family::build::restore(id).map_err(invalid)?);
             }
         }
-        let id = symbols
-            .values()
-            .next()
-            .ok_or_else(|| invalid("Cached imported graph has no symbols"))?
-            .pkg_id();
-        let package_index = emission
-            .asset_packages
-            .packages
-            .iter()
-            .position(|package| package.id == id)
-            .unwrap();
-        linking::Linked {
-            symbols,
-            package_index,
+        if symbols.is_empty() {
+            return Err(invalid("Cached imported graph has no symbols"));
         }
+        linking::Linked { symbols }
     } else {
         emission.asset_packages.owner = origin;
         let linked = (|| {
@@ -605,6 +718,8 @@ fn apply_one(
                 .and_then(|reference| reference.material_inputs.as_ref());
             parhelion_import::marathon::inputs::bind(&graph, folder, inputs, &mut bound)
                 .map_err(|e| invalid(format!("Imported material inputs: {e:#}")))?;
+            parhelion_import::marathon::restore_source_eye(&graph, folder, &mut bound)
+                .map_err(|e| invalid(format!("Imported sight eye: {e:#}")))?;
             let models =
                 parhelion_import::model_symbols(&graph).map_err(|e| invalid(e.to_string()))?;
             for n in json_nodes {
@@ -621,6 +736,7 @@ fn apply_one(
                     manager,
                 )?);
             }
+            streaming::split(&mut nodes, manager)?;
             shared.timings.nodes += started.elapsed();
             let started = std::time::Instant::now();
             loading::replication_companions(
@@ -629,11 +745,6 @@ fn apply_one(
                 &mut nodes,
                 &mut shared.companions,
             )?;
-            let extra_bounds = if crate::package_profile::host().is_standalone() {
-                0
-            } else {
-                ornament_icon::entry_bound(manager, emission, &graph, folder, branding)?
-            };
             let borrowed = if shader {
                 shader::edit(
                     &mut nodes,
@@ -653,16 +764,19 @@ fn apply_one(
             } else {
                 graph["parent"].as_str().unwrap_or("parent")
             };
+            let reuse =
+                shared
+                    .identities
+                    .reuse(origin, &mut nodes, &emission.asset_packages, manager)?;
             shared.timings.companions += started.elapsed();
             let started = std::time::Instant::now();
-            let linked = linking::link(
+            let mut linked = linking::link_with(
                 directory,
                 emission,
                 manager,
-                nodes,
+                (nodes, &reuse.external),
                 primary,
                 &mut shared.companions,
-                extra_bounds,
                 |symbols, groups| {
                     loading::include_native_resources(
                         manager, folder, json_nodes, symbols, groups,
@@ -685,6 +799,9 @@ fn apply_one(
                     .then(|| folder.join("linked"))
                     .as_deref(),
             )?;
+            shared
+                .identities
+                .register(origin, reuse, &mut linked.symbols)?;
             shared.timings.link += started.elapsed();
             Ok::<_, crate::AuthoringError>(linked)
         })();
@@ -695,10 +812,7 @@ fn apply_one(
         }
         linked
     };
-    let linking::Linked {
-        symbols,
-        package_index,
-    } = linked;
+    let linking::Linked { symbols } = linked;
     if shader {
         let replacement = dyes::apply(manager, emission, &symbols, &graph, previous)?
             .ok_or_else(|| invalid("Imported shader has no dye rows"))?;
@@ -708,7 +822,7 @@ fn apply_one(
     if graph.get("gear_art").is_some() {
         let mut result = gear::apply(manager, emission, &symbols, &graph, previous)?;
         ornaments::apply(emission, &graph)?;
-        ornament_icon::apply(manager, emission, &graph, package_index, folder, branding)?;
+        ornament_icon::apply(manager, emission, &graph, folder, branding)?;
         result.extend(character::apply(
             manager,
             emission,
@@ -838,7 +952,7 @@ fn apply_one(
     arrays::add_array_markers(definition).map_err(invalid)?;
 
     ornaments::apply(emission, &graph)?;
-    ornament_icon::apply(manager, emission, &graph, package_index, folder, branding)?;
+    ornament_icon::apply(manager, emission, &graph, folder, branding)?;
     ornament_collections::apply(emission, &graph)?;
     result.extend(character::apply(
         manager,

@@ -17,13 +17,25 @@ mod resource;
 mod rig;
 mod weapon;
 
-#[derive(Default)]
 pub struct NativeOptions {
     /// Retained for existing callers. Texture conversion is built in and ignores this path.
     pub xg_library: Option<PathBuf>,
     /// A saved recipe's namespace that a reimport keeps, so the authored item retains its
     /// identity and edits whichever naming scheme made it. Unset for a new import.
     pub namespace: Option<String>,
+    /// The item's talent grid ornaments import with it as private appearance choices. Each
+    /// ornament converts a model of its own.
+    pub ornaments: bool,
+}
+
+impl Default for NativeOptions {
+    fn default() -> Self {
+        Self {
+            xg_library: None,
+            namespace: None,
+            ornaments: true,
+        }
+    }
 }
 
 struct Assembly<'a> {
@@ -33,6 +45,9 @@ struct Assembly<'a> {
     folder: PathBuf,
     nodes: Vec<Value>,
     symbols: BTreeSet<String>,
+    /// Complete graph audio, shared by retained animation clips and private talent programs.
+    /// Its storage and namespace metadata must remain separate from ordinary appearance nodes.
+    audio_assets: Option<Value>,
     templates: BTreeMap<(u8, u8), u32>,
     globals: super::expression::Globals,
     layouts: super::layout::Layouts,
@@ -40,8 +55,8 @@ struct Assembly<'a> {
     evidence: Vec<Value>,
     /// Explicit translation choices the graph reports with its limitations.
     approximations: BTreeSet<String>,
-    /// The current body's channel bank names in ordinal order, which its materials' object
-    /// inputs index.
+    /// The current model component's input names in order, which its materials' object inputs
+    /// index.
     object_channels: Vec<u32>,
     palette: u32,
     /// Source equipment index to native index. Present only when runtime palettes differ.
@@ -79,6 +94,7 @@ impl<'a> Assembly<'a> {
             folder: folder.to_owned(),
             nodes: Vec::new(),
             symbols: BTreeSet::new(),
+            audio_assets: None,
             templates: BTreeMap::new(),
             globals,
             layouts,

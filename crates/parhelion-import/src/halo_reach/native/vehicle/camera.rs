@@ -87,6 +87,6 @@ pub(super) fn build(
     assembly.resource(driver, definition + 0x248, symbol)?;
     Ok(
         json!({"distance_scale":distance_scale,"selections":selected,
-        "limits":["The private native camera rail is farther from its target. Live framing and collision shortening require gameplay acceptance."]}),
+        "limits":["The private native camera rail is farther from its target."]}),
     )
 }

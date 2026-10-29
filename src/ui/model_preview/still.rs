@@ -28,6 +28,15 @@ impl Subject {
             _ => false,
         }
     }
+
+    /// Names the subject in timing records.
+    fn label(&self) -> String {
+        match self {
+            Self::Appearance(appearance) => format!("appearance {}", appearance.arrangement),
+            Self::Object(tag) => format!("object 0x{tag:08X}"),
+            Self::Local(appearance) => format!("imported {appearance:?}"),
+        }
+    }
 }
 
 type Wanted = (
@@ -267,7 +276,13 @@ fn show_subject(
     }
     still.access = access;
     still.wanted = wanted;
-    still.receive();
+    model_preview::timing::measure(
+        || "receive".to_owned(),
+        "ui",
+        "ui receive",
+        std::time::Duration::from_millis(1),
+        || still.receive(),
+    );
     let held = still.hold(ui.ctx());
     request_preview(&mut still, ui.ctx(), paused || held);
     still.interact(ui, &response);
@@ -342,7 +357,10 @@ impl Still {
                 self.software_frames = 0;
             }
             Err(error) if error == model_preview::CANCELLED => {}
-            Err(error) => self.error = Some((source, error)),
+            Err(error) => {
+                model_preview::timing::mark(|| format!("load failed: {error}"), "ui");
+                self.error = Some((source, error));
+            }
         }
     }
 
@@ -401,10 +419,16 @@ impl Still {
                     Ok(model)
                 })
             };
-            let result = match &access {
-                Some(access) => access.read(read_model),
-                None => read_model(),
-            };
+            let result = model_preview::timing::measure(
+                || format!("load {}", subject.label()),
+                "worker",
+                "geometry and other",
+                std::time::Duration::ZERO,
+                || match &access {
+                    Some(access) => access.read(read_model),
+                    None => read_model(),
+                },
+            );
             let _ = sender.send(result);
             repaint.request_repaint_of(viewport);
         });
@@ -600,7 +624,20 @@ impl Still {
             zoom: self.camera.zoom * fit,
             ..self.camera
         };
-        if model_preview::gpu::available() && self.gpu.fallback(model).is_none() {
+        let gpu = model_preview::gpu::available() && self.gpu.fallback(model).is_none();
+        // Until the GPU draws the model, while its programs link and its images upload, the
+        // software image stands in. It is painted first, so the GPU's first frame covers it.
+        if !(gpu && self.gpu.drawn(model)) {
+            self.draw_software(
+                ui,
+                painter,
+                rect,
+                model,
+                (camera, pixels, seconds),
+                overrides,
+            );
+        }
+        if gpu {
             self.gpu.paint(
                 ui,
                 rect,
@@ -615,8 +652,24 @@ impl Still {
                     dyes: None,
                 },
             );
-            return true;
+            if self.gpu.drawn(model) {
+                return true;
+            }
         }
+        // Reading a model clears what was rendered, so an image of this one has been drawn.
+        self.rendered.is_some()
+    }
+
+    /// Paints the software image of `model`, asking for a new one when the view changed.
+    fn draw_software(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        model: &Arc<Model>,
+        (camera, pixels, seconds): (Camera, [usize; 2], f32),
+        overrides: &[SurfaceOverride],
+    ) {
         // Software previews also advance the material program while preserving cached static views.
         let key = (camera, pixels, overrides.to_vec());
         let request = image_job::Key {
@@ -630,6 +683,9 @@ impl Still {
             orbit: false,
         };
         if let Some((rendered, image)) = self.software.update(ui.ctx(), model.clone(), request) {
+            if self.software_frames == 0 {
+                model_preview::timing::mark(|| "first software frame".to_owned(), "ui");
+            }
             self.software_frames = self.software_frames.saturating_add(1);
             match &mut self.texture {
                 Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
@@ -652,8 +708,6 @@ impl Still {
                 egui::Color32::WHITE,
             );
         }
-        // Reading a model clears what was rendered, so an image of this one has been drawn.
-        self.rendered.is_some()
     }
 }
 

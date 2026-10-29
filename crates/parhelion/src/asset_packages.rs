@@ -1,4 +1,4 @@
-//! Allocate complete resource groups into owned packages before assigning their tags.
+//! Allocate complete artwork chains and symbolic resource graphs into owned packages.
 use crate::{
     AuthoringResult, NewTagReferenceOverride, NewTagSpec,
     appended_tags::MAX_PACKAGE_ENTRY_COUNT,
@@ -6,6 +6,8 @@ use crate::{
     format::{BLOCK_SIZE, MAX_BLOCK_COUNT},
     package_profile::window,
 };
+mod graph;
+pub(crate) mod stream;
 
 pub(crate) struct AssetPackage {
     pub id: u16,
@@ -165,6 +167,59 @@ impl Budget {
 }
 
 impl AssetPackages {
+    /// Artwork has bounded chains but its payload sizes depend on native texture lanes.
+    /// Measure one validated local draft, then author against the selected physical address.
+    pub(crate) fn author<T>(
+        &mut self,
+        mut build: impl FnMut(
+            u16,
+            usize,
+        )
+            -> AuthoringResult<(T, Vec<NewTagSpec>, Vec<NewTagReferenceOverride>)>,
+    ) -> AuthoringResult<T> {
+        let draft_id = window().first();
+        let draft = build(draft_id, 0)?;
+        // A final companion bitmap may reach the end of an existing 8192-entry table.
+        let bounds = draft
+            .1
+            .iter()
+            .map(|tag| {
+                tag.payload
+                    .len()
+                    .checked_add(2048)
+                    .ok_or_else(|| invalid("Artwork payload bound overflow"))
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        let plan = self.plan_group(bounds)?;
+        let (result, tags, mut references) = if plan.package_id == draft_id && plan.base == 0 {
+            draft
+        } else {
+            drop(draft);
+            build(plan.package_id, plan.base)?
+        };
+        for reference in &mut references {
+            reference.new_tag_ordinal = reference
+                .new_tag_ordinal
+                .checked_add(plan.base)
+                .ok_or_else(|| invalid("Artwork reference owner overflow"))?;
+            if let crate::NewTagReference::Appended(index) = &mut reference.reference {
+                *index = index
+                    .checked_add(plan.base)
+                    .ok_or_else(|| invalid("Artwork reference target overflow"))?;
+            }
+        }
+        self.commit_group(plan, tags, references)?;
+        Ok(result)
+    }
+
+    pub(crate) fn tag(&self, tag: tiger_pkg::TagHash) -> Option<&NewTagSpec> {
+        self.packages
+            .iter()
+            .find(|package| package.id == tag.pkg_id())?
+            .tags
+            .get(usize::from(tag.entry_index()))
+    }
+
     pub(crate) fn primary(
         tags: Vec<NewTagSpec>,
         references: Vec<NewTagReferenceOverride>,

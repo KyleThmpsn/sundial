@@ -33,7 +33,9 @@ pub(in crate::model_preview) fn decode(
                 ]
             })
             .collect(),
-        84 => bc5(bytes, width, height)?,
+        84 => super::banded(bytes, 16, [width, height], |band, rows| {
+            bc5(band, width, rows)
+        })?,
         _ => return Ok(None),
     };
     if pixels.iter().flatten().any(|v| !v.is_finite()) {

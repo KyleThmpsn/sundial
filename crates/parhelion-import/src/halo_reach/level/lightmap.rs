@@ -10,8 +10,9 @@
 //! pi is the lobe's color times a diffuse table read at the normal's cosine to the lobe and the
 //! bandwidth, plus the ambient color. The direction map's second channel is the sun's visibility,
 //! for the separate analytical light. The translation stores that decoded form in three images of
-//! one atlas, which stacks the lightmap image of every BSP a level loads, each above a neutral strip
-//! that also lights surfaces without lightmap coordinates.
+//! one atlas, which sets the lightmap image of every BSP a level loads on shelves, each ringed by
+//! neutral texels, above the lighting probes and a last neutral strip that also lights surfaces
+//! without lightmap coordinates.
 //!
 //! Instances without lightmap coordinates are lit per vertex or by one coloring row, and so are a
 //! cluster mesh's parts lit per vertex. Per-vertex lighting is six bytes a vertex in a buffer the
@@ -55,13 +56,22 @@ const EXPONENT: f32 = 9.000_001;
 const BRIGHTNESS: usize = 0x18;
 /// The share of lit texels whose colors encode without clipping.
 const PEAK_QUANTILE: f64 = 0.999;
+/// Stored colors are logarithmic in their share `s` of the atlas's peak: a byte holds
+/// `255 log2(1 + LOG_RANGE s) / log2(1 + LOG_RANGE)` ([`encode_share`], [`decode_share`]). Zero and
+/// the peak store exactly, and the upper 16 stops step evenly by 4.4%, where the square root of `s`
+/// stepped by 13% or more below its sixteenth byte, on 12% of Nightfall's lit texels, and its dark
+/// baked light fell into contour bands. Below `s = 1 / LOG_RANGE` the steps turn linear.
+pub(in crate::halo_reach) const LOG_RANGE: f32 = 65_536.;
 /// Lightmap texture coordinate streams: two unsigned normalized 16-bit values per vertex, with
 /// the declaration word's stride 4 above type 4.
 const TEXCOORD_DECLARATION: u32 = 0x0004_0004;
 /// The cluster mesh vertex buffer slot holding lightmap texture coordinates.
 pub(super) const CLUSTER_SLOT: usize = 1;
-/// Rows of neutral lighting below each source image.
+/// Texels of neutral lighting around each source image and in the atlas's last strip, so filtering
+/// at an image's edge reads neutral light rather than another image's.
 const NEUTRAL_ROWS: usize = 4;
+/// Texels on a side of the largest texture the atlas may take.
+const MAX_SIDE: usize = 16_384;
 /// The lightmap BSP data's per-vertex lighting buffers, an `i16` vertex buffer index and a half
 /// float scale in each 4-byte row, and its instance rows, whose `i16` at `+0x02` names an
 /// instance's per-vertex buffer row and at `+0x04` its coloring row.
@@ -91,25 +101,24 @@ const PER_VERTEX_BYTES: usize = 6;
 /// The per-vertex lighting directions: four signed 16-bit values a texel, red first.
 const DIRECTION_LUT: &str = r"rasterizer\direction_lut_1002";
 const SIGNED_RGBA16: i16 = 34;
-/// Texels on a side of the block that holds one lighting probe, and an atlas's width when it holds
-/// probes alone.
+/// Texels on a side of the block that holds one lighting probe.
 const PROBE_BLOCK: usize = 3;
-const PROBE_WIDTH: usize = 1024;
 
 /// A level's baked lighting in the decoded dual VMF form, as three linear RGBA8 images of one
-/// atlas: each BSP's source image above a neutral strip, neutral lighting beside a narrower image,
-/// and then the lighting probes above a last neutral strip. `lobe` holds the lobe's color and its
-/// bandwidth, `ambient` the ambient color and the sun's visibility, and `direction` the lobe's
-/// direction, halved and offset. Colors are stored as the square root of their share of the
-/// shared peak.
+/// atlas: each BSP's source image on shelves, ringed by neutral lighting, and then the lighting
+/// probes above a last neutral strip. Texels outside those are black and never sampled. `lobe`
+/// holds the lobe's color and its bandwidth, `ambient` the ambient color and the sun's visibility,
+/// and `direction` the lobe's direction, halved and offset. Colors are stored as the logarithm of
+/// their share of the shared peak (`LOG_RANGE`), and the other channels linearly. [`Atlas::texel`]
+/// decodes one texel.
 pub struct Atlas {
     pub width: usize,
     pub height: usize,
     pub lobe: Vec<u8>,
     pub ambient: Vec<u8>,
     pub direction: Vec<u8>,
-    /// The scale of decoded lighting: the diffuse table's value times the lobe's squared stored
-    /// color, plus the ambient's squared stored color, times `scale` is irradiance over pi,
+    /// The scale of decoded lighting: the diffuse table's value times the lobe's decoded share
+    /// (`decode_share`), plus the ambient's decoded share, times `scale` is irradiance over pi,
     /// with the average lit texel's at one.
     pub scale: f32,
     /// The average decoded level of every lit texel and probe, irradiance over pi in Reach's
@@ -129,19 +138,33 @@ pub(super) struct Packed {
     pub probes: Vec<Vec<[f32; 2]>>,
 }
 
-/// Where a BSP's lightmap image sits in an atlas, in texels: its first row, width and height.
+/// Where a BSP's lightmap image sits in an atlas, in texels: its first row and column, width and
+/// height.
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
     row: usize,
+    column: usize,
     width: usize,
     height: usize,
+}
+
+/// One atlas texel as surfaces decode it: its lobe and ambient colors as irradiance over pi in the
+/// atlas's units, where the average lit texel's level is one, the lobe's unit direction, and its
+/// bandwidth and the sun's visibility, unsquared, from 0 to 1.
+#[derive(Clone, Copy, Debug)]
+pub struct Sample {
+    pub lobe: [f32; 3],
+    pub ambient: [f32; 3],
+    pub direction: [f32; 3],
+    pub bandwidth: f32,
+    pub sun: f32,
 }
 
 impl Atlas {
     /// Atlas coordinates of lightmap coordinates `uv` in the source image at `placement`.
     pub fn coordinates(&self, placement: Placement, [u, v]: [f32; 2]) -> [f32; 2] {
         [
-            u * placement.width as f32 / self.width as f32,
+            (placement.column as f32 + u * placement.width as f32) / self.width as f32,
             (placement.row as f32 + v * placement.height as f32) / self.height as f32,
         ]
     }
@@ -150,6 +173,37 @@ impl Atlas {
     pub fn neutral(&self) -> [f32; 2] {
         let middle = (self.height - NEUTRAL_ROWS / 2) as f32;
         [0.5, middle / self.height as f32]
+    }
+
+    /// The texel holding atlas coordinates `uv`, unfiltered, decoded as surfaces decode it.
+    pub fn texel(&self, [u, v]: [f32; 2]) -> Sample {
+        let x = ((u * self.width as f32) as usize).min(self.width - 1);
+        let y = ((v * self.height as f32) as usize).min(self.height - 1);
+        self.texel_at(x, y)
+    }
+
+    /// Texel `(x, y)`, decoded as surfaces decode it. A surface filters the stored values, the
+    /// logarithms, before decoding, so a mean of decoded texels is slightly brighter than its
+    /// filtered sample.
+    pub fn texel_at(&self, x: usize, y: usize) -> Sample {
+        let at = (y * self.width + x) * 4;
+        let unit = |bytes: &[u8], k: usize| f32::from(bytes[at + k]) / 255.;
+        let color = |bytes: &[u8]| -> [f32; 3] {
+            std::array::from_fn(|k| decode_share(unit(bytes, k)) * self.scale)
+        };
+        let axis: [f32; 3] = std::array::from_fn(|k| unit(&self.direction, k) * 2. - 1.);
+        let length = axis.iter().map(|v| v * v).sum::<f32>().sqrt();
+        Sample {
+            lobe: color(&self.lobe),
+            ambient: color(&self.ambient),
+            direction: if length > 1e-5 {
+                axis.map(|v| v / length)
+            } else {
+                [0., 0., 1.]
+            },
+            bandwidth: unit(&self.lobe, 3),
+            sun: unit(&self.ambient, 3),
+        }
     }
 }
 
@@ -555,14 +609,30 @@ fn texels<T>(
     }
 }
 
-/// The square root of `value`'s share of `peak`, as a byte.
-fn encode(value: f32, peak: f32) -> u8 {
-    ((value / peak).clamp(0., 1.).sqrt() * 255. + 0.5) as u8
+/// A color's stored byte from its share of the atlas's peak ([`LOG_RANGE`]). The hardware encoder
+/// (`compute/encode.hlsl`) evaluates the same expression in the same order.
+pub(in crate::halo_reach) fn encode_share(share: f32) -> u8 {
+    ((1. + share.clamp(0., 1.) * LOG_RANGE).log2() / (1. + LOG_RANGE).log2() * 255. + 0.5) as u8
+}
+
+/// A stored color channel's share of the atlas's peak, from the channel as a texture sample reads
+/// it, from 0 to 1. Filtering between texels therefore interpolates their logarithms.
+pub(in crate::halo_reach) fn decode_share(stored: f32) -> f32 {
+    ((stored * (1. + LOG_RANGE).log2()).exp2() - 1.) / LOG_RANGE
+}
+
+/// [`decode_share`] as an HLSL expression of the stored channels `stored`, a float or vector.
+pub(in crate::halo_reach) fn decode_share_hlsl(stored: &str) -> String {
+    format!(
+        "((exp2(({stored})*{:.9})-1)*{:e})",
+        (1. + LOG_RANGE).log2(),
+        1. / LOG_RANGE
+    )
 }
 
 fn encode_texel(texel: &Texel, peak: f32) -> [u8; 12] {
-    let [r, g, b] = texel.lobe.map(|c| encode(c, peak));
-    let [ar, ag, ab] = texel.ambient.map(|c| encode(c, peak));
+    let [r, g, b] = texel.lobe.map(|c| encode_share(c / peak));
+    let [ar, ag, ab] = texel.ambient.map(|c| encode_share(c / peak));
     let [x, y, z] = texel.direction;
     [
         r,
@@ -674,11 +744,11 @@ pub(super) fn decode(cache: &Cache, pages: &mut Pages, lightmap: &Tag) -> Result
 }
 
 /// Packs `images`, each loaded BSP's decoded lightmap image when it has one, and `probes`, each
-/// BSP's lighting probes, into one atlas. Each image sits above a neutral strip, neutral lighting
-/// fills the width beside a narrower one, the probes follow in blocks of `PROBE_BLOCK` texels above
-/// a last neutral strip, and every color is encoded against the 99.9th percentile peak of all of
-/// them. Returns the atlas with each image's placement and each probe's coordinates, or `None` when
-/// no BSP has an image or a probe.
+/// BSP's lighting probes, into one atlas ([`arrange`]). Each image sits on a shelf ringed by
+/// neutral lighting, the probes follow in blocks of `PROBE_BLOCK` texels above a last neutral strip,
+/// and every color is encoded against the 99.9th percentile peak of all of them. Returns the atlas
+/// with each image's placement and each probe's coordinates, or `None` when no BSP has an image or
+/// a probe.
 pub(super) fn pack(
     images: Vec<Option<Lighting>>,
     probes: Vec<Vec<Texel>>,
@@ -712,42 +782,51 @@ pub(super) fn pack(
         average(&mut probes.iter().flatten().map(Texel::level)),
     ];
     let scale = peak / all;
-    let width = images
+    let sizes = images
         .iter()
         .flatten()
-        .map(|image| image.width)
-        .max()
-        .unwrap_or(PROBE_WIDTH);
+        .map(|image| (image.width, image.height))
+        .collect::<Vec<_>>();
+    let layout = arrange(&sizes, probe_count)?;
+    let (width, height) = (layout.width, layout.height);
     let per_row = (width / PROBE_BLOCK).max(1);
-    let probe_rows = probe_count.div_ceil(per_row) * PROBE_BLOCK;
-    let image_rows = images
-        .iter()
-        .flatten()
-        .map(|image| image.height + NEUTRAL_ROWS)
-        .sum::<usize>();
-    let height = image_rows
-        + if probe_count > 0 {
-            probe_rows + NEUTRAL_ROWS
-        } else {
-            0
-        };
     // Neutral texels have no lobe and the average lit texel's irradiance as their ambient color.
-    let neutral = ((1. / scale).clamp(0., 1.).sqrt() * 255. + 0.5) as u8;
+    let neutral = encode_share(1. / scale);
+    // Neutral rings around the images and the last strip. Other texels stay black: no coordinates
+    // reach them. The open sky light (`occlusion::sky_light`) reads the last strip's neutral texel.
     let mut lobe = [0, 0, 0, 0].repeat(width * height);
-    let mut ambient = [neutral, neutral, neutral, 255].repeat(width * height);
+    let mut ambient = [0, 0, 0, 255].repeat(width * height);
     let mut direction = [128, 128, 255, 255].repeat(width * height);
+    let mut fill = |columns: std::ops::Range<usize>, rows: std::ops::Range<usize>| {
+        for y in rows {
+            for x in columns.clone() {
+                let at = (y * width + x) * 4;
+                ambient[at..at + 3].fill(neutral);
+            }
+        }
+    };
+    for (&(column, row), &(w, h)) in layout.origins.iter().zip(&sizes) {
+        fill(
+            column.saturating_sub(NEUTRAL_ROWS)..(column + w + NEUTRAL_ROWS).min(width),
+            row.saturating_sub(NEUTRAL_ROWS)..(row + h + NEUTRAL_ROWS).min(height),
+        );
+    }
+    fill(0..width, height - NEUTRAL_ROWS..height);
     let mut write = |at: usize, bytes: &[u8]| {
         lobe[at..at + 4].copy_from_slice(&bytes[..4]);
         ambient[at..at + 4].copy_from_slice(&bytes[4..8]);
         direction[at..at + 4].copy_from_slice(&bytes[8..12]);
     };
     let mut placements = Vec::with_capacity(images.len());
-    let mut row = 0;
+    let mut origins = layout.origins.iter().copied();
     for image in &images {
         let Some(image) = image else {
             placements.push(None);
             continue;
         };
+        let (column, row) = origins
+            .next()
+            .context("Lightmap image outside its layout")?;
         let encoded = compute::encode(&image.texels, peak)?;
         for (index, texel) in image.texels.iter().enumerate() {
             let cpu;
@@ -758,16 +837,16 @@ pub(super) fn pack(
                 &cpu
             };
             write(
-                ((row + index / image.width) * width + index % image.width) * 4,
+                ((row + index / image.width) * width + column + index % image.width) * 4,
                 bytes,
             );
         }
         placements.push(Some(Placement {
             row,
+            column,
             width: image.width,
             height: image.height,
         }));
-        row += image.height + NEUTRAL_ROWS;
     }
     // Each probe fills a block, and its coordinates are the block's middle, so filtering within the
     // block reads the probe alone.
@@ -779,7 +858,7 @@ pub(super) fn pack(
             let encoded = encode_texel(texel, peak);
             let (x0, y0) = (
                 next % per_row * PROBE_BLOCK,
-                image_rows + next / per_row * PROBE_BLOCK,
+                layout.probe_row + next / per_row * PROBE_BLOCK,
             );
             for y in y0..y0 + PROBE_BLOCK {
                 for x in x0..x0 + PROBE_BLOCK {
@@ -810,6 +889,88 @@ pub(super) fn pack(
         placements,
         probes: coordinates,
     }))
+}
+
+/// Where [`pack`] puts its images and probes: the atlas's width and height, each image's column
+/// and row in the order of the sizes laid out, and the first row of the probe blocks.
+struct Layout {
+    width: usize,
+    height: usize,
+    origins: Vec<(usize, usize)>,
+    probe_row: usize,
+}
+
+/// Lays out images of `sizes`, each a width and height, and `probes` probe blocks across `width`:
+/// the images on shelves, tallest first, each `NEUTRAL_ROWS` texels from the next on either axis,
+/// then the probe blocks in rows, then a last neutral strip.
+fn layout(sizes: &[(usize, usize)], probes: usize, width: usize) -> Layout {
+    let mut order = (0..sizes.len()).collect::<Vec<_>>();
+    order.sort_by_key(|&index| std::cmp::Reverse((sizes[index].1, sizes[index].0)));
+    let mut origins = vec![(0, 0); sizes.len()];
+    let (mut x, mut y, mut shelf) = (0, 0, 0);
+    for index in order {
+        let (w, h) = sizes[index];
+        if x > 0 && x + w > width {
+            (x, y, shelf) = (0, y + shelf, 0);
+        }
+        origins[index] = (x, y);
+        x += w + NEUTRAL_ROWS;
+        shelf = shelf.max(h + NEUTRAL_ROWS);
+    }
+    let probe_row = y + shelf;
+    let probe_rows = probes.div_ceil((width / PROBE_BLOCK).max(1)) * PROBE_BLOCK;
+    Layout {
+        width,
+        height: probe_row
+            + if probes > 0 {
+                probe_rows + NEUTRAL_ROWS
+            } else {
+                0
+            },
+        origins,
+        probe_row,
+    }
+}
+
+/// The squarest [`layout`] of images of `sizes` and `probes` probe blocks, the one whose longer
+/// side is shortest, among widths of a whole number of the widest images and widths near the
+/// square of the texels laid out. Coordinates keep a fixed step across each side, so the longer
+/// side sets their precision: stacked in one column, Nightfall's images and probes took an atlas
+/// 1,024 by 7,118 texels.
+fn arrange(sizes: &[(usize, usize)], probes: usize) -> Result<Layout> {
+    let widest = sizes.iter().map(|size| size.0).max().unwrap_or(PROBE_BLOCK);
+    let area = sizes
+        .iter()
+        .map(|(w, h)| (w + NEUTRAL_ROWS) * (h + NEUTRAL_ROWS))
+        .sum::<usize>()
+        + probes * PROBE_BLOCK * PROBE_BLOCK;
+    let side = (area as f64).sqrt().ceil() as usize;
+    let mut widths = sizes.iter().map(|size| size.0).collect::<Vec<_>>();
+    widths.sort_unstable_by(|a, b| b.cmp(a));
+    let mut candidates = vec![widest, side, side * 9 / 8, side * 5 / 4, side * 3 / 2];
+    let mut run = 0;
+    for width in widths {
+        candidates.push(run + width);
+        run += width + NEUTRAL_ROWS;
+    }
+    candidates
+        .into_iter()
+        .map(|width| width.max(widest).next_multiple_of(4).min(MAX_SIDE))
+        .filter(|&width| width >= widest)
+        .map(|width| layout(sizes, probes, width))
+        .filter(|candidate| candidate.height <= MAX_SIDE)
+        .min_by_key(|candidate| {
+            (
+                candidate.width.max(candidate.height),
+                candidate.width * candidate.height,
+            )
+        })
+        .with_context(|| {
+            format!(
+                "{} lightmap images and {probes} probes exceed a {MAX_SIDE} texel atlas",
+                sizes.len()
+            )
+        })
 }
 
 /// Lightmap texture coordinates from a stream of two unsigned normalized 16-bit values per vertex.

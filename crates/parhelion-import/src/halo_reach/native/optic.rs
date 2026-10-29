@@ -410,9 +410,9 @@ fn alignment(optic: &Prepared) -> &'static str {
 /// What the report says the aiming method leaves unverified.
 fn limits(optic: &Prepared) -> &'static str {
     if optic.separate {
-        "The aiming camera looks over the weapon from behind along the sight axis, preserving the physical lens. Scoped weapons use their source HUD bitmap layers and neutral reticle artwork. Dynamic meter and reticle inputs are reported separately. Source magnification is recorded in source_gameplay.aim. Aim transitions and the final view require gameplay acceptance."
+        "The aiming camera looks over the weapon from behind along the sight axis, preserving the physical lens. Scoped weapons use their source HUD bitmap layers and neutral reticle artwork. Dynamic meter and reticle inputs are reported separately. Source magnification is recorded in source_gameplay.aim."
     } else if optic.automatic {
-        "The aiming camera clears the selected source bounds along the forward axis. This is an adaptation for a source firearm without zoom, not recovered iron-sight alignment. Live aim transitions and eye relief require gameplay acceptance."
+        "The aiming camera clears the selected source bounds along the forward axis. This is an adaptation for a source firearm without zoom, not recovered iron-sight alignment."
     } else {
         "Object-space sight alignment. Lens optics use a simple illuminated aiming mark. Source magnification is recorded separately for scoped weapons and first-person motion."
     }

@@ -185,6 +185,7 @@ pub(crate) fn draw_authoring_choice_row(
                         name: Some(name),
                         description,
                         classification_hash: None,
+                        rarity: None,
                     }),
                     icon,
                     ..Default::default()

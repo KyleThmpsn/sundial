@@ -1,5 +1,7 @@
 //! Validate private replication references before assigning package identities.
 use super::*;
+mod allocation;
+use allocation::Allocation;
 
 pub(in crate::item) fn target<'a, M>(
     nodes: &'a [Node<M>],
@@ -8,17 +10,18 @@ pub(in crate::item) fn target<'a, M>(
 ) -> AuthoringResult<&'a Node<M>> {
     let mut patches = node.patches.iter().filter(|(at, _)| *at == offset);
     let Some((_, symbol)) = patches.next() else {
-        return Err(invalid("Private projectile replication is incomplete"));
+        return Err(invalid(format!(
+            "Private asset {} has no symbolic reference at +0x{offset:X}",
+            node.symbol
+        )));
     };
     if patches.next().is_some() || read_u32(&node.payload, offset)? != u32::MAX {
-        return Err(invalid(
-            "Private projectile replication reference is invalid",
-        ));
+        return Err(invalid("Private asset symbolic reference is invalid"));
     }
     nodes
         .iter()
         .find(|node| node.symbol == *symbol)
-        .ok_or_else(|| invalid("Private projectile replication dependency is missing"))
+        .ok_or_else(|| invalid("Private asset symbolic dependency is missing"))
 }
 
 pub(in crate::item) fn validate_templates<M>(
@@ -46,23 +49,21 @@ pub(in crate::item) fn validate_templates<M>(
             .is_none_or(|entry| entry.file_type != 16 || entry.file_subtype != 0)
     {
         return Err(invalid(
-            "Private projectile replication template has the wrong class",
+            "Private entity replication template has the wrong class",
         ));
     }
     let (rows, _, start, _) = array_at(&replication.payload, 0x30)?;
+    let (_, _, owners, _) = array_at(&root.payload, 16)?;
     for index in 0..rows {
-        let allocation = target(nodes, replication, start + index * 32 + 4)?;
-        if !class(allocation, 0x80809BBB) {
-            return Err(invalid(
-                "Private projectile replication allocation has the wrong class",
-            ));
-        }
+        let owner = target(nodes, root, owners + index * 12)?;
+        Allocation::read(nodes, replication, start + index * 32 + 4)?
+            .validate(nodes, owner, manager)?;
     }
     Ok(())
 }
 
 pub(in crate::item) struct Loading {
-    owner: String,
+    pub(super) owner: String,
     source: crate::LoadingOwner,
     payload: Vec<u8>,
     pub bound: usize,
@@ -170,29 +171,30 @@ impl Loading {
                 owner: TagHash(replication.template),
                 companion: *companion,
             },
-            // The private group stays within one package. One extra block covers
-            // all of its entry indices, descriptors and alignment.
+            // Include sparse package descriptors as well as indices for the private graph.
             bound: payload
                 .len()
                 .checked_add(crate::format::BLOCK_SIZE)
+                .and_then(|size| {
+                    nodes
+                        .len()
+                        .checked_mul(64)
+                        .and_then(|extra| size.checked_add(extra))
+                })
                 .ok_or_else(|| invalid("Replication loading size overflow"))?,
             payload,
         })
     }
 
-    pub fn append<M>(
+    pub fn materialize<M>(
         &self,
         nodes: &[Node<M>],
         symbols: &BTreeMap<String, TagHash>,
-        package: &mut crate::asset_packages::AssetPackage,
-    ) -> AuthoringResult<()> {
+        companion: TagHash,
+    ) -> AuthoringResult<NewTagSpec> {
         let identity = crate::LoadingOwner {
             owner: symbols[&self.owner],
-            companion: AppendedTagAllocator::new(package.id, 0).assigned_tag(
-                package.tags.len(),
-                "Replication loading companion",
-                "companion",
-            )?,
+            companion,
         };
         let replication = nodes
             .iter()
@@ -201,8 +203,9 @@ impl Loading {
         let (rows, _, start, _) = array_at(&replication.payload, 0x30)?;
         let mut resources = vec![identity.owner, identity.companion];
         for index in 0..rows {
-            let allocation = target(nodes, replication, start + index * 32 + 4)?;
-            resources.push(symbols[&allocation.symbol]);
+            resources.push(
+                Allocation::read(nodes, replication, start + index * 32 + 4)?.resolve(symbols)?,
+            );
         }
         let payload = crate::clone_scoped_dependencies(
             (&self.payload, self.source),
@@ -213,12 +216,11 @@ impl Loading {
         if payload.len() > self.bound {
             return Err(invalid("Replication companion exceeded its reserved size"));
         }
-        package.tags.push(NewTagSpec {
+        Ok(NewTagSpec {
             template_tag: self.source.companion,
             payload,
             storage: crate::NewTagStorageMode::InheritTemplate,
-        });
-        Ok(())
+        })
     }
 }
 
@@ -257,8 +259,8 @@ pub(in crate::item) fn validate<M>(nodes: &[Node<M>], root: &Node<M>) -> Authori
         for index in 0..owners {
             let row = row_start + index * 32;
             let owner = target(nodes, root, owner_start + index * 12)?;
-            let owner_allocation = target(nodes, owner, 0x44)?;
-            let allocation = target(nodes, replication, row + 4)?;
+            let owner_allocation = Allocation::read(nodes, owner, 0x44)?;
+            let allocation = Allocation::read(nodes, replication, row + 4)?;
             let instance = crate::tag_payload::bounded_relative_target(
                 &owner.payload,
                 16,
@@ -266,7 +268,7 @@ pub(in crate::item) fn validate<M>(nodes: &[Node<M>], root: &Node<M>) -> Authori
             )?;
             if instance < 4
                 || read_u32(payload, row)? != read_u32(&owner.payload, instance - 4)?
-                || allocation.symbol != owner_allocation.symbol
+                || allocation != owner_allocation
             {
                 return Err(invalid(
                     "Replication instance schema or allocation differs from its component",
@@ -280,9 +282,5 @@ pub(in crate::item) fn validate<M>(nodes: &[Node<M>], root: &Node<M>) -> Authori
         }
         Ok(())
     };
-    check().map_err(|error| {
-        invalid(format!(
-            "Private projectile replication is invalid: {error}"
-        ))
-    })
+    check().map_err(|error| invalid(format!("Private entity replication is invalid: {error}")))
 }

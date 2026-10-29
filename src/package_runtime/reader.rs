@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -19,6 +19,9 @@ pub use decoder::initialize_source_decoder;
 static NEXT_READER: AtomicU64 = AtomicU64::new(1);
 // Reserve room for GUI, database, cache and metadata-index handles even on low-limit systems.
 static READERS: pool::Pool<Mutex<Arc<dyn Package>>> = pool::Pool::new(128);
+
+/// A class's entries, each with its header.
+type Listing = Arc<[(TagHash, tiger_pkg::package::UEntryHeader)]>;
 
 pub struct PackageManager {
     pub package_dir: PathBuf,
@@ -37,7 +40,13 @@ pub struct PackageManager {
     /// configured values.
     rewritten: HashMap<TagHash, Arc<[u8]>>,
     view: Option<Arc<super::mods::View>>,
+    /// Each small class this reader has listed. Listing one walks every entry header, and a
+    /// preview lists the same few classes for each model part. Changes to the tables clear it.
+    classes: Mutex<HashMap<u32, Listing>>,
 }
+
+/// Larger listings, such as every entity, are walked again rather than kept.
+const KEPT_CLASS_ENTRIES: usize = 4096;
 impl PackageManager {
     pub fn new(
         path: impl AsRef<Path>,
@@ -58,9 +67,11 @@ impl PackageManager {
             overlays: Vec::new(),
             rewritten: HashMap::new(),
             view: None,
+            classes: Mutex::new(HashMap::new()),
         })
     }
     pub(super) fn retain_view(&mut self, view: Arc<super::mods::View>) -> Result<(), String> {
+        self.forget_classes();
         for layer in view.layers() {
             let overlay = Self::new(&layer.packages, self.version, Some(self.platform))?;
             for &tag in &layer.tags {
@@ -206,7 +217,15 @@ impl PackageManager {
         }
         self.lookup.tag32_entries_by_pkg.insert(package, headers);
         self.local.insert(package, payloads);
+        self.forget_classes();
         Ok(())
+    }
+
+    fn forget_classes(&mut self) {
+        self.classes
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 
     pub fn get_entry(&self, tag: impl Into<TagHash>) -> Option<tiger_pkg::package::UEntryHeader> {
@@ -229,7 +248,22 @@ impl PackageManager {
         &self,
         reference: u32,
     ) -> Vec<(TagHash, tiger_pkg::package::UEntryHeader)> {
-        self.matching_entries(|entry| entry.reference == reference)
+        if let Some(entries) = self
+            .classes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&reference)
+        {
+            return entries.to_vec();
+        }
+        let entries = self.matching_entries(|entry| entry.reference == reference);
+        if entries.len() <= KEPT_CLASS_ENTRIES {
+            self.classes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(reference, Arc::from(entries.as_slice()));
+        }
+        entries
     }
     pub fn get_all_by_type(
         &self,
@@ -245,6 +279,7 @@ impl PackageManager {
         &self,
         matches: impl Fn(&tiger_pkg::package::UEntryHeader) -> bool,
     ) -> Vec<(TagHash, tiger_pkg::package::UEntryHeader)> {
+        let _stage = crate::model_preview::timing::stage("package scans");
         self.lookup
             .tag32_entries_by_pkg
             .iter()

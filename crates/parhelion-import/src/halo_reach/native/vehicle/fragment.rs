@@ -215,7 +215,7 @@ fn physics(
     Ok(
         json!({"source":source["tag"],"mass":properties.mass,"center":properties.center,
         "inertia":properties.inertia,"hulls":hulls.len(),"hit_triangles":triangles.len(),
-        "limits":["Native rigid-body integration, friction and damping remain. Live impacts and debris retirement require gameplay acceptance."]}),
+        "limits":["Native rigid-body integration, friction and damping remain."]}),
     )
 }
 
@@ -272,10 +272,7 @@ pub(super) fn build(
             .map(|value| format!("{:08X}", value.to_bits()))
             .collect::<String>()
     );
-    let mut local = Graph {
-        root: graph.root.join(&prefix),
-        nodes: Vec::new(),
-    };
+    let mut local = Graph::new(graph.root.join(&prefix), Vec::new());
     std::fs::create_dir_all(&local.root)?;
     let request = ExportRequest {
         cache: String::new(),

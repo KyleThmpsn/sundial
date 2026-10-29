@@ -142,6 +142,128 @@ fn events(
     Ok(())
 }
 
+/// Remove a native component with its registration, interface resources and event wiring.
+/// Components after it move down one ordinal, so descriptors and event endpoints follow.
+pub(crate) fn remove(entity: &mut Payload, patches: &mut Vec<Value>, owner: u32) -> Result<()> {
+    let rows = entity.array(16, 12, Some(0x80809C04))?;
+    let found = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| entity.u32(**row).ok() == Some(owner))
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    ensure!(
+        found.len() == 1,
+        "component {owner:08X} is not registered once"
+    );
+    let removed = u32::try_from(found[0])?;
+    let count = u32::try_from(rows.len())?;
+    let ordinal = |index: u32| -> Result<u32> {
+        ensure!(
+            index < count && index != removed,
+            "entity reference names a removed or absent component"
+        );
+        Ok(if index > removed { index - 1 } else { index })
+    };
+    let kept = rows
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != found[0])
+        .map(|(_, row)| *row)
+        .collect::<Vec<_>>();
+    let (bytes, refs) = copy(entity, &kept, 12, patches)?;
+    append(entity, patches, 16, 12, 0x80809C04, &bytes, &refs)?;
+
+    let current = groups(entity)?;
+    let mut resources = Vec::new();
+    let mut descriptors = Vec::new();
+    let mut resource_refs = Vec::new();
+    let mut descriptor_refs = Vec::new();
+    let mut slots = Vec::new();
+    let mut dropped = 0;
+    for (&key, (_, group)) in &current.rows {
+        let start = descriptors.len() / 24;
+        let mut entries = 0;
+        for &i in group {
+            let (resource, descriptor) = (current.resources[i], current.descriptors[i]);
+            if entity.u32(descriptor)? == owner {
+                ensure!(
+                    entity.u32(resource + 16)? == owner,
+                    "component resource and descriptor owners differ"
+                );
+                dropped += 1;
+                continue;
+            }
+            let (r, rr) = copy(entity, &[resource], 40, patches)?;
+            let (mut d, dr) = copy(entity, &[descriptor], 24, patches)?;
+            let index = ordinal(u32::from_le_bytes(d[16..20].try_into()?))?;
+            d[16..20].copy_from_slice(&index.to_le_bytes());
+            for p in rr {
+                resource_refs
+                    .push(json!({"offset":resources.len()+offset(&p)?,"symbol":p["symbol"]}));
+            }
+            for p in dr {
+                descriptor_refs
+                    .push(json!({"offset":descriptors.len()+offset(&p)?,"symbol":p["symbol"]}));
+            }
+            resources.extend(r);
+            descriptors.extend(d);
+            entries += 1;
+        }
+        if entries > 0 {
+            slots.push((key, ((entries as u32) << 16) | start as u32));
+        }
+    }
+    ensure!(dropped > 0, "component {owner:08X} has no interfaces");
+    append(
+        entity,
+        patches,
+        0x58,
+        40,
+        0x80809C22,
+        &resources,
+        &resource_refs,
+    )?;
+    append(
+        entity,
+        patches,
+        0x68,
+        24,
+        0x80809C20,
+        &descriptors,
+        &descriptor_refs,
+    )?;
+    let slots = lookup(entity.u32(0x40)?, &slots)?;
+    append(entity, patches, 0x48, 8, 0x80809C25, &slots, &[])?;
+
+    let mut events = Vec::new();
+    let mut refs = Vec::new();
+    for row in entity.array(0x20, 72, Some(0x80809BC9))? {
+        if [8, 40]
+            .iter()
+            .any(|delta| entity.u32(row + delta).ok() == Some(owner))
+        {
+            continue;
+        }
+        let (mut event, event_refs) = copy(entity, &[row], 72, patches)?;
+        for at in [8, 40] {
+            // An empty endpoint carries no component ordinal.
+            if u64::from_le_bytes(event[at..at + 8].try_into()?) == u64::MAX {
+                continue;
+            }
+            let index = ordinal(u32::from_le_bytes(event[at + 16..at + 20].try_into()?))?;
+            event[at + 16..at + 20].copy_from_slice(&index.to_le_bytes());
+        }
+        for p in event_refs {
+            refs.push(json!({"offset":events.len()+offset(&p)?,"symbol":p["symbol"]}));
+        }
+        events.extend(event);
+    }
+    append(entity, patches, 0x20, 72, 0x80809BC9, &events, &refs)?;
+    groups(entity)?;
+    Ok(())
+}
+
 /// Add a validated component closure and its native event wiring. The map names
 /// private payload symbols. It includes every internal endpoint of the closure.
 pub(crate) fn insert(

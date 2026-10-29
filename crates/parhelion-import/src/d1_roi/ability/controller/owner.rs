@@ -13,12 +13,43 @@ pub(super) struct Owner {
     pub definition: usize,
     id: u32,
     symbol: String,
-    runtime_class: u32,
     callbacks: Vec<usize>,
     pub initializers: Vec<lifecycle::Method>,
 }
 
 impl Owner {
+    /// Continue construction on a native envelope whose callback and lifecycle tables have
+    /// been cleared. The caller must supply every retained private identity before sealing.
+    pub fn adopt(payload: Payload, symbol: &str) -> Result<Self> {
+        crate::d1_roi::ability::dependency::symbol(symbol)?;
+        let runtime = payload.pointer(16)?;
+        let definition = payload.pointer(24)?;
+        let id = payload.u32(runtime)?;
+        ensure!(
+            payload.u64(0)? == payload.0.len() as u64
+                && runtime >= 4
+                && runtime < definition
+                && !matches!(id, 0 | u32::MAX)
+                && payload.u32(definition)? == id
+                && payload.u64(runtime + 8)? == definition as u64
+                && payload.u64(definition + 8)? == runtime as u64
+                && payload.u32(runtime - 4)? == payload.u32(definition + 4)?
+                && payload.u32(definition - 4)? == payload.u32(runtime + 4)?
+                && payload.bytes::<32>(0x20)? == [0; 32],
+            "Retained owner cannot adopt an inconsistent or initialized envelope"
+        );
+        Ok(Self {
+            payload,
+            patches: vec![(runtime, symbol.into()), (definition, symbol.into())],
+            runtime,
+            definition,
+            id,
+            symbol: symbol.into(),
+            callbacks: Vec::new(),
+            initializers: Vec::new(),
+        })
+    }
+
     pub fn new(
         template: &Payload,
         id: u32,
@@ -61,7 +92,6 @@ impl Owner {
             definition: settings,
             id,
             symbol: symbol.to_owned(),
-            runtime_class: classes.0,
             callbacks: Vec::new(),
             initializers: Vec::new(),
         };
@@ -123,27 +153,66 @@ impl Owner {
         Ok(())
     }
 
-    pub fn callback(&mut self, offset: usize, implementation: u32, index: u32) -> Result<()> {
+    /// The callback may address the root or a constructed embedded runtime object. The
+    /// reference table points inside this record, after its implementation and method words.
+    pub fn callback(
+        &mut self,
+        offset: usize,
+        implementation: u32,
+        index: u32,
+        target: usize,
+    ) -> Result<()> {
+        self.payload.bytes::<24>(offset)?;
+        let end = offset.checked_add(24).context("Callback extent overflow")?;
         ensure!(
-            !self.callbacks.contains(&offset),
-            "Duplicate retained callback slot"
+            offset >= self.runtime
+                && self
+                    .callbacks
+                    .iter()
+                    .all(|&reference| { end <= reference - 8 || offset >= reference + 16 }),
+            "Retained callback slots overlap or precede the runtime"
+        );
+        let class = self.callback_target(target, self.payload.0.len())?;
+        ensure!(
+            index != u32::MAX
+                && sundial::package_authoring::runtime::native_type_inherits(class, implementation),
+            "Retained callback implementation does not belong to its target"
         );
         put(&mut self.payload.0, offset, &implementation.to_le_bytes())?;
         put(&mut self.payload.0, offset + 4, &index.to_le_bytes())?;
         put(&mut self.payload.0, offset + 8, &self.id.to_le_bytes())?;
-        put(
-            &mut self.payload.0,
-            offset + 12,
-            &self.runtime_class.to_le_bytes(),
-        )?;
+        put(&mut self.payload.0, offset + 12, &class.to_le_bytes())?;
         put(
             &mut self.payload.0,
             offset + 16,
-            &(self.runtime as u64).to_le_bytes(),
+            &u64::try_from(target)?.to_le_bytes(),
         )?;
         self.patches.push((offset + 8, self.symbol.clone()));
-        self.callbacks.push(offset);
+        self.callbacks.push(offset + 8);
         Ok(())
+    }
+
+    fn callback_target(&self, target: usize, mutable_end: usize) -> Result<u32> {
+        ensure!(
+            target >= self.runtime
+                && target.checked_add(16).is_some_and(|end| end <= mutable_end)
+                && self
+                    .patches
+                    .iter()
+                    .any(|(at, symbol)| *at == target && symbol == &self.symbol),
+            "Callback target is not a private object in the mutable owner"
+        );
+        let definition = usize::try_from(self.payload.u64(target + 8)?)?;
+        self.payload.bytes::<16>(definition)?;
+        let class = self.payload.u32(definition + 4)?;
+        ensure!(
+            self.payload.u32(target)? == self.id
+                && self.payload.u32(definition)? == self.id
+                && self.payload.u64(definition + 8)? == target as u64
+                && !matches!(class, 0 | u32::MAX),
+            "Callback target does not have reciprocal owner headers"
+        );
+        Ok(class)
     }
 
     pub fn size(&mut self) -> Result<()> {
@@ -156,6 +225,21 @@ impl Owner {
             mutable_end <= self.payload.0.len(),
             "Retained mutable span exceeds its owner"
         );
+        for &reference in &self.callbacks {
+            let target = usize::try_from(self.payload.u64(reference + 8)?)?;
+            let class = self.callback_target(target, mutable_end)?;
+            ensure!(
+                reference + 16 <= mutable_end
+                    && self.payload.u32(reference)? == self.id
+                    && class == self.payload.u32(reference + 4)?
+                    && self.payload.u32(reference - 4)? != u32::MAX
+                    && sundial::package_authoring::runtime::native_type_inherits(
+                        class,
+                        self.payload.u32(reference - 8)?,
+                    ),
+                "Retained callback is outside mutable storage or its target changed"
+            );
+        }
         if self.payload.bytes::<16>(0x30)? == [0; 16] {
             lifecycle::write(&mut self.payload, &self.initializers, mutable_end)?;
         } else {
@@ -167,8 +251,8 @@ impl Owner {
                 "Retained owner has conflicting initializer plans"
             );
         }
-        // Entries identify callback records, not their component roots. The native loader
-        // resolves each callback's original implementation and method index independently.
+        // Entries identify the object reference at callback +8. The loader resolves its
+        // owner/class/offset tuple, with implementation and method immediately before it.
         append(
             &mut self.payload.0,
             32,

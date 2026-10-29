@@ -5,11 +5,10 @@ use std::sync::{Arc, Mutex};
 
 struct Presentation {
     name: Option<String>,
-    type_name: String,
+    /// The source's item type, else the recipe's own. `None` keeps the base weapon's.
+    type_name: Option<String>,
     hash: Option<u32>,
     icon: Option<ImportedIcon>,
-    variants: usize,
-    limitations: Vec<String>,
     dyes: bool,
     animations: bool,
 }
@@ -81,23 +80,16 @@ fn read(recipe: &WeaponRecipe) -> Read {
             .map(str::to_owned),
         type_name: graph["source_type"]
             .as_str()
-            .unwrap_or(recipe.kind.label())
-            .to_owned(),
+            .map(str::to_owned)
+            .or_else(|| recipe.type_name.clone()),
         hash: graph["source_item"]
             .as_u64()
             .and_then(|v| u32::try_from(v).ok()),
         icon,
-        variants: graph["gear_art"]["parts"].as_array().map_or(0, Vec::len),
         // Emission replaces all base dye rows when the graph declares its own dyes.
         dyes: graph["dyes"].is_array(),
         // Only linked first-person payloads replace the native animation selection.
         animations: graph["animation"]["first_person_status"] == "linked",
-        limitations: graph["limitations"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(str::to_owned))
-            .collect(),
     })
 }
 
@@ -175,13 +167,26 @@ pub(super) fn show_as(app: &mut PackageAuthoringApp, ui: &mut egui::Ui, heading:
             "The imported source supplies the model and materials. Other parts follow the recipe's overrides and native base.",
         ),
     );
+    // A weapon import without its own type is the base weapon's type.
+    let base_type = app
+        .recipe
+        .donor
+        .item_hash
+        .parse_u32()
+        .ok()
+        .filter(|_| app.recipe.kind.is_weapon())
+        .and_then(|hash| app.donor_summaries.iter().find(|donor| donor.hash == hash))
+        .map(|donor| donor.type_name.as_str());
     if let Ok(loaded) = card.loaded.lock() {
         let source = loaded.as_ref().and_then(|value| value.as_ref().ok());
         let action = sundial::investment::draw_authoring_item_header(
             ui,
             sundial::investment::AuthoringItemHeader {
                 name: source.map_or(app.recipe.name.as_str(), |s| s.name(&app.recipe)),
-                type_name: source.map_or(app.recipe.kind.label(), |s| s.type_name.as_str()),
+                type_name: source
+                    .and_then(|s| s.type_name.as_deref())
+                    .or(base_type)
+                    .unwrap_or(app.recipe.kind.label()),
                 hash: source.and_then(|s| s.hash),
                 icon: card.icon.as_ref(),
             },
@@ -199,19 +204,140 @@ pub(super) fn show_as(app: &mut PackageAuthoringApp, ui: &mut egui::Ui, heading:
             Some(Err(error)) => {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
-            Some(Ok(source)) => {
-                if source.variants > 0 {
-                    ui.small(format!("{} source art assignments", source.variants));
-                }
-                ui.collapsing("Import Details", |ui| {
-                    for limitation in &source.limitations {
-                        ui.label(limitation);
-                    }
-                });
-            }
+            Some(Ok(_)) => {}
         }
     }
     true
+}
+
+/// The choice an attached ornament binds to: its socket, its choice and the stock plug it is laid
+/// out on.
+type Choice = (usize, usize, u32);
+
+/// An attached ornament as read: its choice, its icon and its rarity.
+type Attached = (Choice, egui::ColorImage, Option<u8>);
+
+#[derive(Clone)]
+struct Ornaments {
+    key: String,
+    loaded: Arc<Mutex<Option<Vec<Attached>>>>,
+    shown: Option<Vec<(Choice, egui::TextureHandle, Option<u8>)>>,
+}
+
+/// What an imported ornament shows in place of the stock plug it is laid out on.
+pub(super) struct Ornament {
+    pub(super) icon: sundial::investment::IconOverride,
+    /// The tier as packages store it, when the import names one.
+    pub(super) rarity: Option<u8>,
+}
+
+/// The choice an attached graph binds to as an ornament, and the icon and rarity the build gives
+/// its private plug.
+fn read_ornament(attachment: &parhelion_import::GraphReference) -> Option<Attached> {
+    let graph: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(attachment.directory.join("asset-graph.json")).ok()?)
+            .ok()?;
+    let link = graph.get("ornament")?;
+    let number = |key: &str| link[key].as_u64();
+    let choice = (
+        usize::try_from(number("target_socket")?).ok()?,
+        usize::try_from(number("choice_index")?).ok()?,
+        u32::try_from(number("native_plug")?).ok()?,
+    );
+    let root = attachment.directory.canonicalize().ok()?;
+    let path = root
+        .join(graph["ornament_icon_png"].as_str()?)
+        .canonicalize()
+        .ok()?;
+    if !path.starts_with(&root) {
+        return None;
+    }
+    let pixels = ImportedIcon::from_bytes(&std::fs::read(path).ok()?)
+        .ok()?
+        .fit_to(96, 96);
+    // The plug keeps its layout plug's rarity when the link names none.
+    let rarity = serde_json::from_value::<crate::recipe::RecipeRarity>(link["rarity"].clone())
+        .ok()
+        .map(|rarity| rarity as u8 + 1);
+    Some((
+        choice,
+        egui::ColorImage::from_rgba_unmultiplied([96, 96], pixels.as_raw()),
+        rarity,
+    ))
+}
+
+/// The imported ornament that takes `plug`'s place as `choice` of `socket`. The choice shows the
+/// stock ornament it is laid out on otherwise, while the build gives its private plug this icon
+/// and rarity. The icon is pending while the recipe's attachments are read, so a choice never
+/// shows the stock icon first.
+pub(super) fn ornament(
+    recipe: &WeaponRecipe,
+    ctx: &egui::Context,
+    (socket, choice, plug): Choice,
+) -> Option<Ornament> {
+    let attachments = &recipe.overrides.imported_graph.as_ref()?.attachments;
+    if attachments.is_empty() {
+        return None;
+    }
+    let key = attachments
+        .iter()
+        .map(|graph| format!("{}:{}", graph.sha256, graph.directory.display()))
+        .collect::<Vec<_>>()
+        .join("|");
+    let id = egui::Id::new("imported-ornament-icons");
+    let mut ornaments = ctx
+        .data_mut(|data| data.get_temp::<Ornaments>(id))
+        .filter(|ornaments| ornaments.key == key)
+        .unwrap_or_else(|| {
+            let loaded = Arc::new(Mutex::new(None));
+            let result = loaded.clone();
+            let attachments = attachments.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let value = attachments.iter().filter_map(read_ornament).collect();
+                if let Ok(mut slot) = result.lock() {
+                    *slot = Some(value);
+                }
+                ctx.request_repaint();
+            });
+            Ornaments {
+                key,
+                loaded,
+                shown: None,
+            }
+        });
+    if ornaments.shown.is_none()
+        && let Some(read) = ornaments
+            .loaded
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+    {
+        ornaments.shown = Some(
+            read.into_iter()
+                .map(|(choice, image, rarity)| {
+                    let name = format!("imported-ornament-{}-{}", choice.0, choice.1);
+                    let icon = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+                    (choice, icon, rarity)
+                })
+                .collect(),
+        );
+    }
+    let ornament = match &ornaments.shown {
+        None => Some(Ornament {
+            icon: sundial::investment::IconOverride::Pending,
+            rarity: None,
+        }),
+        Some(shown) => shown
+            .iter()
+            .find(|(at, ..)| *at == (socket, choice, plug))
+            .map(|(_, icon, rarity)| Ornament {
+                icon: sundial::investment::IconOverride::Texture(icon.id()),
+                rarity: *rarity,
+            }),
+    };
+    ctx.data_mut(|data| data.insert_temp(id, ornaments));
+    ornament
 }
 
 pub(super) enum Part {

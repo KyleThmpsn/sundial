@@ -1,7 +1,14 @@
 use super::*;
 
 impl PackageAuthoringApp {
-    pub(super) fn draw_library_browser(&mut self, ctx: &egui::Context, busy: bool) {
+    /// `open_only` leaves recipes open to opening while the rest of the library waits for the
+    /// importer's sweep or source read.
+    pub(super) fn draw_library_browser(
+        &mut self,
+        ctx: &egui::Context,
+        busy: bool,
+        open_only: bool,
+    ) {
         let mut open = self.library_open;
         let mut action = None;
         egui::Window::new("Recipe Library")
@@ -15,10 +22,14 @@ impl PackageAuthoringApp {
                 if self.draw_library_controls(ui, busy, &mut action) {
                     return;
                 }
+                #[cfg(feature = "d2-model-importer")]
+                if open_only {
+                    self.draw_library_importer_work(ui);
+                }
                 self.draw_library_notice(ui);
                 self.draw_library_search(ui);
                 ui.separator();
-                let matches = self.draw_library_entries(ui, busy, &mut action);
+                let matches = self.draw_library_entries(ui, busy, open_only, &mut action);
                 ui.separator();
                 self.draw_library_footer(ui, busy, matches, &mut action);
             });
@@ -44,10 +55,33 @@ impl PackageAuthoringApp {
         );
     }
 
+    /// The importer's running work, such as its sweep or a source read, while it holds the
+    /// library.
+    #[cfg(feature = "d2-model-importer")]
+    fn draw_library_importer_work(&self, ui: &mut egui::Ui) {
+        let color = ui.visuals().weak_text_color();
+        for (label, _, details) in self.importer.activities() {
+            let response = ui
+                .horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(12.0).color(color));
+                    ui.label(egui::RichText::new(label).color(color));
+                })
+                .response;
+            if !details.is_empty() {
+                response.on_hover_ui(|ui| {
+                    for line in &details {
+                        ui.weak(line);
+                    }
+                });
+            }
+        }
+    }
+
     fn draw_library_entries(
         &mut self,
         ui: &mut egui::Ui,
         busy: bool,
+        open_only: bool,
         action: &mut Option<LibraryAction>,
     ) -> usize {
         let query = self.library_query.trim().to_lowercase();
@@ -74,6 +108,8 @@ impl PackageAuthoringApp {
                 });
             });
         }
+        // Opening only reads a saved recipe, so it need not wait for the sweep or a source read.
+        let can_open = !busy || (open_only && self.library_state.export_selection.is_none());
         let footer_height = super::pinned_footer_height(ui);
         egui::ScrollArea::vertical()
             .id_salt("recipe-library-results")
@@ -83,7 +119,7 @@ impl PackageAuthoringApp {
                 for (entry, details) in &shown {
                     let current = self.recipe_path.as_ref() == Some(&entry.path);
                     let response = ui
-                        .add_enabled_ui(!busy, |ui| {
+                        .add_enabled_ui(can_open, |ui| {
                             draw_library_row(
                                 ui,
                                 self.catalog.as_ref(),
@@ -104,6 +140,7 @@ impl PackageAuthoringApp {
                                     reveal: self.library_state.reveal.as_ref() == Some(&entry.path),
                                     can_restore: !(current && self.recipe_dirty),
                                     installed: self.installed.contains(entry.identity_hash),
+                                    library_busy: busy,
                                 },
                             )
                         })
@@ -127,7 +164,7 @@ impl PackageAuthoringApp {
                 }
                 for map in &shown_maps {
                     let clicked = ui
-                        .add_enabled_ui(!busy, |ui| super::draw_map_row(ui, map, None))
+                        .add_enabled_ui(can_open, |ui| super::draw_map_row(ui, map, None))
                         .inner;
                     #[cfg(feature = "d2-model-importer")]
                     if clicked {

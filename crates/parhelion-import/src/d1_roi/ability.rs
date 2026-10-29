@@ -10,9 +10,10 @@ use sundial::package_authoring::{
 };
 
 mod catalog;
-mod movement;
-pub use catalog::{SubclassCatalog, SubclassNode, SubclassStep};
+pub(crate) mod movement;
+pub use catalog::{AbilityCatalog, SubclassCatalog, SubclassNode, SubclassStep};
 pub mod controller;
+pub mod revival;
 pub use super::lifecycle;
 pub mod dependency;
 pub use crate::d1_roi::native::animation::ability as animation;
@@ -98,7 +99,7 @@ impl Source {
         let limits = vec![
             "Source movement property values are transferred. The matching Shadowkeep controller, input handling, animation and base movement settings are retained.".into(),
             "Source unlock progression is not imported. The source choice and its clean movement foundation contribute no omitted stat, perk or appearance records.".into(),
-            "Private property keys activate only with the selected authored perk. Native gameplay, repeated use, switching and stock donor isolation still require gameplay verification.".into(),
+            "Private property keys activate only with the selected authored perk.".into(),
         ];
         let evidence = json!({
             "source":"d1_roi", "source_builds":self.report.builds,"source_stamp":self.report.stamp,
@@ -379,7 +380,8 @@ fn property_choice(step: &Value) -> Result<Option<(u8, Vec<u32>, Value)>> {
         return Ok(None);
     }
     let mut target = None;
-    let mut keys = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut keys = Vec::new();
     for record in records {
         let row = record.u8(4)?;
         let key = record.u32(0)?;
@@ -388,15 +390,16 @@ fn property_choice(step: &Value) -> Result<Option<(u8, Vec<u32>, Value)>> {
             || record.bytes::<3>(5)? != [0; 3]
             || record.bytes::<8>(8)? != [255, 255, 255, 255, 0, 0, 0, 0]
             || target.is_some_and(|previous| previous != row)
-            || !keys.insert(key)
+            || !seen.insert(key)
         {
             return Ok(None);
         }
         target = Some(row);
+        keys.push(key);
     }
     Ok(Some((
         target.context("Source ability target")?,
-        keys.into_iter().collect(),
+        keys,
         variant.clone(),
     )))
 }

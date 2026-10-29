@@ -268,10 +268,12 @@ pub(in crate::app) struct Workbench {
     ingredient_source: Option<sundial::investment::IngredientSource>,
     /// Weapon names by item hash, for assets named after the pattern that fires them.
     item_names: BTreeMap<u32, entity::catalog::ItemName>,
-    /// Names are cached by native catalog identity and invalidated when source labels change.
-    asset_label_source: Option<Arc<entity::catalog::Catalog>>,
-    /// The game-name registration the labels were computed with.
-    asset_label_generation: u64,
+    /// What `asset_labels` were worked out from.
+    asset_label_source: Option<LabelSource>,
+    /// Bumped whenever the perk or weapon names the asset labels read change.
+    asset_name_revision: u64,
+    /// Asset labels a worker is working out, and what from.
+    asset_label_job: Option<(LabelSource, Receiver<BTreeMap<u32, String>>)>,
     asset_labels: BTreeMap<u32, String>,
     properties: properties::Properties,
     editor: Option<PerkEditor>,
@@ -318,6 +320,10 @@ pub(in crate::app) struct Workbench {
     pub(in crate::app) ability_places: Vec<(crate::subclass::Place, String)>,
 }
 
+/// What a set of asset labels was worked out from: the native catalog, the game-name
+/// registration and the revision of the perk and weapon names.
+type LabelSource = (Arc<entity::catalog::Catalog>, u64, u64);
+
 enum HeaderAction {
     History(bool),
     Save(bool),
@@ -342,9 +348,12 @@ impl Workbench {
             .map(|document| &mut document.recipe)
     }
 
-    /// Whether the background perk discovery that effect checks read has finished.
+    /// Whether the background perk discovery that effect checks read has finished, along with
+    /// the asset labels worked out from it.
     pub(in crate::app) fn discovery_settled(&self) -> bool {
-        !self.discovery.busy() && (self.discovery.data.is_some() || self.discovery.error.is_some())
+        !self.discovery.busy()
+            && self.asset_label_job.is_none()
+            && (self.discovery.data.is_some() || self.discovery.error.is_some())
     }
 
     /// Removes the open perk's effects the workbench flags, as a reader does before applying.
@@ -631,7 +640,7 @@ impl Workbench {
                 .iter()
                 .map(|choice| (choice.perk_index, choice.representative_name.clone()))
                 .collect();
-            self.asset_label_source = None;
+            self.asset_name_revision += 1;
         }
         // Discovery can finish while the native editor is open. Its names must not
         // depend on returning to the effect list or on when the editor was created.
@@ -645,7 +654,7 @@ impl Workbench {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         if self.engine.open {
-            self.refresh_asset_labels();
+            self.refresh_asset_labels(ctx);
         }
         let empty_sources = sundial::investment::PerkSources::default();
         // Taken before the call, because `show` borrows the catalog mutably while the object
@@ -1265,34 +1274,67 @@ impl Workbench {
                 (item, name)
             })
             .collect();
-        self.asset_label_source = None;
+        self.asset_name_revision += 1;
     }
 
-    fn refresh_asset_labels(&mut self) {
+    /// Names every native asset. Naming all of them holds a frame long enough to freeze the
+    /// window, so a worker does it, and the labels worked out before, or each picker's
+    /// fallback, stand in until it finishes.
+    fn refresh_asset_labels(&mut self, ctx: &egui::Context) {
         let Some(data) = &self.discovery.data else {
             self.asset_labels.clear();
             self.asset_label_source = None;
+            self.asset_label_job = None;
             return;
         };
-        let generation = entity::catalog::game_names_generation();
-        if self
-            .asset_label_source
-            .as_ref()
-            .is_some_and(|source| Arc::ptr_eq(source, &data.effects))
-            && self.asset_label_generation == generation
-        {
+        let wanted: LabelSource = (
+            data.effects.clone(),
+            entity::catalog::game_names_generation(),
+            self.asset_name_revision,
+        );
+        let current = |source: &LabelSource| {
+            Arc::ptr_eq(&source.0, &wanted.0) && (source.1, source.2) == (wanted.1, wanted.2)
+        };
+        if let Some((source, receiver)) = self.asset_label_job.take() {
+            match receiver.try_recv() {
+                Ok(labels) => {
+                    self.asset_labels = labels;
+                    self.asset_label_source = Some(source);
+                }
+                // A worker that stopped is not started again for the same inputs every frame.
+                Err(TryRecvError::Disconnected) => self.asset_label_source = Some(source),
+                Err(TryRecvError::Empty) if current(&source) => {
+                    self.asset_label_job = Some((source, receiver));
+                    return;
+                }
+                // Labels from older inputs are dropped with their channel.
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if self.asset_label_source.as_ref().is_some_and(current) {
             return;
         }
-        // A perk an ability grants is listed as "Ability <list> / <entry>", a placeholder
-        // the naming ignores, so what it attaches is named after the ability instead.
-        self.asset_labels = data.effects.discovery_labels_with(
-            |index| match self.perk_names.get(&index) {
-                Some(name) if !name.starts_with("Ability ") => Some(name.clone()),
-                listed => crate::app::ability_names::perk_owner(index).or_else(|| listed.cloned()),
-            },
-            |item| self.item_names.get(&item).cloned(),
-        );
-        self.asset_label_source = Some(data.effects.clone());
-        self.asset_label_generation = generation;
+        let catalog = Arc::clone(&wanted.0);
+        let perk_names = self.perk_names.clone();
+        let item_names = self.item_names.clone();
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            // A perk an ability grants is listed as "Ability <list> / <entry>", a placeholder
+            // the naming ignores, so what it attaches is named after the ability instead.
+            let labels = catalog.discovery_labels_with(
+                |index| match perk_names.get(&index) {
+                    Some(name) if !name.starts_with("Ability ") => Some(name.clone()),
+                    listed => {
+                        crate::app::ability_names::perk_owner(index).or_else(|| listed.cloned())
+                    }
+                },
+                |item| item_names.get(&item).cloned(),
+            );
+            if sender.send(labels).is_ok() {
+                repaint.request_repaint();
+            }
+        });
+        self.asset_label_job = Some((wanted, receiver));
     }
 }

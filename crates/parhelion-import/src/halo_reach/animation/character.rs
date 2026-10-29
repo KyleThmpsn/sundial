@@ -4,6 +4,7 @@ mod grip;
 mod motion;
 mod rider;
 mod source;
+mod timing;
 mod weapon;
 use super::first_person::Action;
 use crate::{
@@ -225,12 +226,18 @@ pub(in crate::halo_reach) fn prepare(
             duration *= (frames - 1) as f32;
             envelope = animation::clip::grow_static_envelope(&envelope, frames)?;
         }
-        let motion = calibration.translate(&source.action(action, frames)?, &rig)?;
+        let timing = if !idle && builtin == 3 && playback == 1 && original.u8(0x181)? == 0 {
+            timing::contact(&source.graph, action, &original)?
+        } else {
+            timing::Fit::linear("Native stance, rider or overlay keeps its original motion fit")
+        };
+        let motion =
+            calibration.translate(&source.action(action, frames, timing.contact)?, &rig)?;
         let result = animation::clip::replace_for(&envelope, &motion, rig.bind.len(), &controls)?;
         let ordinal = converted.len();
         let file = format!("character/clip-{ordinal}-{index}.bin");
         fs::write(root.join(&file), &result.0)?;
-        converted.push(json!({"template":template,"descriptor":index,"file":file,"frames":frames,"duration":duration,"source":action}));
+        converted.push(json!({"template":template,"descriptor":index,"file":file,"frames":frames,"duration":duration,"source":action,"timing":timing.receipt}));
         Ok(ordinal)
     };
     let mut actions = Vec::new();

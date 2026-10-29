@@ -90,7 +90,7 @@ pub fn export(p: &Value, modern: &Path, native: &Path, out: &Path) -> Result<Val
     let mut r = Reader::new(native, &bundle, false)?;
     let graph = dye_bundle::build(&mut r, &source, &carrier, &seed)?;
     r.finish()?;
-    let report = json!({"schema":1,"kind":"shader","profile":p,"preset":bundle,"channels":channels,"native_metadata_channels":borrowed,"private_nodes":graph["nodes"].as_array().unwrap().len(),"material_programs":graph["material_programs"],"installed":false,"standalone_installable":false,"limits":["Native lighting and shared gear rendering determine the final appearance. Verify it in game."]});
+    let report = json!({"schema":1,"kind":"shader","profile":p,"preset":bundle,"channels":channels,"native_metadata_channels":borrowed,"private_nodes":graph["nodes"].as_array().unwrap().len(),"material_programs":graph["material_programs"],"installed":false,"standalone_installable":false,"limits":["Native lighting and shared gear rendering determine the final appearance."]});
     write_json(&out.join("asset.json"), &report)?;
     Ok(report)
 }

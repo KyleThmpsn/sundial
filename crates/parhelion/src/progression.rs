@@ -13,10 +13,10 @@ mod conditions;
 pub(crate) mod presentation;
 use conditions::*;
 pub(crate) use conditions::{
-    classify_sunrise_count_pools, numeric_program_layout, numeric_program_stack_depth,
-    patch_project_acquired_count_programs, patch_project_collection_objectives_with_members,
-    presentation_ancestor_nodes, shared_numeric_instruction_template,
-    validate_shared_expression_table,
+    add_direct_acquired_counts, classify_sunrise_count_pools, numeric_program_layout,
+    numeric_program_stack_depth, patch_project_acquired_count_programs,
+    patch_project_collection_objectives_with_members, presentation_ancestor_nodes,
+    shared_numeric_instruction_template, validate_shared_expression_table,
 };
 // Only imported ornaments patch a collection's objectives directly.
 #[cfg(feature = "d2-model-importer")]

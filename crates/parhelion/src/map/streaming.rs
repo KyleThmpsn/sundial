@@ -21,6 +21,22 @@ use tiger_pkg::TagHash;
 /// Visibility placement, world record, raw tome and cluster metadata per bubble.
 pub(super) const ENTRIES: usize = 4;
 
+/// The box a bubble's tome partitions before its clusters grow it: the area grown to hold each
+/// visible object with a 16 m margin. The lighting cells check their node budget against the
+/// same box, since a larger root also splits on cell faces a smaller one leaves on its boundary.
+fn object_extent(
+    mut bounds: Bounds,
+    visible: &[parhelion_import::halo_reach::level::native::Visible],
+) -> Bounds {
+    for object in visible {
+        for k in 0..3 {
+            bounds.minimum[k] = bounds.minimum[k].min(object.minimum[k] - 16.);
+            bounds.maximum[k] = bounds.maximum[k].max(object.maximum[k] + 16.);
+        }
+    }
+    bounds
+}
+
 pub(super) fn identity(name: &str) -> u64 {
     name.bytes().fold(0xCBF2_9CE4_8422_2325u64, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3)
@@ -47,6 +63,8 @@ pub(super) struct Cells {
     regions: Vec<tome::Region>,
     /// Explicit probe choices for the lighting clusters appended after the crossing clusters.
     lighting_probes: Vec<u16>,
+    /// Probe choices for the crossing clusters that hold probes, by cluster.
+    crossing_probes: BTreeMap<u32, u16>,
 }
 
 impl Cells {
@@ -66,8 +84,10 @@ impl Cells {
 
     /// Each cluster's probe in the occlusion record, whose probes after the first are `probes`.
     /// Cluster 0, the space outside every cell and crossing, takes the record's first probe, the
-    /// open-ground fallback every stock record holds. Crossings take the probe nearest their
-    /// middle. Lighting cells retain the in-cell probe chosen during adaptive subdivision.
+    /// open-ground fallback every stock record holds. A crossing takes a probe it holds, chosen
+    /// as a lighting cell chooses its own ([`lighting::region_probe`]), and otherwise the probe
+    /// nearest its middle. Lighting cells retain the in-cell probe chosen during adaptive
+    /// subdivision.
     pub(super) fn assignments(&self, probes: &[[f32; 4]]) -> Vec<u16> {
         let first_lighting = self.clusters.len() / 20 - self.lighting_probes.len();
         self.clusters
@@ -79,6 +99,9 @@ impl Cells {
                 }
                 if cluster >= first_lighting {
                     return self.lighting_probes[cluster - first_lighting];
+                }
+                if let Some(&probe) = self.crossing_probes.get(&(cluster as u32)) {
+                    return probe;
                 }
                 let middle: [f32; 3] = std::array::from_fn(|k| {
                     f32::from_le_bytes(row[k * 4..k * 4 + 4].try_into().unwrap())
@@ -113,7 +136,9 @@ impl Cells {
 /// The visibility record's table of static instance identifiers (`+0x18`: a seed, then at `+0x20`
 /// 16-byte rows of a u64 key, a u32 value and padding) and its list from each value's index to a
 /// tome object (`+0x30`). A static instance's key is its bounds-row identifier with a zero upper
-/// half, as in Distant Shore's record, whose 2,084 listed instances all take that form.
+/// half, as in Distant Shore's record, whose 2,084 listed instances all take that form. A
+/// decorator cluster's identifier sits in the upper half, as Distant Shore's 1,462 keyed decorator
+/// clusters do.
 const VISIBILITY_SEED: usize = 0x18;
 const VISIBILITY_ROWS: usize = 0x20;
 const VISIBILITY_OBJECTS: usize = 0x30;
@@ -154,14 +179,21 @@ fn visibility_table(
     let mask = capacity - 1;
     let mut rows = vec![(0u64, 0u32); capacity];
     for (index, object) in visible.iter().enumerate() {
-        let key = u64::from(object.id);
+        // A decorator cluster's bounds row holds its identifier in the key's upper half.
+        let key = if object.upper {
+            u64::from(object.id) << 32
+        } else {
+            u64::from(object.id)
+        };
         if key == 0 {
             return Err(invalid("A static instance identifier is zero"));
         }
         let mut slot = slot_hash(seed, key) as usize & mask;
         while rows[slot].0 != 0 {
             if rows[slot].0 == key {
-                return Err(invalid("Static instance identifiers repeat"));
+                return Err(invalid(format!(
+                    "Static instance identifier {key:016X} repeats in {name}"
+                )));
             }
             rows[slot].1 |= PROBED_PAST;
             slot = (slot + 1) & mask;
@@ -571,14 +603,18 @@ impl Layout {
     }
 
     /// The clusters of area `bubble`'s spatial tome: its crossings, then lighting cells over the
-    /// space its `probes` inside `area` cover. A crossing wins where it reaches a cell, since
-    /// the tome takes the first region that holds a point.
+    /// space its `probes` inside `area` cover, which follow the faces of the level's structure
+    /// clusters `structure`. A crossing wins where it reaches a cell, since the tome takes the
+    /// first region that holds a point. The cells keep the tome within its node limit over the
+    /// box that also holds the area's `visible` objects.
     pub(super) fn cells(
         &self,
         bubble: usize,
         previous_entry: Option<[f32; 3]>,
         probes: &[[f32; 4]],
+        structure: &[Bounds],
         area: Bounds,
+        visible: &[parhelion_import::halo_reach::level::native::Visible],
     ) -> AuthoringResult<Cells> {
         let mut clusters = vec![0u8; 20];
         clusters[12..16].copy_from_slice(&(-1f32).to_le_bytes());
@@ -588,6 +624,7 @@ impl Layout {
             clusters,
             regions: Vec::new(),
             lighting_probes: Vec::new(),
+            crossing_probes: BTreeMap::new(),
         };
         let neighbors = self.neighbors(bubble).collect::<Vec<_>>();
         for &other in &neighbors {
@@ -652,7 +689,17 @@ impl Layout {
                 cells.push(bounds, 3, descriptor);
             }
         }
-        for cell in lighting::cells(area, probes, &cells.regions)? {
+        for region in &cells.regions {
+            if region.cluster != 0
+                && let Some(probe) = lighting::region_probe(region.bounds, probes, structure)
+            {
+                cells
+                    .crossing_probes
+                    .insert(region.cluster, (probe + 1) as u16);
+            }
+        }
+        let root = object_extent(area, visible);
+        for cell in lighting::cells(area, root, probes, structure, &cells.regions)? {
             cells.push_lighting(cell);
         }
         Ok(cells)
@@ -683,6 +730,7 @@ impl Layout {
             clusters,
             regions,
             lighting_probes: _,
+            crossing_probes: _,
         } = cells;
         let objects = visible
             .iter()
@@ -691,17 +739,21 @@ impl Layout {
                 maximum: object.maximum,
             })
             .collect::<Vec<_>>();
-        for extent in regions
-            .iter()
-            .map(|region| region.bounds)
-            .chain(objects.iter().copied())
-        {
+        bounds = object_extent(bounds, visible);
+        for extent in regions.iter().map(|region| region.bounds) {
             for k in 0..3 {
                 bounds.minimum[k] = bounds.minimum[k].min(extent.minimum[k] - 16.);
                 bounds.maximum[k] = bounds.maximum[k].max(extent.maximum[k] + 16.);
             }
         }
-        let raw = tome::encode(bounds, &regions, clusters.len() / 20, &objects)?;
+        let raw =
+            tome::encode(bounds, &regions, clusters.len() / 20, &objects).map_err(|error| {
+                error.context(format!(
+                    "Area {bubble} spatial tome of {} regions and {} objects",
+                    regions.len(),
+                    objects.len()
+                ))
+            })?;
         let mut metadata = self.metadata.1[..0x88].to_vec();
         metadata[0x18..0x78].fill(0);
         metadata[0x78..0x88].fill(0xFF);

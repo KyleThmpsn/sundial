@@ -468,30 +468,30 @@ pub(in crate::item) fn author(
         systems.insert(site.system, system);
     }
     let Copies { nodes, .. } = copies;
-    let index = packages.reserve_group(nodes.iter().map(|node| node.payload.len()))?;
-    let package = &mut packages.packages[index];
-    let allocator = AppendedTagAllocator::new(package.id, 0);
-    let base = package.tags.len();
+    let plan = packages.plan_graph(nodes.iter().map(|node| node.payload.len()).collect(), &[])?;
     let tags = (0..nodes.len())
-        .map(|ordinal| allocator.assigned_tag(base + ordinal, "Effect color copy", "effect asset"))
+        .map(|ordinal| plan.tag(ordinal))
         .collect::<AuthoringResult<Vec<_>>>()?;
+    let mut emitted = Vec::new();
+    let mut references = Vec::new();
     for (ordinal, mut node) in nodes.into_iter().enumerate() {
         for (offset, target) in &node.patches {
             write_u32(&mut node.payload, *offset, tags[*target].0)?;
         }
         if let Some(target) = node.reference {
-            package.references.push(crate::NewTagReferenceOverride {
-                new_tag_ordinal: base + ordinal,
-                reference: crate::NewTagReference::Appended(tags[target].entry_index() as usize),
+            references.push(crate::NewTagReferenceOverride {
+                new_tag_ordinal: ordinal,
+                reference: crate::NewTagReference::Tag(tags[target]),
             });
         }
-        package.tags.push(NewTagSpec {
+        emitted.push(NewTagSpec {
             template_tag: TagHash(node.template),
             payload: node.payload,
             storage: crate::NewTagStorageMode::InheritTemplate,
         });
         placed.push(tags[ordinal]);
     }
+    packages.commit_graph(plan, emitted, references)?;
     // Each root's graphs name the copies at their places, each place once.
     let mut by_root = vec![ColorPatches::new(); 1 + swapped.len()];
     let places = reached

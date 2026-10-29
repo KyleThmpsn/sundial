@@ -86,9 +86,10 @@ fn bank(r: &mut Reader, index: usize) -> Result<(u32, Value)> {
         .get(index)
         .context("localized bank index outside table")?;
     let key = p.u32(row)?;
-    // A zero Tag64 is a deliberate indirection, not a missing hash lookup.
+    // A zero Tag64, or a null 32-bit tag, is a deliberate indirection to the secondary table,
+    // not a missing hash lookup.
     let direct = r.ref64(&p, row + 8)?;
-    if direct != 0 {
+    if direct != 0 && direct != u32::MAX {
         return Ok((
             direct,
             json!({"index":index,"key":format!("{key:08X}"),"route":"direct"}),

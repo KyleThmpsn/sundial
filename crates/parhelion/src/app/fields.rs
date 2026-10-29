@@ -15,6 +15,7 @@ pub(super) struct SocketPickerContext<'a> {
     pub(super) show_plug_safety_warnings: bool,
     pub(super) show_experimental_options: bool,
     pub(super) show_technical_rows: &'a mut bool,
+    pub(super) view: SocketView,
     pub(super) perk_request: &'a mut Option<crate::app::custom_perks::workbench::Request>,
     pub(super) donor: &'a WeaponDonor,
     pub(super) log: &'a mut ActivityLog,

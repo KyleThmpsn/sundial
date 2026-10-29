@@ -542,7 +542,7 @@ pub(super) fn validate_socket_column_programs(
 
 /// The most choices a column that rolls from its own pool can hold: the rows one 64-bit
 /// ownership mask covers, which is also the largest stock randomized set.
-const MAX_ROLLED_CHOICES: usize = 64;
+pub(crate) const MAX_ROLLED_CHOICES: usize = 64;
 
 pub(crate) fn validate_socket_plug_variant_shapes(
     variants: &[WeaponSocketPlugVariantOverride],
@@ -1506,12 +1506,8 @@ pub(super) fn validate_authored_localization_values(
     map_strings: &[(u32, String)],
 ) -> AuthoringResult<()> {
     let set_names = plan
-        .gear_pages
-        .keys()
-        .filter_map(|page| {
-            page.set_name(branding.name())
-                .map(|name| (page.hash("name"), name))
-        })
+        .page_names(branding.name())
+        .into_iter()
         .chain(map_strings.iter().cloned())
         .collect::<Vec<_>>();
     let header_values = super::localization::project_localized_values_with_sets(

@@ -152,6 +152,8 @@ pub(crate) fn build_layer_texture_plan<'a>(
             new_tags.len() + 1,
             "icon texture header",
         )?;
+        AppendedTagAllocator::destination(destination_package_id, current_entry_count)
+            .reserve(data_ordinal, 2)?;
         let data_tag = assigned_tag(
             destination_package_id,
             current_entry_count,
@@ -580,7 +582,7 @@ fn assigned_tag(
     ordinal: usize,
     description: &str,
 ) -> AuthoringResult<TagHash> {
-    AppendedTagAllocator::new(package_id, current_entry_count).assigned_tag(
+    AppendedTagAllocator::destination(package_id, current_entry_count).assigned_tag(
         ordinal,
         &format!("{description} destination"),
         description,

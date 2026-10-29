@@ -17,14 +17,14 @@ pub(super) struct Checked {
 impl Source {
     fn requires(self, tool: Tool) -> bool {
         // Browser weapon imports translate source firing audio and require its decoder.
-        self == Source::Reach || tool.required()
+        self == Source::HaloReach || tool.required()
     }
 
     fn tools(self) -> &'static [Tool] {
         match self {
-            Source::Modern => tools::MONUMENT,
-            Source::Roi => tools::RISE_OF_IRON,
-            Source::Reach => tools::REACH,
+            Source::D2Modern => tools::MONUMENT,
+            Source::D1RiseOfIron => tools::RISE_OF_IRON,
+            Source::HaloReach => tools::REACH,
             Source::Marathon => tools::MARATHON,
         }
     }
@@ -300,7 +300,7 @@ impl PackageAuthoringApp {
                     .num_columns(4)
                     .spacing([16.0, 8.0])
                     .show(ui, |ui| {
-                        if self.importer.source == Source::Roi {
+                        if self.importer.source == Source::D1RiseOfIron {
                             ui.strong("Xbox Textures");
                             ui.weak("Textures");
                             ui.weak("Built In");

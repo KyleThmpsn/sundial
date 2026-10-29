@@ -23,6 +23,7 @@ mod terrain;
 #[cfg(test)]
 mod tests;
 pub(crate) mod texture;
+pub mod timing;
 mod vertex;
 
 #[derive(Default)]
@@ -323,7 +324,10 @@ pub(crate) fn load_reported(
     clip: Option<u32>,
 ) -> Result<Model, String> {
     load.say("Opening packages", 0, 0);
-    let manager = crate::investment::discovery::open_packages(packages)?;
+    let manager = {
+        let _stage = timing::stage("package open");
+        crate::investment::discovery::open_packages(packages)?
+    };
     load_with_manager(&manager, tag, load, clip)
 }
 
@@ -406,7 +410,10 @@ fn load_with_manager(
         clip,
         emitter_only,
     )?;
-    model.assets = assets::read(manager, tag, &inventory, cancel)?;
+    model.assets = {
+        let _stage = timing::stage("assets");
+        assets::read(manager, tag, &inventory, cancel)?
+    };
     decode::finish(manager, model, &inventory, &resources, emitter_only)
 }
 

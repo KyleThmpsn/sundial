@@ -236,5 +236,72 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A value derived from a package set alone, kept in `importer/cache/<importer>/<name>` while the
+/// package files are unchanged, wherever their folder lies. `schema` names the stored layout. A copy
+/// that cannot be read or written is rebuilt or skipped rather than failing the import.
+pub(crate) fn by_packages<T: Serialize + serde::de::DeserializeOwned>(
+    (importer, name, schema): (&str, &str, u32),
+    packages: &Path,
+    build: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let stamp = crate::tiger::reader::package_files_stamp(packages)?;
+    let generation = importer_cache(importer, name)
+        .and_then(|root| Generation::file(&root, &format!("{schema}-{stamp}")));
+    // The writer lock keeps a second worker from scanning the same packages at the same time.
+    let writer = generation
+        .as_ref()
+        .map(Generation::writer)
+        .transpose()?
+        .flatten();
+    let path = generation
+        .as_ref()
+        .filter(|_| writer.is_some())
+        .map(Generation::path);
+    if let Some(value) = path
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        return Ok(value);
+    }
+    let value = build()?;
+    if let Some(path) = path {
+        let _ = write_json(path, &value);
+    }
+    Ok(value)
+}
+
+/// Moves a file or folder an earlier version kept at `former` to `path`, keeping what it holds,
+/// or removes it once `path` exists. A move that fails leaves `former` for the next call.
+pub fn take_over(former: &Path, path: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(former) else {
+        return;
+    };
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::rename(former, path);
+    } else if metadata.is_dir() {
+        let _ = fs::remove_dir_all(former);
+    } else {
+        let _ = fs::remove_file(former);
+    }
+}
+
+/// The importer's own folder in Parhelion's data folder, which holds its listings, caches and
+/// tools.
+pub fn importer_folder() -> Option<std::path::PathBuf> {
+    sundial::package_authoring::parhelion_data_directory().map(|data| data.join("importer"))
+}
+
+/// One importer's cache `name`, `importer/cache/<importer>/<name>`. Earlier versions kept it as
+/// `importer/cache/<name>`, which moves there.
+pub fn importer_cache(importer: &str, name: &str) -> Option<std::path::PathBuf> {
+    let cache = importer_folder()?.join("cache");
+    let path = cache.join(importer).join(name);
+    take_over(&cache.join(name), &path);
+    Some(path)
+}
+
 #[cfg(test)]
 mod tests;

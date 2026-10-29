@@ -51,15 +51,16 @@ pub(in crate::halo_reach) fn defaults(
         ("ready".into(), clip("combat", "ready")),
         ("put_away".into(), clip("combat", "put_away")),
     ]);
-    // These are qualified native sword state names, not source item identities.
+    // The native sword's aerial and grounded profile lists name these states.
+    // Their human bank routes corroborate the first air and ground light roles.
     for (state, action) in [
-        ("0x054A16BE", "melee_strike_1"),
+        ("0x054A16BE", "melee_lunge_airborne"),
         ("0x06B623AD", "melee_lunge_airborne"),
         ("0xC5C3F7A0", "melee_strike_1"),
         ("0xC5C3F7A3", "melee_strike_2"),
         ("0xCE9A511C", "melee_strike_2"),
         ("0xCE9A511D", "melee_strike_1"),
-        ("0xCE9A511F", "melee_lunge"),
+        ("0xCE9A511F", "melee_strike_1"),
         ("0xE9D650B6", "melee_lunge"),
     ] {
         actions.insert(state.into(), clip("combat", action));

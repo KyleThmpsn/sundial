@@ -67,6 +67,37 @@ fn source_catalog_survives_reload_and_incomplete_materialization_is_atomic() -> 
     );
     let plan =
         Plan::from_source(selected, &source.report().builds, &stamp).map_err(anyhow::Error::msg)?;
+    let mut rejected_families = Vec::new();
+    for subclass in catalog
+        .iter()
+        .filter(|subclass| subclass.controller_class != 0x808025B8)
+    {
+        let error = Plan::from_source(subclass, &source.report().builds, &stamp)
+            .expect_err("Another source family cannot receive Radiance path labels");
+        ensure!(
+            !error.trim().is_empty(),
+            "Unsupported plan family has an explicit boundary"
+        );
+        rejected_families.push(json!({"item":subclass.item,"controller_class":subclass.controller_class,"error":error}));
+    }
+    ensure!(
+        !rejected_families.is_empty(),
+        "Configured complete corpus exercises non-Radiance families"
+    );
+    let mut legacy_catalog = serde_json::to_value(selected)?;
+    let legacy_object = legacy_catalog
+        .as_object_mut()
+        .context("Source catalog object")?;
+    legacy_object.remove("controller_class");
+    legacy_object.remove("abilities");
+    let legacy_catalog: parhelion_import::d1_roi::ability::SubclassCatalog =
+        serde_json::from_value(legacy_catalog)?;
+    let legacy_error = Plan::from_source(&legacy_catalog, &source.report().builds, &stamp)
+        .expect_err("An old intake without a controller pin requires a fresh source read");
+    ensure!(
+        legacy_error.to_lowercase().contains("refresh"),
+        "Old intake explains how to recover its missing controller evidence"
+    );
     let saved: serde_json::Value =
         serde_json::from_str(include_str!("../recipes/every-end.parhelion.json"))?;
     let mut recipe = WeaponRecipe::from_json_str(&serde_json::to_string(&json!({
@@ -121,6 +152,7 @@ fn source_catalog_survives_reload_and_incomplete_materialization_is_atomic() -> 
             "source_item":selected.item,"source_grid":selected.grid,"nodes":rows.len(),
             "steps":selected.nodes.iter().map(|node|node.steps.len()).sum::<usize>(),
             "fully_unlocked_foundations":foundations,
+            "other_family_rejections":rejected_families,"legacy_catalog_boundary":legacy_error,
             "saved_recipe_sha256":hex::encode(Sha256::digest(fs::read(&path)?)),
             "incomplete_materialization":error,"draft_unchanged":true,"installed":false,"gameplay_verified":false,
             "executable_sha256":hex::encode(Sha256::digest(fs::read(env::current_exe()?)?))

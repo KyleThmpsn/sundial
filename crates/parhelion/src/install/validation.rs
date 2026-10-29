@@ -191,7 +191,14 @@ fn find_obsolete_artifacts(
 ) -> Result<Vec<ArtifactMetadata>, InstallError> {
     let mut obsolete = Vec::new();
     for profile in all_authored_packages_in(&[target]) {
-        if profile.required_output
+        // A required output retires only when the incoming set holds its id under another name,
+        // as packages an earlier build named `w64_parhelion_assets_<id>_0.pkg` do.
+        let renamed = incoming.iter().any(|artifact| {
+            artifact.file_name != profile.file_name
+                && authored_package_for_file_name(&artifact.file_name)
+                    .is_some_and(|incoming| incoming.package_id == profile.package_id)
+        });
+        if (profile.required_output && !renamed)
             || incoming
                 .iter()
                 .any(|artifact| artifact.file_name == profile.file_name)
@@ -482,7 +489,8 @@ pub(super) fn validate_manifest_unlocks(
     let mut definitions = BTreeSet::new();
     let mut slots = BTreeSet::new();
     let mut unlocks = Vec::with_capacity(project.weapons.len());
-    // A subclass has no Collections entry, so it has no unlock to enroll.
+    // A subclass or a mod other than an imported universal ornament has no Collections entry, so
+    // it has no unlock to enroll.
     for (weapon, manifest_unlock) in project
         .weapons
         .iter()
@@ -593,7 +601,7 @@ fn validate_staged_recipe_snapshots(
         let matches_manifest = weapon.namespace == recipe.namespace
             && weapon.name == recipe.name
             && weapon.item.hash.get() == identity.item_hash
-            && weapon.collectible.is_none() == !spec.kind.has_collections()
+            && weapon.collectible.is_none() == !spec.has_collections()
             && weapon
                 .collectible
                 .as_ref()

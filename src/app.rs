@@ -1216,6 +1216,11 @@ fn validate_for_check(document: &WorkspaceDocument) -> Result<(), String> {
 }
 
 pub fn run(package_authoring: Box<dyn PackageAuthoringUtility>) -> eframe::Result {
+    // Model previews compile their shader programs in copies of this executable started for it.
+    #[cfg(windows)]
+    if let Some(code) = crate::model_preview::gpu::serve_compiler() {
+        std::process::exit(code);
+    }
     // Before the catalog, the icon cache or any package reader opens anything.
     if let Err(warning) = crate::system::file_limit::raise_open_file_limit() {
         eprintln!("Sundial: {warning}");

@@ -95,6 +95,17 @@ impl Tool {
         self == Tool::Oodle
     }
 
+    /// The folder Parhelion unpacks the tool into when it fetches the tool itself.
+    fn folder(self) -> &'static str {
+        match self {
+            Tool::Ffmpeg => "ffmpeg",
+            Tool::Decompiler => "3dmigoto",
+            Tool::Oodle => "oodle",
+            Tool::Vgmstream => "vgmstream",
+            Tool::Dxc => "dxc",
+        }
+    }
+
     /// The import error for a tool that could not be found or started.
     pub fn missing(self) -> String {
         format!(
@@ -136,6 +147,12 @@ impl Paths {
 }
 
 static CONFIGURED: RwLock<Paths> = RwLock::new(Paths::NONE);
+
+/// Where Parhelion keeps `tool` when it fetches or unpacks the tool itself,
+/// `importer/tools/<tool>` in its data folder. Only the decompiler is fetched.
+pub fn installed(tool: Tool) -> Option<PathBuf> {
+    crate::cache::importer_folder().map(|importer| importer.join("tools").join(tool.folder()))
+}
 
 /// Replaces the paths later lookups use.
 pub fn configure(paths: Paths) {

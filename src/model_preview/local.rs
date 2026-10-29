@@ -56,12 +56,18 @@ impl LocalAppearance {
     }
 
     fn prepare(&self, packages: &Path) -> Result<(PackageManager, LocalScene), String> {
-        let mut manager = PackageManager::new(
-            packages,
-            tiger_pkg::GameVersion::Destiny(tiger_pkg::DestinyVersion::Destiny2Shadowkeep),
-            None,
-        )?;
-        let scene = (self.read)(&mut manager)?;
+        let mut manager = {
+            let _stage = timing::stage("package open");
+            PackageManager::new(
+                packages,
+                tiger_pkg::GameVersion::Destiny(tiger_pkg::DestinyVersion::Destiny2Shadowkeep),
+                None,
+            )?
+        };
+        let scene = {
+            let _stage = timing::stage("imported graph read");
+            (self.read)(&mut manager)?
+        };
         Ok((manager, scene))
     }
 
@@ -105,6 +111,7 @@ impl LocalAppearance {
         if result.triangles.is_empty() {
             return Err("Imported appearance has no supported geometry".into());
         }
+        let _dyes = timing::stage("dyes");
         let stock_dyes = scene.stock_dyes;
         let dyes = scene
             .dyes

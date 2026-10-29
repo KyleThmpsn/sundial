@@ -2,6 +2,11 @@
 use super::*;
 use anyhow::Context as _;
 
+/// A holographic sight display's idle screen. The M77 display layers fade out through splines of
+/// this channel, fully opaque at zero and gone at one. It has no declaration procedure or getter
+/// in the examined sight bank, so the source controller sets it, and aim visibility stands in.
+pub(super) const SIGHT_DISPLAY: u32 = 0x8F88C0FB;
+
 #[derive(Clone, Default)]
 struct Expr {
     code: Vec<u8>,
@@ -111,6 +116,11 @@ pub(super) struct Context<'a> {
     pub authored: BTreeMap<super::super::inputs::Input, u8>,
     pub full_viewport: bool,
     pub reticle: bool,
+    /// A transparent material may bind scene depth and its projection vector itself.
+    pub scene_depth: bool,
+    /// Whether [`SIGHT_DISPLAY`] reads live aim visibility. Pixel stages fade the display layers
+    /// through it. Vertex stages keep its cached value, so their branches on it still resolve.
+    pub live_display: bool,
 }
 
 pub(super) struct Lowered {
@@ -120,6 +130,10 @@ pub(super) struct Lowered {
     pub evidence: Vec<Value>,
     pub constants: BTreeMap<usize, [u8; 16]>,
     pub viewports: BTreeSet<u32>,
+    /// Texture registers the material binds scene depth to.
+    pub depth: BTreeSet<u32>,
+    /// Material rows holding the depth projection vector.
+    pub depth_rows: BTreeSet<u32>,
 }
 
 impl Context<'_> {
@@ -175,10 +189,19 @@ impl Context<'_> {
         let declaration = bank.iter().find(|d| d.name == name).cloned();
         // Source attachments can forward these inputs through local declarations.
         // The equipped native weapon owns their values even when that forwarding
-        // procedure has no usable source runtime provider here.
-        let live = matches!(name, 0x32CC5402 | 0x9F7F13A9)
-            .then(|| self.objects.get(&format!("{name:08X}")).copied())
-            .flatten();
+        // procedure has no usable source runtime provider here. A sight display reads
+        // native aim visibility.
+        let live = match name {
+            0x32CC5402 | 0x9F7F13A9 => self.objects.get(&format!("{name:08X}")).copied(),
+            SIGHT_DISPLAY if self.live_display => self
+                .objects
+                .get(&format!(
+                    "{:08X}",
+                    crate::tiger::channel::inherited::AIM_VISIBILITY
+                ))
+                .copied(),
+            _ => None,
+        };
         let result = if let Some(index) = live {
             Expr {
                 code: vec![0x4d, index],
@@ -283,6 +306,8 @@ impl Context<'_> {
             evidence: vec![],
             constants: BTreeMap::new(),
             viewports: BTreeSet::new(),
+            depth: BTreeSet::new(),
+            depth_rows: BTreeSet::new(),
         };
         let mut stack = Vec::new();
         let mut temps = BTreeMap::<u8, Expr>::new();
@@ -337,7 +362,8 @@ impl Context<'_> {
                     } else if op == 0x4b && args[0] == 2 && (0x47..=0x4e).contains(&args[1]) {
                         self.authored(super::super::inputs::Input::Pattern(args[1] - 0x47))?
                     } else if op == 0x4a
-                        && (matches!(args, [1, 0 | 4]) || matches!(args, [2, 0 | 1]))
+                        // Frame scalars zero and one are game and render time in both layouts.
+                        && (matches!(args, [1, 0 | 1 | 4]) || matches!(args, [2, 0 | 1]))
                     {
                         Expr {
                             code: vec![0x3c, args[0], args[1]],
@@ -383,6 +409,20 @@ impl Context<'_> {
                         Expr {
                             code: vec![0x3f, 3, 19],
                             resource: true,
+                            ..Expr::default()
+                        }
+                    } else if op == 0x4d && self.scene_depth && args == [3, 19] {
+                        // Scene depth, which both transparent scopes bind to t10. A material
+                        // that loads depth itself binds the same resource to its own register.
+                        Expr {
+                            code: vec![0x3f, 3, 7],
+                            resource: true,
+                            ..Expr::default()
+                        }
+                    } else if op == 0x4b && self.scene_depth && args == [3, 0] {
+                        // The depth projection vector both transparent scopes write to CB2[0].
+                        Expr {
+                            code: vec![0x3d, 3, 0],
                             ..Expr::default()
                         }
                     } else {
@@ -441,6 +481,10 @@ impl Context<'_> {
                     if e.viewport {
                         result.viewports.insert(u32::from(i));
                     }
+                    result.depth_rows.remove(&u32::from(i));
+                    if e.code == [0x3d, 3, 0] {
+                        result.depth_rows.insert(u32::from(i));
+                    }
                     if e.missing.is_empty() && !e.authored {
                         let bank: Vec<[f32; 4]> = self
                             .constants
@@ -480,7 +524,8 @@ impl Context<'_> {
                     let e = pop(&mut stack)?;
                     ensure!(
                         slot >> 5 == 1 && e.missing.is_empty() && e.resource,
-                        "Unsupported source resource binding"
+                        "Unsupported source resource binding {op:02X} {slot:02X} {:?}",
+                        e.missing
                     );
                     let stencil = self.reticle && e.code == [0x3f, 73, 12];
                     let register = if stencil { 6 } else { u32::from(slot & 31) };
@@ -491,9 +536,13 @@ impl Context<'_> {
                         ensure!(
                             e.code == [0x3f, 44, 1]
                                 || e.code == [0x3f, 3, 19]
+                                || e.code == [0x3f, 3, 7]
                                 || (stencil && slot == 0x20),
                             "Unknown native scene texture"
                         );
+                        if e.code == [0x3f, 3, 7] {
+                            result.depth.insert(register);
+                        }
                         result.resources.insert(register);
                     }
                     result.code.extend(e.code);

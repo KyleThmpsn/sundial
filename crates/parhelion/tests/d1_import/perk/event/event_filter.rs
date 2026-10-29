@@ -30,6 +30,20 @@ pub(super) fn check(
             assert_eq!(native.u32(n - 4)?, 0x80803DDA);
             assert_eq!(source.bytes::<4>(s + 8)?, native.bytes::<4>(n + 8)?);
         }
+        28 => {
+            assert_eq!(source.u32(s - 4)?, 0x80802193);
+            assert_eq!(native.u32(n - 4)?, 0x80803DE0);
+            assert_eq!(native.u8(n + 8)? & !0x7F, 0);
+            assert_eq!(native.bytes::<3>(n + 9)?, [0; 3]);
+            // Decode admission from the saved source and emitted native masks.
+            // Zero selects nothing. The original publishers retain the spawn type.
+            for selector in 0..8 {
+                assert_eq!(
+                    source.u8(s + 8)? & (1 << selector) != 0,
+                    native.u8(n + 8)? & (1 << selector) != 0
+                );
+            }
+        }
         _ => return Err("Unexpected additional event condition".into()),
     }
     Ok(())

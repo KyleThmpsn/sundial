@@ -5,8 +5,8 @@ use super::*;
 
 const REACH: &str = "dev.kylethmpsn.parhelion-halo_reach";
 const D2: &str = "dev.kylethmpsn.parhelion-d2_mot";
-const REACH_FILE: &str = "w64_parhelion_assets_0aa1_0.pkg";
-const D2_FILE: &str = "w64_parhelion_assets_0cff_0.pkg";
+const REACH_FILE: &str = "w64_parhelion_sandbox_0aa1_0.pkg";
+const D2_FILE: &str = "w64_parhelion_sandbox_0cff_0.pkg";
 
 fn directory(fixture: &Fixture, id: &str) -> PathBuf {
     mod_content::runtime_directory(fixture.target.parent().unwrap())

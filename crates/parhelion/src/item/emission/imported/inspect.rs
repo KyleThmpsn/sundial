@@ -479,7 +479,6 @@ pub(super) fn apply(
         nodes,
         PAIR,
         companions,
-        0,
         |_, _| Ok(()),
         None,
     )?;

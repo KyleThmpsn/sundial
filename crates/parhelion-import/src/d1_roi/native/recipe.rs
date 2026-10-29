@@ -51,14 +51,11 @@ impl Assembly<'_> {
         }
         let icon = self.icon(item)?;
         let (native_dyes, dye_rows) = self.armor_dyes(dyes, donor, identity)?;
-        let mut limitations = [
-            "Native rendering, cloth motion and repeated ornament selection require in-game acceptance.",
-            "Source effect sequences and their particle events are not translated.",
-        ]
-        .map(String::from)
-        .to_vec();
+        let mut limitations = vec![
+            "Source effect sequences and their particle events are not translated.".to_owned(),
+        ];
         limitations.extend(self.approximations.iter().cloned());
-        let graph = json!({"kind":"armor","source":"d1_roi","source_item":item.hash,"source_name":item.name,"source_icon_png":icon,
+        let mut graph = json!({"kind":"armor","source":"d1_roi","source_item":item.hash,"source_name":item.name,"source_icon_png":icon,
             "collection_set":item.collection_set,
             "source_class":item.class_type,"source_bucket":bucket(item.slot)?,"source_rarity":item.rarity,
             "item_hash":identity,"native_item":donor,"converter_revision":crate::graph::CONVERTER_REVISION,
@@ -67,6 +64,9 @@ impl Assembly<'_> {
             "gear_art":{"selector_format":"shadowkeep","rows":[{"class":item.class_type,"flags":0,"template_index":template_index,"singles":singles,"slots":[]}],"parts":parts},
             "collections_unconditional":true,"rendering":self.evidence,"installable":true,"gameplay_verified":false,
             "limitations":limitations});
+        if let Some(audio) = &self.audio_assets {
+            graph["audio_assets"] = audio.clone();
+        }
         crate::io::write_json(&self.folder.join("asset-graph.json"), &graph)?;
         self.native.finish()?;
         GraphReference::new(&self.folder, identity)
@@ -95,8 +95,15 @@ impl Source {
             .find(|a| a.hash == item)
             .context("Selected source armor is missing")?;
         let mut assets = BTreeMap::new();
+        progress("Reading source armor art…".into());
         let bodies = self.armor_bodies(&armor, &mut assets)?;
-        let ornaments = self.ornaments(&armor, &mut assets)?;
+        let ornaments = if options.ornaments {
+            progress("Reading source ornaments…".into());
+            self.ornaments(&armor, &mut assets)?
+        } else {
+            Vec::new()
+        };
+        progress("Reading source dyes and talents…".into());
         let dyes = self.dyes(armor.definition, &mut assets)?;
         let talents = self.item_talents(armor.definition, &mut assets)?;
         let source = json!({"source":"d1_roi","item":armor,"talents":talents,
@@ -116,6 +123,7 @@ impl Source {
             16,
         )?;
         let mut assembly = Assembly::new(self, native, &output.join("graph"), options, None)?;
+        progress("Finding a native armor template…".into());
         let mut selected = None;
         for donor in donors["gear"]
             .as_array()
@@ -170,6 +178,7 @@ impl Source {
             "No native armor template has the required class, slot and appearance choices",
         )?;
         let donor_hash = number(&donor["hash"])?;
+        progress("Translating source talents…".into());
         let (columns, variants, perks, damage) =
             perk::translate(&mut assembly, &source, donor_hash, perk::Host::Armor)?;
         ensure!(
@@ -181,7 +190,7 @@ impl Source {
             .as_array()
             .context("Armor talent variants")?
             .clone();
-        progress(format!("Converting {}", armor.name));
+        progress("Converting the armor model…".into());
         let mut reference = assembly.armor_graph(
             &armor,
             private_item,
@@ -212,6 +221,11 @@ impl Source {
                 .collect::<Vec<_>>();
             let mut choices = vec![json!(format!("0x{reset:08X}"))];
             for (index, ornament) in ornaments.iter().enumerate() {
+                progress(format!(
+                    "Converting ornament {} of {}…",
+                    index + 1,
+                    ornaments.len()
+                ));
                 let info = &ornament["item"];
                 let mut source_item = Armor {
                     hash: number(&info["hash"])?,
@@ -233,12 +247,15 @@ impl Source {
                 let mut ornament_assembly = Assembly::new(
                     self,
                     native,
-                    &output.join(format!("ornament-{index}")),
+                    &output
+                        .join(crate::graph::ORNAMENTS)
+                        .join(format!("{:08X}", source_item.hash))
+                        .join(crate::graph::GRAPH),
                     options,
                     None,
                 )?;
                 let (name, icon_container) =
-                    ornament_assembly.ornament_display(&armor, ornament)?;
+                    ornament_assembly.ornament_display(armor.definition, ornament)?;
                 if !name.is_empty()
                     && super::super::localization::Labels::new(self)?
                         .text(self, &self.read(source_item.strings)?, 0x78)?
@@ -294,12 +311,13 @@ impl Source {
             );
             columns[socket_index] = json!({"choices":choices,"socket_type":socket["socket_type"],"choice_conditions":[],"choice_weight_bits":[],"randomized_selection_program":[]});
         }
+        progress("Saving the armor recipe…".into());
         let manifest = reference.directory.join("asset-graph.json");
         let mut graph: Value = serde_json::from_slice(&fs::read(&manifest)?)?;
         graph["source_talents"] = talents;
         graph["perk_translation"] = perks;
         graph["limitations"].as_array_mut().context("Armor limitations")?.extend([
-            json!("Supported armor talents use private native effects. Equipping, event delivery, repeated use, selection changes and cleanup require in-game acceptance."),
+            json!("Supported armor talents use private native effects."),
             json!("Native base stats remain the baseline. Source armor stat tiers, ability grants, progression and unsupported talent effects are not translated."),
         ]);
         crate::io::write_json(&manifest, &graph)?;

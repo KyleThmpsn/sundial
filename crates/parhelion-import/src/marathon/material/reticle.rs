@@ -9,6 +9,9 @@ pub(super) fn preset(name: u32) -> Option<(&'static str, [f32; 4])> {
         0x4269E744 => ("Reticle extent", [1.; 4]),
         0xC026EB02 => ("Reticle scale", [1.; 4]),
         0x79FD498A => ("Reticle visibility", [1.; 4]),
+        // The M77 procedural reticle multiplies its color and opacity by this channel through the
+        // same fade-in cubic as aim visibility, so a zero cached value erases its artwork.
+        0x3F8A2821 => ("Sight visibility", [1.; 4]),
         // The depth controller evaluates a power law of this positive scale.
         // A zero cached value is outside its logarithm's domain.
         0x1B68B957 => ("Reticle depth scale", [1.; 4]),
@@ -77,6 +80,77 @@ pub(super) fn pixel(
     Ok(())
 }
 
+/// The reticle of a sight whose source eye sits inside its sight box covers the whole aimed view,
+/// as the source shows it, while the housing that holds its aperture is hidden. Stencil value 4
+/// sets the bit the source test selects, so the reticle no longer stops at the aperture mask.
+/// Aim visibility still sets its opacity through the source expression.
+pub(super) fn unmasked(pixel: String) -> Result<String> {
+    ensure!(
+        pixel.contains("Texture2D<uint4> t0:register(t6);"),
+        "Reticle stencil texture differs"
+    );
+    let loads = pixel.match_indices("t0.Load(").collect::<Vec<_>>();
+    ensure!(loads.len() == 1, "Reticle needs one stencil load");
+    let start = loads[0].0;
+    let end = pixel[start..]
+        .find(';')
+        .context("Reticle stencil load statement")?
+        + start;
+    Ok(format!(
+        "{}uint4(0,4,0,0){}",
+        &pixel[..start],
+        &pixel[end..]
+    ))
+}
+
+/// An enclosed sight with an angular override shows the source's aimed composition. Its reticle
+/// takes the source view's projection in the vertex adapter. Once aim visibility in `row` passes
+/// 0.99, where the rest of the weapon disappears, it darkens the view outside the aperture as the
+/// source housing does. The native viewport row `cb12[12]` holds dimensions in XY and their
+/// reciprocals in ZW, so screen position gives each pixel's tangent in the source view.
+pub(super) fn framed(pixel: String, row: u8, framing: &geometry::Framing) -> Result<String> {
+    let mut pixel = scope::declare_row(unmasked(pixel)?, row)?;
+    ensure!(
+        pixel.contains("register(b12)"),
+        "Reticle has no viewport constants"
+    );
+    let start = pixel.find("void main(").context("Reticle entry")? + "void main(".len();
+    let end = pixel[start..]
+        .find(") {")
+        .context("Reticle parameter list")?
+        + start;
+    let parameters = pixel[start..end]
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    let position = parameters
+        .iter()
+        .find_map(|p| p.strip_suffix(":SV_Position0")?.split_whitespace().nth(1))
+        .context("Reticle screen position input")?
+        .to_owned();
+    ensure!(
+        parameters.contains(&"out float4 o0:SV_Target0"),
+        "Reticle color output differs"
+    );
+    let mut code = format!(
+        "\nfloat2 framedScreen={position}.xy*cb12[12].zw;\nfloat2 framedTangent=float2(framedScreen.x*2-1,(1-framedScreen.y*2)*cb12[12].y*cb12[12].z)*{};\nfloat framedInside=1e20;\n",
+        vertex::float(framing.tangent)
+    );
+    for edge in &framing.window {
+        code.push_str(&format!(
+            "framedInside=min(framedInside,dot(float3(framedTangent,1),float3({},{},{})));\n",
+            vertex::float(edge[0]),
+            vertex::float(edge[1]),
+            vertex::float(edge[2])
+        ));
+    }
+    code.push_str(&format!(
+        "if(framedInside<=0){{o0=float4(0,0,0,saturate((cb0[{row}].x-0.99)*100));return;}}\n"
+    ));
+    pixel.insert_str(end + ") {".len(), &code);
+    Ok(pixel)
+}
+
 pub(super) fn validate(native: &mut Reader, source: &Payload, shell: &Payload) -> Result<()> {
     ensure!(
         source
@@ -118,6 +192,8 @@ pub(super) struct Projection {
     pub offset: u8,
     pub depth: u8,
     pub vectors: usize,
+    /// For a framed sight, the tangent of half the source horizontal view.
+    pub framing: Option<f32>,
 }
 
 pub(super) struct Vertex {
@@ -136,6 +212,7 @@ pub(super) fn vertex(
     code: &[u8],
     values: &[[u8; 16]],
     mut context: expression::Context<'_>,
+    framing: Option<&geometry::Framing>,
 ) -> Result<Vertex> {
     // Source projection matrix, screen offset, then the source-owned depth channel.
     // The material's row allocation varies with its other declared inputs.
@@ -153,6 +230,7 @@ pub(super) fn vertex(
             .checked_add(1)
             .context("Reticle depth row overflow")?,
         vectors: values.len(),
+        framing: framing.map(|framing| framing.tangent),
     };
     ensure!(
         values.len() > usize::from(projection.depth),
@@ -161,7 +239,7 @@ pub(super) fn vertex(
     context.constants = vectors(material, 0x88)?;
     context.authored.clear();
     let live = BTreeSet::from([u32::from(projection.depth)]);
-    let mut lowered = context.lower(&code[10..], values, &live, true)?;
+    let lowered = context.lower(&code[10..], values, &live, true)?;
     ensure!(
         lowered.resources.is_empty() && lowered.samplers.is_empty(),
         "Reticle vertex requires a resource"
@@ -176,24 +254,13 @@ pub(super) fn vertex(
         "Source reticle focal plane is not positive"
     );
     let target = focal_plane(native, shell)?;
-    let factor = target / nominal;
-    ensure!(
-        factor.is_finite() && factor > 0.,
-        "Reticle focal-plane conversion is invalid"
-    );
     ensure!(
         lowered.code.ends_with(&[0x43, projection.depth]),
         "Reticle depth output is not final"
     );
-    // The native reticle projection uses its own virtual focal plane. Preserve the source
-    // response relative to its nominal depth instead of importing a much nearer plane, which
-    // enlarges all procedural artwork. The native template supplies this rendering baseline.
-    let coefficient = u8::try_from(context.constants.len()).context("Reticle constant capacity")?;
-    context.constants.push(resources::vector_bytes([factor; 4]));
-    lowered.code.truncate(lowered.code.len() - 2);
-    lowered
-        .code
-        .extend([0x34, coefficient, 0x04, 0x43, projection.depth]);
+    // The native reticle projection takes its horizontal view from the private optic's angle at
+    // `+80`, which carries the source sight's angular override, so the source depth gives the
+    // artwork its source screen size. A framed sight projects with the source view instead.
     let mut code = vec![
         0x3E,
         2,
@@ -208,11 +275,15 @@ pub(super) fn vertex(
     ];
     code.extend(lowered.code);
     let mut values = values.to_vec();
-    values[usize::from(projection.depth)] = resources::vector_bytes([target; 4]);
+    let policy = match projection.framing {
+        Some(_) => "Source depth in the source aimed view",
+        None => "Source depth in the optic's aimed view",
+    };
+    values[usize::from(projection.depth)] = resources::vector_bytes([nominal; 4]);
     Ok(Vertex {
         projection,
-        plane: json!({"source_nominal":nominal,"native_nominal":target,"scale":factor,
-            "policy":"Native virtual focal-plane baseline with relative source depth response"}),
+        plane: json!({"source_nominal":nominal,"native_nominal":target,
+            "aimed_view_tangent":projection.framing,"policy":policy}),
         code,
         constants: context.constants,
         values,
@@ -257,6 +328,32 @@ fn focal_plane(native: &mut Reader, shell: &Payload) -> Result<f32> {
         "Native reticle focal plane is invalid"
     );
     Ok(value)
+}
+
+/// Aimed glass draws in the reticle pass and projects as a native reticle does. The template's
+/// own producer fills the reticle rows, and its focal plane gives the glass its depth.
+pub(super) fn native_vertex(native: &mut Reader, shell: &Payload) -> Result<Vertex> {
+    focal_plane(native, shell)?;
+    let code = shell
+        .array(0x68, 1, None)?
+        .into_iter()
+        .map(|at| shell.u8(at))
+        .collect::<Result<Vec<_>>>()?;
+    let values = resources::values(native, shell, 0x48)?;
+    Ok(Vertex {
+        projection: Projection {
+            matrix: code[4],
+            offset: code[9],
+            depth: code[9] + 1,
+            vectors: values.len(),
+            framing: None,
+        },
+        plane: Value::Null,
+        code,
+        constants: Vec::new(),
+        values,
+        objects: 0,
+    })
 }
 
 impl Vertex {

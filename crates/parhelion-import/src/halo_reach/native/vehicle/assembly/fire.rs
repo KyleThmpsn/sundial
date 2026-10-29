@@ -1,10 +1,7 @@
 //! A private launch sound follows an accepted native projectile spawn.
 use super::super::secondary::Bundle;
 use super::*;
-use crate::{
-    halo_reach::{audio, cache::Cache},
-    tiger::audio::bank::Bank,
-};
+use crate::halo_reach::{audio, cache::Cache};
 
 struct Source<'a> {
     sound: &'a Value,
@@ -85,115 +82,6 @@ fn primary<'a>(behavior: &'a Value, cache: &Cache) -> Result<Option<Source<'a>>>
     Ok(Some(Source { sound, projectile }))
 }
 
-fn cue(
-    native: &mut Reader,
-    graph: &mut Graph,
-    sound: &Value,
-    template: u32,
-    bus: Option<u32>,
-) -> Result<Value> {
-    let original = native.tag(template, Some(0x80809802))?;
-    let bank_tag = original.u32(20)?;
-    let bank = native.tag(bank_tag, None)?;
-    let bus = audio::output_bus(&bank.0, bus, original.u32(8)?)?;
-    audio::verify_bus(&bank.0, bus)?;
-    let source = &sound["data"];
-    ensure!(
-        source["promotion_index"] == -1 && source["custom_playback_index"] == -1,
-        "Vehicle firing sound requires source promotion or custom playback"
-    );
-    let ranges = source["pitch_ranges"]
-        .as_array()
-        .context("Vehicle firing pitch ranges")?;
-    ensure!(
-        ranges.len() == 1,
-        "Vehicle firing sound requires range switching"
-    );
-    let variants = ranges[0]["variants"]
-        .as_array()
-        .context("Vehicle firing variations")?;
-    ensure!(
-        !variants.is_empty(),
-        "Vehicle firing sound has no variations"
-    );
-    let limits = &source["playback_limits"];
-    ensure!(
-        limits["preemption_ms"] == 0 && limits["maximum_per_object_per_class"] == 0,
-        "Vehicle firing sound requires timed or class preemption"
-    );
-    let limit = u16::try_from(
-        limits["maximum_per_tag"]
-            .as_u64()
-            .filter(|v| (1..=16).contains(v))
-            .context("Vehicle firing global voice limit")?,
-    )?;
-    let gain = source["playback"]["gain_db"]
-        .as_f64()
-        .context("Vehicle firing gain")? as f32;
-    let source_root = graph
-        .root
-        .parent()
-        .context("Vehicle source directory")?
-        .join("source/audio");
-    let medium = original.u32(
-        *original
-            .array(0x18, 4, Some(0x80800014))?
-            .first()
-            .context("Native firing medium")?,
-    )?;
-    let mut ids = Vec::new();
-    let mut media = Vec::new();
-    for variant in variants {
-        let id = u32::try_from(
-            variant["fsb_info"]
-                .as_u64()
-                .context("Vehicle firing sample")?,
-        )?;
-        ensure!(
-            !ids.contains(&id),
-            "Vehicle firing variations repeat a sample"
-        );
-        ids.push(id);
-        let symbol = format!("vehicle-fire-media-{id:08X}");
-        let data = crate::tiger::audio::transcode::normalize_pcm_wem(&std::fs::read(
-            source_root.join(format!("{id:08X}.wav")),
-        )?)?;
-        graph.add(&symbol, medium, &data, None, Vec::new())?;
-        graph.nodes.last_mut().unwrap()["storage"] = json!("audio_media");
-        media.push(json!({"id":id,"symbol":symbol}));
-    }
-    let bank = Bank::one_shot_global(&ids, bus, gain, limit)?;
-    graph.add("vehicle-fire-bank", bank_tag, &bank.bytes, None, Vec::new())?;
-    let node = graph.nodes.last_mut().unwrap();
-    node["storage"] = json!("audio_bank");
-    node["audio_bank"] = serde_json::to_value(&bank)?;
-    node["audio_media"] = json!(media);
-    ensure!(
-        original.0.len() >= 0x50 && original.pointer(0x20)? == 0x40,
-        "Vehicle firing cue envelope differs"
-    );
-    let mut data = original.0[..0x50].to_vec();
-    data.resize(0x50 + ids.len() * 4, 0xff);
-    let size = data.len() as u64;
-    put(&mut data, 0, &size.to_le_bytes())?;
-    put(&mut data, 8, &1u32.to_le_bytes())?;
-    put(&mut data, 12, &u32::MAX.to_le_bytes())?;
-    put(&mut data, 20, &u32::MAX.to_le_bytes())?;
-    for at in [0x18, 0x40] {
-        put(&mut data, at, &(ids.len() as u64).to_le_bytes())?;
-    }
-    let mut patches = vec![json!({"offset":20,"symbol":"vehicle-fire-bank"})];
-    for (index, id) in ids.iter().enumerate() {
-        patches
-            .push(json!({"offset":0x50+index*4,"symbol":format!("vehicle-fire-media-{id:08X}")}));
-    }
-    graph.add("vehicle-fire-cue", template, &data, None, patches)?;
-    graph.nodes.last_mut().unwrap()["audio_events"] = json!([{"offset":8,"id":1}]);
-    Ok(
-        json!({"source":sound["tag"],"variations":ids,"gain_db":gain,"global_voice_limit":limit,"output_bus":bus}),
-    )
-}
-
 impl Assembly {
     pub fn fire_audio(
         &mut self,
@@ -270,7 +158,8 @@ impl Assembly {
             "Native launch sound template is absent or ambiguous"
         );
         let (flow, field, source_cue) = candidates[0];
-        let report = cue(native, graph, source.sound, source_cue, bus)?;
+        let report =
+            audio::once::cue(native, graph, source.sound, source_cue, bus, "vehicle-fire")?;
         let mut bundle = Bundle::read(native, projectile)?;
         let motion = crate::halo_reach::projectile::motion::apply(
             &bundle.entity().clone(),
@@ -292,7 +181,7 @@ impl Assembly {
         Ok(
             json!({"sound":report,"motion":motion,"projectile":symbol,"native_projectile":format!("{projectile:08X}"),
             "trigger":"Native accepted projectile spawn","gameplay_verified":false,
-            "limits":["Source initial gravity scale and range are adapted on the private native projectile. Native launch inputs, later motion curves, damage and visuals are retained. Source primary firing PCM uses a private global voice limit. Source pitch curves, spatial attenuation and secondary firing are not translated. Native activation and audio cleanup require gameplay acceptance."]}),
+            "limits":["Source initial gravity scale and range are adapted on the private native projectile. Native launch inputs, later motion curves, damage and visuals are retained. Source primary firing PCM uses a private global voice limit. Source pitch curves, spatial attenuation and secondary firing are not translated."]}),
         )
     }
 }

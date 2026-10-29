@@ -64,6 +64,9 @@ impl PackageAuthoringApp {
         if edit {
             self.perk_request = Some(custom_perks::workbench::Request::Mod);
         }
+        // An imported universal ornament shows the model it brings.
+        #[cfg(feature = "d2-model-importer")]
+        imported_view::show_as(self, ui, "Source Ornament");
     }
 
     /// Gives a new mod recipe its perk: an empty one of the weapon mod type every weapon's mod

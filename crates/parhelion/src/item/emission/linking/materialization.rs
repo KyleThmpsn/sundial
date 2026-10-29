@@ -49,13 +49,33 @@ fn state(assets: &crate::asset_packages::AssetPackages) -> Vec<PackageState> {
 
 #[test]
 #[ignore = "requires PARHELION_LINK_FIXTURE with Native owner, allocation, buffer and enrollment templates"]
-#[expect(
+fn private_materialization_package_readback() {
+    let output = crate::test_support::artifact_dir("linking");
+    assert!(!output.exists(), "linker output must be fresh");
+    use crate::package_profile::{Host, Window};
+    for (label, window, host) in [
+        ("legacy", Window::FULL, Host::APPENDED),
+        (
+            "managed",
+            Window {
+                base: Window::FULL.base,
+                top: Window::FULL.top - 1,
+                descending: true,
+            },
+            Host::standalone(Window::FULL.top),
+        ),
+    ] {
+        let _profile = crate::package_profile::hold(window, host);
+        materialization_readback(&output.join(label));
+    }
+}
+
+#[allow(
     clippy::cognitive_complexity,
     reason = "End-to-end verification keeps the ordered workflow and its independent assertions together"
 )]
-fn private_materialization_package_readback() {
-    let output = crate::test_support::artifact_dir("linking");
-    match fs::symlink_metadata(&output) {
+fn materialization_readback(output: &Path) {
+    match fs::symlink_metadata(output) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => panic!("Cannot inspect linker output directory: {error}"),
         Ok(_) => panic!("Linker output path already exists: {}", output.display()),
@@ -123,7 +143,7 @@ fn private_materialization_package_readback() {
             companion.1.len() + crate::format::BLOCK_SIZE,
         );
         companion_decl.companion = Some(Companion::new("parent", fixture.parent_template));
-        vec![
+        let mut declarations = vec![
             Declaration::new("owner", fixture.owner_template, owner.len()),
             Declaration::new("allocation", fixture.allocation_template, allocation.len()),
             Declaration::new("header", fixture.buffer_header, header.len()),
@@ -131,7 +151,19 @@ fn private_materialization_package_readback() {
             Declaration::new("parent", fixture.parent_template, parent.len()),
             Declaration::new("entity", entity_template, entity.len()),
             companion_decl,
-        ]
+        ];
+        declarations.swap(3, 4);
+        declarations.splice(
+            4..4,
+            (0..8192).map(|index| {
+                Declaration::new(
+                    format!("extra-{index}"),
+                    fixture.allocation_template,
+                    allocation.len(),
+                )
+            }),
+        );
+        declarations
     };
     let make = |symbols: &BTreeMap<String, TagHash>| -> AuthoringResult<Vec<Node>> {
         let mut private = owner.clone();
@@ -145,7 +177,7 @@ fn private_materialization_package_readback() {
         companion_node.companion = Some(Companion::new("parent", fixture.parent_template));
         let mut parent_node = Node::new("parent", fixture.parent_template, parent.clone());
         parent_node.patch(16, "entity")?;
-        Ok(vec![
+        let mut nodes = vec![
             owner_node,
             Node::new(
                 "allocation",
@@ -157,7 +189,19 @@ fn private_materialization_package_readback() {
             parent_node,
             Node::new("entity", entity_template, entity.clone()),
             companion_node,
-        ])
+        ];
+        nodes.swap(3, 4);
+        nodes.splice(
+            4..4,
+            (0..8192).map(|index| {
+                Node::new(
+                    format!("extra-{index}"),
+                    fixture.allocation_template,
+                    allocation.clone(),
+                )
+            }),
+        );
+        Ok(nodes)
     };
     let before = state(&assets);
     let mut failures = Vec::new();
@@ -175,10 +219,9 @@ fn private_materialization_package_readback() {
             &fixture.packages,
             &mut assets,
             &manager,
-            declarations(),
+            (declarations(), &External::default()),
             "parent",
             &mut companions,
-            0,
             |symbols| {
                 if fault == "materializer" {
                     return Err(invalid("Configured materializer failure"));
@@ -208,40 +251,106 @@ fn private_materialization_package_readback() {
         assert_eq!(state(&assets), before, "{fault} mutated packages");
         failures.push(fault);
     }
+    let streamed = {
+        #[cfg(feature = "d2-model-importer")]
+        {
+            let mut stream = crate::asset_packages::stream::Stream::new(&assets).unwrap();
+            for _ in 0..8193 {
+                let (allocator, tags) = stream.target();
+                allocator
+                    .reserve_payload(tags.len(), allocation.len())
+                    .unwrap();
+                allocator
+                    .assigned_tag(tags.len(), "Streamed fixture", "allocation")
+                    .unwrap();
+                tags.push(NewTagSpec {
+                    template_tag: TagHash(fixture.allocation_template),
+                    payload: allocation.clone(),
+                    storage: crate::NewTagStorageMode::InheritTemplate,
+                });
+            }
+            stream.finish(&mut assets).unwrap()
+        }
+        #[cfg(not(feature = "d2-model-importer"))]
+        {
+            Vec::<TagHash>::new()
+        }
+    };
     let linked = materialize(
         &fixture.packages,
         &mut assets,
         &manager,
-        declarations(),
+        (declarations(), &External::default()),
         "parent",
         &mut companions,
-        0,
         make,
-        |_, _| Ok(()),
+        |symbols, groups| {
+            groups
+                .get_mut(&symbols["parent"])
+                .unwrap()
+                .extend(&streamed);
+            Ok(())
+        },
         None,
     )
     .unwrap();
     assets.validate().unwrap();
-    let package = &assets.packages[linked.package_index];
-    assert_eq!(package.tags[0].payload, allocation);
+    assert!(assets.packages.len() > 1);
+    assert_eq!(assets.packages[0].tags[0].payload, allocation);
     assert_ne!(linked.symbols["owner"].entry_index(), 0);
-    let profile = crate::package_profile::authored_package(package.id).unwrap();
-    let artifact = crate::extend::build_standalone_package_with_references(
-        &fixture.packages,
-        package.id,
-        profile.file_name,
-        &package.tags,
-        &package.references,
-    )
-    .unwrap();
+    assert_ne!(
+        linked.symbols["header"].pkg_id(),
+        linked.symbols["data"].pkg_id()
+    );
+    assert_eq!(
+        linked.symbols["parent"].pkg_id(),
+        linked.symbols["companion"].pkg_id()
+    );
     let temporary = tempfile::tempdir().unwrap();
-    let written = artifact.write_new(temporary.path()).unwrap();
-    let reopened = tiger_pkg::PackageD2PreBL::open(written.to_str().unwrap()).unwrap();
     use tiger_pkg::Package;
+    let mut reopened = BTreeMap::new();
+    let mut emitted = BTreeMap::new();
+    let mut enrolled = false;
+    for package in &assets.packages {
+        let profile = crate::package_profile::authored_package(package.id).unwrap();
+        let artifact = crate::extend::build_standalone_package_with_references(
+            &fixture.packages,
+            package.id,
+            profile.file_name,
+            &package.tags,
+            &package.references,
+        )
+        .unwrap();
+        let written = artifact.write_new(temporary.path()).unwrap();
+        let bytes = fs::read(&written).unwrap();
+        let layout = crate::format::PackageLayout::parse(&bytes).unwrap();
+        let enrollment = layout.shared_tag_enrollment_rows(&bytes).unwrap();
+        enrolled |= enrollment.chunks_exact(8).any(|row| {
+            read_u32(row, 0).unwrap() == linked.symbols["parent"].0
+                && read_u32(row, 4).unwrap() == linked.symbols["companion"].0
+        });
+        emitted.insert(
+            profile.file_name.to_owned(),
+            serde_json::json!({
+                "bytes":bytes.len(),"sha256":digest(&bytes),"entries":package.tags.len()
+            }),
+        );
+        reopened.insert(
+            package.id,
+            tiger_pkg::PackageD2PreBL::open(written.to_str().unwrap()).unwrap(),
+        );
+    }
+    assert!(enrolled);
+    let read = |tag: TagHash| reopened[&tag.pkg_id()].read_tag(tag).unwrap();
     let mut readback = BTreeMap::new();
     for (symbol, tag) in &linked.symbols {
+        let package = assets
+            .packages
+            .iter()
+            .find(|package| package.id == tag.pkg_id())
+            .unwrap();
         let expected = &package.tags[tag.entry_index() as usize].payload;
-        let payload = reopened.read_tag(*tag).unwrap();
+        let payload = read(*tag);
         assert_eq!(payload, *expected);
         readback.insert(
             symbol.clone(),
@@ -250,7 +359,7 @@ fn private_materialization_package_readback() {
             }),
         );
     }
-    let private = reopened.read_tag(linked.symbols["owner"]).unwrap();
+    let private = read(linked.symbols["owner"]);
     assert_eq!(
         read_u32(&private, instance).unwrap(),
         linked.symbols["owner"].0
@@ -263,22 +372,26 @@ fn private_materialization_package_readback() {
         read_u32(&private, 0x44).unwrap(),
         linked.symbols["allocation"].0
     );
-    let bytes = fs::read(&written).unwrap();
-    let layout = crate::format::PackageLayout::parse(&bytes).unwrap();
-    let enrollment = layout.shared_tag_enrollment_rows(&bytes).unwrap();
-    assert!(
-        enrollment
-            .chunks_exact(8)
-            .any(
-                |row| read_u32(row, 0).unwrap() == linked.symbols["parent"].0
-                    && read_u32(row, 4).unwrap() == linked.symbols["companion"].0
-            )
-    );
-    let entries = reopened.entries();
+    let entries = reopened[&linked.symbols["header"].pkg_id()].entries();
     assert_eq!(
         entries[linked.symbols["header"].entry_index() as usize].reference,
         linked.symbols["data"].0
     );
+    let loaded = crate::shared_tag_dependency_index::dependency_entries(
+        &read(linked.symbols["companion"]),
+        linked.symbols["companion"],
+        linked.symbols["parent"],
+    )
+    .unwrap();
+    for (symbol, tag) in &linked.symbols {
+        if symbol.starts_with("extra-") {
+            assert!(loaded.contains(&(tag.pkg_id(), tag.entry_index())));
+        }
+    }
+    for tag in &streamed {
+        assert!(loaded.contains(&(tag.pkg_id(), tag.entry_index())));
+        assert_eq!(read(*tag), allocation);
+    }
     let inputs: BTreeMap<_, _> = [
         ("owner", fixture.owner_template, owner.as_slice()),
         (
@@ -303,15 +416,23 @@ fn private_materialization_package_readback() {
     })
     .collect();
     let receipt = serde_json::json!({"symbols": linked.symbols.iter().map(|(s,t)| (s.clone(), t.0)).collect::<BTreeMap<_,_>>(),
-        "package": profile.file_name, "package_bytes": bytes.len(), "package_sha256": digest(&bytes),
+        "packages": emitted, "streamed":streamed.iter().map(|tag|tag.0).collect::<Vec<_>>(),
+        "native_build":"86657.20.08.23.1800.d2_rc___release", "version":env!("CARGO_PKG_VERSION"),
+        "test_executable_sha256":crate::artifact::digest_file(&std::env::current_exe().unwrap()).unwrap().sha256,
         "inputs": inputs, "private_readback": readback,
-        "entries": package.tags.len(), "failure_cases": failures, "readback_verified": true});
+        "failure_cases": failures, "readback_verified": true});
     if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
         fs::create_dir_all(parent).unwrap();
     }
-    fs::create_dir(&output).expect("linker output must still be absent");
-    fs::copy(&written, output.join(profile.file_name)).unwrap();
-    assert_eq!(fs::read(output.join(profile.file_name)).unwrap(), bytes);
+    fs::create_dir(output).expect("linker output must still be absent");
+    for name in emitted.keys() {
+        let written = temporary.path().join(name);
+        fs::copy(&written, output.join(name)).unwrap();
+        assert_eq!(
+            fs::read(output.join(name)).unwrap(),
+            fs::read(written).unwrap()
+        );
+    }
     fs::write(
         output.join("link-materialization.json"),
         serde_json::to_vec_pretty(&receipt).unwrap(),

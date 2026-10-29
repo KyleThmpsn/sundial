@@ -152,22 +152,22 @@ fn vehicle_reimport_preserves_selection_through_native_staging() -> Result<()> {
     );
     let icon_path = case.output.join("vehicle-icon.png");
     fs::write(&icon_path, &png)?;
-    // A portable graph must also supply its artwork when the recipe has no embedded image.
-    let mut portable: serde_json::Value = serde_json::from_str(&saved.to_json_pretty()?)?;
-    portable["overrides"]["icon_edit"]
+    // The saved graph must also supply its artwork when the recipe has no embedded image.
+    let mut document: serde_json::Value = serde_json::from_str(&saved.to_json_pretty()?)?;
+    document["overrides"]["icon_edit"]
         .as_object_mut()
         .context("Saved icon settings")?
         .remove("imported_image");
-    let graph_only = WeaponRecipe::from_json_str(&serde_json::to_string(&portable)?)?;
+    let graph_only = WeaponRecipe::from_json_str(&serde_json::to_string(&document)?)?;
     ensure!(
         graph_only.overrides.icon_edit.imported_image.as_ref() == Some(icon),
-        "Portable vehicle graph did not restore its rendered artwork"
+        "Saved vehicle graph did not restore its rendered artwork"
     );
     let next_request = sources::reach_request(&case.entry, donor, donor_name, Some(&path))?;
     ensure!(
         next_request.scale == case.expected_scale
             && next_request.inspection_scale == case.expected_inspection_scale,
-        "Portable publication lost the dimensions needed for the next import"
+        "Saved publication lost the dimensions needed for the next import"
     );
     save_imported_recipe(&library, &existing, &prepared).map_err(anyhow::Error::msg)?;
     let repeated = WeaponRecipe::load_json(&path)?;

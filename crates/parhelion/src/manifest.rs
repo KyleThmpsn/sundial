@@ -363,7 +363,8 @@ pub(crate) struct ManifestWeapon {
     pub(crate) namespace: String,
     pub(crate) name: String,
     pub(crate) item: ManifestTaggedIdentity,
-    /// Absent for a subclass, which has no Collections entry.
+    /// Absent for a subclass or a mod other than an imported universal ornament, which have no
+    /// Collections entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) collectible: Option<ManifestIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -403,7 +404,12 @@ impl ManifestWeapon {
                 self.namespace
             ));
         }
-        let collected = self.kind.has_collections();
+        // A mod has an entry only as an imported ornament, which its recipe decides.
+        let collected = if self.kind == ItemKind::Mod {
+            self.collectible.is_some()
+        } else {
+            self.kind.has_collections()
+        };
         if collected == (self.collectible.is_none() && self.unlock.is_none())
             || self.collectible.is_none() != self.unlock.is_none()
         {

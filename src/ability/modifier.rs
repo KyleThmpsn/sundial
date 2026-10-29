@@ -20,7 +20,7 @@ pub fn is_bank(tag: u32) -> bool {
     SLOT_BANKS.iter().any(|(_, banks)| banks.contains(&tag)) || UNPLACED_BANKS.contains(&tag)
 }
 
-/// The Ability Property slot stock keys place a bank in, when one does.
+/// The Ability Property slot established by stock actions or a native subclass destination.
 #[must_use]
 pub fn bank_slot(bank: u32) -> Option<super::AbilityTarget> {
     SLOT_BANKS

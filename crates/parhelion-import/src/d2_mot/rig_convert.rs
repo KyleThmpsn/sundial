@@ -120,8 +120,12 @@ pub fn compatible_map(
     source_item_tag: &Value,
     native_item_tag: &Value,
 ) -> Result<Value> {
+    // An ornament's geometry is worn on its weapon's rig, so the rig export belongs to the item
+    // the config names rather than to the geometry's own item, whether or not the weapon's rig
+    // is source-owned.
+    let rig_item = config.get("rig_item_tag").unwrap_or(source_item_tag);
     if config["source_owned"] == true {
-        return owned::mapping(config, source_item_tag, native_item_tag);
+        return owned::mapping(config, rig_item, native_item_tag);
     }
     let source =
         load(&Path::new(config["source"].as_str().context("source rig path")?).join("rig.json"))?;
@@ -131,9 +135,6 @@ pub fn compatible_map(
         .as_str()
         .map(|geometry| used_bones(Path::new(geometry), source_item_tag))
         .transpose()?;
-    // An ornament's geometry is worn on its weapon's rig, so the rig export belongs to the item
-    // the config names rather than to the geometry's own item.
-    let rig_item = config.get("rig_item_tag").unwrap_or(source_item_tag);
     compatible_map_loaded(
         config,
         rig_item,

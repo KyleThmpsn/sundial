@@ -118,6 +118,10 @@ impl PackageAuthoringApp {
                 let _ = progress_sender.send(CatalogEvent::Progress(progress));
                 progress_ctx.request_repaint();
             });
+            if result.is_ok() {
+                let sources = super::item_sources::ItemSources::read(&install);
+                let _ = sender.send(CatalogEvent::Sources(sources));
+            }
             let _ = sender.send(CatalogEvent::Finished(Box::new(result)));
             ctx.request_repaint();
         }));
@@ -145,6 +149,16 @@ impl PackageAuthoringApp {
                 CatalogEvent::Progress(progress) => {
                     if !self.catalog_reload_pending {
                         self.catalog_progress = Some(progress);
+                    }
+                }
+                CatalogEvent::Sources(sources) => {
+                    if !self.catalog_reload_pending {
+                        self.item_sources = sources.unwrap_or_else(|error| {
+                            self.log.push(LogEntry::error(format!(
+                                "Could not read which mods add or change items: {error}"
+                            )));
+                            item_sources::ItemSources::default()
+                        });
                     }
                 }
                 CatalogEvent::Finished(result) => {

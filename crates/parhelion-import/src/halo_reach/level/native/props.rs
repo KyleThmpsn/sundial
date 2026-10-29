@@ -130,6 +130,94 @@ fn entity(
     Ok(symbol)
 }
 
+/// The lighting probe of a prop standing at `middle`, in the level's coordinates, as the vertex
+/// lighting records its surfaces read ([`native::material::PROBE_CONSTANTS`]): the atlas texel of
+/// the lightmapped ground straight below it, as placed models take theirs
+/// ([`super::ground_light`]), else the atlas's neutral texel. A texel's colors divide by the atlas
+/// scale the surfaces decode with, and its sun visibility is squared, as vertex records carry it.
+fn probe(
+    level: &super::super::Level,
+    atlas: &crate::halo_reach::level::lightmap::Atlas,
+    grid: &HashMap<(i32, i32), Vec<(usize, usize)>>,
+    scale: f32,
+    middle: [f32; 3],
+) -> [[f32; 4]; 3] {
+    let ground = super::ground_below(level, grid, middle).unwrap_or_else(|| atlas.neutral());
+    let sample = atlas.texel(ground);
+    let scale = scale.max(1e-6);
+    let [lr, lg, lb] = sample.lobe.map(|v| v / scale);
+    let [ar, ag, ab] = sample.ambient.map(|v| v / scale);
+    let [dx, dy, dz] = sample.direction;
+    [
+        [lr, lg, lb, sample.bandwidth],
+        [ar, ag, ab, sample.sun * sample.sun],
+        [dx, dy, dz, 1.],
+    ]
+}
+
+/// Each prop surface's key, by its prop and material, and each keyed material.
+type Surfaces = (BTreeMap<(usize, usize), u32>, BTreeMap<u32, Material>);
+
+/// The props' surfaces ([`Surfaces`]). A prop with a lighting probe (`probes`) keys its surfaces
+/// by itself, carrying the probe in their constants ([`native::material::PROBE_CONSTANTS`]) and,
+/// for a `dynamic` environment map, the cube at its middle among `clusters`. A prop without one
+/// shares its materials, keyed by `usize::MAX` for the prop.
+fn surfaces(
+    placements: &[Vec<Primitive>],
+    level: &super::super::Level,
+    middles: &[[f32; 3]],
+    probes: &[Option<[[f32; 4]; 3]>],
+    clusters: Option<&super::cubemaps::Clusters>,
+) -> Result<Surfaces> {
+    let mut keys = BTreeMap::<(usize, usize), u32>::new();
+    let mut used = BTreeMap::new();
+    for (prop, primitives) in placements.iter().enumerate() {
+        let owner = if probes[prop].is_some() {
+            prop
+        } else {
+            usize::MAX
+        };
+        let bsps = primitives
+            .iter()
+            .fold(0, |mask, primitive| mask | primitive.bsps);
+        for primitive in primitives {
+            let index = primitive
+                .material
+                .context("A posed prop has no source material")?;
+            if keys.contains_key(&(owner, index)) {
+                continue;
+            }
+            let mut material = level
+                .materials
+                .get(index)
+                .context("Prop material outside the level")?
+                .clone();
+            if let Some(rows) = probes[prop]
+                && let Some(property) = material.properties.first_mut()
+            {
+                for (name, row) in native::material::PROBE_CONSTANTS.into_iter().zip(rows) {
+                    property.constants.insert(name.to_owned(), row);
+                }
+            }
+            if super::cubemaps::dynamic_environment(&material)
+                && let Some(cube) = clusters.and_then(|clusters| clusters.cube(middles[prop], bsps))
+            {
+                material = super::cubemaps::with_dynamic_cube(&material, cube);
+            }
+            let key = u32::try_from(used.len())?;
+            used.insert(key, material);
+            keys.insert((owner, index), key);
+        }
+    }
+    Ok((keys, used))
+}
+
+/// Builds each posed prop's render entity. With the level's baked `lightmap`, props draw as its
+/// lightmapped surfaces do, with the level's sky-zero analytical light, as placed models take it,
+/// and each prop's surfaces become variants carrying its lighting probe ([`probe`]) and, for a
+/// `dynamic` environment map, the cube at its middle ([`super::cubemaps::Clusters::cube`]). Their
+/// textures then bind densely, so detail maps and detail normals bind as well. Without baked
+/// light, props keep the unlit surface path and share their materials.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build(
     cache: &Cache,
@@ -138,26 +226,60 @@ pub(super) fn build(
     graph: &mut Graph,
     templates: &super::Templates,
     placements: &[Vec<Primitive>],
-    materials: &[Material],
+    level: &super::super::Level,
+    lightmap: Option<&native::material::Lightmap>,
+    loaded: u32,
     offset: [f32; 3],
     report: &mut dyn FnMut(&str),
 ) -> Result<(Vec<Prop>, Value)> {
     if placements.is_empty() {
         return Ok((Vec::new(), json!([])));
     }
-    let mut used = BTreeMap::new();
-    for primitive in placements.iter().flatten() {
-        let index = primitive
-            .material
-            .context("A posed prop has no source material")?;
-        used.insert(
-            u32::try_from(index)?,
-            materials
-                .get(index)
-                .context("Prop material outside the level")?
-                .clone(),
-        );
-    }
+    let middles = placements
+        .iter()
+        .map(|primitives| {
+            let (low, high) = bounds(
+                primitives
+                    .iter()
+                    .flat_map(|primitive| primitive.vertices.iter().map(|v| v.position)),
+            );
+            std::array::from_fn::<f32, 3, _>(|axis| (low[axis] + high[axis]) * 0.5)
+        })
+        .collect::<Vec<_>>();
+    let lit = lightmap.zip(level.lightmap.as_ref());
+    let probes = match lit {
+        Some((lightmap, atlas)) => {
+            let indexed = middles.iter().copied().enumerate().collect::<Vec<_>>();
+            let grid = super::ground_faces(level, &indexed);
+            middles
+                .iter()
+                .map(|&middle| Some(probe(level, atlas, &grid, lightmap.scale, middle)))
+                .collect::<Vec<_>>()
+        }
+        None => vec![None; placements.len()],
+    };
+    let clusters = if lit.is_some()
+        && placements
+            .iter()
+            .flatten()
+            .filter_map(|primitive| primitive.material)
+            .filter_map(|index| level.materials.get(index))
+            .any(super::cubemaps::dynamic_environment)
+    {
+        Some(super::cubemaps::Clusters::read(cache, loaded)?)
+    } else {
+        None
+    };
+    let (keys, used) = surfaces(placements, level, &middles, &probes, clusters.as_ref())?;
+    // Props take the level's sky-zero light, as placed models do.
+    let lit = lit.map(|(lightmap, _)| {
+        let mut lit = lightmap.clone();
+        lit.analytical = lightmap
+            .sun
+            .map(|sun| used.keys().map(|&key| (key, sun)).collect())
+            .unwrap_or_default();
+        lit
+    });
     let material_report = native::material::build_with_progress(
         cache,
         pages,
@@ -171,7 +293,7 @@ pub(super) fn build(
             overrides: &BTreeMap::new(),
             lenses: &BTreeMap::new(),
             paint: &BTreeMap::new(),
-            lightmap: None,
+            lightmap: lit.as_ref(),
             vertex_data: None,
             statics: false,
             prefix: "prop-",
@@ -199,12 +321,12 @@ pub(super) fn build(
     let mut result = Vec::new();
     for (index, primitives) in placements.iter().enumerate() {
         let name = format!("prop{index}");
-        let (low, high) = bounds(
-            primitives
-                .iter()
-                .flat_map(|primitive| primitive.vertices.iter().map(|v| v.position)),
-        );
-        let center: [f32; 3] = std::array::from_fn(|axis| (low[axis] + high[axis]) * 0.5);
+        let center = middles[index];
+        let owner = if probes[index].is_some() {
+            index
+        } else {
+            usize::MAX
+        };
         let mut mesh = Mesh {
             positions: Vec::new(),
             attributes: Vec::new(),
@@ -234,7 +356,9 @@ pub(super) fn build(
                 ]);
             }
             mesh.groups.push((
-                u32::try_from(primitive.material.context("Prop material")?)?,
+                *keys
+                    .get(&(owner, primitive.material.context("Prop material")?))
+                    .context("Prop surface key")?,
                 primitive
                     .indices
                     .chunks_exact(3)

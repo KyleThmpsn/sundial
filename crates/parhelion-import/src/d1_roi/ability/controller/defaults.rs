@@ -16,6 +16,24 @@ fn initialized(size: usize, absent: &[usize], words: &[(usize, u32)]) -> Vec<u8>
     bytes
 }
 
+pub(super) fn runtime_query_action() -> Vec<u8> {
+    initialized(
+        0xF0,
+        &[0, 4, 0x20, 0x24, 0x40, 0x60, 0x70, 0x74, 0xC0, 0xC4],
+        &[(0x5C, 0x811C9DC5)],
+    )
+}
+
+pub(super) fn definition_query_action() -> Vec<u8> {
+    initialized(
+        0x118,
+        &[
+            0, 4, 0x18, 0x1C, 0x30, 0x34, 0x90, 0x94, 0xB8, 0xD8, 0xF0, 0x108,
+        ],
+        &[(0x10, 0x3F800000), (0x28, 0x20), (0x88, 0x673A4035)],
+    )
+}
+
 // Initialized 80804176, SHA-256 a0d376ad955449f2e7ae6cbce9e083f36c7194b6a94155a344bada4a25a3a219.
 pub(super) fn runtime_controller() -> Vec<u8> {
     initialized(

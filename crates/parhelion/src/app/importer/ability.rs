@@ -244,9 +244,16 @@ impl PackageAuthoringApp {
         {
             return;
         }
+        // The subclass is the ability's source item, so its conversions sit with every other
+        // import's.
         let output = data_root().and_then(|root| {
-            service::reserve_assets(&root.join("d1-abilities"), "ability")
-                .map_err(|error| error.to_string())
+            service::item_directory(
+                &root.join(service::IMPORTS),
+                super::Source::D1RiseOfIron.folder(),
+                choice.subclass,
+            )
+            .and_then(|item| service::reserve_assets(&item, "ability"))
+            .map_err(|error| error.to_string())
         });
         let output = match output {
             Ok(output) => output,

@@ -40,8 +40,23 @@ fn query(p: &Payload, native: bool) -> Result<Value> {
         }
         groups.push(json!([p.u32(p.pointer(g)?)?, filters]));
     }
+    // These expressions write the query's three Float4 outputs. Compare the actual
+    // emitted rows and their referenced programs, independently of template selection.
+    let at = r + if native { 0x90 } else { 0xA8 };
+    let mut outputs = Vec::new();
+    for row in p.array(at, 72, Some(if native { 0x80803830 } else { 0x8080302A }))? {
+        outputs.push(json!({
+            "selectors":p.bytes::<16>(row)?,
+            "code":values(p,row+16,1,0x80800009)?,
+            "constants":values(p,row+32,16,0x80800090)?,
+            "dimensions":p.bytes::<16>(row+48)?,
+            "scalar":p.bytes::<8>(row+64)?
+        }));
+    }
     Ok(
-        json!({"groups":groups,"parameters":[p.bytes::<8>(r + if native {0x78} else {0x90})?,p.bytes::<24>(r + if native {0xB8} else {0xD8})?]}),
+        json!({"groups":groups,"outputs":outputs,"output_flags":p.bytes::<8>(at+16)?,
+        "parameters":[p.bytes::<8>(r + if native {0x78} else {0x90})?,
+            p.bytes::<24>(r + if native {0xB8} else {0xD8})?]}),
     )
 }
 

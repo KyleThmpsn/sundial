@@ -307,8 +307,11 @@ impl Graph {
 
 fn checked_output(prepared: &Path, out: &Path) -> Result<PathBuf> {
     let out = outside(out, prepared)?;
-    for folder in ["source", "native"] {
-        let manifest = load(&prepared.join(folder).join("source-manifest.json"))?;
+    for reads in [
+        crate::d2_mot::profile::source(prepared)?,
+        crate::d2_mot::profile::native(prepared)?,
+    ] {
+        let manifest = load(&reads.join("source-manifest.json"))?;
         let packages = Path::new(
             manifest["packages"]
                 .as_str()
@@ -321,8 +324,8 @@ fn checked_output(prepared: &Path, out: &Path) -> Result<PathBuf> {
 }
 
 pub fn build(prepared: &Path, out: &Path, vertex: &Path, pixels: &Path) -> Result<Value> {
-    let source = prepared.join("source");
-    let native = prepared.join("native");
+    let source = crate::d2_mot::profile::source(prepared)?;
+    let native = crate::d2_mot::profile::native(prepared)?;
     build_with_sources(prepared, out, vertex, pixels, &source, &native, &mut |_| {})
 }
 

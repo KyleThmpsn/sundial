@@ -10,11 +10,21 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod animation;
 pub mod completion;
 mod condition;
+pub mod hud;
 pub mod input;
 mod numeric;
 mod plan;
 pub mod sound;
 pub use plan::{ActionKey, Bindings, Plan, Prepared};
+
+/// A checked event body still needs its containing graph to allocate this private resource.
+pub struct ResourcePatch {
+    pub offset: usize,
+    pub symbol: String,
+    pub source: u32,
+    pub source_class: u32,
+    pub native_class: u32,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum Domain {

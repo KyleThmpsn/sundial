@@ -25,7 +25,7 @@ fn specular(material: &Material, layer: usize) -> bool {
 /// Lighting keeps the normalized weights before the albedo pass's small-layer cutoff.
 pub(super) fn parameters(surface: &surface::Surface<'_>, weights: &str) -> String {
     let mut result = format!(
-        "float4 terrainBlend={weights};float4 terrainDraw=terrainBlend*float4(terrainBlend>0.04);\nfloat terrainDiffuse=0,terrainSpecWeight=0.001,terrainSpecPower=0.001,terrainSpecSteepness=0.005,terrainAlbedoBlend=0,terrainArea=0,terrainEnvironment=0;float3 terrainSpecTint=0;\n"
+        "float4 terrainBlend={weights};float4 terrainDraw=terrainBlend*float4(terrainBlend>0.04);\nfloat terrainDiffuse=0,terrainSpecWeight=0.001,terrainSpecPower=0.001,terrainSpecSteepness=0.005,terrainAlbedoBlend=0,terrainArea=0,terrainEnvironment=0,terrainAnalytical=0,terrainHighlight=0;float3 terrainSpecTint=0;\n"
     );
     for layer in 0..4 {
         if !active(surface.material, layer) {
@@ -41,9 +41,10 @@ pub(super) fn parameters(surface: &surface::Surface<'_>, weights: &str) -> Strin
             let coefficient = scalar("specular_coefficient", 1.);
             let area = scalar("area_specular_contribution", 0.);
             let environment = scalar("environment_specular_contribution", 0.);
+            let analytical = scalar("analytical_specular_contribution", 0.5);
             let tint = surface.color(&format!("specular_tint_m_{layer}"), [1.; 4]);
             result.push_str(&format!(
-                "terrainDiffuse+={weight}*{diffuse};terrainSpecWeight+={weight};terrainSpecPower+={weight}*{power};terrainSpecSteepness+={weight}*{steepness};terrainSpecTint+={weight}*{tint}*(1-{blend});terrainAlbedoBlend+={weight}*{blend};terrainArea+={weight}*{coefficient}*{area};terrainEnvironment+={weight}*{coefficient}*{environment};\n"
+                "terrainDiffuse+={weight}*{diffuse};terrainSpecWeight+={weight};terrainSpecPower+={weight}*{power};terrainSpecSteepness+={weight}*{steepness};terrainSpecTint+={weight}*{tint}*(1-{blend});terrainAlbedoBlend+={weight}*{blend};terrainArea+={weight}*{coefficient}*{area};terrainEnvironment+={weight}*{coefficient}*{environment};terrainAnalytical+={weight}*max({coefficient},0)*max({analytical},0);terrainHighlight+={weight}*max({coefficient},0)*max({analytical},0)*max(({tint}).r,max(({tint}).g,({tint}).b));\n"
             ));
         } else {
             result.push_str(&format!("terrainDiffuse+={weight};\n"));
@@ -67,10 +68,15 @@ pub(super) fn base(surface: &surface::Surface<'_>, layer: usize, sample: String)
     format!("lerp({sample},{target},min(saturate(v1.w*{slope}+{offset}),{maximum}))")
 }
 
-/// Map the blended Phong exponent to the native roughness input. The two BRDFs differ.
+/// The blended Phong exponent's Beckmann slope `sqrt(2 / (p + 2))` in the native smoothness mapping
+/// ([`native_roughness`]). The strength is the blended analytical highlight's, masked by the
+/// albedo's alpha as the reflection is, so layers without specular stay fully rough.
 pub(super) fn roughness(material: &Material) -> String {
     if (0..4).any(|layer| specular(material, layer)) {
-        "clamp(sqrt(2/(max(terrainSpecPower,0)+2)),0.05,1)".into()
+        native_roughness(
+            "sqrt(2/(max(terrainSpecPower,0)+2))",
+            "unlit.a*terrainHighlight",
+        )
     } else {
         "1".into()
     }
@@ -81,6 +87,7 @@ pub(super) fn reflection(
     table: Option<&str>,
     environment: Option<&str>,
     level: f32,
+    light: Option<&Highlight>,
 ) -> Option<(String, [f32; 3])> {
     if !(0..4).any(|layer| specular(surface.material, layer)) {
         return None;
@@ -113,9 +120,20 @@ pub(super) fn reflection(
     } else {
         "float3(0,0,0)".into()
     };
+    // The selected light's Phong highlight at the blended exponent, as two-lobe Phong surfaces
+    // take theirs ([`reflection`]).
+    let direct = light
+        .map(|light| {
+            let [r, g, b] = light.intensity;
+            format!(
+                "+3.141592654*reachPhongHighlight(n,normalize(v5.xyz),{},terrainSpecPower)*float3({r:e},{g:e},{b:e})*{BAKED_VISIBILITY}*terrainAnalytical",
+                light.direction
+            )
+        })
+        .unwrap_or_default();
     Some((
         format!(
-            "unlit.a*lerp(lerp(terrainSpecTint,unlit.rgb,terrainAlbedoBlend),float3(1,1,1),pow(1-saturate(dot(n,normalize(v5.xyz))),max(terrainSpecSteepness,0)))*(({area})*terrainArea+{environment})"
+            "unlit.a*lerp(lerp(terrainSpecTint,unlit.rgb,terrainAlbedoBlend),float3(1,1,1),pow(1-saturate(dot(n,normalize(v5.xyz))),max(terrainSpecSteepness,0)))*(({area})*terrainArea+{environment}{direct})"
         ),
         surface.constant("env_tint_color").unwrap_or([1.; 4])[..3]
             .try_into()

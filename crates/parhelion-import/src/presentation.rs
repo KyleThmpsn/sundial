@@ -38,8 +38,64 @@ pub(crate) fn append(
 pub(crate) struct Graph {
     pub root: PathBuf,
     pub nodes: Vec<Value>,
+    /// The position of each node's symbol, once [`Self::index_symbols`] asks for it.
+    symbols: std::sync::Mutex<Option<Symbols>>,
+}
+/// The first node holding each symbol among the first `indexed` nodes.
+#[derive(Default)]
+struct Symbols {
+    at: std::collections::HashMap<String, usize>,
+    indexed: usize,
 }
 impl Graph {
+    pub fn new(root: PathBuf, nodes: Vec<Value>) -> Self {
+        Self {
+            root,
+            nodes,
+            symbols: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Finds nodes by symbol through an index rather than by visiting every node. Each visit
+    /// follows a node's own allocations, and a campaign level's 11,616 nodes took 18 seconds of
+    /// duplicate checks that way. Only a graph whose nodes are appended, and whose symbols never
+    /// change in place, may take the index: a symbol it has not seen is taken to be absent.
+    pub fn index_symbols(&mut self) {
+        *self.symbols.get_mut().unwrap_or_else(|e| e.into_inner()) = Some(Symbols::default());
+    }
+
+    /// The first node holding `symbol`.
+    fn position(&self, symbol: &str) -> Option<usize> {
+        let scan = || self.nodes.iter().position(|node| node["symbol"] == symbol);
+        let mut guard = self.symbols.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(index) = guard.as_mut() else {
+            return scan();
+        };
+        if self.nodes.len() < index.indexed {
+            *index = Symbols::default();
+        }
+        for (at, node) in self.nodes.iter().enumerate().skip(index.indexed) {
+            if let Some(name) = node["symbol"].as_str() {
+                index.at.entry(name.to_owned()).or_insert(at);
+            }
+        }
+        index.indexed = self.nodes.len();
+        match index.at.get(symbol) {
+            None => None,
+            Some(&at) if self.nodes[at]["symbol"] == symbol => Some(at),
+            // A node changed in place since it was indexed.
+            Some(_) => {
+                *index = Symbols::default();
+                scan()
+            }
+        }
+    }
+
+    /// Whether a node holds `symbol`.
+    pub fn contains(&self, symbol: &str) -> bool {
+        self.position(symbol).is_some()
+    }
+
     /// Join a graph written beneath its own directory and symbol namespace.
     /// Symbolic patches stay symbolic until the complete graph is linked.
     pub fn extend(&mut self, graph: Self, prefix: &str) -> Result<()> {
@@ -74,10 +130,7 @@ impl Graph {
         for source in &graph.nodes {
             let mut node = source.clone();
             let symbol = rename(source["symbol"].as_str().context("Nested graph symbol")?)?;
-            ensure!(
-                self.nodes.iter().all(|n| n["symbol"] != symbol),
-                "Presentation namespace collides"
-            );
+            ensure!(!self.contains(&symbol), "Presentation namespace collides");
             node["symbol"] = Value::String(symbol);
             let file = source["file"].as_str().context("Nested graph file")?;
             ensure!(
@@ -128,9 +181,8 @@ impl Graph {
     }
 
     pub fn node(&self, symbol: &str) -> Result<&Value> {
-        self.nodes
-            .iter()
-            .find(|node| node["symbol"] == symbol)
+        self.position(symbol)
+            .map(|at| &self.nodes[at])
             .with_context(|| format!("Missing presentation node {symbol}"))
     }
     pub fn read(&self, symbol: &str) -> Result<crate::tiger::payload::Payload> {
@@ -165,10 +217,7 @@ impl Graph {
         reference: Option<&str>,
         patches: Vec<Value>,
     ) -> Result<()> {
-        ensure!(
-            !self.nodes.iter().any(|n| n["symbol"] == symbol),
-            "duplicate graph symbol"
-        );
+        ensure!(!self.contains(symbol), "duplicate graph symbol");
         crate::graph::add(
             &self.root,
             &mut self.nodes,
@@ -178,5 +227,29 @@ impl Graph {
             reference,
             patches,
         )
+    }
+
+    /// Places node `symbol` as [`Self::add`] does, before its payload exists. [`Self::write`]
+    /// then writes the payload.
+    pub fn reserve(
+        &mut self,
+        symbol: &str,
+        template: u32,
+        reference: Option<&str>,
+        patches: Vec<Value>,
+    ) -> Result<()> {
+        ensure!(!self.contains(symbol), "duplicate graph symbol");
+        self.nodes.push(serde_json::json!({"symbol":symbol,"template":template,"file":format!("{symbol}.bin"),"reference":reference,"patches":patches}));
+        Ok(())
+    }
+
+    /// Writes the payload of node `symbol`, placed by [`Self::reserve`].
+    pub fn write(&self, symbol: &str, data: &[u8]) -> Result<()> {
+        Ok(std::fs::write(self.path(symbol), data)?)
+    }
+
+    /// The file of node `symbol`'s payload, as [`Self::add`] and [`Self::reserve`] name it.
+    pub fn path(&self, symbol: &str) -> PathBuf {
+        self.root.join(format!("{symbol}.bin"))
     }
 }

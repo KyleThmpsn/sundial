@@ -1,5 +1,6 @@
 //! Author native effect sequences from an explicit tree and checked event envelopes.
 //! Source adapters supply event bodies and resources after topology is allocated.
+pub(crate) mod input;
 pub(crate) mod particle;
 pub(crate) mod spawn;
 use super::{allocation::Row, payload::Payload};
@@ -218,6 +219,7 @@ fn event_layout(class: u32) -> Result<(u32, usize, usize, u32)> {
         0x808093c4 => (0x808093c3, 0x80, 0x40, 2),
         0x80806cc6 => (0x80806cc5, 0x128, 0x50, 4),
         0x80806b38 => (0x80806b37, 0x78, 0x60, 6),
+        0x80803f24 => (0x80803f23, 0x40, 0x40, 13),
         0x80808881 => (0x80808880, 0xe0, 0x70, 15),
         0x80803fe9 => (0x80803fe8, 0x88, 0x60, 18),
         0x80804595 => (0x80804594, 0x38, 0x50, 19),

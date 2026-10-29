@@ -16,6 +16,8 @@ pub(super) struct Prepared {
     roles: Vec<[bool; 2]>,
     source_indices: Vec<u32>,
     deformation: Option<deform::Prepared>,
+    /// The text of the model's programs, which State takes to link them while this uploads.
+    pub sources: Option<program::Sources>,
 }
 
 impl Prepared {
@@ -104,6 +106,7 @@ impl Prepared {
             })
             .collect();
         let deformation = deform::Prepared::new(model);
+        let sources = Some(program::Sources::new(model));
 
         Self {
             model: held,
@@ -117,6 +120,7 @@ impl Prepared {
             roles,
             source_indices,
             deformation,
+            sources,
         }
     }
 }
@@ -172,13 +176,16 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Result<Upl
         roles,
         source_indices,
         deformation,
+        sources: _,
     } = prepared;
     // SAFETY: the paint callback supplies its current context. These objects remain owned
     // by Uploaded and all buffers are allocated to the exact prepared slice lengths.
     unsafe {
+        let setup = crate::model_preview::timing::stage("gpu deform setup");
         let deformation = deformation
             .map(|prepared| deform::Pipeline::new(gl, prepared, model.vertices.len()))
             .transpose()?;
+        drop(setup);
         let vao = gl.create_vertex_array().expect("vertex array");
         gl.bind_vertex_array(Some(vao));
         let position_buffer = gl.create_buffer().expect("buffer");
@@ -333,6 +340,7 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Result<Upl
                 row: 0,
                 level: 0,
             }),
+            drawn: false,
         })
     }
 }

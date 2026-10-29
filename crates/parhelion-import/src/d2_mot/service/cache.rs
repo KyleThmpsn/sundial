@@ -2,7 +2,7 @@ use super::*;
 
 pub use crate::tiger::reader::package_stamp;
 
-const SCHEMA: u32 = 6;
+const SCHEMA: u32 = 9;
 
 #[derive(Deserialize, Serialize)]
 struct Cached {
@@ -25,21 +25,38 @@ pub fn scan_cached(
     let output = super::super::reader::outside(output, modern.parent().unwrap_or(&modern))?;
     let output = super::super::reader::outside(&output, native.parent().unwrap_or(&native))?;
     fs::create_dir_all(&output)?;
-    // The importer and model picker share this catalog. Serialize discovery and
+    // The importer and model picker share this listing. Serialize discovery and
     // publication so a second reader can reuse the first one's completed scan.
     let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(output.join("catalog.lock"))
+        .open(output.join("d2_mot.lock"))
         .ok();
     if let Some(lock) = &lock {
         crate::cancellation::lock(lock)?;
     }
     let modern_stamp = package_stamp(&modern)?;
     let native_stamp = package_stamp(&native)?;
-    let path = output.join("weapon-cache.json");
+    let path = output.join("d2_mot.json");
+    // The package reads behind the listing are the importer's cache, `cache/d2_mot/catalog` beside
+    // the catalog folder, which holds only listings.
+    let work = output
+        .with_file_name("cache")
+        .join("d2_mot")
+        .join("catalog");
+    fs::create_dir_all(&work)?;
+    // Earlier versions kept the listing as `weapon-cache.json` under `catalog.lock`, wrote a copy
+    // of every scan to `catalog.json` that nothing read, and kept the reads' files in `output`,
+    // then in its `d2_mot` folder.
+    crate::cache::take_over(&output.join("weapon-cache.json"), &path);
+    for former in ["catalog.lock", "catalog.json", "source-manifest.json"] {
+        let _ = fs::remove_file(output.join(former));
+    }
+    for former in ["raw", "native", "d2_mot"] {
+        let _ = fs::remove_dir_all(output.join(former));
+    }
     let cached = (!refresh)
         .then(|| fs::read(&path).ok())
         .flatten()
@@ -52,13 +69,13 @@ pub fn scan_cached(
             // An install only changes which items exist in the target game.
             // Keep the costly source discovery and recompute both presence flags.
             progress(ScanProgress::OpeningNativePackages);
-            let hashes = catalog::native_hashes(&native, &output)?;
+            let hashes = catalog::native_hashes(&native, &work)?;
             catalog::match_native(&mut cached.weapons, &hashes)?;
         }
         (cached.weapons, changed)
     } else {
         (
-            scan_with_progress(&modern, &native, &output, &mut progress)?,
+            scan_with_progress(&modern, &native, &work, &mut progress)?,
             true,
         )
     };

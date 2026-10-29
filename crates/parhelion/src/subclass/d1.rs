@@ -126,6 +126,33 @@ impl Plan {
         builds: &[String],
         stamp: &str,
     ) -> Result<Self, String> {
+        if source.controller_class == 0 || source.abilities.is_empty() {
+            return Err(
+                "Refresh the D1 source catalog to recover its controller-family evidence".into(),
+            );
+        }
+        if source.controller_class != 0x808025B8 {
+            return Err(
+                "This D1 subclass controller has no qualified attunement-plan mapping".into(),
+            );
+        }
+        let primary = source
+            .abilities
+            .iter()
+            .filter(|ability| ability.row == source.ability_row)
+            .collect::<Vec<_>>();
+        let [primary] = primary.as_slice() else {
+            return Err("The D1 subclass has no unique primary ability record".into());
+        };
+        if primary.pattern != source.pattern
+            || primary.graph != source.graph
+            || primary.controller != source.controller
+            || primary.bank != source.bank
+            || (primary.controller_class, primary.controller_definition) != (0x808025B8, 0x80802A4A)
+            || (primary.bank_class, primary.bank_definition) != (0x80802343, 0x80802B06)
+        {
+            return Err("The D1 subclass controller and property-bank evidence disagree".into());
+        }
         let snapshot = serde_json::to_value(source).map_err(|error| error.to_string())?;
         let groups = source
             .nodes

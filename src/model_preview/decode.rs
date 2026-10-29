@@ -493,6 +493,7 @@ fn normal_material(
 ) -> Option<usize> {
     let (tag, surface) = key?;
     *materials.entry((tag, surface)).or_insert_with(|| {
+        let _stage = timing::stage("materials");
         let decoded = match effects::native::load_normal(
             manager,
             tag,
@@ -602,15 +603,16 @@ fn explicit_gear(
         return None;
     }
     let &tag = material.as_ref().ok()?;
-    *cache
-        .entry(tag)
-        .or_insert_with(|| match texture::gear(manager, tag, model_uv, model) {
+    *cache.entry(tag).or_insert_with(|| {
+        let _stage = timing::stage("materials");
+        match texture::gear(manager, tag, model_uv, model) {
             Ok(gear) => gear,
             Err(error) => {
                 model.notices.push(format!("Gear material: {error}"));
                 None
             }
-        })
+        }
+    })
 }
 
 fn bounded_map(

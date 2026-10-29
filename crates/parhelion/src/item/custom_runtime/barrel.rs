@@ -45,13 +45,7 @@ pub(crate) fn barrel_defaults(
     splices: &[(u32, Vec<u8>)],
     perks: &[u16],
 ) -> AuthoringResult<Option<BarrelDefaults>> {
-    let start = manager
-        .lookup
-        .tag32_entries_by_pkg
-        .get(&HOST_PACKAGE_ID)
-        .ok_or_else(|| invalid("The runtime host package is unavailable"))?
-        .len();
-    let allocator = AppendedTagAllocator::new(HOST_PACKAGE_ID, start);
+    let allocator = AppendedTagAllocator::scratch(manager)?;
     let mut entity = entity.to_vec();
     let mut tags = Vec::new();
     let mut appends = Vec::new();

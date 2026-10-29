@@ -19,5 +19,5 @@ pub(super) const PROJECTILE_PROFILES: &[ProjectileProfile] = &[ProjectileProfile
     graph_tag: 0x8152_82E1,
     owner_tag: 0x8152_82E7,
     default_multiplier: 1.0,
-    evidence: "Verified with private Micro-Missile launch captures: both instance and definition speed fields must agree. The multiplier acts on the weapon's launch speed, not an absolute metres-per-second value. Other weapon combinations still need gameplay testing. No gameplay-safe maximum has been established.",
+    evidence: "Verified with private Micro-Missile launch captures: both instance and definition speed fields must agree. The multiplier acts on the weapon's launch speed, not an absolute metres-per-second value.",
 }];

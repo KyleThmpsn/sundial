@@ -30,55 +30,6 @@ fn event(payload: &[u8], index: usize, expected: u32) -> AuthoringResult<usize> 
     Ok(at)
 }
 
-pub(in crate::item) fn growth(
-    audio: &ImportedAudio,
-    animation: &ImportedAnimation,
-) -> AuthoringResult<usize> {
-    let mut maximum = 0;
-    for bytes in animation
-        .clips
-        .iter()
-        .map(|(_, b)| b)
-        .chain(animation.extra_clips.iter().map(|(_, _, b)| b))
-    {
-        let mut extra = 0usize;
-        for row in &audio.clips {
-            let name = hex(&row["clip_name"], "clip name")?;
-            if word(bytes, 0x120)? != name {
-                continue;
-            }
-            let index = row["event_index"]
-                .as_u64()
-                .and_then(|v| usize::try_from(v).ok())
-                .ok_or_else(|| invalid("Clip audio event index is missing"))?;
-            let native = list(&row["native_sounds"], "clip native sounds")?;
-            if native.len() != 1 {
-                return Err(invalid("Clip native sound is ambiguous"));
-            }
-            let at = event(bytes, index, hex(&native[0]["tag"], "clip native sound")?)?;
-            let p = Payload(bytes.clone());
-            let start = p
-                .pointer(at + 16)
-                .map_err(|e| invalid(format!("Clip path: {e:#}")))?;
-            let tail = bytes
-                .get(start..)
-                .ok_or_else(|| invalid("Clip path is outside its payload"))?;
-            let length = tail
-                .iter()
-                .position(|b| *b == 0)
-                .ok_or_else(|| invalid("Clip path is unterminated"))?;
-            // The entire old path plus the new filename bounds the appended path.
-            let name = format!("ph_{:08x}_clip_{name:08x}_{index}.wwise_event", audio.item);
-            extra = extra
-                .checked_add(length + name.len() + 1)
-                .ok_or_else(|| invalid("Clip audio reservation overflow"))?;
-        }
-        maximum = maximum.max(extra);
-    }
-    Ok(maximum)
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::item) fn author(
     manager: &PackageManager,
     audio: &ImportedAudio,

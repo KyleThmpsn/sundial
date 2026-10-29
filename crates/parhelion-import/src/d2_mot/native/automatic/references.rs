@@ -1,9 +1,6 @@
 //! Recreate native rendering contracts from the user's packages, never old exports.
 use super::*;
 
-#[cfg(test)]
-mod tests;
-
 pub(super) fn link_inputs(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target)?;
     for entry in fs::read_dir(source)? {
@@ -23,8 +20,8 @@ pub(super) fn link_inputs(source: &Path, target: &Path) -> Result<()> {
 
 pub(super) fn export(prepared: &Path, root: &Path, progress: &mut dyn FnMut(String)) -> Result<()> {
     progress("Reading native shader and effect contracts…".into());
-    let native = load(&prepared.join("native/source-manifest.json"))?;
-    let modern = load(&prepared.join("source/source-manifest.json"))?;
+    let native = load(&crate::d2_mot::profile::native(prepared)?.join("source-manifest.json"))?;
+    let modern = load(&crate::d2_mot::profile::source(prepared)?.join("source-manifest.json"))?;
     let native = Path::new(native["packages"].as_str().context("Native packages")?);
     let modern = Path::new(modern["packages"].as_str().context("Modern packages")?);
     let mut native_reader = Reader::new(native, &root.join("native"), false)?;

@@ -104,8 +104,8 @@ pub(super) fn verify(
     if recipe.kind != parhelion::ItemKind::Sparrow {
         return Ok(());
     }
-    // Portable recipes unpack only the asset graph. The configured E2E keeps
-    // the source document independently of that graph's extraction directory.
+    // A recipe's graph folder holds only the asset graph. The configured E2E keeps
+    // the source document independently of that folder.
     let contacts = &source["object"]["gameplay"]["contacts"];
     let source_wheels = contacts["wheels"].as_array().context("Source wheels")?;
     let maximum_mass = source_wheels.iter().try_fold(0f64, |maximum, wheel| {

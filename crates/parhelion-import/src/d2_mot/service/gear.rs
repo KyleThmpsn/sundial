@@ -28,6 +28,16 @@ fn private_key(item: u32, role: &str) -> u32 {
 fn validate_donor(reader: &mut Reader, source: &Weapon, donor: u32) -> Result<()> {
     let tag = crate::tiger::shadowkeep::item_tag(reader, donor)?;
     let item = reader.tag(tag, Some(0x80807BEA))?;
+    // A universal ornament is laid out on a stock one of its category, which serves the same
+    // class and slot and which the same plug sets offer.
+    if source.family() == Family::Ornament {
+        ensure!(
+            source.plug_category.is_some()
+                && crate::tiger::shadowkeep::plug_category(&item)? == source.plug_category,
+            "Native template is not a universal ornament of the same class and slot"
+        );
+        return Ok(());
+    }
     let native_bucket = match item.u8(0xB8)? {
         3 => 3448274439,
         4 => 3551918588,
@@ -178,7 +188,7 @@ fn convert(
     let source_rig = load(&source_path.join("rig.json"))?;
     graph["source_components"] = source_rig["components"].clone();
     graph["limitations"] = json!([
-        "Source geometry, art placements, textures and supported material programs are converted. Native equipment controls and physics remain in use. Verify rendering and behavior in game."
+        "Source geometry, art placements, textures and supported material programs are converted. Native equipment controls and physics remain in use."
     ]);
     runtime::prepare(
         paths,
@@ -193,21 +203,39 @@ fn convert(
     let namespace = source.namespace();
     let reference = GraphReference::new(&output, item)?;
     let icon = STANDARD.encode(fs::read(source_path.join("item-icon.png"))?);
-    let mut recipe = json!({"schema":1,"kind":source.family(),"collection_placement":"sunrise_badge",
+    let ornament = source.family() == Family::Ornament;
+    let mut recipe = if ornament {
+        ornament_recipe(
+            source,
+            &namespace,
+            donor_hash,
+            (&source_report, &gameplay),
+            &icon,
+            &reference,
+        )?
+    } else {
+        json!({"schema":1,"kind":source.family(),"collection_placement":"sunrise_badge",
         "namespace":namespace,"identity":crate::graph::import_identity(&namespace)?,"name":source.name,"type_name":source.weapon_type,
         "donor":{"item_hash":format!("0x{donor_hash:08X}"),"expected_name":donor["name"]},
         "flavor":source_report["flavor"].as_str().unwrap_or(""),"source":"Source: Imported gear",
-        "overrides":{"imported_graph":reference,"icon_edit":{"imported_image":{"png_base64":icon}}}});
-    if let Some(lore) = source_report["lore"]
-        .as_str()
-        .filter(|s| !s.trim().is_empty())
-    {
-        recipe["overrides"]["lore"] = json!(lore);
-    } else {
-        recipe["overrides"]["remove_lore"] = json!(true);
+        "overrides":{"imported_graph":reference,"icon_edit":{"imported_image":{"png_base64":icon}}}})
+    };
+    if !ornament {
+        if let Some(lore) = source_report["lore"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+        {
+            recipe["overrides"]["lore"] = json!(lore);
+        } else {
+            recipe["overrides"]["remove_lore"] = json!(true);
+        }
     }
-    let mapping =
-        crate::d2_mot::gameplay::apply(&gameplay, native, &folder.join("gameplay"), &mut recipe)?;
+    // An ornament changes only how armor looks, so it carries no stats or sockets to map.
+    let mapping = if ornament {
+        json!({})
+    } else {
+        crate::d2_mot::gameplay::apply(&gameplay, native, &folder.join("gameplay"), &mut recipe)?
+    };
     let omitted = graph["rendering"]
         .as_array()
         .into_iter()
@@ -281,6 +309,37 @@ fn convert(
     Ok(path)
 }
 
+/// A universal ornament is a mod: one plug, built on the stock ornament its model was laid out
+/// on and offered unconditionally in every socket that offers that ornament. The plug is the
+/// item, so its name, description, icon and rarity are the source's. The icon is the item's, on
+/// the plate of its rarity under the runtime's watermark.
+fn ornament_recipe(
+    source: &Weapon,
+    namespace: &str,
+    donor: u32,
+    (report, gameplay): (&Value, &Value),
+    icon: &str,
+    reference: &GraphReference,
+) -> Result<Value> {
+    let description = report["flavor"].as_str().unwrap_or("").trim();
+    let mut recipe = json!({"schema":1,"kind":"mod","collection_placement":"sunrise_badge",
+        "namespace":namespace,"identity":crate::graph::import_identity(namespace)?,"name":source.name,
+        "donor":{"item_hash":format!("0x{donor:08X}"),"expected_name":null},
+        "flavor":description,"source":"Source: Imported gear",
+        "overrides":{"imported_graph":reference,"icon_edit":{"imported_image":{"png_base64":icon}},
+            "socket_plug_variants":[{
+            "replace_effects":true,"socket_index":0,"choice_index":0,
+            "source_plug_hash":format!("0x{donor:08X}"),"name":source.name,"description":description,
+            "offer_everywhere":true,"sandbox_perks":[]}]}});
+    if let Some(rarity) = gameplay["rarity"]
+        .as_u64()
+        .and_then(crate::d2_mot::gameplay::rarity)
+    {
+        recipe["overrides"]["rarity"] = json!(rarity);
+    }
+    Ok(recipe)
+}
+
 pub(super) fn prepare(
     source: &Weapon,
     modern: &Path,
@@ -289,23 +348,39 @@ pub(super) fn prepare(
     output: &Path,
     progress: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
-    ensure!(source.family().is_model_gear(), "Item is not model gear");
+    let ornament = source.family() == Family::Ornament;
+    ensure!(
+        source.family().is_model_gear() || ornament,
+        "Item is not model gear"
+    );
     let output = crate::d2_mot::reader::outside(output, modern.parent().context("modern root")?)?;
     let output = crate::d2_mot::reader::outside(&output, native.parent().context("native root")?)?;
     let previous = previous_model_donor(&output, source.hash);
-    let mut candidates = donors["gear"]
-        .as_array()
-        .context("No native gear templates loaded")?
-        .iter()
-        .filter(|donor| {
-            source.accepts_gear_donor(
-                donor["bucket_hash"].as_u64().unwrap_or(0),
-                donor["class_type"]
-                    .as_u64()
-                    .and_then(|v| u8::try_from(v).ok()),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut candidates = if ornament {
+        donors["ornaments"]
+            .as_array()
+            .context("No native universal ornaments loaded")?
+            .iter()
+            .filter(|donor| {
+                source.plug_category.is_some()
+                    && donor["plug_category"].as_u64() == source.plug_category.map(u64::from)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        donors["gear"]
+            .as_array()
+            .context("No native gear templates loaded")?
+            .iter()
+            .filter(|donor| {
+                source.accepts_gear_donor(
+                    donor["bucket_hash"].as_u64().unwrap_or(0),
+                    donor["class_type"]
+                        .as_u64()
+                        .and_then(|v| u8::try_from(v).ok()),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
     candidates.sort_by_key(|donor| {
         (
             donor["hash"].as_u64() != previous.map(u64::from),
@@ -343,6 +418,15 @@ pub(super) fn prepare(
     progress("Checking Source Materials…".into());
     crate::d2_mot::native::effects::check_source_blends(&source_path)
         .map_err(crate::d2_mot::source_limit)?;
+    // Every template reads skinned source art and its cloth solvers the same way, so art they
+    // cannot read fails once here instead of once for each template.
+    if report["models"]
+        .as_array()
+        .is_some_and(|models| models.iter().any(|model| model["rigid_bone_zero"] != true))
+    {
+        progress("Checking Source Skinning…".into());
+        crate::d2_mot::rig_convert::check_source_skinning(&source_path)?;
+    }
     // Keep one native package index for all structural compatibility checks.
     let _native_index = crate::d2_mot::reader::package_index(&native.canonicalize()?, false)?;
     let item = source.destination()?;
@@ -361,9 +445,9 @@ pub(super) fn prepare(
             index + 1
         ));
         crate::cancellation::check()?;
-        let folder = root.join(format!("candidate-{index}"));
+        let folder = root.join(format!("template-{index}"));
         selection["phase"] = json!("planning");
-        selection["candidate"] = donor["hash"].clone();
+        selection["template"] = donor["hash"].clone();
         write_json(&selection_path, &selection)?;
         match plan(source, &paths, donor, &folder, item, progress) {
             Ok(plan) => {
@@ -401,6 +485,7 @@ pub(super) fn prepare(
         crate::cancellation::check()?;
         match result {
             Ok(path) => {
+                crate::graph::settle(&path, &root)?;
                 selection["phase"] = json!("prepared");
                 write_json(&selection_path, &selection)?;
                 write_json(

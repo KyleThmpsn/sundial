@@ -21,6 +21,7 @@ pub(in crate::model_preview) fn load(
     manager: &PackageManager,
     tag: u32,
 ) -> Result<Option<f32>, String> {
+    let _stage = crate::model_preview::timing::stage("materials");
     let bytes = checked(manager, tag, 0x8080_71E8)?;
     let shader = u32_at(&bytes, 0x2C8)?;
     if matches!(shader, 0 | u32::MAX) {

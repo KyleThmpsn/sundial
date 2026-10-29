@@ -165,7 +165,8 @@ impl Cache {
 
 pub(super) unsafe fn update(
     gl: &glow::Context,
-    uniforms: &Uniforms,
+    programs: &program::Programs,
+    view: &draw::View,
     uploaded: &mut Uploaded,
     frame: &Frame,
     target: &Target,
@@ -173,8 +174,9 @@ pub(super) unsafe fn update(
     if !uploaded.ordering.needs_update(frame) {
         return Ok(false);
     }
-    // SAFETY: State binds the main program, model VAO, deformation, camera and target before
-    // this pass. Only one float per corner returns to the CPU. Geometry stays on the GPU.
+    // SAFETY: the groups bind their programs, the model VAO and deformation. State binds the
+    // target before this pass. Only one float per corner returns to the CPU. Geometry stays on
+    // the GPU.
     unsafe {
         let buffer = match uploaded.ordering.buffer {
             Some(buffer) => buffer,
@@ -194,7 +196,7 @@ pub(super) unsafe fn update(
         gl.enable(glow::RASTERIZER_DISCARD);
         draw::groups(
             gl,
-            uniforms,
+            (programs, view),
             uploaded,
             frame,
             target,

@@ -131,6 +131,7 @@ fn mergeable(effect: &WeaponSandboxPerkRuntimeRecipe) -> Result<Program, String>
         || !original.ability_inputs.is_empty()
         || !original.ability_rows.is_empty()
         || !original.native_asset_patches.is_empty()
+        || !original.damage_profiles.is_empty()
         || !original.imported_assets.is_empty()
         || original.assets().any(|asset| {
             *asset

@@ -10,14 +10,6 @@ pub struct Sound {
     parameters: Vec<(u32, u32)>,
 }
 
-pub struct CuePatch {
-    pub offset: usize,
-    pub symbol: String,
-    pub source: u32,
-    pub source_class: u32,
-    pub native_class: u32,
-}
-
 impl Sound {
     pub fn cue(&self) -> u32 {
         self.cue
@@ -98,7 +90,7 @@ impl Sound {
         cue_symbol: &str,
         inputs: &BTreeMap<u32, u32>,
         locators: &BTreeMap<u8, u8>,
-    ) -> Result<CuePatch> {
+    ) -> Result<ResourcePatch> {
         ensure!(
             !cue_symbol.trim().is_empty(),
             "Translated sound cue symbol is empty"
@@ -154,7 +146,7 @@ impl Sound {
         // A checked event envelope must also be safe before its first creation callback.
         put(&mut output.0, instance + 0x40, &u32::MAX.to_le_bytes())?;
         *target = output;
-        Ok(CuePatch {
+        Ok(ResourcePatch {
             offset: event + 0x40,
             symbol: cue_symbol.into(),
             source: self.cue,

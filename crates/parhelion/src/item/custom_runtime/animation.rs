@@ -69,17 +69,6 @@ pub(in crate::item) struct ImportedStates {
     converted_states: Vec<u8>,
 }
 
-impl ImportedAnimation {
-    /// Upper bounds of the payloads `author` places in the weapon's asset group.
-    pub(in crate::item) fn asset_bounds(&self) -> Vec<usize> {
-        self.clips
-            .iter()
-            .map(|(_, payload)| payload.len())
-            .chain(self.extra_clips.iter().map(|(_, _, payload)| payload.len()))
-            .collect()
-    }
-}
-
 fn tag(section: &Value, key: &str) -> AuthoringResult<u32> {
     u32::try_from(
         section[key]
@@ -327,9 +316,8 @@ fn stock(
 /// Private animation payloads already appended, keyed by asset class and content.
 ///
 /// Weapons of one source family share their clip banks, so the same converted
-/// payload is requested by many weapons in a project. A package holds at most
-/// 8192 entries, so identical payloads must become one tag rather than one per
-/// weapon. Payloads are immutable data, so sharing a tag is safe.
+/// payload is requested by many weapons in a project. Sharing immutable payloads
+/// avoids repeating their storage and loading work across asset packages.
 pub(in crate::item) type AnimationTagCache = BTreeMap<(u32, [u8; 32]), u32>;
 
 /// Source-owned rigs need both skeletons, one first-person controller at most per view and
@@ -550,6 +538,7 @@ pub(in crate::item) fn author(
         if let Some(existing) = cache.get(&key) {
             return Ok(*existing);
         }
+        allocator.reserve_payload(tags.len(), payload.len())?;
         let assigned = allocator.assigned_tag(tags.len(), "Imported animation", what)?;
         cache.insert(key, assigned.0);
         tags.push(NewTagSpec {

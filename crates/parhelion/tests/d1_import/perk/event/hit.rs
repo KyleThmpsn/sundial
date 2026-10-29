@@ -42,5 +42,5 @@ pub(super) fn check(
             _ => return Err("Unexpected hit predicate".into()),
         }
     }
-    super::filter::damage(stock, source, s + 8, native, n + 8)
+    super::filter::damage(reader, stock, source, s + 8, native, n + 8)
 }

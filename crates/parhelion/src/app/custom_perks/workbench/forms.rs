@@ -263,6 +263,7 @@ impl Workbench {
 
     fn refresh_effect_names(
         &mut self,
+        ctx: &egui::Context,
         catalog: Option<&InvestmentCatalog>,
         choices: &[WeaponSandboxPerkChoice],
     ) {
@@ -271,10 +272,10 @@ impl Workbench {
                 .iter()
                 .map(|choice| (choice.perk_index, choice.representative_name.clone()))
                 .collect();
-            self.asset_label_source = None;
+            self.asset_name_revision += 1;
         }
         self.refresh_item_names(catalog);
-        self.refresh_asset_labels();
+        self.refresh_asset_labels(ctx);
     }
 
     fn draw_effects_header(
@@ -335,7 +336,7 @@ impl Workbench {
         experimental: bool,
     ) {
         let ctx = ui.ctx().clone();
-        self.refresh_effect_names(catalog, choices);
+        self.refresh_effect_names(&ctx, catalog, choices);
         self.draw_effects_header(ui, catalog, choices, recipe);
         ui.add_space(4.0);
         if recipe.effects.is_empty() {
@@ -988,7 +989,7 @@ impl Workbench {
         recipe: &mut PerkRecipe,
     ) {
         use super::assets::variants;
-        self.refresh_asset_labels();
+        self.refresh_asset_labels(ui.ctx());
         let picked = pickers::browser_with_toolbar(
             ui,
             "existing-behavior",

@@ -97,8 +97,7 @@ pub(crate) fn insert_rows(
 pub(crate) fn build<'a>(
     manager: &PackageManager,
     images: impl Iterator<Item = (u32, &'a HudImage)>,
-    nodes: &mut Vec<NewTagSpec>,
-    references: &mut Vec<NewTagReferenceOverride>,
+    assets: &mut crate::asset_packages::AssetPackages,
 ) -> AuthoringResult<Option<ReplacementSpec>> {
     let images: Vec<_> = images.collect();
     if images.is_empty() {
@@ -144,41 +143,46 @@ pub(crate) fn build<'a>(
     {
         return Err(invalid("HUD texture buffer is invalid"));
     }
-    let allocator = AppendedTagAllocator::new(crate::package_profile::window().first(), 0);
     let mut rows = vec![];
     for (key, image) in images {
-        let ordinal = nodes.len();
-        let header_tag = allocator.assigned_tag(ordinal + 1, "HUD header", "HUD icon")?;
-        let layer_tag = allocator.assigned_tag(ordinal + 2, "HUD layer", "HUD icon")?;
-        let mut private_layer = layer.clone();
-        write_u32(&mut private_layer, 0x80, header_tag.0)?;
-        nodes.extend([
-            NewTagSpec {
-                template_tag: data,
-                payload: image.rgba().to_vec(),
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-            NewTagSpec {
-                template_tag: TEXTURE,
-                payload: header.clone(),
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-            NewTagSpec {
-                template_tag: LAYER,
-                payload: private_layer,
-                storage: NewTagStorageMode::InheritTemplate,
-            },
-        ]);
-        references.extend([
-            NewTagReferenceOverride {
-                new_tag_ordinal: ordinal,
-                reference: NewTagReference::Appended(ordinal + 1),
-            },
-            NewTagReferenceOverride {
-                new_tag_ordinal: ordinal + 1,
-                reference: NewTagReference::Appended(ordinal),
-            },
-        ]);
+        let layer_tag = assets.author(|package, first| {
+            let allocator = AppendedTagAllocator::new(package, first);
+            let mut nodes = Vec::new();
+            let mut references = Vec::new();
+            let ordinal = nodes.len();
+            let header_tag = allocator.assigned_tag(ordinal + 1, "HUD header", "HUD icon")?;
+            let layer_tag = allocator.assigned_tag(ordinal + 2, "HUD layer", "HUD icon")?;
+            let mut private_layer = layer.clone();
+            write_u32(&mut private_layer, 0x80, header_tag.0)?;
+            nodes.extend([
+                NewTagSpec {
+                    template_tag: data,
+                    payload: image.rgba().to_vec(),
+                    storage: NewTagStorageMode::InheritTemplate,
+                },
+                NewTagSpec {
+                    template_tag: TEXTURE,
+                    payload: header.clone(),
+                    storage: NewTagStorageMode::InheritTemplate,
+                },
+                NewTagSpec {
+                    template_tag: LAYER,
+                    payload: private_layer,
+                    storage: NewTagStorageMode::InheritTemplate,
+                },
+            ]);
+            references.extend([
+                NewTagReferenceOverride {
+                    new_tag_ordinal: ordinal,
+                    reference: NewTagReference::Appended(ordinal + 1),
+                },
+                NewTagReferenceOverride {
+                    new_tag_ordinal: ordinal + 1,
+                    reference: NewTagReference::Appended(ordinal),
+                },
+            ]);
+            Ok((layer_tag, nodes, references))
+        })?;
         rows.push((key, layer_tag));
     }
     Ok(Some(ReplacementSpec {

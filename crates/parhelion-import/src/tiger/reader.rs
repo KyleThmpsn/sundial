@@ -12,7 +12,7 @@ use tiger_pkg::{DestinyVersion, GameVersion, MarathonVersion, PackageManager, Ta
 
 mod payloads;
 mod stamp;
-pub use stamp::package_stamp;
+pub use stamp::{package_files_stamp, package_stamp};
 
 /// Package indexes open in this process, by folder and era, with the package stamp each was
 /// built from.
@@ -131,6 +131,19 @@ impl Reader {
             version: self.version.clone(),
             record_reads: true,
         })
+    }
+    /// A reader on the same package index that keeps its reads in memory only, for surveys
+    /// whose tags the export does not need.
+    pub(crate) fn shared_discovery(&self) -> Self {
+        Self {
+            manager: Arc::clone(&self.manager),
+            output: self.output.clone(),
+            cache: payloads::Payloads::default(),
+            tags: BTreeMap::new(),
+            packages: self.packages.clone(),
+            version: self.version.clone(),
+            record_reads: false,
+        }
     }
     pub(crate) fn clear_cached_tags(&mut self) {
         self.cache.clear();

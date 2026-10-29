@@ -10,9 +10,31 @@ pub(super) struct Filters {
     rarity: Option<u8>,
     ammo: Option<u16>,
     damage: Option<String>,
+    /// The Marathon tab shown. Other sources leave it unset and list every row.
+    tab: Option<Tab>,
+}
+
+/// Marathon lists its weapons apart from the mods, consumables and other items beside them.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(super) enum Tab {
+    Weapons,
+    Other,
+}
+
+/// A row is a weapon when its type is a native weapon type.
+pub(super) fn is_weapon(item: &Weapon) -> bool {
+    parhelion_import::weapon_type::canonical(&item.weapon_type).is_some()
 }
 
 impl Filters {
+    /// The cleared filters, which keep the tab shown.
+    pub fn cleared(&self) -> Self {
+        Self {
+            tab: self.tab,
+            ..Self::default()
+        }
+    }
+
     pub fn active(&self) -> bool {
         self.family.is_some()
             || self.bucket.is_some()
@@ -23,7 +45,9 @@ impl Filters {
     }
 
     pub fn matches(&self, item: &Weapon) -> bool {
-        self.family.is_none_or(|value| item.family() == value)
+        self.tab
+            .is_none_or(|tab| (tab == Tab::Weapons) == is_weapon(item))
+            && self.family.is_none_or(|value| item.family() == value)
             && self
                 .bucket
                 .is_none_or(|value| item.bucket_hash == Some(value))
@@ -39,15 +63,26 @@ impl Filters {
     }
 }
 
-const FAMILIES: [service::Family; 7] = [
+const FAMILIES: [service::Family; 9] = [
     service::Family::Weapon,
     service::Family::Armor,
+    service::Family::Ornament,
+    service::Family::WeaponOrnament,
     service::Family::GhostShell,
     service::Family::Ship,
     service::Family::Sparrow,
     service::Family::Shader,
     service::Family::Emblem,
 ];
+
+/// The family whose slots a family's rows fill. A universal ornament fills an armor slot.
+fn slot_family(family: service::Family) -> service::Family {
+    if family == service::Family::Ornament {
+        service::Family::Armor
+    } else {
+        family
+    }
+}
 
 const SLOTS: [(u32, &str); 12] = [
     (1498876634, "Kinetic"),
@@ -128,18 +163,34 @@ fn choice<T: Clone + PartialEq>(
 }
 
 /// Halo: Reach and Marathon rows carry a kind and a source type only. Marathon also shows its
-/// animation preference, which changes `animations` without counting as a filter change.
+/// animation and ornament preferences, which change `preferences` without counting as a filter
+/// change.
 fn draw_source(
     ui: &mut egui::Ui,
     browser: &mut browser::Browser,
     items: &[Weapon],
     source: Source,
-    animations: &mut bool,
+    preferences: Preferences<'_>,
 ) -> bool {
     let mut changed = false;
+    // The Marathon listing opens on its weapons.
+    if source == Source::Marathon && browser.filters.tab.is_none() {
+        browser.filters.tab = Some(Tab::Weapons);
+        changed = true;
+    }
     ui.horizontal_wrapped(|ui| {
         style::compact_controls(ui);
-        if source == Source::Reach {
+        if source == Source::Marathon {
+            for (tab, label) in [(Tab::Weapons, "Weapons"), (Tab::Other, "Other")] {
+                let shown = browser.filters.tab == Some(tab);
+                if ui.add(egui::Button::new(label).selected(shown)).clicked() && !shown {
+                    browser.filters.tab = Some(tab);
+                    browser.kind.clear();
+                    changed = true;
+                }
+            }
+        }
+        if source == Source::HaloReach {
             for (family, label) in [
                 (None, "All"),
                 (Some(service::Family::Weapon), "Weapons"),
@@ -153,10 +204,13 @@ fn draw_source(
                 }
             }
         }
-        let family = browser.filters.family;
+        let (family, tab) = (browser.filters.family, browser.filters.tab);
         let types: BTreeSet<&str> = items
             .iter()
-            .filter(|item| family.is_none_or(|family| item.family() == family))
+            .filter(|item| {
+                family.is_none_or(|family| item.family() == family)
+                    && tab.is_none_or(|tab| (tab == Tab::Weapons) == is_weapon(item))
+            })
             .map(|item| item.weapon_type.as_str())
             .filter(|kind| !kind.is_empty())
             .collect();
@@ -181,12 +235,23 @@ fn draw_source(
             .checkbox(&mut browser.show_installed, "Show Installed")
             .changed();
         if source == Source::Marathon {
-            ui.checkbox(animations, "Marathon Animations").on_hover_text(
+            ui.checkbox(preferences.marathon_animations, "Marathon Animations").on_hover_text(
                 "Experimental. Imports play the weapon's own Marathon animations instead of the donor's.",
+            );
+            ui.checkbox(preferences.marathon_ornaments, "Ornaments").on_hover_text(
+                "Imports each weapon's camos as ornaments. Each camo adds a model, so imports take longer. Reimports keep the ornaments each recipe has.",
             );
         }
     });
     changed
+}
+
+/// The import preferences the filter bar shows beside the filters.
+pub(super) struct Preferences<'a> {
+    pub marathon_animations: &'a mut bool,
+    pub marathon_ornaments: &'a mut bool,
+    pub modern_ornaments: &'a mut bool,
+    pub d1_roi_ornaments: &'a mut bool,
 }
 
 pub(super) fn draw(
@@ -194,10 +259,10 @@ pub(super) fn draw(
     browser: &mut browser::Browser,
     items: &[Weapon],
     source: Source,
-    animations: &mut bool,
+    preferences: Preferences<'_>,
 ) -> bool {
-    if !matches!(source, Source::Modern | Source::Roi) {
-        return draw_source(ui, browser, items, source, animations);
+    if !matches!(source, Source::D2Modern | Source::D1RiseOfIron) {
+        return draw_source(ui, browser, items, source, preferences);
     }
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
@@ -212,7 +277,7 @@ pub(super) fn draw(
             FAMILIES
                 .into_iter()
                 .filter(|family| {
-                    source != Source::Roi
+                    source != Source::D1RiseOfIron
                         || matches!(family, service::Family::Weapon | service::Family::Armor)
                 })
                 .map(|value| (value, value.label().to_owned())),
@@ -259,10 +324,10 @@ pub(super) fn draw(
             SLOTS
                 .into_iter()
                 .filter(|(bucket, _)| {
-                    (source != Source::Roi
+                    (source != Source::D1RiseOfIron
                         || service::Family::from_bucket(*bucket) == Some(service::Family::Armor))
                         && filters.family.is_none_or(|family| {
-                            service::Family::from_bucket(*bucket) == Some(family)
+                            service::Family::from_bucket(*bucket) == Some(slot_family(family))
                         })
                 })
                 .map(|(value, name)| (value, name.to_owned())),
@@ -287,7 +352,7 @@ pub(super) fn draw(
             .family
             .is_none_or(|family| family == service::Family::Weapon)
         {
-            if source != Source::Roi {
+            if source != Source::D1RiseOfIron {
                 changed |= choice(
                     ui,
                     "import-damage",
@@ -313,7 +378,7 @@ pub(super) fn draw(
         }
         if filters
             .family
-            .is_none_or(|family| family == service::Family::Armor)
+            .is_none_or(|family| slot_family(family) == service::Family::Armor)
         {
             changed |= choice(
                 ui,
@@ -327,7 +392,7 @@ pub(super) fn draw(
                 142.0,
             );
         }
-        if source != Source::Roi {
+        if source != Source::D1RiseOfIron {
             changed |= ui
                 .checkbox(&mut browser.show_installed, "Show Installed")
                 .on_hover_text("Include items already present in the target installation.")
@@ -338,6 +403,15 @@ pub(super) fn draw(
                     "Include display-only definitions. Some lack the data needed to import.",
                 )
                 .changed();
+        }
+        if source == Source::D2Modern {
+            ui.checkbox(preferences.modern_ornaments, "Ornaments").on_hover_text(
+                "Imports each weapon's own ornaments. Each ornament adds a model, so imports take longer. Reimports keep the ornaments each recipe has.",
+            );
+        } else {
+            ui.checkbox(preferences.d1_roi_ornaments, "Ornaments").on_hover_text(
+                "Imports each weapon's and armor piece's ornaments. Each ornament adds a model, so imports take longer. Reimports keep the ornaments each recipe has.",
+            );
         }
     });
     changed

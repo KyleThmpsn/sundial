@@ -45,9 +45,11 @@ pub(super) fn registrations(
     );
     let mut keys = BTreeSet::new();
     for provider in providers {
+        // A root and a retained embedded helper may publish the same namespace with distinct
+        // priority rows. Only a repeated binding to the same wrapper is ambiguous here.
         ensure!(
-            provider.key != u32::MAX && keys.insert(provider.key),
-            "Authored component repeats an interface namespace"
+            provider.key != u32::MAX && keys.insert((provider.key, provider.offset)),
+            "Authored component repeats an interface binding"
         );
         let object = links::Object {
             owner: component.owner,

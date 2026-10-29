@@ -1,4 +1,4 @@
-//! Clear native glass and a neutral aiming mark on the source's physical aperture.
+//! A native mask or a neutral aiming mark on the source's physical aperture.
 use super::*;
 
 /// The highest `TEXCOORD` index a translated shader names, where a bare `TEXCOORD` is index 0.
@@ -46,6 +46,54 @@ pub(super) fn cutout(mut pixel: String, lens: &geometry::Lens) -> Result<String>
     Ok(pixel)
 }
 
+/// A weapon whose source eye sits inside its sight box shows only the scene and the reticle once
+/// aimed, because the source view never leaves the aperture. Every other surface discards its
+/// color, depth and shadow fragments once aim visibility passes 0.99, where Shadowkeep's reticle
+/// spline starts to rise. The material expression copies aim visibility to `row`.
+pub(super) fn hidden_when_aimed(pixel: String, row: u8) -> Result<String> {
+    clip_by_aim(pixel, row, &format!("0.99-cb0[{row}].x"))
+}
+
+/// Glass ahead of an enclosed sight's source eye belongs to the aimed view alone, which its vertex
+/// stage always projects. It discards until aim visibility passes 0.99, where the rest of the
+/// weapon disappears and the framed reticle's window opens.
+pub(super) fn shown_when_aimed(pixel: String, row: u8) -> Result<String> {
+    clip_by_aim(pixel, row, &format!("cb0[{row}].x-0.99"))
+}
+
+fn clip_by_aim(pixel: String, row: u8, kept: &str) -> Result<String> {
+    let mut pixel = declare_row(pixel, row)?;
+    let start = pixel.find("void main(").context("Pixel entry")?;
+    let body = pixel[start..].find(") {").context("Pixel parameter list")? + start + ") {".len();
+    pixel.insert_str(body, &format!("\nclip({kept});\n"));
+    Ok(pixel)
+}
+
+/// Extend or add the material constant declaration so `row` is readable.
+pub(super) fn declare_row(mut pixel: String, row: u8) -> Result<String> {
+    let rows = usize::from(row) + 1;
+    if let Some(line) = pixel.find("register(b0)") {
+        let start = pixel[line..]
+            .find("cb0[")
+            .context("Material constant declaration")?
+            + line
+            + "cb0[".len();
+        let end = pixel[start..]
+            .find(']')
+            .context("Material constant extent")?
+            + start;
+        if pixel[start..end].parse::<usize>()? < rows {
+            pixel.replace_range(start..end, &rows.to_string());
+        }
+    } else {
+        pixel.insert_str(
+            0,
+            &format!("cbuffer C0:register(b0) {{ float4 cb0[{rows}]; }};\n"),
+        );
+    }
+    Ok(pixel)
+}
+
 pub(super) fn build(
     native: &mut Reader,
     graph: &mut Graph,
@@ -89,7 +137,7 @@ aim=float2(dot(lens,float3({horizontal})),dot(lens,float3({vertical})))/float2({
     );
     let pixel = if mask {
         "void main(out float4 color:SV_TARGET0,out float4 mask:SV_TARGET1){color=0;mask=float4(0,0,0,1);}"
-    } else if lens.reticle {
+    } else {
         r#"
 float4 main(float2 aim:TEXCOORD0):SV_TARGET0 {
 float2 edge=max(fwidth(aim),float2(0.001,0.001));
@@ -99,8 +147,6 @@ float mark=max(vertical,horizontal);
 return float4(float3(0.15,0.018,0.003)*mark,mark*0.8);
 }
 "#
-    } else {
-        "float4 main(float2 aim:TEXCOORD0):SV_TARGET0{return float4(0,0,0,0);}"
     };
     let vertex_name = format!("vertex-{key:08X}");
     let pixel_name = format!("pixel-{key:08X}");
@@ -127,7 +173,7 @@ return float4(float3(0.15,0.018,0.003)*mark,mark*0.8);
     )?;
     Ok(
         json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),
-        "scope_adapter":if mask {"aperture_mask"} else if lens.reticle {"aperture_aiming_mark"} else {"clear_lens"},"aperture_center":lens.center,"aim_center":lens.aim,"aperture_radii":lens.radii,"solid_pass_cutout_supported":!lens.outline.is_empty(),
-        "limits":"Clear source glass and a native aperture mask or neutral aiming mark. Source glass reflection, distortion, magnification and live alignment are not established."}),
+        "scope_adapter":if mask {"aperture_mask"} else {"aperture_aiming_mark"},"aperture_center":lens.center,"aim_center":lens.aim,"aperture_radii":lens.radii,"source_eye_enclosed":lens.enclosed,"solid_pass_cutout_supported":!lens.outline.is_empty(),
+        "limits":"A native aperture mask or neutral aiming mark. Source glass translates as ordinary transparent work. Source distortion, magnification and live alignment are not established."}),
     )
 }

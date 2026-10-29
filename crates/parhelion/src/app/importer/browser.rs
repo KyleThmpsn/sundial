@@ -159,7 +159,7 @@ impl Browser {
     pub fn clear_filters(&mut self) {
         self.query.clear();
         self.kind.clear();
-        self.filters = filters::Filters::default();
+        self.filters = self.filters.cleared();
         self.show_installed = false;
         self.show_dummy = false;
         self.dirty = true;
@@ -285,6 +285,10 @@ fn missing_donor_text(row: &Row<'_>) -> &'static str {
         }
     } else if weapon.is_shader() {
         "No installed native shader to convert with."
+    } else if weapon.family() == service::Family::Ornament {
+        "No installed universal ornament of this class and slot to build on."
+    } else if weapon.family() == service::Family::WeaponOrnament {
+        "Its stock weapon lists ornaments only in its own definition, which imports cannot add to."
     } else if weapon.family().is_model_gear() {
         "No installed native item matches this equipment slot and class."
     } else if weapon.family() == service::Family::Emblem {
@@ -448,16 +452,29 @@ impl PackageAuthoringApp {
                 .response;
             super::super::pickers::name_response(ui, &order, "Sort Order");
         });
-        let animations = &mut self.importer.settings.marathon_animations;
-        let animated = *animations;
+        let settings = &mut self.importer.settings;
+        let preferences = |settings: &service::Settings| {
+            (
+                settings.marathon_animations,
+                settings.marathon_ornaments,
+                settings.modern_ornaments,
+                settings.d1_roi_ornaments,
+            )
+        };
+        let before = preferences(settings);
         changed |= filters::draw(
             ui,
             browser,
             &self.importer.weapons,
             self.importer.source,
-            animations,
+            filters::Preferences {
+                marathon_animations: &mut settings.marathon_animations,
+                marathon_ornaments: &mut settings.marathon_ornaments,
+                modern_ornaments: &mut settings.modern_ornaments,
+                d1_roi_ornaments: &mut settings.d1_roi_ornaments,
+            },
         );
-        let toggled = *animations != animated;
+        let toggled = preferences(settings) != before;
         if changed || query_changed {
             browser.dirty = true;
             browser.reset_scroll = true;

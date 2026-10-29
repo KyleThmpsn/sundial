@@ -232,7 +232,7 @@ fn confined_backup_child(parent: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn backup_directory_is_link(metadata: &fs::Metadata) -> bool {
+pub(super) fn backup_directory_is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;

@@ -1108,12 +1108,15 @@ impl PackageAuthoringApp {
             ))
             .on_hover_text("Built from that recipe's stock donor and changes.");
         }
+        let sources = &self.item_sources;
         let selection = self.catalog.as_ref().and_then(|catalog| {
             catalog.draw_weapon_donor_header_picker(
                 ui,
                 "weapon-gameplay-donor",
                 &mut self.donor_query,
-                self.donor_summaries.iter(),
+                self.donor_summaries
+                    .iter()
+                    .filter(|donor| sources.listed(catalog, donor.hash)),
                 WeaponDonorPickerOptions {
                     selected_hash: current_hash,
                     selected_label: &selected_text,
@@ -1130,6 +1133,7 @@ impl PackageAuthoringApp {
         if self.catalog.is_none() {
             ui.add_enabled(false, egui::Button::new(selected_text.as_str()));
         }
+        self.draw_base_source(ui, current_hash);
         // Parts from other weapons are chosen on Gameplay. The card says when any are, and leads
         // there.
         let borrowed = self.borrowed_gameplay_parts();
@@ -1157,9 +1161,8 @@ impl PackageAuthoringApp {
     ) {
         #[cfg(feature = "d2-model-importer")]
         if imported_view::show_as(self, ui, "Appearance") {
-            if ui.link("Open Appearance").clicked() {
-                self.open_page(WorkbenchPage::Appearance);
-            }
+            draw_part_note(ui, "Model and materials from the import", "Open Appearance")
+                .then(|| self.open_page(WorkbenchPage::Appearance));
             return;
         }
         let effective_base = gameplay_donor.map(|donor| {

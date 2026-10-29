@@ -88,8 +88,11 @@ pub(super) fn read(
     if let Some(tables) = listing.as_ref().and_then(|listing| reuse(&key, listing)) {
         return Ok(tables);
     }
+    let parse = crate::model_preview::timing::stage("package index parse");
     let metadata = tiger_pkg::PackageManager::new(directory, version, platform)
         .map_err(|e| format!("{e:#}"))?;
+    drop(parse);
+    let _copy = crate::model_preview::timing::stage("package index copy");
     let tables = Tables {
         package_dir: metadata.package_dir,
         package_paths: metadata.package_paths.into_iter().collect(),
@@ -136,6 +139,7 @@ fn reuse(key: &Key, listing: &Listing) -> Option<Tables> {
         tables
     };
     // Copied outside the lock, so readers of other directories don't wait on it.
+    let _copy = crate::model_preview::timing::stage("package index copy");
     Some(tables.copy())
 }
 

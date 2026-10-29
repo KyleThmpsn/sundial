@@ -9,6 +9,21 @@ use std::collections::BTreeSet;
 const NAMESPACE: u32 = 0x811c9dc5;
 type Name = (u32, u32, u32);
 
+/// Aim visibility. Stock optic banks `81532E86` and `81532F95` declare local `79FD498A` as parent
+/// `43A361CE` under namespace `5F6317D5`. Shadowkeep reticles read it to appear once aiming
+/// completes.
+pub(crate) const AIM_VISIBILITY: u32 = 0x79fd498a;
+
+/// The lookup namespace and parent channel a newly inherited local reads. Other locals take the
+/// parent channel of their own name in the empty namespace.
+fn parent(local: u32) -> (u32, u32) {
+    if local == AIM_VISIBILITY {
+        (0x5f6317d5, 0x43a361ce)
+    } else {
+        (NAMESPACE, local)
+    }
+}
+
 fn lookup(original: &Payload, definition: usize, rows: &[usize]) -> Result<Vec<Name>> {
     let mut result = Vec::new();
     let mut seen = BTreeSet::new();
@@ -39,10 +54,17 @@ fn lookup(original: &Payload, definition: usize, rows: &[usize]) -> Result<Vec<N
 }
 
 fn span(names: &[Name]) -> Result<[u16; 2]> {
-    let indices = names
-        .iter()
+    default_span(names.iter().map(|name| name.0))
+}
+
+/// The first and last rows of the sorted inherited lookup in the default namespace, or `FFFF`
+/// for both when it has none, as definition `+128/+12A` records them. Named namespaces sort
+/// first, so the span starts after them, as in stock runtime bank `815226A0` (rows 7 to 23).
+pub(crate) fn default_span(namespaces: impl IntoIterator<Item = u32>) -> Result<[u16; 2]> {
+    let indices = namespaces
+        .into_iter()
         .enumerate()
-        .filter_map(|(i, name)| (name.0 == NAMESPACE).then_some(i))
+        .filter_map(|(i, namespace)| (namespace == NAMESPACE).then_some(i))
         .collect::<Vec<_>>();
     Ok(match (indices.first(), indices.last()) {
         (Some(&first), Some(&last)) => [u16::try_from(first)?, u16::try_from(last)?],
@@ -229,7 +251,14 @@ pub(crate) fn extend(
     );
     for &name in requested {
         if !order.contains(&name) {
-            names.push((NAMESPACE, name, u32::try_from(order.len())?));
+            let (namespace, parent) = parent(name);
+            ensure!(
+                !names
+                    .iter()
+                    .any(|row| (row.0, row.1) == (namespace, parent)),
+                "Inherited channel lookup already names the parent of {name:08X}"
+            );
+            names.push((namespace, parent, u32::try_from(order.len())?));
             order.push(name);
         }
     }

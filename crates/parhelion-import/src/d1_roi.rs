@@ -102,6 +102,9 @@ pub struct Source {
     codec: Mutex<Option<codec::Decoder>>,
     blocks: Mutex<BlockCache>,
     human_skeleton: Mutex<Option<u32>>,
+    /// Every equippable weapon, read once. An import reads the list for its export and again
+    /// for its conversion, and each read visits every item definition.
+    weapons: std::sync::OnceLock<Vec<Weapon>>,
 }
 
 #[derive(Debug)]
@@ -206,6 +209,7 @@ impl Source {
             codec: Mutex::new(None),
             blocks: Mutex::new(BTreeMap::new()),
             human_skeleton: Mutex::new(None),
+            weapons: std::sync::OnceLock::new(),
         };
         source.report.builds.sort();
         source.report.builds.dedup();
@@ -336,15 +340,11 @@ impl Source {
             &self.report.packages
         };
         let output = crate::io::outside(output, root)?;
-        ensure!(!output.exists(), "Use a fresh output directory");
+        // An importer reserves the conversion folder it fills, so an empty one is fresh too.
+        ensure!(
+            fs::read_dir(&output).map_or(true, |mut entries| entries.next().is_none()),
+            "Use a fresh output directory"
+        );
         Ok(output)
-    }
-
-    pub fn write_inspection(&self, output: &Path) -> Result<PathBuf> {
-        let output = self.output(output)?;
-        fs::create_dir_all(&output)?;
-        let path = output.join("inspection.json");
-        crate::io::write_json(&path, &serde_json::to_value(&self.report)?)?;
-        Ok(path)
     }
 }

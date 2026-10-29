@@ -220,6 +220,6 @@ pub(super) fn native(
         "routing":"source_loop","transcoded_media":files,"converted_banks":[{
             "source_tag":"00000001","file":"audio/fire.bank.json","version":113,"routing":"source_loop"}],
         "conversion_errors":[],"output_bus":output_bus,
-        "limits":["The selected attached loop supplies start, sustain and release recordings, gains and linear fades. Native loop activation and cleanup are retained. This nonspatial route does not translate source environment switches, heat gating, distance attenuation or the remaining weapon and impact layers. Live held fire, release, selection changes and cleanup require gameplay verification."]}),
+        "limits":["The selected attached loop supplies start, sustain and release recordings, gains and linear fades. Native loop activation and cleanup are retained. This nonspatial route does not translate source environment switches, heat gating, distance attenuation or the remaining weapon and impact layers."]}),
     )
 }

@@ -1,4 +1,5 @@
-//! Lighting and water coordinates transported through lossless half bits and vertex texture loads.
+//! Lighting and water coordinates transported through lossless half bits and vertex texture loads,
+//! and the fixed-point lightmap coordinates a static vertex's detail lanes carry.
 use super::*;
 use std::collections::HashMap;
 
@@ -9,9 +10,40 @@ const PER_ROW: usize = WIDTH / 4;
 const ADDRESS_RADIX: usize = 0x7c00;
 const MAX_HEIGHT: usize = 16384;
 
+/// Lightmap coordinates ride in two half lanes as fixed point in their bits: the least normal half's
+/// bits, `0x400`, plus the coordinate's magnitude times `COORDINATE_STEPS`, up to `0x7BFF`, with
+/// the sign bit for a negative coordinate. Every pattern is a finite normal half, so the input
+/// assembler's and a texture load's conversions to float keep it, and `f32tof16` recovers it
+/// without relying on subnormals. A step is 1/30,719 of the atlas's side. Plain half floats step by
+/// 2^-11 from 0.5 to 1, 3.5 texels on a side of 7,118, where Reach's own coordinates step by 0.016
+/// texels of their image. A positive second lane also keeps a vertex out of the record path, which
+/// marks its records with a negative one.
+pub(in crate::halo_reach) const COORDINATE_STEPS: f32 = 30_719.;
+const COORDINATE_FIRST: u16 = 0x400;
+
+/// The half lane bits of lightmap coordinate `value`, from -1 to 1. A negative value keeps at least
+/// one step, so its sign survives the decode.
+pub(in crate::halo_reach) fn coordinate_bits(value: f32) -> u16 {
+    let steps = (value.abs().min(1.) * COORDINATE_STEPS + 0.5) as u16;
+    if value < 0. {
+        0x8000 | (COORDINATE_FIRST + steps.max(1))
+    } else {
+        COORDINATE_FIRST + steps
+    }
+}
+
+/// HLSL decoding the float2 `lanes`, read from [`coordinate_bits`] halves, back to coordinates.
+/// A lane that holds zero decodes to zero.
+pub(super) fn coordinates(lanes: &str) -> String {
+    format!(
+        "sign({lanes})*max(float2(f32tof16(abs({lanes})))-{COORDINATE_FIRST},0)/{COORDINATE_STEPS:.1}"
+    )
+}
+
 pub(in crate::halo_reach) struct Table {
     pub symbol: String,
-    pub coordinates: HashMap<(u32, u32), [f32; 2]>,
+    /// Each vertex's detail lane bits, which name its record.
+    pub coordinates: HashMap<(u32, u32), [u16; 2]>,
     pub records: usize,
     pub height: usize,
 }
@@ -45,7 +77,7 @@ pub(in crate::halo_reach) fn add(
             }
             let mut lighting = source.lighting.unwrap_or([[0.; 4]; 3]);
             // Keep radiance linear through raster interpolation. Pixel lightmaps instead decode
-            // their square-root encoding before shading.
+            // their logarithmic encoding before shading.
             for row in &mut lighting[..2] {
                 for channel in &mut row[..3] {
                     *channel /= peak;
@@ -55,16 +87,19 @@ pub(in crate::halo_reach) fn add(
                 u8::from(source.lighting.is_some()) | (u8::from(source.water_uv.is_some()) << 1),
             );
             let water = source.water_uv.unwrap_or([0.; 2]);
-            let lightmap = lightmap(u32::try_from(primitive)?, source);
-            let extra = [water[0], water[1], lightmap[0], lightmap[1]];
+            let lightmap = lightmap(u32::try_from(primitive)?, source).map(coordinate_bits);
             let mut record = [0u8; 32];
-            for (channel, value) in lighting.into_iter().flatten().chain(extra).enumerate() {
+            for (channel, value) in lighting.into_iter().flatten().chain(water).enumerate() {
                 let value = half::f16::from_f32(value);
                 ensure!(
                     value.is_finite(),
                     "Vertex data exceeds the finite half-float range"
                 );
                 record[channel * 2..channel * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            // The last two lanes hold the lightmap coordinates' fixed-point bits.
+            for (k, bits) in lightmap.into_iter().enumerate() {
+                record[28 + k * 2..30 + k * 2].copy_from_slice(&bits.to_le_bytes());
             }
             let next = records.len();
             let index = *records.entry(record).or_insert_with(|| {
@@ -75,13 +110,13 @@ pub(in crate::halo_reach) fn add(
                 index < PER_ROW * MAX_HEIGHT,
                 "Vertex data exceeds the 2048 by 16384 texture capacity"
             );
-            // These floats are exact half values, not rounded integer coordinates. The shader
-            // recovers their bits before deriving a texel address, including subnormal halves.
+            // These bits are half values, not rounded integer coordinates. The shader recovers
+            // them before deriving a texel address, including subnormal halves.
             coordinates.insert(
                 (u32::try_from(primitive)?, u32::try_from(vertex)?),
                 [
-                    half::f16::from_bits((index % ADDRESS_RADIX) as u16).to_f32(),
-                    -half::f16::from_bits((index / ADDRESS_RADIX + 1) as u16).to_f32(),
+                    (index % ADDRESS_RADIX) as u16,
+                    0x8000 | (index / ADDRESS_RADIX + 1) as u16,
                 ],
             );
         }
@@ -118,4 +153,7 @@ pub(in crate::halo_reach) fn add(
 }
 
 pub(super) const DECLARATION: &str = "Texture2D<float4> VertexData:register(t0);";
+/// Loads a record's rows into the lighting outputs, its water coordinates into `o9` and its
+/// lightmap coordinate bits into `o3.zw`, which the static vertex program then decodes with the
+/// attribute stream's own ([`coordinates`]).
 pub(super) const READ: &str = "o6=0;o7=0;o8=0;if(detail.y<0){uint record=f32tof16(detail.x)+(f32tof16(-detail.y)-1)*31744;int2 at=int2((record%512)*4,record/512);o6=VertexData.Load(int3(at,0));o7=VertexData.Load(int3(at+int2(1,0),0));o8=VertexData.Load(int3(at+int2(2,0),0));float4 extra=VertexData.Load(int3(at+int2(3,0),0));uint flags=(uint)o8.w;o8.w=flags&1;o3.zw=extra.zw;if((flags&2)!=0){o9.xy=extra.xy;o9.w=1;}}";

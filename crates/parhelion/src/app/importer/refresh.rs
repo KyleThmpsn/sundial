@@ -9,36 +9,26 @@ pub(super) struct Item {
     namespace: String,
     identity: u32,
     revision: u32,
+    /// Whether the recipe's conversion brought ornaments, which its reimport brings again.
+    ornaments: bool,
 }
 
 impl Item {
-    /// The importer that wrote the recipe, from its namespace. The earlier bulk and import
-    /// schemes end with their source item's hash, and earlier Marathon names hold its hash or a
-    /// short word. A reimport keeps the saved namespace, so the item keeps its identity in any
-    /// of them. Other names record no source item.
+    /// The importer that wrote the recipe. A reimport keeps the saved namespace, so the item keeps
+    /// its identity in any of the schemes `Source::of_namespace` reads.
     fn source(&self) -> Option<Source> {
-        [
-            ("parhelion.reach.", Source::Reach),
-            ("parhelion.d1_roi.", Source::Roi),
-            ("parhelion.import.d1_roi.", Source::Roi),
-            ("parhelion.d2_mot.", Source::Modern),
-            ("parhelion.bulk.", Source::Modern),
-            ("parhelion.marathon.", Source::Marathon),
-        ]
-        .into_iter()
-        .find_map(|(prefix, source)| self.namespace.starts_with(prefix).then_some(source))
+        Source::of_namespace(&self.namespace)
     }
 
     /// The source item hash that ends the namespace.
     fn named_source(&self) -> Option<u32> {
-        let hash = self.namespace.rsplit(['-', '.']).next()?;
-        u32::from_str_radix(hash, 16).ok()
+        Source::named_item(&self.namespace)
     }
 
     /// Whether `weapon`, a row of `source` whose origin is `origin`, is this recipe's source item.
     fn matches(&self, source: Source, weapon: &Weapon, origin: Option<&Origin>) -> bool {
         match source {
-            Source::Reach => self.identity == weapon.hash,
+            Source::HaloReach => self.identity == weapon.hash,
             // Rows are keyed by the identity today's name derives. An earlier name holds the
             // source hash, or a word with no hash, which only the item's name can place.
             Source::Marathon => {
@@ -48,17 +38,39 @@ impl Item {
                             Some(hash) => hash == entry.item,
                             None => self.name.eq_ignore_ascii_case(&entry.name),
                         },
-                        Origin::Reach(_) => false,
+                        Origin::HaloReach(_) => false,
                     })
             }
-            Source::Modern if self.namespace.starts_with("parhelion.bulk.") => {
+            Source::D2Modern if self.namespace.starts_with("parhelion.bulk.") => {
                 self.named_source() == Some(weapon.hash)
             }
-            Source::Modern => service::destination_hash(weapon.hash, &weapon.name)
+            Source::D2Modern => service::destination_hash(weapon.hash, &weapon.name)
                 .is_ok_and(|hash| hash == self.identity),
-            Source::Roi => self.named_source() == Some(weapon.hash),
+            Source::D1RiseOfIron => self.named_source() == Some(weapon.hash),
         }
     }
+
+    /// The only row named as this recipe is, for a D2 Modern recipe that no row matches. Some
+    /// earlier recipes, restored or made by an import test, end their namespace with a hash that
+    /// names no source item. With no such row or several, how many there are, since the version
+    /// the recipe came from is then unknown.
+    fn named_row<'a>(&self, weapons: &'a [Weapon]) -> Result<&'a Weapon, usize> {
+        let named: Vec<_> = weapons
+            .iter()
+            .filter(|weapon| weapon.name.trim().eq_ignore_ascii_case(self.name.trim()))
+            .collect();
+        match named.as_slice() {
+            [weapon] => Ok(weapon),
+            _ => Err(named.len()),
+        }
+    }
+}
+
+/// Records a reimport failure for the review's outcome and for the activity log, which keeps it
+/// after the outcome is dismissed.
+fn fail(log: &mut ActivityLog, state: &mut State, message: String) {
+    log.push(LogEntry::error(message.clone()));
+    state.failures.push(message);
 }
 
 #[derive(Default)]
@@ -66,7 +78,8 @@ pub(super) struct State {
     pub pending: Vec<Item>,
     /// Pending recipes left out of the next reimport. Every recipe starts selected.
     excluded: BTreeSet<PathBuf>,
-    seen: BTreeSet<(PathBuf, u32)>,
+    /// The revisions of each recipe the review already offered.
+    seen: BTreeMap<PathBuf, BTreeSet<u32>>,
     queue: VecDeque<(Source, Vec<Item>)>,
     active: bool,
     importing: bool,
@@ -75,37 +88,68 @@ pub(super) struct State {
 }
 
 impl State {
+    /// Runs every frame, so the pending recipes are rebuilt only when the library changed them. A
+    /// library of thousands of imported recipes is otherwise copied each frame.
     pub fn observe(&mut self, entries: &[RecipeLibraryEntry]) {
         if self.active {
             return;
         }
-        self.pending = entries
-            .iter()
-            .filter_map(|entry| {
-                let revision = entry.import_revision?;
-                (revision < parhelion_import::CONVERTER_REVISION
-                    && !self.seen.contains(&(entry.path.clone(), revision)))
-                .then(|| Item {
-                    path: entry.path.clone(),
-                    name: entry.name.clone(),
-                    namespace: entry.namespace.clone(),
-                    identity: entry.identity_hash,
+        let outdated = entries.iter().filter_map(|entry| {
+            let revision = entry.import_revision?;
+            (revision < parhelion_import::CONVERTER_REVISION
+                && !self
+                    .seen
+                    .get(&entry.path)
+                    .is_some_and(|seen| seen.contains(&revision)))
+            .then_some((entry, revision))
+        });
+        let unchanged = outdated
+            .clone()
+            .map(|(entry, revision)| {
+                (
+                    &entry.path,
+                    &entry.name,
+                    &entry.namespace,
+                    entry.identity_hash,
                     revision,
-                })
+                    entry.import_ornaments,
+                )
+            })
+            .eq(self.pending.iter().map(|item| {
+                (
+                    &item.path,
+                    &item.name,
+                    &item.namespace,
+                    item.identity,
+                    item.revision,
+                    item.ornaments,
+                )
+            }));
+        if unchanged {
+            return;
+        }
+        self.pending = outdated
+            .map(|(entry, revision)| Item {
+                path: entry.path.clone(),
+                name: entry.name.clone(),
+                namespace: entry.namespace.clone(),
+                identity: entry.identity_hash,
+                revision,
+                ornaments: entry.import_ornaments,
             })
             .collect();
-        let pending = &self.pending;
-        self.excluded
-            .retain(|path| pending.iter().any(|item| item.path == *path));
+        let pending: BTreeSet<_> = self.pending.iter().map(|item| &item.path).collect();
+        self.excluded.retain(|path| pending.contains(path));
     }
 
     pub fn dismiss(&mut self) {
         self.excluded.clear();
-        self.seen.extend(
-            self.pending
-                .drain(..)
-                .map(|item| (item.path, item.revision)),
-        );
+        for item in self.pending.drain(..) {
+            self.seen
+                .entry(item.path)
+                .or_default()
+                .insert(item.revision);
+        }
     }
 
     /// Reimports the selected recipes. The rest wait for a later importer revision, as Later
@@ -158,10 +202,10 @@ impl PackageAuthoringApp {
         let settings = &self.importer.settings;
         let missing = |source: Source| {
             match source {
-                Source::Modern => &settings.modern_packages,
-                Source::Reach => &settings.reach_maps,
+                Source::D2Modern => &settings.modern_packages,
+                Source::HaloReach => &settings.reach_maps,
                 Source::Marathon => &settings.marathon_packages,
-                Source::Roi => &settings.d1_roi,
+                Source::D1RiseOfIron => &settings.d1_roi,
             }
             .as_ref()
             .is_none_or(|path| !path.is_dir())
@@ -231,6 +275,10 @@ impl PackageAuthoringApp {
         }
         if refresh {
             self.importer.refresh.begin();
+            // Recipes that name no source item fail before any import runs.
+            for failure in &self.importer.refresh.failures {
+                self.log.push(LogEntry::error(failure.clone()));
+            }
             self.importer.enabled = true;
             self.importer.open = true;
         }
@@ -246,10 +294,11 @@ impl PackageAuthoringApp {
                 self.importer.refresh.failures.extend(outcome.failures);
                 if outcome.cancelled {
                     self.importer.refresh.queue.clear();
-                    self.importer
-                        .refresh
-                        .failures
-                        .push("The remaining reimports were cancelled.".into());
+                    fail(
+                        &mut self.log,
+                        &mut self.importer.refresh,
+                        "The remaining reimports were cancelled.".into(),
+                    );
                 }
             }
             self.importer.refresh.importing = false;
@@ -285,10 +334,13 @@ impl PackageAuthoringApp {
             None
         };
         if let Some(problem) = problem {
-            self.importer
-                .refresh
-                .failures
-                .extend(items.iter().map(|item| format!("{}: {problem}", item.name)));
+            for item in &items {
+                fail(
+                    &mut self.log,
+                    &mut self.importer.refresh,
+                    format!("{}: {problem}", item.name),
+                );
+            }
             self.importer.refresh.queue.pop_front();
             ctx.request_repaint();
             return;
@@ -296,38 +348,81 @@ impl PackageAuthoringApp {
         if !self.importer_blockers().is_empty() {
             return;
         }
-        self.importer.selected.clear();
-        self.importer.reimport.clear();
-        for item in items {
-            let found = self.importer.weapons.iter().find(|weapon| {
-                item.matches(source, weapon, self.importer.origins.get(&weapon.hash))
-            });
-            match found {
-                Some(weapon) if self.importer.browser.importable(weapon) => {
-                    self.importer.selected.insert(weapon.hash);
-                    // The saved namespace reproduces the saved identity, so the import
-                    // updates this recipe and keeps its edits.
-                    self.importer
-                        .reimport
-                        .insert(weapon.hash, item.namespace.clone());
-                }
-                Some(_) => self.importer.refresh.failures.push(format!(
-                    "{}: no Shadowkeep weapon can host its type.",
-                    item.name
-                )),
-                None => self.importer.refresh.failures.push(format!(
-                    "{}: its source item isn't in the current {} packages.",
-                    item.name,
-                    source.label()
-                )),
-            }
-        }
+        let deferred = self.select_reimports(source, items);
         self.importer.refresh.queue.pop_front();
+        if !deferred.is_empty() {
+            self.importer.refresh.queue.push_front((source, deferred));
+        }
         if !self.importer.selected.is_empty() {
             self.import_selected(ctx);
             self.importer.refresh.importing = self.importer.busy();
         }
         ctx.request_repaint();
+    }
+
+    /// Selects each recipe's source row for one batch, with the saved namespace that keeps its
+    /// identity, and records the recipes no row can take. Returns the recipes that wait for a
+    /// later batch.
+    fn select_reimports(&mut self, source: Source, items: Vec<Item>) -> Vec<Item> {
+        self.importer.selected.clear();
+        self.importer.reimport.clear();
+        let mut deferred = Vec::new();
+        for item in items {
+            let found = self
+                .importer
+                .weapons
+                .iter()
+                .find(|weapon| {
+                    item.matches(source, weapon, self.importer.origins.get(&weapon.hash))
+                })
+                .ok_or(0)
+                .or_else(|_| match source {
+                    Source::D2Modern => item.named_row(&self.importer.weapons),
+                    _ => Err(0),
+                });
+            match found {
+                // Each recipe keeps its own saved namespace, so a second recipe of the same
+                // source item waits for a batch of its own.
+                Ok(weapon) if self.importer.selected.contains(&weapon.hash) => deferred.push(item),
+                Ok(weapon) if self.importer.browser.importable(weapon) => {
+                    self.importer.selected.insert(weapon.hash);
+                    // The saved namespace reproduces the saved identity, so the import
+                    // updates this recipe and keeps its edits. It brings ornaments only if
+                    // the recipe had them.
+                    self.importer.reimport.insert(
+                        weapon.hash,
+                        Saved {
+                            namespace: item.namespace.clone(),
+                            ornaments: item.ornaments,
+                        },
+                    );
+                }
+                Ok(_) => fail(
+                    &mut self.log,
+                    &mut self.importer.refresh,
+                    format!("{}: no Shadowkeep weapon can host its type.", item.name),
+                ),
+                Err(0) => fail(
+                    &mut self.log,
+                    &mut self.importer.refresh,
+                    format!(
+                        "{}: no item in the current {} packages matches its recipe.",
+                        item.name,
+                        source.label()
+                    ),
+                ),
+                Err(count) => fail(
+                    &mut self.log,
+                    &mut self.importer.refresh,
+                    format!(
+                        "{}: {count} {} items have this name, and its recipe doesn't record which one it came from. Import the right one from the importer.",
+                        item.name,
+                        source.label()
+                    ),
+                ),
+            }
+        }
+        deferred
     }
 }
 
@@ -406,12 +501,18 @@ fn group(
                 });
             })
             .body(|ui| {
+                // Only the rows in view are laid out. A source can hold thousands of recipes.
+                let row_height = ui
+                    .spacing()
+                    .interact_size
+                    .y
+                    .max(ui.text_style_height(&egui::TextStyle::Body));
                 egui::ScrollArea::vertical()
                     .id_salt(("import-refresh-names", label))
                     .max_height(160.0)
                     .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        for item in items {
+                    .show_rows(ui, row_height, items.len(), |ui, rows| {
+                        for item in &items[rows] {
                             let mut on = selected(state, item);
                             if ui.checkbox(&mut on, &item.name).changed() {
                                 requests.changes.push((item.path.clone(), on));

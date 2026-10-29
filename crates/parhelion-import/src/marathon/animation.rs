@@ -20,6 +20,7 @@ mod retarget;
 mod source;
 pub(super) use compile::compile;
 pub(super) use donor::choose as choose_donor;
+pub(super) use donor::plain as plain_behavior;
 pub(super) use native::equipment_bones;
 
 /// A source component: its tag, its owner payload, the owner's definition and that definition's
@@ -38,6 +39,152 @@ fn components(r: &mut Reader, entity: u32) -> Result<Vec<Component>> {
             Ok((tag, owner, base, class))
         })
         .collect()
+}
+
+/// The private equipment palette [`compile`] skins the weapon's geometry to, without compiling
+/// its controller. A camo worn on the weapon skins to the same palette.
+pub(super) fn palette(
+    source: &mut Reader,
+    native: &mut Reader,
+    parts: &[Value],
+    item_tag: u32,
+) -> Result<Vec<u32>> {
+    let root = hash(
+        parts.first().context("Empty source animation assembly")?,
+        "entity",
+    )?;
+    let owners = components(source, root)?;
+    let owner = |class: u32| -> Result<std::sync::Arc<Payload>> {
+        let found = owners
+            .iter()
+            .filter(|owner| owner.3 == class)
+            .map(|owner| owner.1.clone())
+            .collect::<Vec<_>>();
+        ensure!(
+            found.len() == 1,
+            "Source weapon needs one {class:08X} component"
+        );
+        Ok(found[0].clone())
+    };
+    let (skeleton, controls) = (owner(source::SKELETON)?, owner(source::CONTROLS)?);
+    let weapon = source::Rig::read(&skeleton, &controls)?;
+    let carrier = native::Carrier::read(native, item_tag)?;
+    // The extension writes private skeletons, which a worn camo does not keep.
+    let scratch = tempfile::tempdir()?;
+    Ok(native::extend(&carrier, &weapon, scratch.path())?.palette)
+}
+
+/// Rest poses of an attachment's own skeleton, as each bone's transform from its bind. The first
+/// is the first frame of the `idle` state in the attachment's own action lookup. Each further one
+/// composes the last frame of an additive clip in that lookup's bank over it, multiplying
+/// rotations on the right and adding translations. A sight can store its optic folded in the bind
+/// pose and swing it onto its sight line in such a layer, which the attachment's own controller
+/// plays and no lookup state routes. The geometry chooses among these by its aperture. An
+/// attachment without a single skeleton, control rig, lookup and `idle` state, or whose idle
+/// state cannot be sampled, keeps its bind. Layers that cannot be sampled are left out. Both are
+/// reported.
+pub(super) fn local_pose(source: &mut Reader, entity: u32) -> Result<(Vec<Vec<Pose>>, Value)> {
+    let owners = components(source, entity)?;
+    let one = |class: u32| {
+        let found = owners
+            .iter()
+            .filter(|owner| owner.3 == class)
+            .collect::<Vec<_>>();
+        (found.len() == 1).then(|| found[0].1.clone())
+    };
+    let (Some(skeleton), Some(controls), Some(lookup)) = (
+        one(source::SKELETON),
+        one(source::CONTROLS),
+        one(controller::LOOKUP),
+    ) else {
+        return Ok((
+            Vec::new(),
+            json!({"pose":"bind","reason":"The attachment has no single skeleton, control rig and action lookup"}),
+        ));
+    };
+    let sampled = (|| -> Result<_> {
+        let rig = source::Rig::read(&skeleton, &controls)?;
+        let local = controller::Controller::read(source, &lookup)?;
+        let idle = source::fnv("idle");
+        ensure!(
+            local.names.contains_key(&idle),
+            "The attachment lookup has no idle state"
+        );
+        let route = local.route(idle, &BTreeMap::new())?;
+        let [(descriptor, _)] = route.as_slice() else {
+            anyhow::bail!("The attachment idle state chooses among several descriptors");
+        };
+        let ordinal = local.descriptors[*descriptor as usize]
+            .clip
+            .context("The attachment idle state plays no clip")?;
+        let (values, additive) = compile::values(source, local.clips[ordinal], &rig, 0)?;
+        ensure!(!additive, "The attachment idle clip is additive");
+        Ok((rig, local, values))
+    })();
+    let (rig, local, values) = match sampled {
+        Ok(sampled) => sampled,
+        Err(error) => {
+            if crate::cancellation::is_cancelled(&error) {
+                return Err(error);
+            }
+            return Ok((
+                Vec::new(),
+                json!({"pose":"bind","reason":format!("{error:#}")}),
+            ));
+        }
+    };
+    let deformations = |values: &[Pose]| -> Result<Vec<Pose>> {
+        Ok(rig
+            .objects(values)?
+            .iter()
+            .zip(&rig.bind)
+            .map(|(object, bind)| object.then(bind.inverse()))
+            .collect())
+    };
+    let mut rests = vec![deformations(&values)?];
+    let mut layers = Vec::new();
+    for &clip in &local.clips {
+        match compile::values(source, clip, &rig, usize::MAX) {
+            Ok((delta, true)) => {
+                let composed = values
+                    .iter()
+                    .zip(&delta)
+                    .map(|(base, delta)| additive(*base, *delta))
+                    .collect::<Result<Vec<_>>>()?;
+                rests.push(deformations(&composed)?);
+                layers.push(json!({"clip":format!("{clip:08X}"),"rest":rests.len() - 1}));
+            }
+            Ok((_, false)) => {}
+            Err(error) => {
+                if crate::cancellation::is_cancelled(&error) {
+                    return Err(error);
+                }
+                layers.push(json!({"clip":format!("{clip:08X}"),"reason":format!("{error:#}")}));
+            }
+        }
+    }
+    Ok((
+        rests,
+        json!({"pose":"idle","layers":layers,
+            "policy":"Rest 0 is the first frame of the attachment's own idle state. Each layer rest adds the end of an additive clip in its bank. The source transitions are not translated."}),
+    ))
+}
+
+/// An additive control value composed over its base: rotation multiplied on the right,
+/// translation added and scale multiplied.
+fn additive(base: Pose, delta: Pose) -> Result<Pose> {
+    let [x, y, z, w, ..] = base.0;
+    let [i, j, k, r, ..] = delta.0;
+    Pose::checked([
+        w * i + x * r + y * k - z * j,
+        w * j - x * k + y * r + z * i,
+        w * k + x * j - y * i + z * r,
+        w * r - x * i - y * j - z * k,
+        base.0[4] + delta.0[4],
+        base.0[5] + delta.0[5],
+        base.0[6] + delta.0[6],
+        base.0[7] * delta.0[7],
+    ])
 }
 
 fn save(root: &Path, tag: u32, suffix: &str, payload: &Payload) -> Result<String> {

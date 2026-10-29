@@ -50,45 +50,16 @@ fn artwork(
         request: crate::watermark::WeaponIconRequest {
             donor_container_tag: donor,
             icon_edit: edit,
-            rarity: crate::AuthoredWeaponRarity::Exotic,
+            rarity: super::ornaments::rarity(graph)?.unwrap_or(crate::AuthoredWeaponRarity::Exotic),
             plain: false,
         },
     }))
-}
-
-pub(super) fn entry_bound(
-    manager: &sundial::package_authoring::PackageManager,
-    emission: &PackageEmission,
-    graph: &Value,
-    folder: &Path,
-    branding: crate::branding::Branding,
-) -> AuthoringResult<usize> {
-    let Some(artwork) = artwork(emission, graph, folder)? else {
-        return Ok(0);
-    };
-    // Validate the complete plan before the model group chooses its package.
-    // Primary layers can contain several texture lanes, so a fixed allowance
-    // does not describe every donor's actual resource count.
-    let plan = crate::watermark::build_presented_watermark_plan(
-        manager,
-        crate::package_profile::window().first(),
-        0,
-        0,
-        &[artwork.request],
-        crate::watermark::Presentation {
-            branding,
-            artwork: &[None],
-        },
-        &|_| format!("Ornament {:08X}", artwork.target),
-    )?;
-    Ok(plan.new_tags.len())
 }
 
 pub(super) fn apply(
     manager: &sundial::package_authoring::PackageManager,
     emission: &mut PackageEmission,
     graph: &Value,
-    package_index: usize,
     folder: &Path,
     branding: crate::branding::Branding,
 ) -> AuthoringResult<()> {
@@ -101,11 +72,12 @@ pub(super) fn apply(
     else {
         return Ok(());
     };
-    let package_index = if crate::package_profile::host().is_standalone() {
-        let draft = crate::watermark::build_presented_watermark_plan(
+    let donor = request.donor_container_tag;
+    let (container, added) = emission.asset_packages.author(|package, first| {
+        let plan = crate::watermark::build_presented_watermark_plan(
             manager,
-            crate::package_profile::window().first(),
-            0,
+            package,
+            first,
             0,
             std::slice::from_ref(&request),
             crate::watermark::Presentation {
@@ -114,40 +86,15 @@ pub(super) fn apply(
             },
             &|_| format!("Ornament {target:08X}"),
         )?;
-        emission
-            .asset_packages
-            .reserve_group(draft.new_tags.iter().map(|tag| tag.payload.len()))?
-    } else {
-        package_index
-    };
-    let donor = request.donor_container_tag;
-    let package = &emission.asset_packages.packages[package_index];
-    let package_id = package.id;
-    let base = package.tags.len();
-    let plan = crate::watermark::build_presented_watermark_plan(
-        manager,
-        package_id,
-        0,
-        base,
-        &[request],
-        crate::watermark::Presentation {
-            branding,
-            artwork: &[None],
-        },
-        &|_| format!("Ornament {target:08X}"),
-    )?;
-    let container = plan
-        .container_for_request(0)
-        .ok_or_else(|| invalid("Ornament icon container missing"))?;
-    let added = (base..base + plan.new_tags.len())
-        .map(|i| TagHash::new(package_id, i as u16))
-        .collect::<Vec<_>>();
-    emission.asset_packages.packages[package_index]
-        .tags
-        .extend(plan.new_tags);
-    emission.asset_packages.packages[package_index]
-        .references
-        .extend(plan.reference_overrides);
+        let container = plan
+            .container_for_request(0)
+            .ok_or_else(|| invalid("Ornament icon container missing"))?;
+        let allocator = AppendedTagAllocator::new(package, first);
+        let added = (0..plan.new_tags.len())
+            .map(|index| allocator.assigned_tag(index, "Ornament artwork", "artwork resource"))
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        Ok(((container, added), plan.new_tags, plan.reference_overrides))
+    })?;
     let (icons, icon_index) = append_authored_weapon_icon_row(
         std::mem::take(&mut emission.item_icons),
         donor_index,

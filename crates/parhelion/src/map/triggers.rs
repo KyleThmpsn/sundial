@@ -20,6 +20,7 @@ const SENSOR_COMPONENT: u32 = 0x8080_9522;
 // These are donor roles, validated against the paired placed records and slot references.
 const NEUTRAL_VOLUME_ENTITY: u32 = 0x80BF_DDCB;
 
+#[derive(Clone)]
 pub(super) struct Triggers {
     object: (TagHash, Vec<u8>),
     volume: Placed,
@@ -31,15 +32,14 @@ pub(super) struct Triggers {
 }
 
 impl Triggers {
-    /// Finds a neutral volume record and a sensor naming its first volume in this object.
+    /// Finds a neutral volume record and a sensor naming its first volume in this object. The pair
+    /// holds no volumes until [`Self::placed`] gives it an area's.
     pub(super) fn find(
         manager: &PackageManager,
         object: TagHash,
         payload: &[u8],
-        volumes: &[Volume],
-        area: &str,
     ) -> AuthoringResult<Option<Self>> {
-        if volumes.is_empty() || read_u64(payload, 0x38)? == 0 {
+        if read_u64(payload, 0x38)? == 0 {
             return Ok(None);
         }
         let (count, _, groups, _) = array_at(payload, 0x38)?;
@@ -124,12 +124,21 @@ impl Triggers {
                         read_tag(manager, packfile, "Neutral trigger packfile")?,
                     ),
                     dependencies: dependencies.into_iter().map(TagHash).collect(),
-                    volumes: volumes.to_vec(),
-                    key: fnv1_name_hash(&format!("{area}/triggers")),
+                    volumes: Vec::new(),
+                    key: 0,
                 }));
             }
         }
         Ok(None)
+    }
+
+    /// The pair for the area `area`, holding its `volumes`.
+    pub(super) fn placed(&self, volumes: &[Volume], area: &str) -> Self {
+        Self {
+            volumes: volumes.to_vec(),
+            key: fnv1_name_hash(&format!("{area}/triggers")),
+            ..self.clone()
+        }
     }
 
     pub(super) fn bindings(&self) -> super::mission::Triggers {

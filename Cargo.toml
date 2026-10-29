@@ -87,14 +87,20 @@ winit = { version = "0.30.13", default-features = false, features = ["wayland-cs
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-
-[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_OpenGL", "Win32_Media_Audio", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# eframe already links winit. The dependent crates' native test windows name it directly.
 winit = { version = "0.30.13", default-features = false }
 
 [profile.release]
 strip = true
 lto = "thin"
+
+# Local test builds: release optimization without link-time optimization, recompiling only what
+# changed. Shipped and CI builds keep the release profile. `--profile fast` writes `target/fast`.
+[profile.fast]
+inherits = "release"
+lto = false
+incremental = true
 
 # Full debug info produces a half-gigabyte PDB for each test binary on Windows, and writing it
 # dominates the edit-and-test cycle. Line tables still resolve panic backtraces and test failure

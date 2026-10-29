@@ -36,25 +36,31 @@ pub(in crate::item) fn author<M>(
         .filter(|(index, _)| aliases[*index] == *index)
         .map(|(_, node)| node.payload.len())
         .collect::<Vec<_>>();
-    bounds.extend(loading.iter().map(|loading| loading.bound));
-    let index = packages.reserve_group(bounds)?;
-    let package = &mut packages.packages[index];
-    let allocator = AppendedTagAllocator::new(package.id, 0);
-    let base = package.tags.len();
     let mut ordinals = vec![0; nodes.len()];
-    let mut next = base;
+    let mut next = 0;
     for (index, canonical) in aliases.iter().enumerate() {
         if index == *canonical {
             ordinals[index] = next;
             next += 1;
         }
     }
+    let loading_start = next;
+    let together = loading
+        .iter()
+        .enumerate()
+        .map(|(index, loading)| {
+            let owner = nodes
+                .iter()
+                .position(|node| node.symbol == loading.owner)
+                .ok_or_else(|| invalid("Replication loading owner is missing"))?;
+            Ok((ordinals[aliases[owner]], loading_start + index))
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    bounds.extend(loading.iter().map(|loading| loading.bound));
+    let plan = packages.plan_graph(bounds, &together)?;
     let mut symbols = BTreeMap::new();
     for (index, node) in nodes.iter().enumerate() {
-        symbols.insert(
-            node.symbol.clone(),
-            allocator.assigned_tag(ordinals[aliases[index]], "Private asset group", "asset")?,
-        );
+        symbols.insert(node.symbol.clone(), plan.tag(ordinals[aliases[index]])?);
     }
     let mut replacements = bind(&symbols)?;
     // Bind-time edits cannot change a texture whose identity is shared. Audio
@@ -71,6 +77,8 @@ pub(in crate::item) fn author<M>(
             }
         }
     }
+    let mut tags = Vec::new();
+    let mut references = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
         if node.storage != crate::NewTagStorageMode::InheritTemplate
             && (node.reference.is_some()
@@ -119,25 +127,25 @@ pub(in crate::item) fn author<M>(
             continue;
         }
         if let Some(target) = &node.reference {
-            package.references.push(crate::NewTagReferenceOverride {
-                new_tag_ordinal: package.tags.len(),
-                reference: crate::NewTagReference::Appended(
-                    symbols
+            references.push(crate::NewTagReferenceOverride {
+                new_tag_ordinal: tags.len(),
+                reference: crate::NewTagReference::Tag(
+                    *symbols
                         .get(target)
-                        .ok_or_else(|| invalid("Private asset dependency is missing"))?
-                        .entry_index() as usize,
+                        .ok_or_else(|| invalid("Private asset dependency is missing"))?,
                 ),
             });
         }
-        package.tags.push(NewTagSpec {
+        tags.push(NewTagSpec {
             template_tag: TagHash(node.template),
             payload,
             storage: node.storage,
         });
     }
-    for loading in loading {
-        loading.append(nodes, &symbols, package)?;
+    for (index, loading) in loading.iter().enumerate() {
+        tags.push(loading.materialize(nodes, &symbols, plan.tag(loading_start + index)?)?);
     }
+    packages.commit_graph(plan, tags, references)?;
     // Native replication allocations and their root are eager. The companion
     // is reached through package enrollment rather than the global index.
     let eager = nodes

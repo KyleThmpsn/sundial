@@ -281,7 +281,7 @@ pub(super) fn build(
             "stability":plan.report,
             "surface_inputs":inputs,"surface_channel_names":channel_names,
             "gameplay_verified":false,
-            "limits":["Authored aerodynamic response using the selected source dimensions and mass. Equilibrium calibration assumes the native base gravity. World gravity modifiers, collision, takeoff and handling need gameplay verification."]}),
+            "limits":["Authored aerodynamic response using the selected source dimensions and mass. Equilibrium calibration assumes the native base gravity."]}),
     )?;
     contacts.inputs = inputs;
     Ok(contacts)

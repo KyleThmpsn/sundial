@@ -52,6 +52,8 @@ pub(super) struct Geometry {
     ambience: Option<String>,
     /// This area's static instances as its tome's Umbra objects, empty without connected areas.
     visibility: Vec<parhelion_import::halo_reach::level::native::Visible>,
+    /// The decorator records this area's placement table places, by symbol.
+    decorators: Vec<String>,
     /// The graph nodes, by index, that this area's chain loads, or all of them.
     loads: Option<Vec<usize>>,
     /// An exclusive lock on the map's cache folder, held until the stage has read its payloads.
@@ -78,6 +80,11 @@ struct Shared {
     ambience: Option<String>,
     /// The first area's static instances, which a single-area map's tome lists.
     visibility: Vec<parhelion_import::halo_reach::level::native::Visible>,
+    /// The first area's decorator records, which a single-area map places.
+    decorators: Vec<String>,
+    /// The stock decorator placement every area's decorator rows copy, when the level's
+    /// decorators draw as Destiny's instanced decorators.
+    decorator_placement: Option<chain::Decorators>,
     /// The symbol of the atmosphere volume the map's atmosphere names.
     atmosphere: Option<String>,
     /// The symbol of the distance lookup the map's atmosphere names.
@@ -86,21 +93,28 @@ struct Shared {
     atmosphere_image: Option<String>,
     /// The level's occlusion probes, each a position and a sky visibility.
     occlusion: Vec<[f32; 4]>,
+    /// The boxes of the level's structure clusters, which the lighting cells follow.
+    clusters: Vec<parhelion_import::halo_reach::level::streaming::Bounds>,
     /// The level's cubemap volumes.
     cubemaps: Vec<parhelion_import::halo_reach::level::native::CubemapVolume>,
     /// The level's lights.
     lights: Vec<parhelion_import::halo_reach::level::native::lights::MapLight>,
     light: Option<[f32; 3]>,
+    /// The native sun the level asks for, which every area's environment sets.
+    native_sun: Option<parhelion_import::halo_reach::level::native::NativeSun>,
     /// The nodes no area's chain reaches, which every area loads.
     everywhere: BTreeSet<usize>,
     source: MapSource,
+    /// The donor world and its map root chain as [`Chain::load`] left them, which connected areas
+    /// copy under their own names ([`Chain::renamed`]).
+    donor: (String, Chain),
 }
 
 type Piece = parhelion_import::halo_reach::level::native::Piece;
 
 impl Shared {
-    /// The symbols area `area`'s chain names: its pieces' statics, its world collision and
-    /// ambience, and the sky, atmosphere and cubemaps every area places.
+    /// The symbols area `area`'s chain names: its pieces' statics, its world collision, ambience
+    /// and decorator records, and the sky, atmosphere and cubemaps every area places.
     fn roots<'a>(
         &'a self,
         area: &'a parhelion_import::halo_reach::level::native::Area,
@@ -113,6 +127,7 @@ impl Shared {
             .chain(area.world.meshes.iter().map(String::as_str))
             .chain(self.sky.iter().map(|object| object.reference.as_str()))
             .chain(area.ambience.as_deref())
+            .chain(area.decorators.iter().map(String::as_str))
             .chain(self.atmosphere.as_deref())
             .chain(self.atmosphere_lookup.as_deref())
             .chain(self.atmosphere_image.as_deref())
@@ -186,10 +201,61 @@ fn map_lights(
         .collect()
 }
 
+/// The chain's environment for a level that asks for native sun `sun`, with the sun off in
+/// `interiors`. A level without baked light asks for none and keeps the global defaults.
+fn map_environment(
+    sun: Option<parhelion_import::halo_reach::level::native::NativeSun>,
+    interiors: &[parhelion_import::halo_reach::level::native::Interior],
+) -> Option<chain::Environment> {
+    let sun = sun?;
+    Some(chain::Environment {
+        sun_intensity: sun.intensity,
+        sun_color: sun.color,
+        interiors: interiors
+            .iter()
+            .map(|interior| (interior.minimum, interior.maximum))
+            .collect(),
+    })
+}
+
 fn fnv1a64(text: &str) -> u64 {
     text.bytes().fold(0xCBF2_9CE4_8422_2325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
     })
+}
+
+/// Removes the work folders other maps' stages left in `maps`, and with `cached`, the current
+/// map's own, which a conversion read from the area cache leaves unread. Only the stage that
+/// converted into a work folder reads it. A later stage restores installed packages, reads the
+/// area cache, or clears the folder and converts again. A stage holds its map's lock until its
+/// payloads are read, so a folder whose lock is taken stays. The caller holds `current`'s lock.
+fn remove_finished_work_folders(maps: &Path, current: &str, cached: bool) {
+    if cached {
+        let _ = std::fs::remove_dir_all(maps.join(current));
+    }
+    let Ok(entries) = std::fs::read_dir(maps) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        // Links are not followed. A folder of another kind is not a work folder.
+        if name == current || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Ok(lock) = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(maps.join(format!("{name}.lock")))
+        else {
+            continue;
+        };
+        if lock.try_lock().is_ok() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 impl Geometry {
@@ -231,6 +297,7 @@ impl Geometry {
             .transpose()?;
         report("Reading Donor World Templates");
         let mut chain = Chain::load(directory, manager, companions, world, name)?;
+        let donor = (world.to_owned(), chain.clone());
         let (world_compound, world_meshes) = chain.world_templates()?;
         let sky = chain.sky_templates(manager)?;
         let atmosphere = chain.atmosphere_volume()?;
@@ -272,6 +339,35 @@ impl Geometry {
                 };
                 parhelion_import::halo_reach::level::mission::AudioOptions { banks, decoder }
             });
+        // The level's decorators draw as Destiny's instanced decorators when the recipe asks and
+        // the stock records they copy are present, and otherwise as copies among the pieces.
+        let (decorators, decorator_placement) = match source.decorators {
+            super::Decorators::Static => (None, None),
+            super::Decorators::Native => {
+                let found =
+                    parhelion_import::halo_reach::level::native::DecoratorTemplates::find(|tag| {
+                        manager.get_entry(TagHash(tag)).map(|entry| entry.reference)
+                    })
+                    .and_then(|templates| {
+                        chain::decorators(
+                            manager,
+                            TagHash(templates.table),
+                            &[TagHash(templates.surface), TagHash(templates.depth)],
+                        )
+                        .map(|placement| (templates, placement))
+                        .map_err(|error| error.to_string())
+                    });
+                match found {
+                    Ok((templates, placement)) => (Some(templates), Some(placement)),
+                    Err(error) => {
+                        report(&format!(
+                            "Native Decorators Unavailable, Copying Decorators / {error}"
+                        ));
+                        (None, None)
+                    }
+                }
+            }
+        };
         let templates = parhelion_import::halo_reach::level::native::Templates {
             model: chain.prop().model,
             props: parhelion_import::halo_reach::level::native::PropTemplates {
@@ -299,6 +395,7 @@ impl Geometry {
             atmosphere_image,
             occlusion_probes,
             cubemaps,
+            decorators,
         };
         let cached = crate::mod_family::build::map_state(name).map_err(invalid)?;
         let kept = cached.is_some();
@@ -319,6 +416,7 @@ impl Geometry {
                 Err(_) => None,
             }
         };
+        remove_finished_work_folders(&maps, name, conversion_cache.is_some());
         let folder = conversion_cache
             .as_ref()
             .map_or(folder, |cache| cache.folder().to_owned());
@@ -376,6 +474,14 @@ impl Geometry {
             };
         chain.set_light(converted.light);
         chain.set_lights(map_lights(&converted.lights, name));
+        chain.set_environment(map_environment(
+            converted.native_sun,
+            converted
+                .areas
+                .first()
+                .map_or(&converted.interiors, |area| &area.interiors),
+        ));
+        chain.set_decorators(decorator_placement.clone());
         if converted.areas.len() != areas.len()
             || converted
                 .areas
@@ -400,15 +506,20 @@ impl Geometry {
             sky: converted.sky,
             ambience: converted.ambience,
             visibility: converted.visibility,
+            decorators: converted.decorators,
+            decorator_placement,
             atmosphere: converted.atmosphere,
             atmosphere_lookup: converted.atmosphere_lookup,
             atmosphere_image: converted.atmosphere_image,
             occlusion: converted.occlusion,
+            clusters: converted.clusters,
             cubemaps: converted.cubemaps,
             lights: converted.lights,
             light: converted.light,
+            native_sun: converted.native_sun,
             everywhere: BTreeSet::new(),
             source: source.clone(),
+            donor,
         };
         // Nodes only an implicit binding reaches, as kept audio banks, load with every area.
         if !shared.areas.is_empty() {
@@ -443,9 +554,17 @@ impl Geometry {
         if !self.first || index == 0 || index >= self.shared.areas.len() {
             return Err(invalid(format!("Map area {index} is not a connected area")));
         }
-        let mut chain = Chain::load(directory, manager, companions, world, name)?;
+        let mut chain = match &self.shared.donor {
+            (donor, chain) if donor == world => chain.renamed(manager, world, name)?,
+            _ => Chain::load(directory, manager, companions, world, name)?,
+        };
         chain.set_light(self.shared.light);
         chain.set_lights(map_lights(&self.shared.lights, name));
+        chain.set_environment(map_environment(
+            self.shared.native_sun,
+            &self.shared.areas[index].interiors,
+        ));
+        chain.set_decorators(self.shared.decorator_placement.clone());
         Self::assemble(chain, self.shared.clone(), index, name, None, None)
     }
 
@@ -489,6 +608,11 @@ impl Geometry {
                     None,
                 ),
             };
+        let decorators = shared
+            .areas
+            .get(index)
+            .map_or(&shared.decorators, |area| &area.decorators)
+            .clone();
         let source = &shared.source;
         let zone_sets = shared
             .areas
@@ -516,6 +640,7 @@ impl Geometry {
             statics,
             ambience,
             visibility,
+            decorators,
             loads,
             shared,
             _folder_lock: folder_lock,
@@ -644,6 +769,12 @@ impl Geometry {
     /// visibility, which the area's occlusion record holds after its first.
     pub(super) fn occlusion(&self) -> &[[f32; 4]] {
         &self.shared.occlusion
+    }
+
+    /// The boxes of the level's structure clusters in the map's coordinates, whose faces bound
+    /// the area's lighting cells.
+    pub(super) fn clusters(&self) -> &[parhelion_import::halo_reach::level::streaming::Bounds] {
+        &self.shared.clusters
     }
 
     pub(super) fn split_tags(
@@ -820,6 +951,11 @@ impl Geometry {
             .iter()
             .map(|prop| Ok((tag(&prop.entity)?, prop.position)))
             .collect::<AuthoringResult<Vec<_>>>()?;
+        let decorators = self
+            .decorators
+            .iter()
+            .map(|record| tag(record))
+            .collect::<AuthoringResult<Vec<_>>>()?;
         let loads = self
             .loads
             .clone()
@@ -887,6 +1023,7 @@ impl Geometry {
             statics,
             &pieces,
             &props,
+            &decorators,
             &self.spawns,
             &world,
             &sky,

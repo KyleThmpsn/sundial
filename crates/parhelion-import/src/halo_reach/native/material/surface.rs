@@ -195,7 +195,8 @@ impl<'a> Surface<'a> {
             .map_or_else(|| "albedo.a".to_owned(), |s| format!("({s}).a"));
         let ambient = match ambient_scale {
             Some(scale) => format!(
-                "float3 glassAmbient=LightAmbient.Sample(ClampSampler,abs(v3.zw)).rgb;glassAmbient*=glassAmbient*{scale:.9};"
+                "float3 glassAmbient=LightAmbient.Sample(ClampSampler,abs(v3.zw)).rgb;glassAmbient={}*{scale:.9};",
+                crate::halo_reach::level::lightmap::decode_share_hlsl("glassAmbient")
             ),
             None => "float3 glassAmbient=float3(1,1,1);".to_owned(),
         };

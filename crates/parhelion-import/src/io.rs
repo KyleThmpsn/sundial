@@ -42,6 +42,27 @@ pub fn write_json(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Move a finished output folder into place. Another process, such as a malware scanner, can
+/// still hold a file written moments earlier, and Windows then refuses to move its folder. A
+/// refusal is retried for a few seconds.
+pub fn move_folder(from: &Path, to: &Path) -> Result<()> {
+    let mut attempts = 0;
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied && attempts < 20 => {
+                crate::cancellation::check()?;
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Moving {} to {}", from.display(), to.display()));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

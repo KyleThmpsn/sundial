@@ -147,33 +147,6 @@ impl Source {
         }))
     }
 
-    /// Export both body variants, component owners, model streams and texture plates.
-    /// Material execution, cloth simulation and native D2 conversion remain separate work.
-    pub fn export_armor(&self, item: u32, output: &Path) -> Result<PathBuf> {
-        let output = self.output(output)?;
-        let armor = self
-            .armor()?
-            .into_iter()
-            .find(|armor| armor.hash == item)
-            .context("Selected source armor is missing")?;
-        let mut assets = BTreeMap::new();
-        let bodies = self.armor_bodies(&armor, &mut assets)?;
-        let ornaments = self.ornaments(&armor, &mut assets)?;
-        let dyes = self.dyes(armor.definition, &mut assets)?;
-        let talents = self.item_talents(armor.definition, &mut assets)?;
-        self.unchanged()?;
-        fs::create_dir_all(&output)?;
-        let assets = self.write_assets(&output, assets)?;
-        let path = output.join("armor.json");
-        crate::io::write_json(
-            &path,
-            &json!({"source":"d1_roi","native_conversion":false,"item":armor,
-            "builds":self.report.builds,"package_stamp":self.report.stamp,"bodies":bodies,"ornaments":ornaments,"dyes":dyes,"talents":talents,"assets":assets,
-            "limits":["Source armor, ornaments, material programs and texture bytes are preserved. Material execution, body skinning, effects and cloth still need native D2 translation and gameplay verification."]}),
-        )?;
-        Ok(path)
-    }
-
     pub(super) fn armor_bodies(
         &self,
         armor: &Armor,

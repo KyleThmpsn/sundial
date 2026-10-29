@@ -19,6 +19,9 @@ pub(super) struct Node {
     /// A cloned loading index for the named owner symbol, from that native parent's companion.
     pub companion: Option<Companion>,
     pub storage: crate::NewTagStorageMode,
+    /// A texture's large buffer, which the client streams on demand. No loading group lists it,
+    /// even though its header names it.
+    pub streamed: bool,
     #[cfg(feature = "d2-model-importer")]
     pub audio: crate::item::custom_runtime::assets::audio::Metadata,
 }
@@ -75,6 +78,7 @@ impl Node {
             reference: None,
             companion: None,
             storage: crate::NewTagStorageMode::InheritTemplate,
+            streamed: false,
             #[cfg(feature = "d2-model-importer")]
             audio: Default::default(),
         }
@@ -90,8 +94,15 @@ impl Node {
 
 pub(super) struct Linked {
     pub symbols: BTreeMap<String, TagHash>,
-    #[cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
-    pub package_index: usize,
+}
+
+/// Resources an earlier group already committed that this group names by symbol, as a texture
+/// shared with an earlier imported graph is. They are resolved rather than allocated, and they
+/// join this group's loading closures.
+#[derive(Default)]
+pub(super) struct External {
+    pub symbols: BTreeMap<String, TagHash>,
+    pub resources: Vec<crate::LoadingResource>,
 }
 
 pub(super) use crate::shared_tag_dependency_index::native::{Companions, native_companion};
@@ -107,7 +118,33 @@ pub(super) fn link(
     nodes: Vec<Node>,
     primary: &str,
     companions: &mut Companions,
-    extra_bounds: usize,
+    extra_groups: impl FnOnce(
+        &BTreeMap<String, TagHash>,
+        &mut BTreeMap<TagHash, Vec<TagHash>>,
+    ) -> AuthoringResult<()>,
+    debug: Option<&Path>,
+) -> AuthoringResult<Linked> {
+    link_with(
+        directory,
+        emission,
+        manager,
+        (nodes, &External::default()),
+        primary,
+        companions,
+        extra_groups,
+        debug,
+    )
+}
+
+/// [`link`] for a group that also names `external` resources an earlier group committed.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn link_with(
+    directory: &Path,
+    emission: &mut PackageEmission,
+    manager: &sundial::package_authoring::PackageManager,
+    (nodes, external): (Vec<Node>, &External),
+    primary: &str,
+    companions: &mut Companions,
     extra_groups: impl FnOnce(
         &BTreeMap<String, TagHash>,
         &mut BTreeMap<TagHash, Vec<TagHash>>,
@@ -117,11 +154,13 @@ pub(super) fn link(
     let mut declarations = Vec::with_capacity(nodes.len());
     for node in &nodes {
         let size = match &node.companion {
-            // One native package contains at most 8192 tags. Its added bitmap,
-            // index list and descriptors fit within this conservative extra block.
-            // A merged index is no larger than the indexes it merges.
+            // Account for a sparse descriptor and index per resource across packages,
+            // in addition to every retained native index.
             Some(companion) => {
-                let mut size = crate::format::BLOCK_SIZE;
+                let mut size = (nodes.len() + external.resources.len())
+                    .checked_mul(64)
+                    .and_then(|bytes| bytes.checked_add(crate::format::BLOCK_SIZE))
+                    .ok_or_else(|| invalid("Companion size overflow"))?;
                 for parent in companion.native_parents() {
                     size = native_companion(directory, manager, parent, companions)?
                         .1
@@ -141,10 +180,9 @@ pub(super) fn link(
         directory,
         &mut emission.asset_packages,
         manager,
-        declarations,
+        (declarations, external),
         primary,
         companions,
-        extra_bounds,
         |_symbols| {
             #[cfg(feature = "d2-model-importer")]
             let nodes = {
@@ -217,24 +255,13 @@ fn validate_materialized(nodes: &[Node], declarations: &[Declaration]) -> Author
     Ok(())
 }
 
-/// Checks that the declarations fit one package with `extra_bounds` more entries, that their
-/// symbols are nonempty and unique and include `primary`, and reads each native companion
-/// parent they need.
+/// Check symbols and read the native companions before planning physical packages.
 fn check_declarations(
     directory: &Path,
     manager: &sundial::package_authoring::PackageManager,
-    (declarations, primary, extra_bounds): (&[Declaration], &str, usize),
+    (declarations, primary): (&[Declaration], &str),
     companions: &mut Companions,
 ) -> AuthoringResult<()> {
-    if declarations
-        .len()
-        .checked_add(extra_bounds)
-        .is_none_or(|count| count > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT)
-    {
-        return Err(invalid(
-            "Private asset declarations exceed one package's entry capacity",
-        ));
-    }
     let mut names = BTreeSet::new();
     for declaration in declarations {
         if declaration.symbol.is_empty() || !names.insert(declaration.symbol.as_str()) {
@@ -258,10 +285,9 @@ pub(super) fn materialize(
     directory: &Path,
     assets: &mut crate::asset_packages::AssetPackages,
     manager: &sundial::package_authoring::PackageManager,
-    declarations: Vec<Declaration>,
+    (declarations, external): (Vec<Declaration>, &External),
     primary: &str,
     companions: &mut Companions,
-    extra_bounds: usize,
     materializer: impl FnOnce(&BTreeMap<String, TagHash>) -> AuthoringResult<Vec<Node>>,
     extra_groups: impl FnOnce(
         &BTreeMap<String, TagHash>,
@@ -269,23 +295,40 @@ pub(super) fn materialize(
     ) -> AuthoringResult<()>,
     debug: Option<&Path>,
 ) -> AuthoringResult<Linked> {
-    check_declarations(
-        directory,
-        manager,
-        (&declarations, primary, extra_bounds),
-        companions,
-    )?;
-    let mut bounds: Vec<_> = declarations.iter().map(|d| d.bound).collect();
-    bounds.extend(std::iter::repeat_n(crate::format::BLOCK_SIZE, extra_bounds));
-    let plan = assets.plan_group(bounds)?;
-    let allocator = AppendedTagAllocator::new(plan.package_id, 0);
-    let base = plan.base;
+    check_declarations(directory, manager, (&declarations, primary), companions)?;
+    let names: BTreeMap<_, _> = declarations
+        .iter()
+        .enumerate()
+        .map(|(index, declaration)| (declaration.symbol.as_str(), index))
+        .collect();
+    let together = declarations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, declaration)| {
+            declaration
+                .companion
+                .as_ref()
+                .map(|companion| (index, companion))
+        })
+        .map(|(index, companion)| {
+            names
+                .get(companion.shared_owner.as_str())
+                .copied()
+                .map(|owner| (owner, index))
+                .ok_or_else(|| invalid("Loading owner declaration is missing"))
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    let plan = assets.plan_graph(declarations.iter().map(|d| d.bound).collect(), &together)?;
     let mut symbols = BTreeMap::new();
     for (i, declaration) in declarations.iter().enumerate() {
-        symbols.insert(
-            declaration.symbol.clone(),
-            allocator.assigned_tag(base + i, "Private asset", "asset")?,
-        );
+        symbols.insert(declaration.symbol.clone(), plan.tag(i)?);
+    }
+    for (symbol, tag) in &external.symbols {
+        if symbols.insert(symbol.clone(), *tag).is_some() {
+            return Err(invalid(format!(
+                "Shared asset symbol {symbol} is also allocated"
+            )));
+        }
     }
     let mut nodes = materializer(&symbols)?;
     validate_materialized(&nodes, &declarations)?;
@@ -295,12 +338,18 @@ pub(super) fn materialize(
             .copied()
             .ok_or_else(|| invalid(format!("Missing symbol {s}")))
     };
+    let streamed: BTreeSet<&str> = nodes
+        .iter()
+        .filter(|node| node.streamed)
+        .map(|node| node.symbol.as_str())
+        .collect();
     let mut loading_owners = Vec::new();
     let mut resources = Vec::new();
-    for node in &nodes {
+    for node in nodes.iter().filter(|node| !node.streamed) {
         let mut references = node
             .patches
             .iter()
+            .filter(|(_, target)| !streamed.contains(target.as_str()))
             .map(|(_, target)| symbol(target))
             .collect::<AuthoringResult<Vec<_>>>()?;
         if let Some(target) = &node.reference {
@@ -317,6 +366,7 @@ pub(super) fn materialize(
             });
         }
     }
+    resources.extend(external.resources.iter().cloned());
     let eager = eager_loading_owners(manager, &nodes, &symbols)?;
     let mut loading_groups = crate::shared_tag_dependency_index::partition::partition_with_eager(
         &resources,
@@ -429,18 +479,14 @@ pub(super) fn materialize(
             storage: node.storage,
         });
         if let Some(target) = &node.reference {
-            let ordinal = symbol(target)?.entry_index() as usize;
             references.push(crate::NewTagReferenceOverride {
-                new_tag_ordinal: base + i,
-                reference: crate::NewTagReference::Appended(ordinal),
+                new_tag_ordinal: i,
+                reference: crate::NewTagReference::Tag(symbol(target)?),
             });
         }
     }
-    let package_index = assets.commit_group(plan, prepared, references)?;
-    Ok(Linked {
-        symbols,
-        package_index,
-    })
+    assets.commit_graph(plan, prepared, references)?;
+    Ok(Linked { symbols })
 }
 
 fn eager_loading_owners(

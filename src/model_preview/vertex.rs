@@ -20,6 +20,7 @@ pub(super) struct Layouts(BTreeMap<u16, Vec<Element>>);
 
 impl Layouts {
     pub fn read(manager: &PackageManager) -> Result<Self, String> {
+        let _stage = super::timing::stage("vertex layouts");
         let mut result = Self::default();
         result.builtins();
         let mut roots = manager.get_all_by_reference(0x8080_72A6);

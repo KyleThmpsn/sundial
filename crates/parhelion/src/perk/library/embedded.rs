@@ -52,6 +52,9 @@ impl Library {
                 if history.contains(&key) {
                     return Ok(());
                 }
+                // An untouched import of the same perk from before its source showed an icon
+                // gives way to it, rather than staying beside it.
+                let superseded = superseded(&scan.entries, &history, &recipe)?;
                 if !existing.contains(&key) {
                     recipe.id = key.clone();
                     let path = self.root.join(format!("{key}.perk.json"));
@@ -63,6 +66,14 @@ impl Library {
                         .map_err(|error| format!("{}: {error}", path.display()))?;
                     existing.insert(key.clone());
                     report.added += 1;
+                    if let Some(entry) = superseded
+                        && fs::read(&entry.path).ok().as_deref() == Some(entry.baseline.as_slice())
+                    {
+                        fs::remove_file(&entry.path)
+                            .map_err(|error| format!("{}: {error}", entry.path.display()))?;
+                        existing.remove(&entry.recipe.id);
+                        report.added -= 1;
+                    }
                 }
                 history.insert(key);
                 Ok::<_, String>(())
@@ -80,6 +91,30 @@ impl Library {
         }
         Ok(report)
     }
+}
+
+/// The library's untouched import of `recipe` without its icon, which `recipe` replaces. An import
+/// keeps its content identity as its id until the reader edits it.
+fn superseded<'a>(
+    entries: &'a [Entry],
+    history: &BTreeSet<String>,
+    recipe: &PerkRecipe,
+) -> Result<Option<&'a Entry>, String> {
+    if recipe.icon.is_none() {
+        return Ok(None);
+    }
+    let mut bare = recipe.clone();
+    bare.icon = None;
+    let key = identity(&bare)?;
+    if !history.contains(&key) {
+        return Ok(None);
+    }
+    for entry in entries.iter().filter(|entry| entry.recipe.id == key) {
+        if identity(&entry.recipe)? == key {
+            return Ok(Some(entry));
+        }
+    }
+    Ok(None)
 }
 
 fn identity(recipe: &PerkRecipe) -> Result<String, String> {

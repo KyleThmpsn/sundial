@@ -5,7 +5,9 @@ mod attack;
 mod effect;
 mod evade;
 mod group;
+mod jump;
 mod protection;
+mod rate;
 mod scalar;
 
 pub(super) fn check(
@@ -18,13 +20,18 @@ pub(super) fn check(
     let grants = choice["ability_grants"].as_array().ok_or("Grant origins")?;
     assert!(!grants.is_empty());
     let effects = action.array(0x38, 8, Some(0x808040AC))?;
-    assert_eq!(effects.len(), grants.len());
+    let mut seen = BTreeSet::new();
+    let applied = grants
+        .iter()
+        .filter(|grant| seen.insert((grant["slot"].as_u64(), grant["property_key"].as_u64())))
+        .collect::<Vec<_>>();
+    assert_eq!(effects.len(), applied.len());
     let activation = action.array(0x20, 8, Some(0x808040BA))?;
     assert_eq!(activation.len(), 1);
     assert_eq!(action.u8(action.pointer(activation[0])? + 5)?, 0);
     assert!(action.array(0x48, 8, Some(0x808040BA))?.is_empty());
     let mut checked = Vec::new();
-    for (grant, effect) in grants.iter().zip(effects) {
+    for (grant, effect) in applied.into_iter().zip(effects) {
         let bank = number(&grant["native_bank"])?;
         let key = number(&grant["property_key"])?;
         let slot = number(&grant["slot"])? as u8;
@@ -34,6 +41,18 @@ pub(super) fn check(
         assert_eq!(action.u8(at + 2)?, slot);
         assert_eq!(action.u32(at + 4)?, key);
         assert_eq!(action.u8(at + 8)?, 0);
+        if grant["route"] == "source_jump_group" {
+            checked.push(jump::check(source, stock, native, grant)?);
+            continue;
+        }
+        assert_eq!(
+            grants
+                .iter()
+                .filter(|row| row["property_key"] == grant["property_key"])
+                .count(),
+            1,
+            "A single-row grant lost its activation"
+        );
         let original = source.read(number(&grant["source_bank"])?)?;
         let row = number(&grant["source_property_offset"])? as usize;
         let definition = original.pointer(24)?;
@@ -82,7 +101,12 @@ pub(super) fn check(
         }
         let rows = new.iter().filter(|r| r.key == key).collect::<Vec<_>>();
         assert_eq!(rows.len(), 1);
+        let mut readback = json!({"bank":bank,"key":key,"source_row":row});
         match original.u32(modifier - 4)? {
+            0x8080243C => {
+                readback["active_energy_rate"] =
+                    rate::check(&original, row, &before, &emitted, stored[0])?;
+            }
             0x808026D1 => protection::check(&original, row, &before, &emitted, stored[0])?,
             0x8080296E => group::check(&original, row, &before, &emitted, stored[0])?,
             0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365
@@ -239,7 +263,7 @@ pub(super) fn check(
                 }
             }
         }
-        checked.push(json!({"bank":bank,"key":key,"source_row":row}));
+        checked.push(readback);
     }
     Ok(json!({"ability_grants":checked,"gameplay_verified":false}))
 }
@@ -355,7 +379,10 @@ pub(super) fn origins(
                     let parameters = match payload.u32(modifier - 4)? {
                         0x80802254 | 0x808030C8 | 0x8080296E | 0x8080251A | 0x808028BA
                         | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365 | 0x808028B8
-                        | 0x80803198 | 0x80802AA8 | 0x80802B72 | 0x808026D1 => vec![None],
+                        | 0x80803198 | 0x80802AA8 | 0x80802B72 | 0x808026D1 | 0x8080243C
+                        | 0x808027E0 | 0x80802330 | 0x80802BC2 => {
+                            vec![None]
+                        }
                         0x80802974 | 0x8080235E => {
                             let first = payload.u32(modifier + 16)?;
                             let count = payload.u32(modifier + 20)?;

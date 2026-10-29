@@ -207,7 +207,7 @@ pub(super) struct Constant {
 }
 impl Constant {
     pub fn valid(self, constants: &[[f32; 4]]) -> bool {
-        self.row < constants.len() && self.row < 128
+        self.row < constants.len() && self.row < crate::model_preview::effects::ROWS
     }
     pub fn value(self, frame: &Frame) -> f32 {
         frame[self.row][self.lane]

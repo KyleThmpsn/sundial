@@ -43,14 +43,17 @@ fn texture_contract(
     bindings: &mut Bindings,
     reticle_viewport: bool,
 ) -> Result<()> {
-    // Verified Deferred and Atmosphere resources. The integer screen-space
-    // texture moved from +0x78 to +0xB8, Deferred specular mips from +0x98
-    // to +0xD8, and the Atmosphere sky lookup from +0x90 to +0x100.
+    // Verified Deferred and Atmosphere resources. Scene depth moved from +0x38
+    // to +0x78, the integer screen-space texture from +0x78 to +0xB8, Deferred
+    // specular mips from +0x98 to +0xD8, and the Atmosphere sky lookup from
+    // +0x90 to +0x100.
     // Preserve the material's output slot, which varies between materials.
     let code = array_bytes(material, base + 0x20, 1)?;
     let instructions = program::parse(&code)?;
     for pair in instructions.windows(2) {
         let mapped = match pair[0].args {
+            // Scene depth, which transparent scopes also bind at t10.
+            [3, 0x0F] => Some([0x3F, 3, 0x07]),
             [3, 0x17] => Some([0x3F, 3, 0x0F]),
             [3, 0x1B] => Some([0x3F, 3, 0x13]),
             [7, 0x20] => Some([0x3F, 7, 0x12]),
@@ -75,6 +78,9 @@ fn texture_contract(
     // scalars. Keep their field offsets and the source shader's equations.
     for instruction in &instructions {
         let mapped = match (instruction.op, instruction.args) {
+            // The depth reconstruction vector, Deferred field 0 in both eras, which transparent
+            // scopes copy to b2[0]. A material that binds scene depth itself reads it too.
+            (0x4B, [3, 0]) => Some([0x3D, 3, 0]),
             (0x4B, [0x4A, field @ 4..=5]) if reticle_viewport => Some([0x3D, 0x49, *field]),
             (0x4C, [2, 8]) => Some([0x3E, 2, 6]),
             (0x4A, [0x5F, field @ 0..=4]) => Some([0x3C, 0x5C, *field]),

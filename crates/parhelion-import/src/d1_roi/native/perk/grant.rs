@@ -9,6 +9,7 @@ mod effect;
 mod evade;
 mod fixed;
 mod group;
+mod rate;
 mod scalar;
 
 // Root bank pairs of the source ability table. Each owns the same property array contract.
@@ -208,6 +209,52 @@ impl Catalog {
                 if target != 255 && ordinal != usize::from(target) {
                     continue;
                 }
+                if ability.data.u32(ability.data.pointer(16)? - 4)? == 0x8080275C
+                    && ability
+                        .rows
+                        .iter()
+                        .any(|&at| ability.data.u32(at).ok() == Some(key))
+                {
+                    let bank = ability
+                        .native
+                        .context("Source Jump grant has no native bank")?;
+                    let slot = ability_modifier::bank_slot(bank)
+                        .context("Native Jump bank has no qualified property slot")?;
+                    ensure!(
+                        slot == sundial::package_authoring::ability_bank::AbilityTarget::Jump,
+                        "Source Jump grant resolved another ability slot"
+                    );
+                    let (row, evidence) = crate::d1_roi::ability::movement::lower_group(
+                        source,
+                        native,
+                        ability.bank,
+                        bank,
+                        key,
+                    )?;
+                    ensure!(
+                        keys.insert(row.key),
+                        "Source grants overlap one complete Jump group"
+                    );
+                    for mut record in evidence {
+                        record["source_grant"] = json!(index);
+                        record["source_ability"] = json!(ordinal);
+                        record["source_pattern"] = json!(ability.pattern);
+                        record["slot"] = json!(slot.byte());
+                        record["parameter_index"] = Value::Null;
+                        report.push(record);
+                    }
+                    program.actions.insert(
+                        0,
+                        Action::AbilityProperty {
+                            target: slot,
+                            key: row.key,
+                            option: PropertyOperation::Apply,
+                        },
+                    );
+                    program.ability_rows.push(row);
+                    matched = true;
+                    continue;
+                }
                 for &at in &ability.rows {
                     if ability.data.u32(at)? != key {
                         continue;
@@ -362,6 +409,7 @@ fn modifiers(
 ) -> Result<Vec<(AbilityRowModifier, Option<usize>)>> {
     let at = data.pointer(row + 32)?;
     match data.u32(at - 4)? {
+        0x8080243C => rate::lower(data, row, native),
         0x8080296E => group::lower(source, data, row, native),
         0x8080251A | 0x808028BA | 0x808030A9 | 0x80802591 | 0x8080209C | 0x80802365
         | 0x808028B8 | 0x80802B72 | 0x808026D1 => fixed::lower(data, row, native),

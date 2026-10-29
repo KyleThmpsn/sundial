@@ -162,17 +162,18 @@ fn gear_imports_keep_their_family_and_art_variants_through_staging()
             }
             graph
         };
-        // The ordinary name control changes private identity. Saving and sharing must still work.
+        // The ordinary name control changes private identity. Saving must still work, and the
+        // saved recipe names its converted folder rather than embedding it.
         recipe.rename_authored_item(format!("{} Coverage Copy", recipe.name))?;
         let portable = recipe.to_json_pretty()?;
         let document: Value = serde_json::from_str(&portable)?;
         if recipe.kind != ItemKind::Emblem {
             assert!(
-                document["overrides"]["imported_graph"]
-                    .get("directory")
-                    .is_none()
+                document["overrides"]["imported_graph"]["directory"]
+                    .as_str()
+                    .is_some()
             );
-            assert!(document["overrides"]["imported_graph"]["embedded_assets"].is_object());
+            assert!(document["overrides"]["imported_graph"]["embedded_assets"].is_null());
         }
         fs::write(
             output.join(format!("{:08X}.parhelion.json", source.hash)),
@@ -426,7 +427,7 @@ fn verify_equipment_clips(
         .overrides
         .imported_graph
         .as_ref()
-        .ok_or("Portable assets")?
+        .ok_or("Imported assets")?
         .directory;
     for clip in animation["clips"].as_array().ok_or("Converted clips")? {
         let name = u32::try_from(clip["name"].as_u64().ok_or("Clip name")?)?;

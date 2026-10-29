@@ -11,6 +11,10 @@ use crate::package_payload::u32_at;
 use crate::package_runtime::reader::PackageManager;
 
 use super::spawns::Spawn;
+mod fixed;
+mod health;
+pub use fixed::{neutral_profile, read_neutral_profile};
+pub use health::{healing_labels, healing_profile, read_healing_profile, set_health_response};
 
 /// The directory class profiles are filed under, among many other resources.
 const DIRECTORY_CLASS: u32 = 0x8080_9C36;

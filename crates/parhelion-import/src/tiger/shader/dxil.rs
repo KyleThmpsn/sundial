@@ -45,6 +45,10 @@ pub struct Options {
     /// Admit only the checked depth-texture/linearization/projection-flag consumer.
     /// The caller verifies native depth and coefficient scope producers.
     pub perspective_depth: bool,
+    /// The depth texture register, and the constant buffer and row holding its linearization
+    /// coefficients, that `perspective_depth` admits. `None` is the transparent scope's `t10`
+    /// and `CB2[0]`. A material that binds depth itself names its own register and row.
+    pub depth_source: Option<(u32, u32, u32)>,
     /// Renderer-owned texture slots whose consumer binding has been independently checked.
     pub texture_registers: BTreeMap<u32, u32>,
     /// Explicit renderer sampling adapters. The source instruction must be a

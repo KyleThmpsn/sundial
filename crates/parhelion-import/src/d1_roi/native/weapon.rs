@@ -1,6 +1,8 @@
 //! Source weapon art on a native runtime that preserves every source bone binding.
 use super::*;
 use crate::GraphReference;
+mod firing;
+mod ornament;
 mod stats;
 
 pub(super) fn key(text: &str) -> u32 {
@@ -38,14 +40,19 @@ impl Source {
         );
         // Select a compatible runtime before any conversion. A source-data or tool failure
         // cannot be repaired by rebuilding the same assets on another runtime.
-        progress("Reading source weapon".into());
+        progress("Exporting source weapon…".into());
         let export = self.export_weapon(hash, &output.join("source"))?;
         let source: Value = serde_json::from_slice(&fs::read(export)?)?;
         let kinetic = perk::requires_kinetic(self, &source)?;
         let mut reader = Reader::discovery(native, &output.join("rig-checks"), false)?;
         let mut refused = Vec::new();
-        for &base in bases {
+        for (index, &base) in bases.iter().enumerate() {
             crate::cancellation::check()?;
+            progress(format!(
+                "Checking native runtime {} of {}…",
+                index + 1,
+                bases.len()
+            ));
             if kinetic {
                 let tag = crate::tiger::shadowkeep::item_tag(&mut reader, base)?;
                 let item = reader.tag(tag, Some(0x80807BEA))?;
@@ -63,7 +70,7 @@ impl Source {
                 refused.push(format!("{base:08X}: {error:#}"));
                 continue;
             }
-            progress(format!("Using native runtime {base:08X}"));
+            progress(format!("Using native runtime {base:08X}…"));
             fs::write(
                 output.join("native-base-selection.json"),
                 serde_json::to_vec_pretty(
@@ -73,7 +80,15 @@ impl Source {
             reader.finish()?;
             drop(reader);
             return self
-                .prepare_exported_weapon(hash, native, base, &output, &source, options, progress)
+                .prepare_exported_weapon(
+                    hash,
+                    native,
+                    (base, bases),
+                    &output,
+                    &source,
+                    options,
+                    progress,
+                )
                 .with_context(|| format!("Source weapon {hash:08X}, native runtime {base:08X}"));
         }
         anyhow::bail!(
@@ -100,15 +115,25 @@ impl Source {
         )?;
         let source_path = self.export_weapon(hash, &output.join("source"))?;
         let source: Value = serde_json::from_slice(&fs::read(source_path)?)?;
-        self.prepare_exported_weapon(hash, native, donor, &output, &source, options, progress)
+        self.prepare_exported_weapon(
+            hash,
+            native,
+            (donor, &[]),
+            &output,
+            &source,
+            options,
+            progress,
+        )
     }
 
+    /// `donor` is the native runtime with the other native weapons of its type, which can lend
+    /// it an ornament socket type.
     #[allow(clippy::too_many_arguments)]
     fn prepare_exported_weapon(
         &self,
         hash: u32,
         native: &Path,
-        donor: u32,
+        (donor, kin): (u32, &[u32]),
         output: &Path,
         source: &Value,
         options: &NativeOptions,
@@ -119,7 +144,7 @@ impl Source {
             .into_iter()
             .find(|w| w.hash == hash)
             .context("Selected source weapon is missing")?;
-        progress(format!("Reading {}", weapon.name));
+        progress("Reading native weapon art…".into());
         let namespace = options
             .namespace
             .clone()
@@ -145,13 +170,11 @@ impl Source {
             definition.u16(selectors.first().context("Native weapon art selector")? + 2)?;
         let mut parts = Vec::new();
         let dyes = source["dyes"].as_array().context("Source weapon dyes")?;
-        for (i, part) in source["art"]["parts"]
+        let art = source["art"]["parts"]
             .as_array()
-            .context("Source weapon parts")?
-            .iter()
-            .enumerate()
-        {
-            progress(format!("Converting {} part {}", weapon.name, i + 1));
+            .context("Source weapon parts")?;
+        for (i, part) in art.iter().enumerate() {
+            progress(format!("Converting model part {} of {}…", i + 1, art.len()));
             let symbol = assembly.body(part, dyes, &format!("part-{i}"))?;
             parts.push(json!({"source_assignment":part["assignment"],
                 "key":key(&format!("parhelion/imported-gear/{private_item:08X}/art-{i}")),"parent":symbol}));
@@ -164,11 +187,13 @@ impl Source {
         for row in &mut rows {
             row["template_index"] = json!(template);
         }
+        progress("Converting the item icon…".into());
         let icon = assembly.item_icon(weapon.strings)?;
-        let (columns, variants, perks, damage) =
-            perk::translate(&mut assembly, source, donor, perk::Host::Weapon)?;
+        progress("Translating source stats…".into());
         let stats = stats::translate(&mut assembly, source)?;
-        progress(format!("Converting {} runtime animation", weapon.name));
+        progress("Translating source firing inputs…".into());
+        let firing = firing::prepare(&mut assembly, source, donor)?;
+        progress("Converting the source rig…".into());
         let mut native_rig = assembly.evidence[0]["native_runtime"].clone();
         if assembly.evidence[0]["source_owned"] == true {
             rig::prepare_owned(
@@ -179,7 +204,7 @@ impl Source {
                 &directory,
             )?;
         }
-        progress(format!("Converting {} named audio", weapon.name));
+        progress("Converting named audio…".into());
         let named_audio = crate::d1_roi::audio::prepare_named(
             self,
             &source["runtime"],
@@ -191,6 +216,7 @@ impl Source {
             json!({"status":"native_donor_only",
             "reason":format!("{error:#}"),"gameplay_verified":false})
         });
+        progress("Converting weapon animation…".into());
         let mut runtime_animation = super::animation::prepare(
             self,
             &source["runtime"],
@@ -201,6 +227,7 @@ impl Source {
         .unwrap_or_else(|error| {
             json!({"status":"native","reason":format!("{error:#}"),"gameplay_verified":false})
           });
+        progress("Converting first-person animation…".into());
         let mut first_person_animation = super::animation::prepare_first_person(
             self, &source["runtime"], &mut assembly.native, &native_rig, &directory,
         ).unwrap_or_else(|error| json!({"first_person_status":"native","reason":format!("{error:#}"),"gameplay_verified":false}));
@@ -213,6 +240,7 @@ impl Source {
                 &mut first_person_animation,
             )?;
         }
+        progress("Converting third-person poses…".into());
         match super::animation::character::prepare(
             self,
             &source["runtime"],
@@ -230,35 +258,37 @@ impl Source {
                 first_person_animation["character_reason"] = json!(format!("{error:#}"));
             }
         }
-        let audio_assets = runtime_animation
+        assembly.audio_assets = runtime_animation
             .as_object_mut()
             .and_then(|v| v.remove("audio_assets"));
+        progress("Translating source perks…".into());
+        let (columns, variants, perks, damage) =
+            perk::translate(&mut assembly, source, donor, perk::Host::Weapon)?;
         let animation_limit = match (
             runtime_animation["status"] == "linked",
             first_person_animation["first_person_status"] == "linked",
         ) {
             (true, true) => {
-                "Supported weapon and named first-person actions use converted source motion. Other actions and firing effects retain the selected native runtime. Event dispatch and playback require in-game acceptance."
+                "Supported weapon and named first-person actions use converted source motion. Other actions and firing effects retain the selected native runtime."
             }
             (true, false) => {
-                "Supported weapon clips use converted source motion. First-person actions retain the selected native runtime. Event dispatch and playback require in-game acceptance."
+                "Supported weapon clips use converted source motion. First-person actions retain the selected native runtime."
             }
             (false, true) => {
-                "Supported named first-person actions use converted source motion. Equipment clips and other actions retain the selected native runtime. Event dispatch and playback require in-game acceptance."
+                "Supported named first-person actions use converted source motion. Equipment clips and other actions retain the selected native runtime."
             }
             (false, false) => "Firing and reload animation use the selected native runtime.",
         };
         let mut limitations = [
             animation_limit,
-            "Base stats are the source investment values. The native runtime's stat translation decides their gameplay effect, which requires in-game acceptance.",
+            "Base stats use source investment values. Qualified firing curves retain source timing and charge inputs. Other stat translation and firing behavior use the native runtime.",
             "Matched named audio uses source banks and media with the native event's trigger and acoustic settings. Other audio uses the selected native runtime. Supported sight lights retain source transforms and live parameters on native shaders. Other auxiliary sight effects require separate translation.",
             "Unsupported talent choices, scaled source stat adjustments and talent progression are not translated.",
-            "Rendering, aiming, repeated firing and selection cleanup require in-game acceptance.",
         ]
         .map(String::from)
         .to_vec();
         limitations.push(if first_person_animation["character_status"] == "linked" {
-            "Qualified standing and crouched poses retain source body motion, holding and finger layers. Dynamic aim, movement and combat actions retain native behavior. Third-person playback requires in-game acceptance.".into()
+            "Qualified standing and crouched poses retain source body motion, holding and finger layers. Dynamic aim, movement and combat actions retain native behavior.".into()
         } else {
             format!("Third-person poses retain native behavior: {}", first_person_animation["character_reason"].as_str().unwrap_or("source holding profile was not converted"))
         });
@@ -268,12 +298,13 @@ impl Source {
             "item_hash":private_item,"native_item":donor,"converter_revision":crate::graph::CONVERTER_REVISION,
             "nodes":assembly.nodes,"parent":parts[0]["parent"],"dyes":[],"dye_rows":[[],[],[]],
             "gear_art":{"selector_format":"shadowkeep","rows":rows,"parts":parts},
-            "source_talents":source["talents"],"perk_translation":perks,"stat_translation":stats.report,
+            "source_talents":source["talents"],"perk_translation":perks,"stat_translation":stats.report,"firing_translation":firing,
             "rendering":assembly.evidence,"equipment_animation":runtime_animation,"animation":first_person_animation,"audio":named_audio,
             "collections_unconditional":true,"installable":true,"gameplay_verified":false,"limitations":limitations});
-        if let Some(audio) = audio_assets {
+        if let Some(audio) = assembly.audio_assets.take() {
             graph["audio_assets"] = audio;
         }
+        progress("Saving the weapon recipe…".into());
         crate::io::write_json(&directory.join("asset-graph.json"), &graph)?;
         assembly.native.finish()?;
         self.unchanged()?;
@@ -301,6 +332,27 @@ impl Source {
         crate::artwork::apply(&mut recipe, &directory)?;
         let path = output.join("weapon.parhelion.json");
         crate::io::write_json(&path, &recipe)?;
+        let ornaments = if options.ornaments {
+            self.import_weapon_ornaments(
+                &ornament::Owner {
+                    weapon: &weapon,
+                    source,
+                    native,
+                    donor,
+                    kin,
+                    namespace: &namespace,
+                    item: private_item,
+                    template,
+                    recipe: &path,
+                    output: &output.join("ornaments"),
+                },
+                options,
+                progress,
+            )?
+        } else {
+            json!({"skipped":"Ornaments were not imported"})
+        };
+        crate::io::write_json(&output.join("ornaments.json"), &ornaments)?;
         Ok(path)
     }
 }

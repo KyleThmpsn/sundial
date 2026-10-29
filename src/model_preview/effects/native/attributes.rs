@@ -41,6 +41,7 @@ pub(in crate::model_preview) fn load(
     manager: &PackageManager,
     tag: u32,
 ) -> Result<Option<Attributes>, String> {
+    let _stage = crate::model_preview::timing::stage("materials");
     let bytes = checked(manager, tag, 0x8080_71E8)?;
     let tag = u32_at(&bytes, 0x48)?;
     if matches!(tag, 0 | u32::MAX) {

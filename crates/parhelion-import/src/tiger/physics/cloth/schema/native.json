@@ -2741,5 +2741,109 @@
     ],
     "parent": null,
     "signature": 1909566431
+  },
+  "hclObjectSpaceDeformerLocalBlockPN": {
+    "size": 256,
+    "version": 0,
+    "members": [
+      {
+        "name": "localPosition",
+        "kind": 5,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "localNormal",
+        "kind": 5,
+        "subtype": 0,
+        "length": 64,
+        "flags": 0,
+        "offset": 128
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceDeformerLocalBlockUnpackedPN": {
+    "size": 512,
+    "version": 0,
+    "members": [
+      {
+        "name": "localPosition",
+        "kind": 12,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "localNormal",
+        "kind": 12,
+        "subtype": 0,
+        "length": 16,
+        "flags": 0,
+        "offset": 256
+      }
+    ],
+    "parent": null
+  },
+  "hclObjectSpaceSkinPNOperator": {
+    "size": 192,
+    "version": 1,
+    "members": [
+      {
+        "name": "localPNs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 160,
+        "class": "hclObjectSpaceDeformerLocalBlockPN"
+      },
+      {
+        "name": "localUnpackedPNs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 176,
+        "class": "hclObjectSpaceDeformerLocalBlockUnpackedPN"
+      }
+    ],
+    "parent": "hclObjectSpaceSkinOperator",
+    "signature": 680600271
+  },
+  "hclScratchBufferDefinition": {
+    "size": 96,
+    "version": 0,
+    "members": [
+      {
+        "name": "triangleIndices",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 72
+      },
+      {
+        "name": "storeNormals",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 88
+      },
+      {
+        "name": "storeTangentsAndBiTangents",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 89
+      }
+    ],
+    "parent": "hclBufferDefinition",
+    "signature": 2281251836
   }
 }

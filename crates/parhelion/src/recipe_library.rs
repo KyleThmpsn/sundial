@@ -13,13 +13,19 @@ use crate::{
     bundled_defaults::{self, AppliedVersions, DefaultsRefresh},
 };
 
+// Conversions and their shared payloads are the importer's.
+#[cfg(feature = "d2-model-importer")]
+mod conversions;
 mod delete;
+mod listing;
 mod mutation;
 mod restore;
 mod shaders;
 #[cfg(test)]
 mod transactions_tests;
 mod transfer;
+#[cfg(feature = "d2-model-importer")]
+pub(crate) use conversions::{Progress, Removed, SetAside, Status, Step};
 pub(crate) use delete::DeleteRecipe;
 pub(crate) use restore::RestoreDefaults;
 pub(crate) use restore::RestoreRecipe;
@@ -132,8 +138,11 @@ pub struct RecipeLibraryEntry {
     pub collection_position: Option<crate::collection::Position>,
     pub armor_class: Option<crate::ArmorClass>,
     pub(crate) armor_origin: Option<crate::collection::armor::Origin>,
-    /// Oldest imported graph revision, including portable appearance attachments.
+    /// Oldest imported graph revision, including appearance attachments.
     pub import_revision: Option<u32>,
+    /// Whether the imported graph carries ornament attachments, such as Marathon camos. A
+    /// reimport brings them again.
+    pub import_ornaments: bool,
     pub badge: Option<LibraryBadge>,
     /// The release watermark's fingerprint. [`load_corner_icon`] reads the artwork.
     pub corner_icon: Option<u64>,
@@ -156,6 +165,17 @@ pub struct RecipeLibraryEntry {
     pub icon_edit: crate::WeaponIconEdit,
     /// The art the icon shows in place of its image: a vehicle's silhouette or a generated icon.
     pub art: Option<crate::icon_art::Art>,
+    /// The fingerprint of a mod perk's own image, which the mod's icon is. [`load_perk_icon`]
+    /// reads the image.
+    pub perk_icon: Option<u64>,
+}
+
+/// The recipes at `paths` as [`WeaponRecipe::load_listing`] reads them, on several threads, in
+/// the same order.
+pub(crate) fn load_listings(
+    paths: &[PathBuf],
+) -> Vec<Result<WeaponRecipe, crate::recipe::RecipeError>> {
+    listing::in_parallel(paths, |path| WeaponRecipe::load_listing(path))
 }
 
 /// Reads the badge of the recipe at `path`, artwork included.
@@ -172,6 +192,22 @@ pub(crate) fn load_corner_icon(
     WeaponRecipe::load_json(path)
         .map(|recipe| recipe.overrides.corner_icon)
         .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// The image of the mod recipe at `path`, which is its one perk's own image.
+pub(crate) fn load_perk_icon(path: &Path) -> Result<crate::icon_edit::ImportedIcon, String> {
+    let recipe =
+        WeaponRecipe::load_listing(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    match recipe
+        .overrides
+        .socket_plug_variants
+        .into_iter()
+        .next()
+        .and_then(|variant| variant.icon)
+    {
+        Some(crate::perk::Icon::Image { image, .. }) => Ok(image),
+        _ => Err("The mod's perk has no image of its own".into()),
+    }
 }
 
 /// A Crucible map recipe of the maps folder, which the library lists for builds. Maps have no
@@ -202,6 +238,10 @@ pub struct RecipeLibrary {
     refresh: Option<DefaultsRefresh>,
     /// Activities belong to builds with the D2 model importer.
     maps: Option<PathBuf>,
+    /// Folders chosen in preferences that hold snapshots outside the data folder, the staging
+    /// folder and the package backup folder.
+    #[cfg(feature = "d2-model-importer")]
+    snapshot_roots: Vec<PathBuf>,
 }
 
 impl RecipeLibrary {
@@ -236,6 +276,8 @@ impl RecipeLibrary {
             canonical_root,
             refresh: None,
             maps,
+            #[cfg(feature = "d2-model-importer")]
+            snapshot_roots: Vec::new(),
         };
         library.refresh = library.materialize_bundled_recipes()?;
         Ok(library)
@@ -306,68 +348,10 @@ impl RecipeLibrary {
         });
 
         let mut scan = RecipeLibraryScan::default();
-        for path in paths {
-            match WeaponRecipe::load_listing_details(&path) {
-                Ok((recipe, armor_origin, import_revision)) => {
-                    scan.entries.push(RecipeLibraryEntry {
-                        // Read first, while the fields below have not yet moved out of the recipe.
-                        art: crate::icon_art::Art::of(&recipe),
-                        armor_origin,
-                        import_revision,
-                        kind: recipe.kind,
-                        collection_destination: recipe.overrides.collection_destination,
-                        collection_position: recipe.overrides.collection_position,
-                        armor_class: recipe.overrides.armor_class,
-                        badge: recipe.overrides.badge.as_ref().map(|badge| LibraryBadge {
-                            name: badge.name.clone(),
-                            description: badge.description.clone(),
-                            icon: badge
-                                .icon
-                                .as_ref()
-                                .map(crate::presentation::Artwork::fingerprint),
-                        }),
-                        corner_icon: recipe
-                            .overrides
-                            .corner_icon
-                            .as_ref()
-                            .map(crate::presentation::Artwork::fingerprint),
-                        bundled: path.file_name().and_then(|name| name.to_str()).is_some_and(
-                            |name| {
-                                BUNDLED_RECIPES
-                                    .iter()
-                                    .any(|(file_name, _)| name == *file_name)
-                            },
-                        ),
-                        path,
-                        donor_hash: recipe.donor.item_hash.parse_u32().unwrap_or_default(),
-                        type_donor_hash: recipe.type_donor_hash(),
-                        identity_hash: recipe.identity.item_hash.parse_u32().unwrap_or_default(),
-                        type_name: recipe.type_name,
-                        class_type_name: (recipe.kind == crate::ItemKind::Subclass)
-                            .then(|| {
-                                crate::subclass::class_type_name(
-                                    recipe.overrides.subclass_every_class,
-                                    recipe.overrides.subclass_class,
-                                )
-                            })
-                            .flatten(),
-                        ammo_type: recipe.overrides.ammo_type,
-                        damage_type: recipe.overrides.modern_damage_type,
-                        rarity: recipe.overrides.rarity,
-                        icon_hash: recipe
-                            .icon_donor
-                            .as_ref()
-                            .or(recipe.presentation_donor.as_ref())
-                            .unwrap_or(&recipe.donor)
-                            .item_hash
-                            .parse_u32()
-                            .unwrap_or_default(),
-                        icon_edit: recipe.overrides.icon_edit,
-                        name: recipe.name,
-                        namespace: recipe.namespace,
-                    })
-                }
-                Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
+        for entry in listing::entries(&self.root, &paths) {
+            match entry {
+                Ok(entry) => scan.entries.push(entry),
+                Err(error) => scan.errors.push(error),
             }
         }
         scan.entries.sort_by_cached_key(|entry| {
@@ -795,32 +779,22 @@ impl RecipeLibrary {
             .map_err(|error| format!("Recipe identity is invalid: {error}"))?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        for path in self.recipe_paths()? {
+        let paths = self.recipe_paths()?;
+        // Names and identities only. A recipe this version refuses still claims its namespace
+        // and identities, so it does not stop every other save.
+        let claims = listing::claims(&self.root, &paths);
+        for (path, claim) in paths.iter().zip(claims) {
             if excluded_path.is_some_and(|excluded| {
-                fs::canonicalize(&path).is_ok_and(|existing| existing == excluded)
+                fs::canonicalize(path).is_ok_and(|existing| existing == excluded)
             }) {
                 continue;
             }
-            // Names and identities only, so an embedded model is not restored for each recipe.
-            let (namespace, existing_hashes) = match WeaponRecipe::load_listing(&path) {
-                Ok(existing) => {
-                    let hashes = existing
-                        .identity
-                        .parsed_hashes(&existing.namespace)
-                        .map_err(|error| {
-                            format!("Invalid identity in {}: {error}", path.display())
-                        })?;
-                    (existing.namespace, hashes)
-                }
-                // A recipe this version refuses still claims its namespace and identities, so
-                // they are read on their own rather than stopping every other save.
-                Err(_) => WeaponRecipe::load_claim(&path).map_err(|error| {
-                    format!(
-                        "Could not verify recipe identity uniqueness because {} is invalid: {error}",
-                        path.display()
-                    )
-                })?,
-            };
+            let (namespace, existing_hashes) = claim.map_err(|error| {
+                format!(
+                    "Could not verify recipe identity uniqueness because {} is invalid: {error}",
+                    path.display()
+                )
+            })?;
             if namespace.eq_ignore_ascii_case(&candidate.namespace) {
                 return Err(format!(
                     "Recipe namespace {:?} is already used by {}",

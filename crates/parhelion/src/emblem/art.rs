@@ -159,11 +159,11 @@ pub(crate) fn resolve(
 pub(crate) fn author(
     manager: &PackageManager,
     nameplate: &ResolvedNameplate,
+    (package, first): (u16, usize),
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
-    let package = crate::package_profile::window().first();
-    let allocator = crate::appended_tags::AppendedTagAllocator::new(package, 0);
+    let allocator = crate::appended_tags::AppendedTagAllocator::new(package, first);
     let mut container = crate::icon_edit::read_icon_container(manager, nameplate.template)?;
     let banner_offset = NameplatePart::Banner.layer_offset();
     let banner_copied =
@@ -179,7 +179,7 @@ pub(crate) fn author(
                 let plan = crate::icon_edit::build_layer_repaint_plan(
                     manager,
                     package,
-                    0,
+                    first,
                     nodes.len(),
                     (*layout, nameplate.template),
                     &|pixels, width, height| {

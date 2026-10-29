@@ -99,6 +99,7 @@ struct Session {
     native: BTreeSet<u16>,
     /// The packages that hold the build's private runtime copies, in order.
     private: Vec<u16>,
+    records: Vec<u16>,
     #[cfg(feature = "d2-model-importer")]
     maps: Vec<(crate::map::MapRecipe, serde_json::Value)>,
     /// Controllers are generated after activity tags have their final addresses.
@@ -113,6 +114,38 @@ fn session() -> MutexGuard<'static, Option<Session>> {
 }
 pub(crate) fn clear() {
     *session() = None;
+}
+
+pub(crate) fn begin_native() {
+    *session() = Some(Session::default());
+}
+
+/// Allocation-only snapshot for speculative runtime-cache relocation.
+pub(crate) struct Reservations {
+    reserved: BTreeSet<u16>,
+    native: BTreeSet<u16>,
+    private: Vec<u16>,
+    records: Vec<u16>,
+}
+
+pub(crate) fn reservations() -> Reservations {
+    let mut guard = session();
+    let current = guard.get_or_insert_with(Session::default);
+    Reservations {
+        reserved: current.reserved.clone(),
+        native: current.native.clone(),
+        private: current.private.clone(),
+        records: current.records.clone(),
+    }
+}
+
+pub(crate) fn restore_reservations(saved: Reservations) {
+    let mut guard = session();
+    let current = guard.get_or_insert_with(Session::default);
+    current.reserved = saved.reserved;
+    current.native = saved.native;
+    current.private = saved.private;
+    current.records = saved.records;
 }
 
 pub(crate) fn mission_script(name: &str, source: String) -> Result<(), String> {
@@ -431,23 +464,35 @@ pub(crate) fn begin(
 }
 
 fn dependencies_match(target: &Path, dependencies: &[ArtifactMetadata]) -> Result<bool, String> {
+    let mut paths = Vec::with_capacity(dependencies.len());
     for expected in dependencies {
         if Path::new(&expected.file_name).components().count() != 1 {
             return Err("Invalid native dependency path in importer receipt".into());
         }
         let path = target.join(&expected.file_name);
         mod_content::checked_path(target, &path)?;
-        let actual = crate::artifact::digest_file(&path).map_err(|e| {
-            format!(
-                "Could not verify native importer dependency {}: {e}",
-                path.display()
-            )
-        })?;
-        if actual.byte_length != expected.byte_length || actual.sha256 != expected.sha256 {
-            return Ok(false);
-        }
+        paths.push(path);
     }
-    Ok(true)
+    // Dependencies hash on their own threads and compare in order. Past the first that differs,
+    // the rest no longer matter, as when they were hashed one at a time.
+    let borrowed = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    let mut matched = true;
+    crate::artifact::digest_files(&borrowed, |index, actual| {
+        let actual = match actual {
+            Ok(actual) => actual,
+            Err(_) if !matched => return Ok(()),
+            Err(e) => {
+                return Err(format!(
+                    "Could not verify native importer dependency {}: {e}",
+                    paths[index].display()
+                ));
+            }
+        };
+        let expected = &dependencies[index];
+        matched &= actual.byte_length == expected.byte_length && actual.sha256 == expected.sha256;
+        Ok(())
+    })?;
+    Ok(matched)
 }
 
 /// Every template's stock package generations participate in the importer identity. This also
@@ -486,7 +531,8 @@ fn source_dependencies(
     ids: &BTreeSet<u16>,
     digests: &mut BTreeMap<String, ArtifactMetadata>,
 ) -> Result<Vec<ArtifactMetadata>, String> {
-    let mut dependencies = Vec::new();
+    let mut names = Vec::new();
+    let mut unhashed = Vec::new();
     for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
@@ -500,20 +546,33 @@ fn source_dependencies(
             .file_name()
             .into_string()
             .map_err(|_| "Native dependency name is not UTF-8")?;
-        let metadata = if let Some(metadata) = digests.get(&name) {
-            metadata.clone()
-        } else {
-            let digest = crate::artifact::digest_file(&path).map_err(|e| e.to_string())?;
-            let metadata = ArtifactMetadata {
+        if !digests.contains_key(&name) {
+            unhashed.push((name.clone(), path));
+        }
+        names.push(name);
+    }
+    // Packages a template names can be large, so they hash on their own threads.
+    let paths = unhashed
+        .iter()
+        .map(|(_, path)| path.as_path())
+        .collect::<Vec<_>>();
+    crate::artifact::digest_files(&paths, |index, digest| {
+        let name = &unhashed[index].0;
+        let digest = digest.map_err(|e| e.to_string())?;
+        digests.insert(
+            name.clone(),
+            ArtifactMetadata {
                 file_name: name.clone(),
                 byte_length: digest.byte_length,
                 sha256: digest.sha256,
-            };
-            digests.insert(name, metadata.clone());
-            metadata
-        };
-        dependencies.push(metadata);
-    }
+            },
+        );
+        Ok(())
+    })?;
+    let mut dependencies = names
+        .iter()
+        .map(|name| digests[name].clone())
+        .collect::<Vec<_>>();
     dependencies.sort_by(|a, b| a.file_name.cmp(&b.file_name));
     Ok(dependencies)
 }
@@ -551,14 +610,16 @@ fn map_inputs(
     paths.extend(info);
     paths.sort();
     paths.dedup();
-    let files = paths
-        .into_iter()
-        .map(|path| {
-            crate::artifact::digest_file(&path)
-                .map(|digest| (path.clone(), digest))
-                .map_err(|e| format!("Could not hash map input {}: {e}", path.display()))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    // The map caches and sound banks run to gigabytes, so they hash on their own threads.
+    let mut files = BTreeMap::new();
+    let borrowed = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    crate::artifact::digest_files(&borrowed, |index, digest| {
+        let path = &paths[index];
+        let digest =
+            digest.map_err(|e| format!("Could not hash map input {}: {e}", path.display()))?;
+        files.insert(path.clone(), digest);
+        Ok(())
+    })?;
     Ok(serde_json::json!({
         "map": map.name, "donor": map.donor, "source": source, "decoder": decoder, "files": files,
         "reach_revision": parhelion_import::halo_reach::REVISION,
@@ -680,23 +741,34 @@ pub(crate) fn allocate(owner: Importer, index: usize) -> Result<u16, String> {
 /// then sits at the top of the window, clear of the ids Sunrise Studio gives a mod's new packages
 /// from `0x0AA0` up without reading other mods.
 pub(crate) fn private_runtime(index: usize) -> Result<u16, String> {
+    record_page(true, index)
+}
+
+/// Native record pools share the importer's reservations. The first asset ID remains fixed
+/// even when records spill before the badge package has been constructed.
+pub(crate) fn record_page(private: bool, index: usize) -> Result<u16, String> {
+    let first_asset = crate::package_profile::window().first();
     let mut guard = session();
-    let current = guard
-        .as_mut()
-        .ok_or("Private runtime allocation has no build session")?;
+    let current = guard.get_or_insert_with(Session::default);
+    current.native.insert(first_asset);
     let window = crate::package_profile::window();
     let host = crate::package_profile::host().id;
-    while current.private.len() <= index {
+    let pages = if private {
+        &mut current.private
+    } else {
+        &mut current.records
+    };
+    while pages.len() <= index {
         let id = (window.base..=window.top)
             .rev()
             .find(|id| {
                 *id != host && !current.reserved.contains(id) && !current.native.contains(id)
             })
-            .ok_or("No free package ID remains for the build's private runtime")?;
-        current.private.push(id);
+            .ok_or("No free package ID remains for authored records")?;
+        pages.push(id);
         current.reserved.insert(id);
     }
-    Ok(current.private[index])
+    Ok(pages[index])
 }
 
 pub(crate) fn use_id(owner: Importer, id: u16) {

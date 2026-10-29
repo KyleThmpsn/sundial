@@ -11,7 +11,7 @@ fn child(
     let kind = p.u8(at + 5)?;
     // Bound recursion and keep compound timer allocation outside leaf children.
     ensure!(
-        matches!(kind, 2 | 3 | 4 | 7..=10 | 12 | 14..=20 | 22 | 23 | 27 | 33),
+        matches!(kind, 2..=5 | 7..=12 | 14..=20 | 22 | 23 | 27..=28 | 33 | 35),
         "Source compound condition has an unqualified child"
     );
     ensure!(
@@ -41,6 +41,18 @@ pub(super) fn read(
         !rows.is_empty() && rows.len() <= 16,
         "Source subgroup count is outside the bounded route"
     );
+    let holds = rows
+        .iter()
+        .map(|&row| {
+            let seconds = p.f32(row)?;
+            ensure!(
+                seconds.is_finite() && seconds >= 0.0 && p.u32(row + 4)? == 0,
+                "Source subgroup hold is invalid"
+            );
+            Ok(seconds)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let held = holds.iter().filter(|&&seconds| seconds > 0.0).count();
     let mut bytes = vec![0; 24];
     bytes[..8].copy_from_slice(&p.bytes::<8>(at)?);
     bytes[5] = 31;
@@ -62,10 +74,21 @@ pub(super) fn read(
         ],
     };
     for (index, row) in rows.into_iter().enumerate() {
-        ensure!(
-            p.f32(row)? >= 0.0 && p.u32(row + 4)? == 0,
-            "Source subgroup hold is invalid"
-        );
+        // Visitors 76AA60/1084C20 allocate one root-owned timer per positive row.
+        // Lookups 6CB540/ECCE70 select those records by the full group index, so
+        // only the first `held` rows can retain state, even with mixed zero holds.
+        // Source 6F4F56 then rounds that row's hold to ticks and enforces one tick.
+        // Emit exactly that timer prefix, leaving unallocated suffix rows at zero.
+        let hold = if index < held {
+            let ticks = (holds[index] * 60.0).round_ties_even().max(1.0);
+            ensure!(
+                (1.0..=32767.0).contains(&ticks),
+                "Source subgroup hold exceeds the signed 60 Hz timer domain"
+            );
+            ticks / 60.0
+        } else {
+            0.0
+        };
         let children = p.array(row + 8, 8, None)?;
         ensure!(
             !children.is_empty() && children.len() <= 16,
@@ -78,7 +101,7 @@ pub(super) fn read(
             bytes: vec![0; children.len() * 8],
             links: BTreeMap::new(),
         });
-        graph.blocks[1].bytes[index * 32..index * 32 + 8].copy_from_slice(&p.bytes::<8>(row)?);
+        put(&mut graph.blocks[1].bytes, index * 32, &hold.to_le_bytes())?;
         put(
             &mut graph.blocks[1].bytes,
             index * 32 + 8,
@@ -117,13 +140,13 @@ pub(super) fn predicate(
     source: &Source,
     p: &Payload,
     at: usize,
-    native: Option<&mut Reader>,
+    mut native: Option<&mut Reader>,
 ) -> Result<NativeNode> {
     ensure!(
         p.f32(at + 0xC4)? == 0.0,
         "Compound player hold requires its own scheduler contract"
     );
-    let mut graph = player::graph(p, at)?;
+    let mut graph = player::graph(source, p, at, native.as_deref_mut())?;
     graph.blocks[0].class = 0x80803DCC;
     graph.blocks[0].bytes.resize(264, 0);
     graph.blocks[0].bytes[5] = 35;

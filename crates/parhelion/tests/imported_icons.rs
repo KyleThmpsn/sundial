@@ -27,6 +27,7 @@ fn converted_artwork_survives_reload_and_model_copy_without_replacing_authored_i
         &configured("PARHELION_MARATHON_PACKAGES")?,
         &configured("SUNDIAL_STOCK_PACKAGES")?,
         &output.join("converted"),
+        &mut |_| {},
     )?;
     let plan: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
     let entries = plan

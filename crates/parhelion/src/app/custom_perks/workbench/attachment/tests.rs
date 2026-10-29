@@ -16,6 +16,7 @@ fn donor() -> WeaponDonor {
             compatible_plug_count: 1,
             reusable_plug_set_index: None,
             randomized_plug_set_index: None,
+            ordered_randomized_choices: vec![],
         }],
         investment_stats: vec![],
         addable_investment_stats: vec![],

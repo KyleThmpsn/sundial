@@ -10,10 +10,11 @@ pub(super) fn resolve(
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<Modifier> {
+    let value = row.value().map_err(invalid)?;
     let (AbilityRowModifier::Attack { amounts, .. }, Modifier::Attack(mut modifier)) =
-        (&row.modifier, row.value())
+        (&row.modifier, value)
     else {
-        return Ok(row.value());
+        return Ok(value);
     };
     let profiles = modifier.profiles(bank).map_err(invalid)?;
     let mut private = [0; 2];

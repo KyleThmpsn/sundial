@@ -1,7 +1,32 @@
 use super::*;
 use std::fmt::Write;
 
-pub(in crate::model_preview) fn source(model: &Model, vertex: bool) -> String {
+/// Which native materials a preview shader carries.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::model_preview) enum Scope {
+    /// None, for the surfaces drawn without a native material.
+    Base,
+    /// One material, numbered 0 in the shader, so materials with the same code share it.
+    Material(usize),
+}
+
+/// The materials `scope` covers, each with the number the shader knows it by.
+fn included(model: &Model, scope: Scope) -> Vec<(usize, &Material)> {
+    match scope {
+        Scope::Base => Vec::new(),
+        Scope::Material(index) => model
+            .effects
+            .get(index)
+            .filter(|material| material.native.is_some())
+            .map(|material| (0, material))
+            .into_iter()
+            .collect(),
+    }
+}
+
+pub(in crate::model_preview) fn source(model: &Model, vertex: bool, scope: Scope) -> String {
+    let materials = included(model, scope);
+    let materials = materials.as_slice();
     let mut text = String::from(glsl::HELPERS);
     if vertex {
         text.push_str(VERTEX);
@@ -11,8 +36,8 @@ pub(in crate::model_preview) fn source(model: &Model, vertex: bool) -> String {
     text.push_str(cube::GLSL);
     text.push_str(layered::GLSL);
     text.push_str(include_str!("image/sample.glsl"));
-    sampling_source(model, &mut text, vertex);
-    for (index, material) in model.effects.iter().enumerate() {
+    sampling_source(materials, &mut text, vertex);
+    for &(index, material) in materials {
         let Some(native) = &material.native else {
             continue;
         };
@@ -30,28 +55,28 @@ pub(in crate::model_preview) fn source(model: &Model, vertex: bool) -> String {
         }
     }
     if vertex {
-        vertex_source(model, &mut text);
+        vertex_source(materials, &mut text);
     } else {
-        paint_source(model, &mut text);
-        normal_source(model, &mut text);
-        grain_source(model, &mut text);
-        pixel_source(model, &mut text);
-        surface_source(model, &mut text);
+        paint_source(materials, &mut text);
+        normal_source(materials, &mut text);
+        grain_source(materials, &mut text);
+        pixel_source(materials, &mut text);
+        surface_source(materials, &mut text);
     }
     text
 }
 
 /// The pixel stage's resource reads: sampling, sizes and cube levels of detail.
-fn sampling_source(model: &Model, text: &mut String, vertex: bool) {
-    sample_source(model, text, vertex);
-    size_source(model, text, vertex);
-    load_source(model, text, vertex);
-    lod_source(model, text, vertex);
+fn sampling_source(materials: &[(usize, &Material)], text: &mut String, vertex: bool) {
+    sample_source(materials, text, vertex);
+    size_source(materials, text, vertex);
+    load_source(materials, text, vertex);
+    lod_source(materials, text, vertex);
 }
 
-fn sample_source(model: &Model, text: &mut String, vertex: bool) {
+fn sample_source(materials: &[(usize, &Material)], text: &mut String, vertex: bool) {
     text.push_str("uvec4 nSample(int resource,int samplerIndex,vec4 uv,float lod,int sampling,vec4 dx,vec4 dy,ivec3 offset){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         let Some(native) = &material.native else {
             continue;
         };
@@ -243,9 +268,9 @@ fn sample_image(
     writeln!(text,"float low={low},high={high},blend={blend};vec4 result=vec4(0.0);for(int tap=0;tap<16;tap++){{if(tap>=taps)break;vec2 p=uv.xy+direction*((float(tap)+0.5)/float(taps)-0.5);result+=mix(nImageLevel({sampler},int(low),p,offset.xy,modes,border,linear),nImageLevel({sampler},int(high),p,offset.xy,modes,border,linear),blend)/float(taps);}}return floatBitsToUint(result);}}").unwrap();
 }
 
-fn size_source(model: &Model, text: &mut String, vertex: bool) {
+fn size_source(materials: &[(usize, &Material)], text: &mut String, vertex: bool) {
     text.push_str("uvec4 nSize(int resource,int mip){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(native) = &material.native {
             for (unit, binding) in native.bindings.iter().enumerate() {
                 if binding.vertex != vertex {
@@ -295,9 +320,9 @@ fn size_source(model: &Model, text: &mut String, vertex: bool) {
     text.push_str("return uvec4(0u);}\n");
 }
 
-fn load_source(model: &Model, text: &mut String, vertex: bool) {
+fn load_source(materials: &[(usize, &Material)], text: &mut String, vertex: bool) {
     text.push_str("uvec4 nLoad(int resource,ivec4 position,ivec3 offset){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         let Some(native) = &material.native else {
             continue;
         };
@@ -350,9 +375,9 @@ fn load_source(model: &Model, text: &mut String, vertex: bool) {
     text.push_str("return uvec4(0u);}\n");
 }
 
-fn lod_source(model: &Model, text: &mut String, vertex: bool) {
+fn lod_source(materials: &[(usize, &Material)], text: &mut String, vertex: bool) {
     text.push_str("vec4 nLod(int resource,int samplerIndex,vec4 direction){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         let Some(native) = &material.native else {
             continue;
         };
@@ -374,7 +399,7 @@ fn lod_source(model: &Model, text: &mut String, vertex: bool) {
     text.push_str("return vec4(0.0);}\n");
 }
 
-const SAMPLERS: [&str; 9] = [
+const SAMPLERS: [&str; super::TEXTURES] = [
     "uAlbedo",
     "uGear",
     "uNormal",
@@ -384,12 +409,15 @@ const SAMPLERS: [&str; 9] = [
     "uEffectTexture0",
     "uEffectTexture1",
     "uEffectTexture2",
+    "uNativeTexture9",
+    "uNativeTexture10",
+    "uNativeTexture11",
 ];
 
-fn vertex_source(model: &Model, text: &mut String) {
+fn vertex_source(materials: &[(usize, &Material)], text: &mut String) {
     text.push_str("void nativeVertex(inout vec3 position,inout vec3 normal){\n");
     text.push_str("vNative[0]=vec4(normal,1.0);vNative[1]=aTangent;vNative[2]=vec4(cross(normal,aTangent.xyz)*aTangent.w,0.0);vNative[3]=vec4(aUv,aDetailUv);vNative[4]=vec4(position,1.0);vNative[5]=aColor;vNative[6]=vec4(0.0);vNative[7]=vec4(0.0);vNative[8]=aColor;vNative[9]=vec4(0.0);\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(uv) = material.native.as_ref().and_then(|n| n.opaque_uv) {
             writeln!(
                 text,
@@ -456,9 +484,9 @@ fn vertex_source(model: &Model, text: &mut String) {
     text.push_str("}\n");
 }
 
-fn paint_source(model: &Model, text: &mut String) {
+fn paint_source(materials: &[(usize, &Material)], text: &mut String) {
     text.push_str("bool nHasPaint(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if material
             .native
             .as_ref()
@@ -468,7 +496,7 @@ fn paint_source(model: &Model, text: &mut String) {
         }
     }
     text.push_str("return false;}\nvec2 nPaintSmooth(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(paint) = material
             .native
             .as_ref()
@@ -479,7 +507,7 @@ fn paint_source(model: &Model, text: &mut String) {
     }
     text.push_str("return vec2(0.0);}\n");
     text.push_str("bool nHasBaseMetal(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if material
             .native
             .as_ref()
@@ -491,7 +519,7 @@ fn paint_source(model: &Model, text: &mut String) {
         }
     }
     text.push_str("return false;}\nfloat nBaseMetal(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(value) = material
             .native
             .as_ref()
@@ -504,9 +532,9 @@ fn paint_source(model: &Model, text: &mut String) {
     text.push_str("return 0.0;}\n");
 }
 
-fn normal_source(model: &Model, text: &mut String) {
+fn normal_source(materials: &[(usize, &Material)], text: &mut String) {
     text.push_str("bool nHasDecodedNormal(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(value) = material
             .native
             .as_ref()
@@ -517,7 +545,7 @@ fn normal_source(model: &Model, text: &mut String) {
         }
     }
     text.push_str("return false;}\nvec4 nNormalDecode(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(value) = material
             .native
             .as_ref()
@@ -530,9 +558,9 @@ fn normal_source(model: &Model, text: &mut String) {
     text.push_str("return vec4(2.0,-1.0,2.0,-1.0);}\n");
 }
 
-fn grain_source(model: &Model, text: &mut String) {
+fn grain_source(materials: &[(usize, &Material)], text: &mut String) {
     text.push_str("bool nHasNormalGrain(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(value) = material
             .native
             .as_ref()
@@ -543,7 +571,7 @@ fn grain_source(model: &Model, text: &mut String) {
         }
     }
     text.push_str("return false;}\nfloat nNormalGrain(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if let Some(value) = material
             .native
             .as_ref()
@@ -556,9 +584,9 @@ fn grain_source(model: &Model, text: &mut String) {
     text.push_str("return 0.0;}\n");
 }
 
-fn surface_source(model: &Model, text: &mut String) {
+fn surface_source(materials: &[(usize, &Material)], text: &mut String) {
     text.push_str("bool nativeSurface(out vec3 albedo,out vec4 normal,out float metal,out float ambient,out vec3 emission,out float coverage){albedo=vec3(0.0);normal=vec4(0.0,0.0,1.0,1.0);metal=0.0;ambient=1.0;emission=vec3(0.0);coverage=1.0;vec4 v[16];vec4 o[16];for(int i=0;i<16;i++)v[i]=vec4(0.0);\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         let Some(native) = material.native.as_ref().filter(|n| n.deferred) else {
             continue;
         };
@@ -602,9 +630,9 @@ fn pixel_inputs(text: &mut String, program: &program::Program) {
     }
 }
 
-fn pixel_source(model: &Model, text: &mut String) {
+fn pixel_source(materials: &[(usize, &Material)], text: &mut String) {
     text.push_str("bool nHasIntensity(){\n");
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         if material
             .native
             .as_ref()
@@ -618,7 +646,7 @@ fn pixel_source(model: &Model, text: &mut String) {
     text.push_str(
         "vec4 nativePixel(vec3 gearBase,out float ambient){\nambient=-1.0;vec4 v[16];vec4 o[16];for(int i=0;i<16;i++)v[i]=vec4(0.0);\n",
     );
-    for (index, material) in model.effects.iter().enumerate() {
+    for &(index, material) in materials {
         let Some(native) = &material.native else {
             continue;
         };
@@ -660,11 +688,11 @@ impl Native {
 
 const VERTEX: &str = r#"
 uniform int uNativeIndex,uNativeQuaternion;
-uniform int uNativePresent[9];
-uniform sampler2D uAlbedo,uGear,uNormal,uDetail,uDetailNormal,uIridescence,uEffectTexture0,uEffectTexture1,uEffectTexture2;
-uniform vec4 uNativeVertexConstants[128];
+uniform int uNativePresent[12];
+uniform sampler2D uAlbedo,uGear,uNormal,uDetail,uDetailNormal,uIridescence,uEffectTexture0,uEffectTexture1,uEffectTexture2,uNativeTexture9,uNativeTexture10,uNativeTexture11;
+uniform vec4 uNativeVertexConstants[CONSTANT_ROWS];
 vec4 nConstant(int buffer,int index){
-    if(buffer==0)return uNativeVertexConstants[clamp(index,0,127)];
+    if(buffer==0)return uNativeVertexConstants[clamp(index,0,CONSTANT_ROWS-1)];
     if(buffer==11){
         if(index==5||index==7)return vec4(0.0,0.0,0.0,1.0);
         if(index==6)return vec4(1.0,1.0,0.0,0.0);
@@ -678,12 +706,12 @@ vec4 nConstant(int buffer,int index){
 
 const PIXEL: &str = r#"
 uniform int uNativeIndex;
-uniform int uNativePresent[9];
+uniform int uNativePresent[12];
 uniform vec4 uNativeDye[27];
 uniform vec3 uNativeDirection;
 uniform float uNativeDistance;
 vec4 nConstant(int buffer,int index){
-    if(buffer==0)return uEffectConstants[clamp(index,0,127)];
+    if(buffer==0)return uEffectConstants[clamp(index,0,CONSTANT_ROWS-1)];
     if(buffer>=5&&buffer<=7)return uNativeDye[clamp(index,0,26)];
     if(buffer==2&&index==0)return vec4(0.0,1.0,0.0,0.0);
     if(buffer==8&&index==4)return vec4(0.0,0.0,0.5,0.5);

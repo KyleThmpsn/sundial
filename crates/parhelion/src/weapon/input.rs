@@ -16,6 +16,8 @@ use sundial::package_authoring::{
 };
 use tiger_pkg::TagHash;
 mod logic;
+#[cfg(feature = "d2-model-importer")]
+pub(crate) mod timing;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -198,7 +198,7 @@ fn marathon_sights_survive_recipe_reload_and_selected_package_art() -> Result<()
                         .context("Donor name")?
                         .to_owned(),
                 )],
-                false,
+                marathon::browse::Options::default(),
                 &source,
                 &native,
                 &output.join(format!("import-{index}")),

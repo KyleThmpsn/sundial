@@ -182,6 +182,10 @@ impl Program {
                     (86, 0) => Op::Value([f32::from(surface.unwrap() % 2); 4]),
                     // The studio has no temporal dither or camera jitter.
                     (FRAME, 26) => Op::Value([0.0; 4]),
+                    // The depth projection vector a material writes for its own depth load. Studio
+                    // depth loads already return reciprocal distance, so it takes the coefficients
+                    // the transparent scope's CB2[0] has in the preview.
+                    (3, 0) => Op::Value([0.0, 1.0, 0.0, 0.0]),
                     (source, element) => {
                         return Err(format!(
                             "The effect needs an unsupported vector input ({source}:{element})"
@@ -215,7 +219,7 @@ impl Program {
                     let slot = arg()?;
                     if !matches!(
                         (source, element, slot),
-                        (3, 7, 0x25) | (3, 15, 0x23) | (3, 19, 0x20..=0x3f) | (44, 1, 0x20..=0x3f)
+                        (3, 7 | 19, 0x20..=0x3f) | (3, 15, 0x23) | (44, 1, 0x20..=0x3f)
                     ) {
                         return Err("The effect needs an unsupported scene texture".into());
                     }
@@ -268,6 +272,16 @@ impl Program {
             .rev()
             .find(|(slot, _, _)| *slot == register)
             .is_some_and(|&(_, source, element)| (source, element) == (44, 1))
+    }
+
+    /// Whether the stage binds scene depth to pixel texture `register` itself, instead of the
+    /// depth the transparent scope binds to `t10`.
+    pub(crate) fn scene_depth(&self, register: usize) -> bool {
+        self.textures
+            .iter()
+            .rev()
+            .find(|(slot, _, _)| *slot == register)
+            .is_some_and(|&(_, source, element)| (source, element) == (3, 7))
     }
 
     pub(crate) fn sky_hemisphere(&self, register: usize) -> bool {

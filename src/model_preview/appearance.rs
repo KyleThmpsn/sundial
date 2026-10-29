@@ -41,7 +41,10 @@ pub(crate) fn load_clip_reported(
     clip: Option<u32>,
 ) -> Result<Model, String> {
     cancel.say("Opening packages", 0, 0);
-    let manager = crate::investment::discovery::open_packages(packages)?;
+    let manager = {
+        let _stage = super::timing::stage("package open");
+        crate::investment::discovery::open_packages(packages)?
+    };
     let globals = manager.read_tag(resolve_live_named_tag(
         &manager,
         "investment_globals",
@@ -105,10 +108,12 @@ pub(crate) fn load_clip_reported(
             result.notices.join(" ")
         ));
     }
+    let dyes = super::timing::stage("dyes");
     apply_colors(&manager, &globals, appearance, &mut result)?;
     if !appearance.dyes.is_empty() {
         result.iridescence = texture::iridescence(&manager);
     }
+    drop(dyes);
     result.notices.sort();
     result.notices.dedup();
     let mut seen = BTreeSet::new();

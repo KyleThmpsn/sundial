@@ -1,8 +1,8 @@
 //! A perk column that rolls from its own choices, written the way the importers write one, on
-//! Badlander's first rolled lane with two curated plugs. Those two stay swappable, and two more
+//! Badlander's first rolled lane with two curated plugs. Those two stay reusable, and two more
 //! choices, the second a private perk, are only in the roll pool. The staged packages must append
 //! one set after the stock rows holding all four choices, the private perk as its own item, keep
-//! every stock set as it shipped, and give the socket row that set, the two swappable choices and
+//! every stock set as it shipped, and give the socket row that set, the two reusable choices and
 //! a single-roll selection program. A fresh catalog scan must read the same socket.
 use super::offered_mods::{investment_root, item_index, plug_sets};
 use super::*;
@@ -111,7 +111,7 @@ fn real_rolled_column_appends_a_private_randomized_set() {
         .collect::<Vec<_>>();
     assert_eq!(staged_sets[stock_sets.len()], pool);
 
-    // The socket row rolls from that set, one plug per roll, and embeds the two swappable ones.
+    // The socket row rolls from that set, one plug per roll, and embeds the two reusable ones.
     let items = staged
         .read_tag(
             root_child_tag(&investment_root(&staged), ROOT_ITEM_DEFINITION_TABLE_SLOT).unwrap(),
@@ -167,7 +167,7 @@ fn real_rolled_column_appends_a_private_randomized_set() {
         &serde_json::json!({
             "weapon": format!("0x{:08X}", weapon.item_hash),
             "socket": socket.index,
-            "swappable": curated.iter().map(|hash| format!("0x{hash:08X}")).collect::<Vec<_>>(),
+            "reusable": curated.iter().map(|hash| format!("0x{hash:08X}")).collect::<Vec<_>>(),
             "randomized_plug_set": set,
             "pool_item_indices": pool.iter().map(|(index, _)| index).collect::<Vec<_>>(),
             "private_plug": format!("0x{:08X}", plug.item_hash),

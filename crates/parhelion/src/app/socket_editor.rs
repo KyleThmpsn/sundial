@@ -30,6 +30,7 @@ pub(super) fn socket_editor_donor<'a>(
             compatible_plug_count: 0,
             reusable_plug_set_index: None,
             randomized_plug_set_index: None,
+            ordered_randomized_choices: Vec::new(),
         });
     }
     std::borrow::Cow::Owned(expanded)
@@ -323,6 +324,92 @@ fn draw_add_socket(
     });
 }
 
+/// Which of each socket's lists the rows show and edit: the reusable plugs it offers, or the
+/// randomized plugs it can roll. A socket that rolls rolls its reusable plugs too, so they are
+/// randomized as well.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum SocketView {
+    #[default]
+    Reusable,
+    Randomized,
+}
+
+/// The Reusable and Randomized buttons at the right of a weapon's Perks & Sockets heading, which
+/// they close. Randomized counts the sockets that roll.
+pub(super) fn draw_socket_view_toggle(
+    ui: &mut egui::Ui,
+    view: &mut SocketView,
+    recipe: &WeaponRecipe,
+) {
+    let rolling = recipe
+        .overrides
+        .socket_columns
+        .iter()
+        .flatten()
+        .filter(|column| column.reusable_choices.is_some())
+        .count();
+    let randomized = if rolling == 0 {
+        "Randomized".to_owned()
+    } else {
+        format!("Randomized · {rolling}")
+    };
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        // Laid out from the right, so Randomized comes first.
+        for (choice, label, hint) in [
+            (
+                SocketView::Randomized,
+                randomized.as_str(),
+                "The perks each socket can roll, its reusable ones included",
+            ),
+            (
+                SocketView::Reusable,
+                "Reusable",
+                "The perks each socket offers",
+            ),
+        ] {
+            if ui
+                .add(egui::Button::new(label).selected(*view == choice))
+                .on_hover_text(hint)
+                .clicked()
+            {
+                *view = choice;
+            }
+        }
+    });
+}
+
+/// The base's randomized plug set on a lane that keeps its role and does not roll from its own
+/// choices or name a set of its own.
+fn base_roll(recipe: &WeaponRecipe, socket: &sundial::investment::WeaponSocket) -> Option<u16> {
+    let column = recipe
+        .overrides
+        .socket_columns
+        .get(socket.index)
+        .and_then(Option::as_ref);
+    socket.randomized_plug_set_index.filter(|_| {
+        column.is_none_or(|column| {
+            column.reusable_choices.is_none()
+                && column.randomized_plug_set_index.is_none()
+                && column
+                    .socket_type
+                    .is_none_or(|socket_type| socket_type == socket.socket_type)
+        })
+    })
+}
+
+/// Whether a lane rolls from its own choices or its base rolls it, the sockets Randomized lists
+/// first.
+fn lane_rolls(recipe: &WeaponRecipe, socket: &sundial::investment::WeaponSocket) -> bool {
+    base_roll(recipe, socket).is_some()
+        || recipe
+            .overrides
+            .socket_columns
+            .get(socket.index)
+            .and_then(Option::as_ref)
+            .is_some_and(|column| column.reusable_choices.is_some())
+}
+
 pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContext<'_>) {
     let SocketPickerContext {
         catalog,
@@ -334,6 +421,7 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         show_plug_safety_warnings,
         show_experimental_options,
         show_technical_rows,
+        view,
         perk_request,
         donor,
         log,
@@ -388,6 +476,14 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         })
         .map(|socket| socket.index)
         .collect::<BTreeSet<_>>();
+    // Randomized lists the sockets that roll and folds the rest, where a roll can still start.
+    let (rows, others): (Vec<_>, Vec<_>) = effective_donor
+        .sockets
+        .iter()
+        .filter(|socket| !unused.contains(&socket.index))
+        .partition(|socket| view == SocketView::Reusable || lane_rolls(recipe, socket));
+    let rows = rows.iter().map(|socket| socket.index).collect::<Vec<_>>();
+    let others = others.iter().map(|socket| socket.index).collect::<Vec<_>>();
     let preview = crate::app::donor_view::preview::loadout(catalog, recipe);
     let mut draw_row = |ui: &mut egui::Ui, socket_index: usize| {
         draw_socket_picker_row(
@@ -407,23 +503,31 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
                     && socket_index + 1 == effective_donor.sockets.len(),
                 show_experimental_options,
                 show_technical_row: &mut *show_technical_rows,
+                view,
                 perk_request,
                 log,
             },
         );
     };
-    for socket in effective_donor
-        .sockets
-        .iter()
-        .filter(|socket| !unused.contains(&socket.index))
-    {
-        draw_row(ui, socket.index);
+    for &socket_index in &rows {
+        draw_row(ui, socket_index);
+    }
+    if !others.is_empty() {
+        egui::CollapsingHeader::new(format!("Other Sockets · {}", others.len()))
+            .id_salt("randomized-other-sockets")
+            .show(ui, |ui| {
+                for &socket_index in &others {
+                    draw_row(ui, socket_index);
+                }
+            })
+            .header_response
+            .on_hover_text("Sockets that do not roll. Adding a choice here starts a roll.");
     }
     if gear {
         draw_add_socket(ui, catalog, recipe, donor);
         return;
     }
-    if !unused.is_empty() {
+    if view == SocketView::Reusable && !unused.is_empty() {
         egui::CollapsingHeader::new(format!("Unused Base Sockets · {}", unused.len()))
             .id_salt("unused-weapon-sockets")
             .show(ui, |ui| {
@@ -1063,7 +1167,12 @@ fn draw_choice_conditions(
     }
 }
 
-/// Draws the reusable and randomized plug-set rows and the randomized selection program.
+/// Draws the reusable and randomized plug-set rows and the randomized selection program. Only a
+/// weapon build plans the private set a column that rolls from its choices needs.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each plug set row starts from its donor field and the installed table's size"
+)]
 fn draw_plug_set_rows(
     ui: &mut egui::Ui,
     column: &mut WeaponSocketColumnRecipe,
@@ -1072,6 +1181,7 @@ fn draw_plug_set_rows(
     socket_index: usize,
     plug_set_count: usize,
     plug_set_max: u16,
+    is_weapon: bool,
 ) {
     ui.horizontal(|ui| {
         let mut enabled = column.reusable_plug_set_index.is_some();
@@ -1088,13 +1198,13 @@ fn draw_plug_set_rows(
         }
     });
     // A column that rolls from its own choices gets a private randomized set of all of them, and
-    // only the leading ones stay swappable.
+    // only the leading ones stay reusable plug items.
     ui.horizontal(|ui| {
         let choices = column.choices.len();
         let mut rolled = column.reusable_choices.is_some();
         if ui
             .add_enabled(
-                column.randomized_plug_set_index.is_none() && (rolled || choices > 1),
+                rolled || (is_weapon && column.randomized_plug_set_index.is_none() && choices > 1),
                 egui::Checkbox::new(&mut rolled, "Roll from Choices"),
             )
             .changed()
@@ -1108,7 +1218,7 @@ fn draw_plug_set_rows(
         if let Some(count) = &mut column.reusable_choices {
             let most = u16::try_from(choices.saturating_sub(1).max(1)).unwrap_or(u16::MAX);
             ui.add(egui::DragValue::new(count).range(1..=most));
-            ui.weak("swappable");
+            ui.weak("reusable");
         }
     });
     ui.horizontal(|ui| {
@@ -1173,6 +1283,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
     let donor_reusable = socket.reusable_plug_set_index;
     let donor_randomized = socket.randomized_plug_set_index;
     let socket_label = socket.label.clone();
+    let is_weapon = recipe.kind.is_weapon();
     let plug_set_count = catalog.reusable_plug_set_count();
     let plug_set_max = plug_set_count
         .saturating_sub(1)
@@ -1261,6 +1372,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
                         socket_index,
                         plug_set_count,
                         plug_set_max,
+                        is_weapon,
                     );
                 })
                 .header_response
@@ -1270,7 +1382,7 @@ pub(super) fn draw_socket_technical_fields(ui: &mut egui::Ui, fields: SocketTech
         header_response.scroll_to_me(Some(egui::Align::Center));
     }
     // The raw list removes a choice the way the socket picker does, so its weight, condition,
-    // custom perk and place in the swappable lead leave with it.
+    // custom perk and place in the reusable lead leave with it.
     if let Some(choice) = removed_choice
         && remove_choice(recipe, donor.sockets.len(), socket_index, inherited, choice).is_ok()
     {
@@ -1305,9 +1417,9 @@ fn draw_inherited_socket_summary(
 ) {
     ui.horizontal_wrapped(|ui| {
         ui.weak(format!(
-            "Inherited type {donor_socket_type} · reusable {} · randomized {}",
-            donor_reusable.map_or_else(|| "disabled".to_owned(), |value| value.to_string()),
-            donor_randomized.map_or_else(|| "disabled".to_owned(), |value| value.to_string())
+            "Inherited type {donor_socket_type} · Reusable Plug Set {} · Randomized Plug Set {}",
+            donor_reusable.map_or_else(|| "none".to_owned(), |value| value.to_string()),
+            donor_randomized.map_or_else(|| "none".to_owned(), |value| value.to_string())
         ));
         if donor_socket_type == u16::MAX {
             ui.weak("Activate this socket to edit its fields.");
@@ -1332,9 +1444,7 @@ fn draw_restore_donor_row(
 ) -> bool {
     let restore = ui
         .button("Restore Donor Row")
-        .on_hover_text(
-            "Remove this socket's overrides. Random donor rows keep a fixed Collections roll.",
-        )
+        .on_hover_text("Remove this socket's overrides.")
         .clicked();
     if !restore {
         return false;
@@ -1424,7 +1534,7 @@ pub(super) fn shift_socket_choice_queries_after_removal(
     }
 }
 
-/// Keeps a column that rolls from its choices valid: a swappable lead that covers every choice
+/// Keeps a column that rolls from its choices valid: a reusable lead that covers every choice
 /// leaves nothing to roll, so the pool is dropped.
 fn trim_rolled_choices(column: &mut WeaponSocketColumnRecipe) {
     let choices = column.choices.len();
@@ -1439,7 +1549,7 @@ fn trim_rolled_choices(column: &mut WeaponSocketColumnRecipe) {
 }
 
 /// Writes `choices` as the socket's column, each keeping the weight and condition at its index.
-/// A choice past the earlier ones weighs 1.0, has no condition and stays out of the swappable
+/// A choice past the earlier ones weighs 1.0, has no condition and stays out of the reusable
 /// lead, and a custom perk whose choice no longer holds its plug is dropped. Removing or moving a
 /// choice goes through [`rebuild_lane`] instead, which carries all of these with the choice.
 pub(super) fn set_recipe_socket_column(
@@ -1504,7 +1614,7 @@ pub(super) fn make_choice_default(
 }
 
 /// Moves one choice within its socket, carrying its weight, condition and custom perk with it.
-/// In a column that rolls from its choices, see [`moved_lead`] for its place in the swappable lead.
+/// In a column that rolls from its choices, see [`moved_lead`] for its place in the reusable lead.
 ///
 /// The first choice is the one that starts equipped, so this is how the default is chosen as well
 /// as how the rest are ordered.
@@ -1558,9 +1668,101 @@ pub(super) fn move_choice(
     Ok(())
 }
 
-/// The swappable lead after choice `from` of a column whose first `lead` choices are swappable
+/// Makes choice `index` reusable, as the last of the lane's reusable choices, or leaves it to roll
+/// alone, as the first of the rest, and returns early when it already is. Every choice of a lane
+/// that rolls joins its roll either way. The default stays reusable. A lane that did not roll
+/// starts rolling from its choices.
+pub(super) fn set_choice_reusable(
+    recipe: &mut WeaponRecipe,
+    socket_count: usize,
+    socket_index: usize,
+    inherited: &[u32],
+    index: usize,
+    reusable: bool,
+) -> Result<(), String> {
+    let current = recipe_socket_choices(recipe, socket_index, inherited)?;
+    if index >= current.len() {
+        return Err("The selected choice no longer exists. Reopen the socket picker.".into());
+    }
+    let column = recipe
+        .overrides
+        .socket_columns
+        .get(socket_index)
+        .and_then(Option::as_ref);
+    if column.is_some_and(|column| {
+        (!column.choice_weight_bits.is_empty() && column.choice_weight_bits.len() != current.len())
+            || (!column.choice_conditions.is_empty()
+                && column.choice_conditions.len() != current.len())
+    }) {
+        return Err("The socket's weights or conditions do not match its choices. Correct them before reordering.".into());
+    }
+    let lead = column
+        .and_then(|column| column.reusable_choices)
+        .map_or(current.len(), usize::from)
+        .min(current.len());
+    let (to, lead) = match reusable {
+        true if index >= lead => (lead, lead + 1),
+        false if index > 0 && index < lead => (lead - 1, lead - 1),
+        _ => return Ok(()),
+    };
+    if column.is_none() {
+        materialize_socket_column(recipe, socket_count, socket_index, inherited, false);
+    }
+    let mut order = current
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, plug)| (plug, Some(index)))
+        .collect::<Vec<_>>();
+    let moved = order.remove(index);
+    order.insert(to, moved);
+    rebuild_lane(
+        recipe,
+        socket_count,
+        socket_index,
+        inherited,
+        &current,
+        order,
+        Some(u16::try_from(lead).unwrap_or(u16::MAX)),
+    );
+    Ok(())
+}
+
+/// Rolls a lane from its choices and `randomized`, the base's other randomized plugs, which join
+/// after them as randomized choices. The current choices stay reusable.
+pub(super) fn roll_from_base(
+    recipe: &mut WeaponRecipe,
+    socket_count: usize,
+    socket_index: usize,
+    inherited: &[u32],
+    randomized: &[u32],
+) -> Result<(), String> {
+    let mut choices = recipe_socket_choices(recipe, socket_index, inherited)?;
+    let reusable = choices.len();
+    if reusable == 0 {
+        return Err("Set a plug before rolling this socket.".into());
+    }
+    let added = randomized
+        .iter()
+        .copied()
+        .filter(|plug| !choices.contains(plug))
+        .collect::<Vec<_>>();
+    choices.extend(added);
+    choices.truncate(crate::item::MAX_ROLLED_CHOICES);
+    if choices.len() <= reusable {
+        return Ok(());
+    }
+    let lead = u16::try_from(reusable).unwrap_or(u16::MAX);
+    set_recipe_socket_column(recipe, socket_count, socket_index, inherited, choices);
+    if let Some(Some(column)) = recipe.overrides.socket_columns.get_mut(socket_index) {
+        column.reusable_choices = Some(lead);
+    }
+    Ok(())
+}
+
+/// The reusable lead after choice `from` of a column whose first `lead` choices are reusable
 /// moves to `to`. Every other choice keeps its membership. The moved one takes the membership of
-/// where it lands, keeping its own between the swappable and pool-only choices.
+/// where it lands, keeping its own between the reusable and randomized choices.
 fn moved_lead(lead: u16, from: usize, to: usize) -> u16 {
     let lead = usize::from(lead);
     let rest = lead - usize::from(from < lead);
@@ -1573,7 +1775,7 @@ fn moved_lead(lead: u16, from: usize, to: usize) -> u16 {
 }
 
 /// Takes choice `index` out of its socket. The later choices move up with their weights,
-/// conditions, custom perks and places in the swappable lead, and a custom perk on the removed
+/// conditions, custom perks and places in the reusable lead, and a custom perk on the removed
 /// choice goes with it.
 pub(super) fn remove_choice(
     recipe: &mut WeaponRecipe,
@@ -1728,7 +1930,7 @@ pub(super) fn sync_behavior_socket_pins(
             continue;
         };
         // Each choice keeps the index it had, `None` for a plug this sync places, so its custom
-        // perk, weight, condition and place in the swappable lead follow it. Two custom perks
+        // perk, weight, condition and place in the reusable lead follow it. Two custom perks
         // can share one template plug, so a plug alone cannot tell choices apart.
         let mut choices = current
             .iter()
@@ -1821,12 +2023,12 @@ fn authored_choices(recipe: &WeaponRecipe, lane: usize, choices: &[u32]) -> BTre
 }
 
 /// Writes a lane rebuilt from `order`, each plug with the index it had in `current` or `None`
-/// for one placed new. Custom perks, weights, conditions and the swappable lead follow their own
+/// for one placed new. Custom perks, weights, conditions and the reusable lead follow their own
 /// choices, and a custom perk whose choice left the lane goes with it.
 ///
-/// `lead` is the swappable lead of an edit that decides it, as a move does. Followed by origin,
-/// the lead ends at the last swappable choice, so a swappable choice moved past pool-only ones
-/// would make them swappable too.
+/// `lead` is the reusable lead of an edit that decides it, as a move does. Followed by origin,
+/// the lead ends at the last reusable choice, so a reusable choice moved past randomized ones
+/// would make them reusable too.
 fn rebuild_lane(
     recipe: &mut WeaponRecipe,
     socket_count: usize,

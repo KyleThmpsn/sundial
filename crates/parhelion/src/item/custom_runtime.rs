@@ -86,13 +86,7 @@ pub(crate) fn preflight_runtime_edits(
     content_group: Option<u32>,
     splices: &[(u32, Vec<u8>)],
 ) -> AuthoringResult<()> {
-    let start = manager
-        .lookup
-        .tag32_entries_by_pkg
-        .get(&HOST_PACKAGE_ID)
-        .ok_or_else(|| invalid("The runtime host package is unavailable"))?
-        .len();
-    let allocator = AppendedTagAllocator::new(HOST_PACKAGE_ID, start);
+    let allocator = AppendedTagAllocator::scratch(manager)?;
     #[allow(unused_mut)]
     let mut source_trajectory = false;
     let projectile = if let Some(fired) = &overrides.fired_graph {
@@ -459,6 +453,8 @@ pub(super) fn author_runtime_edits(
                 &fired.patches,
                 &fired.appends,
                 &BTreeSet::new(),
+                &[],
+                &[],
                 "Fired graph",
                 allocator,
                 tags,

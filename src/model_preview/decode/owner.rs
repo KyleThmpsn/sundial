@@ -120,6 +120,7 @@ pub(in crate::model_preview) fn owners(
                 &disabled,
             )?;
             let resources = &resources[owner.resources.clone()];
+            let _animation = timing::stage("animation");
             model.clips = animation::clips(manager, resources);
             let clip = selected
                 .filter(|tag| owners.len() == 1 || model.clips.iter().any(|c| c.tag == *tag));

@@ -73,14 +73,14 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
         authored_container,
     )
     .unwrap();
-    let container = &assets.badge.new_tags[usize::from(authored_container.entry_index())].payload;
+    let container = &assets.packages.tag(authored_container).unwrap().payload;
     let layer_tag = TagHash(read_u32(container, 0x14).unwrap());
-    let layer = &assets.badge.new_tags[usize::from(layer_tag.entry_index())].payload;
+    let layer = &assets.packages.tag(layer_tag).unwrap().payload;
     let glyph_textures = crate::icon_edit::texture_reference_offsets(layer, layer_tag).unwrap();
     let glyph_sizes = glyph_textures
         .iter()
         .map(|(_, tag)| {
-            let header = &assets.badge.new_tags[usize::from(tag.entry_index())].payload;
+            let header = &assets.packages.tag(*tag).unwrap().payload;
             [read_u16(header, 14).unwrap(), read_u16(header, 16).unwrap()]
         })
         .collect::<Vec<_>>();
@@ -123,6 +123,7 @@ fn native_perk_icons_author_private_wrappers_and_preserve_stock_pixels() {
         &sources.manager,
         &imported,
         stock_container,
+        (crate::package_profile::window().first(), 0),
         &mut imported_nodes,
         &mut references,
     )

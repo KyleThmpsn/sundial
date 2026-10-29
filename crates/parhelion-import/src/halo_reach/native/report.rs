@@ -72,6 +72,7 @@ pub(super) fn behavior(graph: &mut Value) {
         ("projectile", &graph["projectile"]["conversion"]),
         ("shards", &graph["projectile"]["conversion"]["shards"]),
         ("melee", &graph["melee"]),
+        ("sword", &graph["sword"]["conversion"]),
         ("handling_audio", &graph["handling_audio"]),
     ] {
         if let Some(rows) = section.get("retained_native_behavior") {
@@ -81,6 +82,5 @@ pub(super) fn behavior(graph: &mut Value) {
     graph["retained_native_behavior"] = Value::Object(retained);
     graph["limits"] = json!([
         "Source behavior is translated only where the corresponding report section records its implementation. Retained native behavior is listed separately.",
-        "Package and native-code readback do not establish live rendering, animation transitions, collision or gameplay acceptance.",
     ]);
 }

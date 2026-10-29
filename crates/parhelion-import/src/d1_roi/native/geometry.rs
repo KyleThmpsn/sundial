@@ -1,4 +1,4 @@
-use super::material::{Draw, Equipment};
+use super::material::{Draw, Equipment, Retained};
 use super::*;
 
 pub(super) struct Model {
@@ -112,6 +112,8 @@ impl Assembly<'_> {
     ) -> Result<Model> {
         let source = self.source.read(source_tag)?;
         let meshes = source.array(0x10, 0xA0, Some(0x80801BBF))?;
+        // Every mesh of the source model shares one gear-dye extern per stage.
+        let retained = equipment.retained(&source, &meshes)?;
         let first = *ordinals
             .first()
             .context("Source model has no selected meshes")?;
@@ -283,11 +285,15 @@ impl Assembly<'_> {
                         "{symbol}-material-{material:08X}-pass-{stage}-dye-{dye}-layout-{layout}-sim-{}",
                         u8::from(simulated)
                     );
+                    let retained = retained
+                        .get(&(stage, dye, material))
+                        .copied()
+                        .unwrap_or(Retained::Unresolved);
                     let mat = self
                     .material(
                         material,
                         &mat_symbol,
-                        Draw { stage, dye, simulated, layout },
+                        Draw { stage, dye, simulated, layout, retained },
                         equipment,
                     )
                     .with_context(|| {

@@ -189,6 +189,35 @@ pub(crate) fn payload_fields(
     template: u32,
     payload: &[u8],
 ) -> Result<Vec<(usize, u32)>, String> {
+    payload_records(manager, template, payload, |kind| kind != 0)
+}
+
+/// Typed object views, including the original reciprocal definition of a sealed owner.
+/// Raw pointers and object references do not authorize traversal into arbitrary bytes.
+pub(crate) fn payload_objects(
+    manager: &PackageManager,
+    template: u32,
+    payload: &[u8],
+) -> Result<Vec<(usize, u32)>, String> {
+    payload_records(manager, template, payload, |kind| kind == 0)
+}
+
+/// Object-reference fields retain a resource, a concrete class and an owner-relative offset.
+/// Keep them distinct from four-byte resource references when relocating component storage.
+pub(crate) fn payload_object_references(
+    manager: &PackageManager,
+    template: u32,
+    payload: &[u8],
+) -> Result<Vec<(usize, u32)>, String> {
+    payload_records(manager, template, payload, |kind| kind == 9)
+}
+
+fn payload_records(
+    manager: &PackageManager,
+    template: u32,
+    payload: &[u8],
+    include: impl Fn(u32) -> bool,
+) -> Result<Vec<(usize, u32)>, String> {
     let entry = manager
         .get_entry(TagHash(template))
         .ok_or_else(|| format!("Reference template 0x{template:08X} is missing"))?;
@@ -211,8 +240,8 @@ pub(crate) fn payload_fields(
                 Ok(schema.payload)
             })
         },
-        |reference, offset, field| {
-            if field {
+        |reference, offset, kind| {
+            if include(kind) {
                 fields.push((offset, reference));
             }
         },
@@ -230,19 +259,21 @@ pub(crate) fn walk(
 ) -> Result<BTreeMap<u32, usize>, String> {
     let mut references = BTreeMap::new();
     visit(data, root, record, |tag, offset, _| {
-        references.entry(tag).or_insert(offset);
+        if is_reference(tag) {
+            references.entry(tag).or_insert(offset);
+        }
     })?;
     Ok(references)
 }
 
 /// Visits each object of the tree rooted at `root`, calling `found` with each reference: an
 /// object's class, at the object's offset, and each tag a reference field holds, at the field's
-/// offset, the last argument telling a field from a class.
+/// offset, the last argument holding layout kind 4 or 9 for a field and zero for a class.
 fn visit(
     data: &[u8],
     root: u32,
     mut record: impl FnMut(u32) -> Result<Record, String>,
-    mut found: impl FnMut(u32, usize, bool),
+    mut found: impl FnMut(u32, usize, u32),
 ) -> Result<(), String> {
     let mut pending = vec![(0usize, root)];
     if root == 0x8080_9C36
@@ -267,9 +298,9 @@ fn visit(
                 "Native object 0x{class:08X} at 0x{offset:X} exceeds its resource"
             ));
         }
-        if is_reference(class) {
-            found(class, offset, false);
-        }
+        // Typed views include native declarations as well as generated package schemas.
+        // Only resource traversal filters the class into the package-reference domain.
+        found(class, offset, 0);
         for (field, kind) in schema.fields.iter().copied() {
             let field = offset
                 .checked_add(field)
@@ -278,7 +309,7 @@ fn visit(
                 4 | 9 => {
                     let tag = u32_at(data, field)?;
                     if is_reference(tag) {
-                        found(tag, field, true);
+                        found(tag, field, kind);
                     }
                 }
                 3 => follow(data, field, &mut pending, &mut record)?,

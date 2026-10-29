@@ -75,70 +75,111 @@ pub(super) fn reach_request(
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::app) enum Source {
     #[default]
-    Modern,
-    Reach,
+    D2Modern,
+    HaloReach,
     Marathon,
-    Roi,
+    D1RiseOfIron,
 }
 
 impl Source {
-    pub const ALL: [Source; 4] = [Source::Modern, Source::Roi, Source::Reach, Source::Marathon];
+    pub const ALL: [Source; 4] = [
+        Source::D2Modern,
+        Source::D1RiseOfIron,
+        Source::HaloReach,
+        Source::Marathon,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
-            Source::Modern => "D2 Modern",
-            Source::Reach => "Halo: Reach",
+            Source::D2Modern => "D2 Modern",
+            Source::HaloReach => "Halo: Reach",
             Source::Marathon => "Marathon",
-            Source::Roi => "D1 Rise of Iron",
+            Source::D1RiseOfIron => "D1 Rise of Iron",
         }
     }
 
-    pub fn view_file(self) -> &'static str {
-        match self {
-            Source::Modern => "importer-view.json",
-            Source::Reach => "importer-view-reach.json",
+    /// Where this source's browser view is kept, `importer/views/<importer>.json`. Earlier
+    /// versions kept it at the data folder's top as `importer-view*.json`, which moves there.
+    /// Until a move succeeds the earlier file stays in use.
+    pub fn view_path(self, root: &Path) -> PathBuf {
+        let former = root.join(match self {
+            Source::D2Modern => "importer-view.json",
+            Source::HaloReach => "importer-view-reach.json",
             Source::Marathon => "importer-view-marathon.json",
-            Source::Roi => "importer-view-d1-roi.json",
+            Source::D1RiseOfIron => "importer-view-d1-roi.json",
+        });
+        let path = root
+            .join("importer")
+            .join("views")
+            .join(format!("{}.json", self.folder()));
+        parhelion_import::cache::take_over(&former, &path);
+        if former.is_file() && !path.exists() {
+            former
+        } else {
+            path
         }
     }
 
     /// These sources expose checked inventory artwork readers.
     pub fn icons(self) -> bool {
-        matches!(self, Source::Modern | Source::Roi)
+        matches!(self, Source::D2Modern | Source::D1RiseOfIron)
     }
 
     pub fn welcome(self) -> &'static str {
         match self {
-            Source::Modern => "Choose your modern Destiny 2 installation or its packages folder.",
-            Source::Reach => "Choose your MCC installation or its Halo: Reach maps folder.",
+            Source::D2Modern => "Choose your modern Destiny 2 installation or its packages folder.",
+            Source::HaloReach => "Choose your MCC installation or its Halo: Reach maps folder.",
             Source::Marathon => "Choose your Marathon installation or its packages folder.",
-            Source::Roi => "Choose your Rise of Iron Xbox One packages folder.",
+            Source::D1RiseOfIron => "Choose your Rise of Iron Xbox One packages folder.",
         }
     }
 
     fn dialog_title(self) -> &'static str {
         match self {
-            Source::Modern => "Modern Destiny 2 Build",
-            Source::Reach => "Halo: Reach Maps",
+            Source::D2Modern => "Modern Destiny 2 Build",
+            Source::HaloReach => "Halo: Reach Maps",
             Source::Marathon => "Marathon Packages",
-            Source::Roi => "Rise of Iron Xbox One Packages",
+            Source::D1RiseOfIron => "Rise of Iron Xbox One Packages",
         }
     }
 
-    /// Asset folder kind under an item's model folder.
-    fn assets(self) -> &'static str {
+    /// The folder of the models folder that holds this importer's items, named for its module.
+    pub fn folder(self) -> &'static str {
         match self {
-            Source::Modern => "modern",
-            Source::Reach => "reach",
+            Source::D2Modern => "d2_mot",
+            Source::HaloReach => "halo_reach",
             Source::Marathon => "marathon",
-            Source::Roi => "d1-roi",
+            Source::D1RiseOfIron => "d1_roi",
         }
+    }
+
+    /// The importer that wrote a recipe, from its namespace. The earlier bulk and import schemes
+    /// end with their source item's hash, and earlier Marathon names hold its hash or a short
+    /// word. Other names record no source item.
+    pub fn of_namespace(namespace: &str) -> Option<Source> {
+        [
+            ("parhelion.reach.", Source::HaloReach),
+            ("parhelion.d1_roi.", Source::D1RiseOfIron),
+            ("parhelion.import.d1_roi.", Source::D1RiseOfIron),
+            ("parhelion.d2_mot.", Source::D2Modern),
+            ("parhelion.bulk.", Source::D2Modern),
+            ("parhelion.marathon.", Source::Marathon),
+        ]
+        .into_iter()
+        .find_map(|(prefix, source)| namespace.starts_with(prefix).then_some(source))
+    }
+
+    /// The source item hash that ends a namespace, as every Rise of Iron and modern Destiny 2
+    /// namespace does and some earlier Marathon ones do.
+    pub fn named_item(namespace: &str) -> Option<u32> {
+        let hash = namespace.rsplit(['-', '.']).next()?;
+        u32::from_str_radix(hash, 16).ok()
     }
 
     fn reading(self) -> &'static str {
         match self {
-            Source::Reach => "Reading Maps",
-            Source::Roi => "Reading Packages",
+            Source::HaloReach => "Reading Maps",
+            Source::D1RiseOfIron => "Reading Packages",
             _ => "Reading Items",
         }
     }
@@ -146,7 +187,7 @@ impl Source {
 
 #[derive(Clone)]
 pub(super) enum Origin {
-    Reach(reach::Entry),
+    HaloReach(reach::Entry),
     Marathon(marathon::Entry),
 }
 
@@ -159,8 +200,8 @@ pub(super) enum Base {
 impl Origin {
     pub fn base(&self) -> Option<Base> {
         match self {
-            Origin::Reach(entry) if entry.vehicle() => Some(Base::Vehicle),
-            Origin::Reach(entry) => Some(Base::Weapon(entry.weapon_type())),
+            Origin::HaloReach(entry) if entry.vehicle() => Some(Base::Vehicle),
+            Origin::HaloReach(entry) => Some(Base::Weapon(entry.weapon_type())),
             Origin::Marathon(entry) => entry.weapon_type().map(Base::Weapon),
         }
     }
@@ -168,8 +209,8 @@ impl Origin {
     /// The row's type: the native weapon type, Vehicle, or an unsupported item's own type.
     fn kind(&self) -> String {
         match self {
-            Origin::Reach(entry) if entry.vehicle() => "Vehicle".to_owned(),
-            Origin::Reach(entry) => entry.weapon_type().to_owned(),
+            Origin::HaloReach(entry) if entry.vehicle() => "Vehicle".to_owned(),
+            Origin::HaloReach(entry) => entry.weapon_type().to_owned(),
             Origin::Marathon(entry) => entry
                 .weapon_type()
                 .map_or_else(|| entry.kind.clone(), str::to_owned),
@@ -178,7 +219,9 @@ impl Origin {
 
     pub fn hover(&self) -> String {
         match self {
-            Origin::Reach(entry) => format!("{}\nMaps: {}", entry.path, entry.caches.join(", ")),
+            Origin::HaloReach(entry) => {
+                format!("{}\nMaps: {}", entry.path, entry.caches.join(", "))
+            }
             Origin::Marathon(entry) => format!("Source Item: {:08X}", entry.item),
         }
     }
@@ -190,7 +233,7 @@ fn rows(origins: impl Iterator<Item = Origin>) -> (Vec<Weapon>, BTreeMap<u32, Or
     let mut keyed = BTreeMap::new();
     for origin in origins {
         let (hash, name, vehicle) = match &origin {
-            Origin::Reach(entry) => (entry.destination(), entry.name(), entry.vehicle()),
+            Origin::HaloReach(entry) => (entry.destination(), entry.name(), entry.vehicle()),
             Origin::Marathon(entry) => (entry.destination(), entry.name.clone(), false),
         };
         let Ok(hash) = hash else { continue };
@@ -226,7 +269,7 @@ pub(super) struct Shelf {
 impl Shelf {
     fn new(source: Source) -> Self {
         let mut browser = browser::Browser::default();
-        let view_path = data_root().ok().map(|root| root.join(source.view_file()));
+        let view_path = data_root().ok().map(|root| source.view_path(&root));
         if let Some(path) = &view_path {
             browser.apply_view(browser::View::load(path));
         }
@@ -248,19 +291,19 @@ impl Shelf {
 impl Importer {
     pub fn folder(&self) -> Option<&PathBuf> {
         match self.source {
-            Source::Modern => self.settings.modern_packages.as_ref(),
-            Source::Reach => self.settings.reach_maps.as_ref(),
+            Source::D2Modern => self.settings.modern_packages.as_ref(),
+            Source::HaloReach => self.settings.reach_maps.as_ref(),
             Source::Marathon => self.settings.marathon_packages.as_ref(),
-            Source::Roi => self.settings.d1_roi.as_ref(),
+            Source::D1RiseOfIron => self.settings.d1_roi.as_ref(),
         }
     }
 
     fn folder_mut(&mut self) -> &mut Option<PathBuf> {
         match self.source {
-            Source::Modern => &mut self.settings.modern_packages,
-            Source::Reach => &mut self.settings.reach_maps,
+            Source::D2Modern => &mut self.settings.modern_packages,
+            Source::HaloReach => &mut self.settings.reach_maps,
             Source::Marathon => &mut self.settings.marathon_packages,
-            Source::Roi => &mut self.settings.d1_roi,
+            Source::D1RiseOfIron => &mut self.settings.d1_roi,
         }
     }
 
@@ -335,19 +378,19 @@ impl PackageAuthoringApp {
             return;
         };
         let resolved = match source {
-            Source::Modern => service::packages_path(&path).map_err(|error| error.to_string()),
-            Source::Reach => reach::maps_path(&path).map_err(|error| format!("{error:#}")),
+            Source::D2Modern => service::packages_path(&path).map_err(|error| error.to_string()),
+            Source::HaloReach => reach::maps_path(&path).map_err(|error| format!("{error:#}")),
             Source::Marathon => {
                 marathon::packages_path(&path).map_err(|error| format!("{error:#}"))
             }
-            Source::Roi => {
+            Source::D1RiseOfIron => {
                 parhelion_import::d1_roi::packages_path(&path).map_err(|error| format!("{error:#}"))
             }
         };
         match resolved {
             Ok(path) => {
                 *self.importer.folder_mut() = Some(path);
-                if source == Source::Roi {
+                if source == Source::D1RiseOfIron {
                     self.importer.roi = None;
                 }
                 self.importer.weapons.clear();
@@ -396,9 +439,9 @@ impl PackageAuthoringApp {
                 ctx.request_repaint();
             };
             let result = match source {
-                Source::Reach => {
+                Source::HaloReach => {
                     reach::browse_cached(&folder, &cache, refresh, progress).map(|entries| {
-                        let (weapons, origins) = rows(entries.into_iter().map(Origin::Reach));
+                        let (weapons, origins) = rows(entries.into_iter().map(Origin::HaloReach));
                         (weapons, origins, None)
                     })
                 }
@@ -408,7 +451,7 @@ impl PackageAuthoringApp {
                             rows(listing.entries.into_iter().map(Origin::Marathon));
                         (weapons, origins, listing.warning)
                     }),
-                Source::Modern | Source::Roi => {
+                Source::D2Modern | Source::D1RiseOfIron => {
                     Err(anyhow::anyhow!("This source uses a separate reader"))
                 }
             }
@@ -426,8 +469,9 @@ impl PackageAuthoringApp {
             .unwrap_or_default()
     }
 
-    /// The installed native item an origin builds on: a weapon of its type, or a Sparrow for a
-    /// vehicle. Stock items that unlock through their own collectible come first.
+    /// The first installed native item an origin can build on: a weapon of its type, or a Sparrow
+    /// for a vehicle. Stock items that unlock through their own collectible come first. A Marathon
+    /// import can build on a later candidate, as [`Self::foreign_donors`] describes.
     pub(super) fn foreign_donor(
         &self,
         origin: &Origin,
@@ -437,8 +481,10 @@ impl PackageAuthoringApp {
     }
 
     /// Every installed native item an origin can build on, in [`Self::foreign_donor`]'s order.
-    /// With Marathon animations on, a Marathon import takes the first whose first-person states
-    /// play the source's reloads.
+    /// A Halo: Reach import takes the first. A Marathon import gets the whole list and takes the
+    /// earliest whose own first-person animation best fits the source weapon's hold, reloads and
+    /// reload motion, or with Marathon animations on, the first whose states request the source's
+    /// reloads.
     pub(super) fn foreign_donors(
         &self,
         origin: &Origin,
@@ -477,8 +523,9 @@ impl PackageAuthoringApp {
     }
 
     /// Converts the selected Halo: Reach or Marathon items, each onto its chosen native base.
-    /// `reimport` names the saved namespace of each item a library reimport updates.
-    pub(super) fn import_foreign(&mut self, ctx: &egui::Context, reimport: &BTreeMap<u32, String>) {
+    /// `reimport` names the library recipe each item a library reimport updates. A Marathon item
+    /// brings ornaments as its recipe did, and any other as the importer's Ornaments choice says.
+    pub(super) fn import_foreign(&mut self, ctx: &egui::Context, reimport: &BTreeMap<u32, Saved>) {
         let source = self.importer.source;
         let Some(folder) = self.importer.folder().cloned() else {
             return;
@@ -486,6 +533,7 @@ impl PackageAuthoringApp {
         let Ok(root) = data_root() else { return };
         let risky = self.risky_donors();
         let source_animation = self.importer.settings.marathon_animations;
+        let ornaments = self.importer.settings.marathon_ornaments;
         let existing: BTreeMap<_, _> = self
             .recipe_entries
             .iter()
@@ -502,27 +550,41 @@ impl PackageAuthoringApp {
                 }
                 // Earlier Marathon imports were named by source hash or a short word. Halo:
                 // Reach recipes were only ever named by their entry slug.
+                let saved = reimport.get(&weapon.hash);
                 if let Origin::Marathon(entry) = &mut origin {
-                    entry.saved_namespace = reimport.get(&weapon.hash).cloned();
+                    entry.saved_namespace = saved.map(|saved| saved.namespace.clone());
                 }
-                Some((weapon.clone(), origin, donor))
+                let options = marathon::Options {
+                    source_animation,
+                    ornaments: saved.map_or(ornaments, |saved| saved.ornaments),
+                };
+                Some((weapon.clone(), origin, donor, options))
             })
             .collect();
         let names = jobs
             .iter()
-            .map(|(weapon, _, _)| weapon.name.clone())
+            .map(|(weapon, ..)| weapon.name.clone())
             .collect();
+        let cache = root.join("importer/catalog");
+        let relisted = self.importer.relisted.clone();
         self.run_import(ctx, names, move |index, native, progress| {
-            let (weapon, origin, donors) = &jobs[index];
+            let (weapon, origin, donors, options) = &jobs[index];
             let (donor, donor_name) = &donors[0];
-            let folder_name = match origin {
-                Origin::Reach(_) => format!("Reach {}", weapon.name),
-                Origin::Marathon(_) => weapon.name.clone(),
+            let kind = match origin {
+                Origin::HaloReach(entry) if entry.vehicle() => "vehicle",
+                Origin::HaloReach(_) | Origin::Marathon(_) => "weapon",
             };
-            let item = service::model_directory(&root.join("models"), &folder_name, weapon.hash)?;
-            let output = service::reserve_assets(&item, source.assets())?.join("import");
+            let item = service::item_directory(
+                &root.join(service::IMPORTS),
+                source.folder(),
+                weapon.hash,
+            )?;
+            // The importer works in `work`, and its graphs then move into their places in the
+            // conversion folder.
+            let conversion = service::reserve_assets(&item, kind)?;
+            let output = conversion.join("work");
             match origin {
-                Origin::Reach(entry) => {
+                Origin::HaloReach(entry) => {
                     progress("Translating source model…".into());
                     let request = reach_request(
                         entry,
@@ -530,17 +592,23 @@ impl PackageAuthoringApp {
                         donor_name,
                         existing.get(&weapon.hash).map(PathBuf::as_path),
                     )?;
-                    reach::import(&request, &folder, native, &output)
+                    let recipe = reach::import(&request, &folder, native, &output)?;
+                    parhelion_import::settle_graphs(&recipe, &conversion)?;
+                    Ok(recipe)
                 }
-                Origin::Marathon(entry) => marathon::import(
-                    entry,
-                    donors,
-                    source_animation,
-                    &folder,
-                    native,
-                    &output,
-                    progress,
-                ),
+                Origin::Marathon(entry) => {
+                    // A game update renumbers the tags a listing names, so an entry listed
+                    // before one is found again in the current packages.
+                    let current = marathon::current(&folder, &cache, entry)?;
+                    if current.listed != entry.listed {
+                        relisted.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let recipe = marathon::import(
+                        &current, donors, *options, &folder, native, &output, progress,
+                    )?;
+                    marathon::settle(&recipe, &conversion)?;
+                    Ok(recipe)
+                }
             }
         });
     }

@@ -1,7 +1,58 @@
-//! Cosmetic collectibles inherit the native ornament's weapon-type leaf.
+//! Cosmetic collectibles for an imported weapon's own ornaments, which acquire with the weapon. An
+//! Exotic's join the native ornament's weapon-type page under Exotic and Weapon Ornaments, and an
+//! ordinary weapon's its weapon type's page under Weapons and Weapon Ornaments, as stock ones do.
 use super::*;
 use crate::progression::*;
 use crate::tag_payload::{array_at, read_u16, write_localized_reference, write_u16};
+
+/// The Exotic native ornament's one weapon-type page and the count pools it is counted in.
+fn exotic_page(
+    emission: &PackageEmission,
+    donor: usize,
+    source_unlock: usize,
+) -> AuthoringResult<(u16, Vec<u16>, SunriseAcquiredPoolSelection)> {
+    let parents = template_presentation_parents(&emission.nodes, &emission.collectibles, donor)?;
+    let [leaf] = parents.as_slice() else {
+        return Err(invalid("Native ornament must have one weapon-type leaf"));
+    };
+    let leaf = *leaf;
+    let (_, _, node_rows, _) = array_at(&emission.nodes, 8)?;
+    let parent = |index: u16| -> AuthoringResult<u16> {
+        let (count, _, rows, _) = array_at(
+            &emission.nodes,
+            node_rows + index as usize * PRESENTATION_NODE_ROW_SIZE + 0x18,
+        )?;
+        if count != 1 {
+            return Err(invalid("Ambiguous ornament collection ancestry"));
+        }
+        read_u16(&emission.nodes, rows)
+    };
+    let ornaments = parent(leaf)?;
+    let exotics = parent(ornaments)?;
+    if read_u32(
+        &emission.nodes,
+        node_rows + ornaments as usize * PRESENTATION_NODE_ROW_SIZE + 0x28,
+    )? != 0x47D9E328
+        || read_u32(
+            &emission.nodes,
+            node_rows + exotics as usize * PRESENTATION_NODE_ROW_SIZE + 0x28,
+        )? != 0x3FB0E331
+    {
+        return Err(invalid(
+            "Ornament donor is not in Exotics / Weapon Ornaments / weapon type",
+        ));
+    }
+    let selection = classify_sunrise_count_pools(
+        &emission.pools,
+        &emission.nodes,
+        &emission.collectibles,
+        &emission.objectives,
+        &parents,
+        leaf,
+        source_unlock as u16,
+    )?;
+    Ok((leaf, parents, selection))
+}
 
 pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringResult<()> {
     let Some(link) = graph.get("ornament") else {
@@ -68,46 +119,17 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
     let new_parallel = emission.pools.len();
     emission.pools.extend_from_slice(&parallel);
     crate::tag_payload::write_relative_pointer(&mut emission.pools, 0x20, new_parallel)?;
-    let parents = template_presentation_parents(&emission.nodes, &emission.collectibles, donor)?;
-    let [leaf] = parents.as_slice() else {
-        return Err(invalid("Native ornament must have one weapon-type leaf"));
+    // An ordinary weapon's planned page counts it directly. An Exotic's counts as the native
+    // ornament's pools count that ornament.
+    let weapon_page = emission.ornament_targets.get(&owner_hash).copied();
+    let (leaf, parents, selection) = match weapon_page {
+        Some(page) => (
+            page.page,
+            vec![page.page],
+            SunriseAcquiredPoolSelection::default(),
+        ),
+        None => exotic_page(emission, donor, source_unlock)?,
     };
-    let leaf = *leaf;
-    let (_, _, node_rows, _) = array_at(&emission.nodes, 8)?;
-    let parent = |index: u16| -> AuthoringResult<u16> {
-        let (count, _, rows, _) = array_at(
-            &emission.nodes,
-            node_rows + index as usize * PRESENTATION_NODE_ROW_SIZE + 0x18,
-        )?;
-        if count != 1 {
-            return Err(invalid("Ambiguous ornament collection ancestry"));
-        }
-        read_u16(&emission.nodes, rows)
-    };
-    let ornaments = parent(leaf)?;
-    let exotics = parent(ornaments)?;
-    if read_u32(
-        &emission.nodes,
-        node_rows + ornaments as usize * PRESENTATION_NODE_ROW_SIZE + 0x28,
-    )? != 0x47D9E328
-        || read_u32(
-            &emission.nodes,
-            node_rows + exotics as usize * PRESENTATION_NODE_ROW_SIZE + 0x28,
-        )? != 0x3FB0E331
-    {
-        return Err(invalid(
-            "Ornament donor is not in Exotics / Weapon Ornaments / weapon type",
-        ));
-    }
-    let selection = classify_sunrise_count_pools(
-        &emission.pools,
-        &emission.nodes,
-        &emission.collectibles,
-        &emission.objectives,
-        &parents,
-        leaf,
-        source_unlock as u16,
-    )?;
     let mut identity =
         WeaponCloneIdentity::from_namespace(&format!("parhelion.imported-ornament-{target:08x}"))?;
     if (0..count).any(|i| {
@@ -141,7 +163,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
             },
             material_set_index: material,
             presentation_parents: &parents,
-            require_donor_parent_subset: true,
+            require_donor_parent_subset: weapon_page.is_none(),
         },
     )?;
     let (_, _, new_rows, _) = array_at(&emission.collectibles, 8)?;
@@ -181,30 +203,58 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         0xFFFF,
         0x811C9DC5,
     )?;
-    crate::progression::presentation::append_collectible_child_to_node(
-        &mut emission.nodes,
-        leaf as usize,
-        donor,
-        count,
-    )?;
+    match weapon_page {
+        // A page the build added has no stock child of its own, so the row copies one from the
+        // stock page it was cloned from.
+        Some(page) => {
+            let template = crate::progression::presentation::collectible_child_row(
+                &emission.nodes,
+                usize::from(page.child_page),
+                page.child_donor,
+            )?;
+            crate::progression::presentation::add_templated_collectible_children(
+                &mut emission.nodes,
+                usize::from(leaf),
+                &[count],
+                template,
+                crate::collection::first(None),
+            )?;
+        }
+        None => crate::progression::presentation::append_collectible_child_to_node(
+            &mut emission.nodes,
+            leaf as usize,
+            donor,
+            count,
+        )?,
+    }
     emission.objectives = patch_project_collection_objectives(
         std::mem::take(&mut emission.objectives),
         &emission.nodes,
         &BTreeMap::from([(leaf, 1)]),
         1,
     )?;
-    emission.pools = patch_project_acquired_count_programs(
-        std::mem::take(&mut emission.pools),
-        &[ProjectAuthoredRow {
-            donor_collectible_index: donor,
-            authored_collectible_index: count,
-            pages: crate::collection::CollectionPages::one(leaf),
-            classes: crate::collection::Classes::ALL,
-            source_acquired_flag: source_unlock as u16,
-            authored_unlock_index: unlock,
-            count_selection: selection,
-        }],
-    )?;
+    let row = ProjectAuthoredRow {
+        donor_collectible_index: donor,
+        authored_collectible_index: count,
+        pages: crate::collection::CollectionPages::one(leaf),
+        classes: crate::collection::Classes::ALL,
+        source_acquired_flag: source_unlock as u16,
+        authored_unlock_index: unlock,
+        count_selection: selection,
+    };
+    if weapon_page.is_some() {
+        add_direct_acquired_counts(
+            &mut emission.objectives,
+            &emission.nodes,
+            std::slice::from_ref(&row),
+            &emission.pools,
+        )?;
+    } else {
+        emission.pools = patch_project_acquired_count_programs(
+            std::mem::take(&mut emission.pools),
+            std::slice::from_ref(&row),
+        )?;
+    }
     for data in [
         &mut emission.collectibles,
         &mut emission.collectible_displays,
@@ -216,7 +266,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         crate::tag_payload::write_u64(data, 0, len)?;
     }
     eprintln!(
-        "Imported ornament {target:08X} collectible {} in Exotics / Weapon Ornaments / node {leaf}; owner unlock {unlock}",
+        "Imported ornament {target:08X} collectible {} on Collections page {leaf}; owner unlock {unlock}",
         identity.collectible_hash
     );
     Ok(())

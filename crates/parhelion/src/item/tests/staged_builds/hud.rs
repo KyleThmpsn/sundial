@@ -173,16 +173,13 @@ fn hud_icon_private_graph_preserves_source_and_every_content_variant() {
         .write_to(&mut png, image::ImageFormat::Png)
         .unwrap();
     let image = crate::hud_icon::HudImage::from_png(&png.into_inner()).unwrap();
-    let mut assets = vec![];
-    let mut refs = vec![];
-    let replacement = crate::hud_icon::assets::build(
-        &manager,
-        std::iter::once((key, &image)),
-        &mut assets,
-        &mut refs,
-    )
-    .unwrap()
-    .unwrap();
+    let mut packages = crate::asset_packages::AssetPackages::default();
+    let replacement =
+        crate::hud_icon::assets::build(&manager, std::iter::once((key, &image)), &mut packages)
+            .unwrap()
+            .unwrap();
+    let assets = &packages.packages[0].tags;
+    let refs = &packages.packages[0].references;
     assert_eq!(assets.len(), 3);
     assert_eq!(refs.len(), 2);
     assert_eq!(assets[0].payload, image.rgba());
@@ -215,8 +212,7 @@ fn hud_icon_private_graph_preserves_source_and_every_content_variant() {
         crate::hud_icon::assets::build(
             &manager,
             std::iter::once((0x08491234, &image)),
-            &mut vec![],
-            &mut vec![]
+            &mut crate::asset_packages::AssetPackages::default()
         )
         .is_err()
     );

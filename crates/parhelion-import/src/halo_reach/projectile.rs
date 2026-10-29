@@ -215,7 +215,7 @@ fn resolved(
 }
 
 // Relocate only typed component references and the separately supplied component table.
-fn relocate(
+pub(super) fn relocate(
     payload: &mut Payload,
     owners: &BTreeMap<u32, Payload>,
     ids: &BTreeMap<u32, u32>,

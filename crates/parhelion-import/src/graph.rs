@@ -9,13 +9,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 mod opened;
+mod place;
 mod presentation;
 pub use opened::forget_opened;
+pub use place::{GRAPH, ORNAMENTS, conversion_folder, in_place, place, settle, unplace};
 
 /// The importer revision a new import records in its graph. Raise it with any change to what
 /// conversion writes. Raise `MINIMUM_CONVERTER_REVISION` to it as well when imports made before
 /// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
-pub const CONVERTER_REVISION: u32 = 214;
+pub const CONVERTER_REVISION: u32 = 263;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
@@ -114,7 +116,7 @@ impl GraphReference {
         ensure!(
             !matches!(
                 graph["kind"].as_str(),
-                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow")
+                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
             ) && graph.get("gear_art").is_none(),
             "Choose imported weapon assets for a weapon model"
         );
@@ -231,7 +233,7 @@ impl GraphReference {
         ensure!(
             matches!(
                 kind,
-                "shader" | "armor" | "ghost_shell" | "ship" | "sparrow"
+                "shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament"
             ),
             "This item kind does not use reusable imported assets"
         );
@@ -420,6 +422,7 @@ fn copy_plan(graph: &Value, root: &Path, output: &Path) -> Result<Vec<(PathBuf, 
         "/particles/nodes",
         "/audio_assets/nodes",
         "/projectile/nodes",
+        "/sword/nodes",
     ] {
         for node in graph
             .pointer(pointer)
@@ -453,6 +456,43 @@ fn hash_animation(graph: &Value, root: &Path, digest: &mut Sha256) -> Result<()>
     Ok(())
 }
 
+/// Reads every file under `root` once on several threads, so the hash that follows finds them in
+/// the file cache. A cold folder of a thousand payloads otherwise waits on each read in turn,
+/// eight seconds for one Rise of Iron weapon. Failures are left for the hash to report.
+fn read_ahead(root: &Path) {
+    use std::io::Read;
+    let mut files = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
+                Ok(kind) if kind.is_file() => files.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(8));
+    std::thread::scope(|scope| {
+        for _ in 0..threads.min(files.len()) {
+            scope.spawn(|| {
+                let mut buffer = vec![0; 1 << 20];
+                while let Some(path) =
+                    files.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
+                    if let Ok(mut file) = fs::File::open(path) {
+                        while file.read(&mut buffer).is_ok_and(|count| count > 0) {}
+                    }
+                }
+            });
+        }
+    });
+}
+
 fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
     let bytes = fs::read(directory.join("asset-graph.json"))?;
     let graph: Value = serde_json::from_slice(&bytes)?;
@@ -467,7 +507,7 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         ensure!(
             matches!(
                 graph["kind"].as_str(),
-                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow")
+                Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
             ),
             "Imported graph is not reusable item assets"
         );
@@ -485,6 +525,7 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
     digest.update((bytes.len() as u64).to_le_bytes());
     digest.update(&bytes);
     let root = directory.canonicalize()?;
+    read_ahead(&root);
     let mut symbols = BTreeSet::new();
     for node in nodes {
         let symbol = node["symbol"].as_str().context("Missing asset symbol")?;
@@ -542,6 +583,8 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
             Some("armor" | "ghost_shell" | "ship" | "sparrow")
         )
     {
+        // A universal ornament carries gear art. A weapon ornament for a stock weapon is a
+        // weapon model graph of the ornament kind, which has a parent like any weapon model.
         validate_gear(&graph, &symbols)?;
     } else {
         ensure!(
@@ -601,6 +644,7 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
                 .into_iter()
                 .flatten(),
         )
+        .chain(graph["sword"]["nodes"].as_array().into_iter().flatten())
     {
         let name = node["file"].as_str().context("particle payload file")?;
         let path = Path::new(name);
@@ -649,7 +693,7 @@ fn validate_gear(graph: &Value, symbols: &BTreeSet<&str>) -> Result<()> {
     ensure!(
         matches!(
             graph["kind"].as_str(),
-            Some("weapon" | "armor" | "ghost_shell" | "ship" | "sparrow")
+            Some("weapon" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
         ),
         "Gear art requires a model gear recipe"
     );

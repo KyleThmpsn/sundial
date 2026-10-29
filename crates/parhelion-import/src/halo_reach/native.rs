@@ -834,10 +834,7 @@ pub(super) fn build(
         geometry::encode_with_stages(&mesh, &header, row, &stages)?
     };
     fs::create_dir_all(root)?;
-    let mut g = Graph {
-        root: root.to_path_buf(),
-        nodes: Vec::new(),
-    };
+    let mut g = Graph::new(root.to_path_buf(), Vec::new());
     buffers(native, &mut g, &header, row, &encoded)?;
     g.add("model", model_tag, &encoded.header, None, encoded.patches)?;
     let original = render_owner(native, &mut g, owner_tag)?;
@@ -1523,6 +1520,16 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
                 &root.join("graph"),
             )
             .with_context(|| format!("Handling audio for {}", entry.slug))?;
+        }
+        if let Some(sword) = super::melee::slam::prepare(
+            &mut native,
+            &scene,
+            &behavior,
+            &recipe,
+            &root.join("graph"),
+            entry.source.audio.is_some(),
+        )? {
+            graph["sword"] = sword;
         }
         report::behavior(&mut graph);
         write_json(&root.join("graph/asset-graph.json"), &graph)?;

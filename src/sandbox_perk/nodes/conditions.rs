@@ -335,13 +335,13 @@ pub const CONDITIONS: [NodeKind; 45] = [
     },
     NodeKind {
         kind: 33,
-        class: 0x00000000,
-        struct_size: 0,
+        class: 0x80803DE3,
+        struct_size: 12,
         occurrences: 0,
         name: "Event Byte Differs",
         summary: "Requires an event byte to differ from the byte on this node.",
-        evidence: "Requires node byte +8 to differ from event byte 0. No package occurrence was found.",
-        support: Support::Unobserved,
+        evidence: "Original typed copying accepts the registered 12-byte condition class 80803DE3. Explicit kind 33 dispatch compares node byte +8 with event byte 0. Publication sends zero on ending and one on activation. No stock class-kind pair or default kind was found. The construction is qualified by original copying and dispatch, without a disk-load or gameplay claim.",
+        support: Support::Authorable,
     },
     NodeKind {
         kind: 34,

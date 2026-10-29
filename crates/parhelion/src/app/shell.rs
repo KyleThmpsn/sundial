@@ -410,13 +410,13 @@ impl PackageAuthoringApp {
             .filter(|path| self.map_entries.iter().any(|map| &map.path == *path))
             .count();
         let noun = match (maps, included_count) {
+            // One pass over the library each frame. Finding each included recipe in it took
+            // millions of path comparisons a frame for a library of 2,000 included recipes.
             (0, _) => ItemKind::count_noun(
-                self.enabled_recipe_paths.iter().filter_map(|path| {
-                    self.recipe_entries
-                        .iter()
-                        .find(|entry| &entry.path == path)
-                        .map(|entry| entry.kind)
-                }),
+                self.recipe_entries
+                    .iter()
+                    .filter(|entry| self.enabled_recipe_paths.contains(&entry.path))
+                    .map(|entry| entry.kind),
                 included_count,
             ),
             (1, 1) => "Map",
@@ -460,12 +460,93 @@ impl PackageAuthoringApp {
             {
                 self.build_status_open = true;
             }
+            self.draw_activity(ui);
             self.draw_build_notice(ui);
         });
         if included_count == 0 {
             ui.colored_label(ui.visuals().warn_fg_color, "Nothing selected to build.");
         } else if !catalog_ready && !installing {
             ui.colored_label(ui.visuals().warn_fg_color, "Weapon catalog unavailable.");
+        }
+    }
+
+    /// Running background work, each with the window that shows it and the lines its hover adds.
+    fn activities(&self) -> Vec<(String, Option<ActivityWindow>, Vec<String>)> {
+        let mut tasks = Vec::new();
+        if self.build_receiver.is_some() {
+            tasks.push((
+                "Building…".to_owned(),
+                Some(ActivityWindow::BuildStatus),
+                Vec::new(),
+            ));
+        }
+        if self.install_receiver.is_some() {
+            tasks.push((
+                "Installing…".to_owned(),
+                Some(ActivityWindow::BuildStatus),
+                Vec::new(),
+            ));
+        }
+        if self.build_check.busy() {
+            tasks.push(("Checking Installed Items…".to_owned(), None, Vec::new()));
+        }
+        if self.catalog_receiver.is_some() || self.catalog_worker.is_some() {
+            tasks.push(("Loading Catalog…".to_owned(), None, Vec::new()));
+        }
+        #[cfg(feature = "d2-model-importer")]
+        tasks.extend(
+            self.importer
+                .activities()
+                .into_iter()
+                .map(|(label, shown, details)| {
+                    (label, shown.then_some(ActivityWindow::Importer), details)
+                }),
+        );
+        tasks
+    }
+
+    /// A spinner and the first running background task, with every task on hover. A click
+    /// opens the task's window. Nothing shows while all is idle.
+    fn draw_activity(&mut self, ui: &mut egui::Ui) {
+        let tasks = self.activities();
+        let Some((first, window, _)) = tasks.first().cloned() else {
+            return;
+        };
+        let color = ui.visuals().weak_text_color();
+        let text = match tasks.len() {
+            1 => first,
+            count => format!("{first} +{}", count - 1),
+        };
+        let shown = ui
+            .horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(12.0).color(color));
+                ui.label(egui::RichText::new(text).color(color));
+            })
+            .response;
+        let mut response = ui
+            .interact(
+                shown.rect,
+                ui.id().with("background-activity"),
+                egui::Sense::click(),
+            )
+            .on_hover_ui(|ui| {
+                for (label, _, details) in &tasks {
+                    ui.label(label);
+                    for line in details {
+                        ui.weak(line);
+                    }
+                }
+            });
+        if window.is_some() {
+            response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            match window {
+                Some(ActivityWindow::BuildStatus) => self.build_status_open = true,
+                #[cfg(feature = "d2-model-importer")]
+                Some(ActivityWindow::Importer) => self.importer.open = true,
+                None => {}
+            }
         }
     }
 
@@ -567,4 +648,12 @@ impl PackageAuthoringApp {
         }
         ui.add_space(5.0);
     }
+}
+
+/// The window that shows a background task.
+#[derive(Clone, Copy)]
+enum ActivityWindow {
+    BuildStatus,
+    #[cfg(feature = "d2-model-importer")]
+    Importer,
 }

@@ -45,8 +45,27 @@ fn clear_requirements(emission: &mut PackageEmission, target: u32) -> AuthoringR
     Ok(())
 }
 
+/// The rarity an ornament link names, which its private plug and icon take.
+pub(super) fn rarity(graph: &Value) -> AuthoringResult<Option<crate::AuthoredWeaponRarity>> {
+    let Some(value) = graph["ornament"].get("rarity") else {
+        return Ok(None);
+    };
+    let rarity: crate::recipe::RecipeRarity = serde_json::from_value(value.clone())
+        .map_err(|error| invalid(format!("Ornament rarity: {error}")))?;
+    Ok(Some(rarity.into()))
+}
+
 pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringResult<()> {
     let Some(link) = graph.get("ornament") else {
+        // A universal ornament is offered in every socket of its class and slot without an
+        // unlock, so its plug keeps none of the stock ornament's requirements.
+        if graph["kind"] == "ornament" {
+            let item = graph["item_hash"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| invalid("Universal ornament item hash"))?;
+            return clear_requirements(emission, item);
+        }
         return Ok(());
     };
     let hash = |key: &str| {
@@ -69,6 +88,27 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         return Err(invalid("Ornament owner must be a separate authored weapon"));
     }
     clear_requirements(emission, target)?;
+    // A socket type whitelists the reset's plug category and one ornament category. A link that
+    // names that category moves the private plug into it, whichever stock ornament it copies.
+    if let Some(category) = link.get("plug_category") {
+        let category = category
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| invalid("Ornament plug category"))?;
+        let ordinal = definition_ordinal(emission, target)?;
+        crate::plug_classification::PlugClassification::set_category(
+            &mut emission.host_new_tags[ordinal].payload,
+            category,
+        )?;
+    }
+    // A source tier sets the private plug's own rarity, independently of its layout plug's.
+    if let Some(rarity) = rarity(graph)? {
+        let ordinal = definition_ordinal(emission, target)?;
+        let definition = &mut emission.host_new_tags[ordinal].payload;
+        *definition
+            .get_mut(sundial::package_authoring::investment_schema::ITEM_RARITY_OFFSET)
+            .ok_or_else(|| invalid("Ornament plug has no rarity field"))? = rarity.package_value();
+    }
     let ordinal = definition_ordinal(emission, owner)?;
     let definition = &emission.host_new_tags[ordinal].payload;
     let resource = relative_target(definition, 0x68)?;

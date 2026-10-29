@@ -221,7 +221,10 @@ fn source_controllers_route_staged_first_person_actions() -> Result<()> {
         let path = marathon::browse::import(
             &entry,
             &candidates,
-            true,
+            marathon::browse::Options {
+                source_animation: true,
+                ornaments: false,
+            },
             &source,
             &prepared_packages,
             &output.join(format!("import-{index}")),

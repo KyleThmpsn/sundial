@@ -219,12 +219,7 @@ pub fn sockets(r: &mut Reader, hash: u32) -> Result<Value> {
                 .into_iter()
                 .map(|o| plug.u16(o + 2))
                 .collect::<Result<Vec<_>>>()?;
-            let categories = (0x100..plug.0.len().min(0x300).saturating_sub(8))
-                .step_by(4)
-                .filter(|&at| plug.u32(at).ok() == Some(0x808077E3))
-                .map(|at| plug.u32(at + 4))
-                .collect::<Result<Vec<_>>>()?;
-            let category = (categories.len() == 1).then(|| categories[0]);
+            let category = plug_category(&plug)?;
             plugs.push(json!({"hash":items.u32(row)?,"tag":format!("{tag:08X}"),"art_indices":art,"category":category,"item_kind":plug.u8(0xB8)?,"default":choice==initial}));
         }
         let curated_fallback = if initial == u16::MAX && item.u64(row + 0x40)? == 0 {
@@ -240,6 +235,16 @@ pub fn sockets(r: &mut Reader, hash: u32) -> Result<Value> {
     write_json(&r.output.join("native-sockets.json"), &report)?;
     r.finish()?;
     Ok(report)
+}
+
+/// A native plug item's category, when its definition names exactly one.
+pub(crate) fn plug_category(plug: &Payload) -> Result<Option<u32>> {
+    let categories = (0x100..plug.0.len().min(0x300).saturating_sub(8))
+        .step_by(4)
+        .filter(|&at| plug.u32(at).ok() == Some(0x808077E3))
+        .map(|at| plug.u32(at + 4))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((categories.len() == 1).then(|| categories[0]))
 }
 
 /// A recipe that sets any socket column makes the build curate every socket it inherits, and a

@@ -537,7 +537,7 @@ impl Graph {
     }
 }
 
-/// One observed native configuration, independent of any installed stock action.
+/// One qualified native configuration, independent of any installed stock action.
 pub fn template(kind: NodeKind) -> Option<Vec<u8>> {
     schema::template(kind)
 }

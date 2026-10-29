@@ -18,9 +18,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
+    time::Instant,
 };
 use sundial::investment::InvestmentCatalog;
 mod armor;
+mod firing;
 mod first_person;
 mod perk;
 mod readback;
@@ -81,16 +83,25 @@ fn view(native: &Path, output: &Path, run: &Path, names: &[String]) -> Result<Pa
 }
 
 #[test]
-#[ignore = "Requires D1_IMPORT_PLAN, D1_IMPORT_OUTPUT, D1_SOURCE_PACKAGES, SUNDIAL_STOCK_PACKAGES and PARHELION_D1_XG"]
+#[ignore = "Requires D1_IMPORT_PLAN, D1_IMPORT_OUTPUT, D1_SOURCE_PACKAGES, SUNDIAL_STOCK_PACKAGES, PARHELION_D1_XG and SUNDIAL_TEST_REVISION"]
 #[allow(clippy::cognitive_complexity)]
 fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
+    let began = Instant::now();
     let output = configured("D1_IMPORT_OUTPUT")?;
     ensure!(!output.exists(), "Use a fresh output folder");
     let native = configured("SUNDIAL_STOCK_PACKAGES")?;
-    let source = Source::open(&configured("D1_SOURCE_PACKAGES")?, |_, _| {})?;
-    let plan: Vec<Value> = serde_json::from_slice(&fs::read(configured("D1_IMPORT_PLAN")?)?)?;
+    let source_packages = configured("D1_SOURCE_PACKAGES")?;
+    let source_stamp = package_stamp(&source_packages)?;
+    let native_stamp = package_stamp(&native)?;
+    let revision = env::var("SUNDIAL_TEST_REVISION")?;
+    ensure!(!revision.trim().is_empty(), "Source revision is empty");
+    let test_binary_sha256 = hex::encode(Sha256::digest(fs::read(env::current_exe()?)?));
+    let source = Source::open(&source_packages, |_, _| {})?;
+    let plan_bytes = fs::read(configured("D1_IMPORT_PLAN")?)?;
+    let plan: Vec<Value> = serde_json::from_slice(&plan_bytes)?;
     ensure!(!plan.is_empty(), "Required source corpus is empty");
     fs::create_dir_all(&output)?;
+    fs::write(output.join("plan.json"), &plan_bytes)?;
     let catalog = InvestmentCatalog::load_with_cache_path(
         native.parent().context("Native root")?,
         &output.join("native-catalog.json"),
@@ -285,6 +296,8 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
         serde_json::to_vec_pretty(&json!({"cases":receipts,"failures":failures}))?,
     )?;
     ensure!(!recipes.is_empty(), "No accepted cases to stage");
+    let conversion_seconds = began.elapsed().as_secs_f64();
+    let staging_began = Instant::now();
     let snapshot = BatchBuildSnapshot::new(BatchBuildRequest {
         package_directory: native.clone(),
         staging_root: output.join("build"),
@@ -305,6 +318,8 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
             .map(|a| a.file_name.clone())
             .collect::<Vec<_>>(),
     )?;
+    let staging_seconds = staging_began.elapsed().as_secs_f64();
+    let readback_began = Instant::now();
     let mut staged = Reader::new(&packages, &output.join("readback"), false)?;
     for (tag, bytes) in unchanged {
         ensure!(staged.tag(tag, None)?.0 == bytes, "Stock donor changed");
@@ -314,6 +329,7 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
             continue;
         };
         let checked = (|| -> Result<()> {
+            receipt["firing_readback"] = firing::check(&source, &mut stock, &mut staged, receipt)?;
             let (tag, _) = item(&mut staged, hash)?;
             receipt["readback"] = readback::check(
                 &source,
@@ -332,6 +348,27 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                     perk::check(&source, &mut stock, &mut staged, tag, recipe, receipt).map_err(
                         |error| anyhow::anyhow!("Perks for {}: {error}", receipt["name"]),
                     )?;
+                for required in receipt["case"]["required_status_audio_graphs"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    let required = number(required)?;
+                    ensure!(
+                        receipt["native_behaviors"]
+                            .as_array()
+                            .context("Native behavior readback")?
+                            .iter()
+                            .flat_map(|behavior| {
+                                behavior["status_audio"].as_array().into_iter().flatten()
+                            })
+                            .any(|audio| {
+                                audio["source_graph"].as_u64() == Some(u64::from(required))
+                                    && audio["persisted"].is_object()
+                            }),
+                        "Required status audio graph {required:08X} has no persisted and staged readback"
+                    );
+                }
                 if receipt["graph"]["kind"] == "armor" {
                     receipt["armor_talents"] =
                         armor::check(&source, &mut staged, tag, recipe, receipt)?;
@@ -358,10 +395,23 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
     }
     stock.finish()?;
     staged.finish()?;
+    let source_after = package_stamp(&source_packages)?;
+    let native_after = package_stamp(&native)?;
+    if source_stamp != source_after || native_stamp != native_after {
+        failures.push("Configured source or stock packages changed during verification".into());
+    }
     fs::write(
         output.join("verification.json"),
         serde_json::to_vec_pretty(
-            &json!({"source":source.report(),"native_stamp":package_stamp(&native)?,"converter_revision":parhelion_import::CONVERTER_REVISION,"cases":receipts,"failures":failures,"staged":built.run_directory,"limits":"Source conversion, persisted reload and native package readback. Rendering, optics, cloth and perk gameplay require separate live acceptance."}),
+            &json!({"source":source.report(),"source_revision":revision,"test_binary_sha256":test_binary_sha256,
+                "source_stamp":source_stamp,"source_stamp_after":source_after,
+                "native_stamp":native_stamp,"native_stamp_after":native_after,
+                "plan_sha256":hex::encode(Sha256::digest(&plan_bytes)),
+                "converter_revision":parhelion_import::CONVERTER_REVISION,"cases":receipts,
+                "failures":failures,"staged":built.run_directory,"artifacts":built.artifacts,
+                "timing_seconds":{"conversion":conversion_seconds,"staging":staging_seconds,
+                    "readback":readback_began.elapsed().as_secs_f64(),"total":began.elapsed().as_secs_f64()},
+                "limits":"Source conversion, persisted reload and native package readback. Rendering, optics, cloth, audio playback, activation, repeated use, cancellation, expiry and cleanup execution require separate live acceptance. Compilation and link timing belong to the external Release verification receipt."}),
         )?,
     )?;
     ensure!(

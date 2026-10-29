@@ -113,7 +113,15 @@ impl Assets {
     }
 
     pub fn write(self, graph: &Path, root: u32, report: Value) -> Result<Value> {
-        let directory = graph.join("projectile");
+        self.write_in(graph, "projectile", root, report)
+    }
+
+    pub fn write_in(self, graph: &Path, folder: &str, root: u32, report: Value) -> Result<Value> {
+        ensure!(
+            matches!(folder, "projectile" | "sword"),
+            "Unsupported private graph folder"
+        );
+        let directory = graph.join(folder);
         ensure!(!directory.exists(), "projectile output already exists");
         fs::create_dir_all(&directory)?;
         let mut nodes = Vec::new();
@@ -137,7 +145,7 @@ impl Assets {
                     put(&mut node.payload, at, &u32::MAX.to_le_bytes())?;
                 }
             }
-            let file = format!("projectile/{}.bin", node.symbol);
+            let file = format!("{folder}/{}.bin", node.symbol);
             fs::write(graph.join(&file), &node.payload.0)?;
             nodes.push(json!({"symbol":node.symbol,"template":node.template,"file":file,
                 "reference":node.reference.map(|id| self.names.get(&id).cloned().context("unreserved projectile reference")).transpose()?,

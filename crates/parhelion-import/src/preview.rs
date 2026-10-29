@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 use sundial::package_authoring::PackageManager;
-use sundial::ui::model_preview::{LocalAppearance, LocalScene};
+use sundial::ui::model_preview::{LocalAppearance, LocalScene, timing};
 use tiger_pkg::TagHash;
 
 pub fn appearance(reference: &GraphReference, kind: &str) -> LocalAppearance {
@@ -34,7 +34,10 @@ fn read(
     item_kind: &str,
     manager: &mut PackageManager,
 ) -> Result<LocalScene, String> {
-    validate(reference, item_kind)?;
+    {
+        let _stage = timing::stage("imported validation");
+        validate(reference, item_kind)?;
+    }
     let graph: Value = serde_json::from_slice(
         &fs::read(reference.directory.join("asset-graph.json")).map_err(|e| e.to_string())?,
     )
@@ -46,7 +49,9 @@ fn read(
     let (package, symbols, entries) =
         prepare(&graph, &root, manager, reference.material_inputs.as_ref())?;
     // Validate after reading too, so concurrent file changes cannot assemble a mixed graph.
+    let check = timing::stage("imported validation");
     validate(reference, item_kind)?;
+    drop(check);
     manager.add_local_package(package, entries)?;
     scene(&graph, item_kind, &symbols, manager)
 }
@@ -94,10 +99,13 @@ fn prepare(
             return Err("Imported preview has duplicate symbols".into());
         }
     }
+    let binding = timing::stage("imported material binding");
     let mut bound = crate::tiger::material::bind(graph, root)
         .map_err(|e| format!("Imported model bindings: {e:#}"))?;
     crate::marathon::inputs::bind(graph, root, inputs, &mut bound)
         .map_err(|e| format!("Imported material inputs: {e:#}"))?;
+    drop(binding);
+    let _payloads = timing::stage("imported payloads");
     let models = crate::model_symbols(graph).map_err(|e| e.to_string())?;
     let entries = nodes
         .iter()
@@ -285,7 +293,8 @@ fn source_dyes(
     symbols: &Symbols,
 ) -> Result<BTreeMap<usize, u32>, String> {
     let first = match item_kind {
-        "armor" => 0,
+        // A universal ornament dresses armor, so it takes armor's dye slots.
+        "armor" | "ornament" => 0,
         "weapon" => 4,
         "ship" => 7,
         "sparrow" => 10,

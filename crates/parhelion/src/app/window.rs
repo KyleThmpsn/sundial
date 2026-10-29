@@ -55,7 +55,11 @@ impl PackageAuthoringUtility for Parhelion {
         preferences: PackageAuthoringPreferences,
     ) -> Result<(), String> {
         let packages = install_directory.join("packages");
-        let branding = crate::branding::Branding::detect(install_directory);
+        // One read of the runtime DLL, which is tens of megabytes, gives both.
+        let runtime = sundial::package_authoring::installed_runtime_kind(install_directory);
+        let branding = runtime.map_or(crate::branding::Branding::Sunrise, |(brand, _)| {
+            crate::branding::Branding::of(brand)
+        });
         self.app.perk_workbench.branding = branding;
         if self.app.presentation_editor.branding() != branding {
             self.app.presentation_editor.set_branding(branding);
@@ -76,7 +80,7 @@ impl PackageAuthoringUtility for Parhelion {
             self.app.reset_catalog_load();
             self.app.invalidate_results();
         }
-        self.app.mod_loader = crate::install::uses_mod_loader(&self.app.packages);
+        self.app.mod_loader = runtime.is_some_and(|(_, mods)| mods);
         self.app.show_plug_safety_warnings = sundial::investment::show_plug_safety_warnings();
         self.app.initialize_storage();
         self.app.upgrade.request();

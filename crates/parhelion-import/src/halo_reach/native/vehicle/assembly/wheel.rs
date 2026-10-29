@@ -544,7 +544,7 @@ impl Assembly {
         Ok(
             json!({"clips":clip_report,"front_phase_method":10,"rear_phase_method":11,"steering_method":9,
             "parameters":first_parameter+4,"layers":states.len()+3,"input_scheduler":"Primary vehicle bank","seal":seal,"output":output,
-            "limits":["These source rotation overlays follow native car travel and steering. Suspension deformation and live layered playback require gameplay acceptance."]}),
+            "limits":["These source rotation overlays follow native car travel and steering."]}),
         )
     }
 }

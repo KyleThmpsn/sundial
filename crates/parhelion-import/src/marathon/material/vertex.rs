@@ -372,6 +372,7 @@ fn validate_projection(source: &Source<'_>, projection: Option<reticle::Projecti
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn hlsl(
     listing: &str,
     pixel: &[u8],
@@ -380,6 +381,7 @@ pub(super) fn hlsl(
     dynamic: &BTreeSet<usize>,
     motion: (&str, u32),
     projection: Option<reticle::Projection>,
+    aimed: Option<reticle::Projection>,
 ) -> Result<(String, bool)> {
     let inputs = dxil::signature(listing, true)?;
     let outputs = dxil::signature(listing, false)?;
@@ -505,6 +507,7 @@ pub(super) fn hlsl(
             colors,
             motion,
             projection,
+            aimed,
         )?,
         colors,
     ))
@@ -541,9 +544,35 @@ fn program(
     colors: bool,
     motion: (&str, u32),
     projection: Option<reticle::Projection>,
+    aimed: Option<reticle::Projection>,
 ) -> Result<String> {
     let inv = inverse(&surface.transform)?;
     let vector = |row: &[f32]| row.iter().map(|v| float(*v)).collect::<Vec<_>>().join(",");
+    // Glass ahead of an enclosed sight's source eye draws in the reticle pass and always takes the
+    // source camera. Its pixel stage draws it only once aiming completes, so it fills the same
+    // window as the framed reticle. Its offset from the eye over its distance along the sight axis
+    // is a view tangent, divided by the tangent of half the source view. Like a reticle, it takes
+    // the native reticle rows' aspect (`M11 / |M00|`), screen offset and focal-plane depth, with a
+    // clip W of one. The glass's own native depth depends on where the aimed camera sits, and
+    // glass projected with the view rows in transparent or reticle passes did not show in game.
+    let glass_framing = match (&surface.framed, aimed) {
+        (Some(framing), Some(aimed)) => format!(
+            "float3 framedOffset=local-float3({origin});\nfloat framedForward=dot(framedOffset,float3({forward}));\nfloat2 framedLateral=float2(dot(framedOffset,float3({left})),dot(framedOffset,float3({up})));\nfloat4 framedDepth=reticleData[{m2}]*-reticleData[{depth}].x+reticleData[{m3}];\nprojected=float4(float2(-framedLateral.x,framedLateral.y*abs(reticleData[{m1}].y/reticleData[{m}].x))/({tangent}*framedForward)+reticleData[{offset}].xy,framedDepth.z/framedDepth.w,1);",
+            origin = vector(&framing.origin),
+            forward = vector(&framing.forward),
+            left = vector(&framing.axes[0]),
+            up = vector(&framing.axes[1]),
+            tangent = float(framing.tangent),
+            m = aimed.matrix,
+            m1 = aimed.matrix + 1,
+            m2 = aimed.matrix + 2,
+            m3 = aimed.matrix + 3,
+            depth = aimed.depth,
+            offset = aimed.offset
+        ),
+        (Some(_), None) => anyhow::bail!("Aimed glass has no native reticle projection"),
+        (None, _) => String::new(),
+    };
     Ok(format!(
         r#"
 cbuffer Object:register(b11) {{float4 objectData[{object_rows}];}};
@@ -566,6 +595,7 @@ float3 sourcePosition=(local-float3({offset}))/float3({scale});
 float3 sourceNormal=float3(dot(inverse0.xyz,normal.xyz),dot(inverse1.xyz,normal.xyz),dot(inverse2.xyz,normal.xyz));
 {color_load}
 {assignments}
+{glass_framing}
 }}
 "#,
         object_rows = 8 + motion.1 * 3,
@@ -575,7 +605,7 @@ float3 sourceNormal=float3(dot(inverse0.xyz,normal.xyz),dot(inverse1.xyz,normal.
         } else {
             ""
         },
-        reticle_buffer = if let Some(projection) = projection {
+        reticle_buffer = if let Some(projection) = projection.or(aimed) {
             format!(
                 "cbuffer Reticle:register(b0){{float4 reticleData[{}];}};",
                 projection.vectors
@@ -586,8 +616,20 @@ float3 sourceNormal=float3(dot(inverse0.xyz,normal.xyz),dot(inverse1.xyz,normal.
         reticle_projection = if let Some(projection) = projection {
             // Reticle vertices are camera-relative artwork, unlike the physical lens.
             // Undo attachment placement before the native scope projection consumes them.
+            // A framed sight's artwork spans the source aimed view at its source depth. The
+            // native matrix still supplies axis signs, aspect and depth.
+            let screen = match projection.framing {
+                Some(tangent) => format!(
+                    "float2(reticlePosition.x*reticleData[{m}].x,reticlePosition.y*reticleData[{m1}].y)/(abs(reticleData[{m}].x)*reticleData[{depth}].x*{tangent})",
+                    depth = projection.depth,
+                    m = projection.matrix,
+                    m1 = projection.matrix + 1,
+                    tangent = float(tangent)
+                ),
+                None => "q.xy/q.w".into(),
+            };
             format!(
-                "float3 reticlePosition=local-float3(0,0,reticleData[{depth}].x);\nfloat4 q=reticleData[{m}]*reticlePosition.x+reticleData[{m1}]*reticlePosition.y+reticleData[{m2}]*reticlePosition.z+reticleData[{m3}];\nprojected=float4(q.xy/q.w+reticleData[{offset}].xy,q.z/q.w,1);\nfloat3 reticleView=viewData[4].xyz*reticlePosition.x+viewData[5].xyz*reticlePosition.y+viewData[6].xyz*reticlePosition.z+viewData[7].xyz;",
+                "float3 reticlePosition=local-float3(0,0,reticleData[{depth}].x);\nfloat4 q=reticleData[{m}]*reticlePosition.x+reticleData[{m1}]*reticlePosition.y+reticleData[{m2}]*reticlePosition.z+reticleData[{m3}];\nprojected=float4({screen}+reticleData[{offset}].xy,q.z/q.w,1);\nfloat3 reticleView=viewData[4].xyz*reticlePosition.x+viewData[5].xyz*reticlePosition.y+viewData[6].xyz*reticlePosition.z+viewData[7].xyz;",
                 depth = projection.depth,
                 m = projection.matrix,
                 m1 = projection.matrix + 1,

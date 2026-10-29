@@ -8,12 +8,7 @@ pub struct Input {
     owner: u32,
 }
 
-pub struct Written {
-    pub runtime: usize,
-    pub definition: usize,
-    /// Both paired headers must follow the private owner during graph allocation.
-    pub patches: Vec<(usize, String)>,
-}
+pub use crate::tiger::sequence::input::Written;
 
 impl Input {
     pub fn definition(&self) -> usize {
@@ -77,47 +72,6 @@ impl Input {
         parent: usize,
         symbol: &str,
     ) -> Result<Written> {
-        ensure!(
-            !symbol.is_empty()
-                && symbol
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')),
-            "Native sequence input owner symbol differs"
-        );
-        let owner = target.u32(parent)?;
-        ensure!(owner != u32::MAX, "Native sequence input has no owner");
-        target.bytes::<80>(runtime)?;
-        target.bytes::<48>(definition)?;
-        ensure!(
-            parent < runtime && runtime + 80 <= definition,
-            "Native sequence input storage overlaps its definition or parent"
-        );
-        // Original 92F3 defaults and serialized common-controller witnesses agree on the
-        // inactive cache. Source +3C and +48 differ, so copying its live tail is invalid.
-        let mut live = [0u8; 80];
-        for field in [0x20, 0x24, 0x30, 0x38, 0x3C] {
-            put(&mut live, field, &u32::MAX.to_le_bytes())?;
-        }
-        let mut settings = [0u8; 48];
-        put(&mut settings, 24, &0x808092F7u64.to_le_bytes())?;
-        put(&mut settings, 40, &u64::from(u32::MAX).to_le_bytes())?;
-        let mut output = target.clone();
-        put(&mut output.0, runtime, &live)?;
-        put(&mut output.0, definition, &settings)?;
-        for (at, twin, class) in [
-            (runtime, definition, 0x808092F4u32),
-            (definition, runtime, 0x808092F3u32),
-        ] {
-            put(&mut output.0, at, &owner.to_le_bytes())?;
-            put(&mut output.0, at + 4, &class.to_le_bytes())?;
-            put(&mut output.0, at + 8, &(twin as u64).to_le_bytes())?;
-        }
-        native::relative(&mut output, runtime + 16, parent)?;
-        *target = output;
-        Ok(Written {
-            runtime,
-            definition,
-            patches: vec![(runtime, symbol.into()), (definition, symbol.into())],
-        })
+        crate::tiger::sequence::input::write(target, runtime, definition, parent, symbol)
     }
 }

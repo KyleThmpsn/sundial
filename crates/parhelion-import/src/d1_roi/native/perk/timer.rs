@@ -1,6 +1,7 @@
 //! Timer extensions retain their own event predicates, independently of activation.
 use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
+use sundial::package_authoring::sandbox_perk::nodes;
 
 pub(super) fn read(
     source: &Source,
@@ -17,15 +18,33 @@ pub(super) fn read(
             && p.f32(at + 8)? >= 0.0,
         "Source timer extension has unsupported flags or bounds"
     );
-    let nodes = conditions(source, p, at + 16, native)?;
+    let children = p.array(at + 16, 8, None)?;
     ensure!(
-        !nodes.is_empty() && nodes.iter().all(|n| n.kind == 2),
-        "Source timer extension requires checked kill predicates"
+        !children.is_empty(),
+        "Source timer extension has no predicates"
     );
+    let mut source_mask = 0u64;
+    for child in children {
+        let child = p.pointer(child)?;
+        let kind = p.u8(child + 5)?;
+        ensure!(
+            matches!(kind, 2 | 12 | 19) && (kind == 2 || p.u8(child + 6)? == 0),
+            "Source timer extension requires qualified kill, game-event or reload predicates"
+        );
+        source_mask |= 1u64 << kind;
+    }
     ensure!(
-        p.u64(at + 32)? == 1 << 2,
+        p.u64(at + 32)? == source_mask,
         "Source timer event mask disagrees"
     );
+    // Source 6CE15F and native ECD440 test the nested event mask before their
+    // ordinary condition evaluator. Neither dispatch is specific to kills.
+    // Keep new predicates stateless and let their translators qualify producers,
+    // identities and filters before constructing the native subscription.
+    let nodes = conditions(source, p, at + 16, native)?;
+    let native_mask = nodes
+        .iter()
+        .fold(0u64, |mask, node| mask | 1u64 << node.kind);
     let effects = p.array(0x38, 8, None)?;
     let mut extensions = Vec::new();
     for (index, &row) in effects.iter().enumerate() {
@@ -56,7 +75,7 @@ pub(super) fn read(
     bytes[0] = 32;
     bytes[4..12].copy_from_slice(&p.bytes::<8>(at + 4)?);
     put(&mut bytes, 16, &(nodes.len() as u64).to_le_bytes())?;
-    put(&mut bytes, 32, &(1u64 << 2).to_le_bytes())?;
+    put(&mut bytes, 32, &native_mask.to_le_bytes())?;
     let mut graph = Graph {
         blocks: vec![
             Block {
@@ -75,7 +94,10 @@ pub(super) fn read(
     };
     for (i, mut node) in nodes.into_iter().enumerate() {
         node.bytes[7] = 255;
-        let child = Graph::read(&node.bytes, 0, 0x80803DE7).map_err(anyhow::Error::msg)?;
+        let class = nodes::condition(node.kind)
+            .context("Native timer predicate class")?
+            .class;
+        let child = Graph::read(&node.bytes, 0, class).map_err(anyhow::Error::msg)?;
         let target = graph.append(&child).map_err(anyhow::Error::msg)?;
         graph.blocks[1].links.insert(i * 8, target);
     }

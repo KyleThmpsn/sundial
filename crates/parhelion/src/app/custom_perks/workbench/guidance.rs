@@ -362,7 +362,11 @@ pub(super) fn summary_with_assets(
             f32::from(program.chance_permyriad) / 100.0
         ));
     }
-    for action in &program.actions {
+    for (index, action) in program.actions.iter().enumerate() {
+        if program.action_changes(index).is_some() {
+            sentences.push(program::action_reading(program, index, keys).replace('\n', ". "));
+            continue;
+        }
         let text = action
             .asset()
             .and_then(|asset| labels.and_then(|labels| labels.get(&asset.graph)))

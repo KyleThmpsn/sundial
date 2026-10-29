@@ -18,6 +18,7 @@ mod constraint;
 mod contact;
 mod fidelity;
 mod framing;
+mod hammer;
 mod inspection;
 mod vehicle_audio;
 mod vehicle_effects;
@@ -363,6 +364,15 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
             }
             let damage = fidelity::damage(&mut staged, &stock, &runtime, &witness["damage"])?;
             let melee = fidelity::melee(&mut staged, &mut stock, &recipe, &witness["melee"])?;
+            hammer::verify(
+                &mut staged,
+                &mut stock,
+                &runtime,
+                &graph,
+                &witness["hammer"],
+                &reference.directory,
+                &output.join(format!("hammer-{hash:08X}.json")),
+            )?;
             if !damage.is_null() || !melee.is_null() {
                 fs::write(
                     output.join(format!("fidelity-{hash:08X}.json")),
@@ -404,6 +414,7 @@ fn translated_items_survive_portable_reload_and_native_staging() -> Result<()> {
             &json!({"items":evidence,"results":results,"staged":built.run_directory,"gameplay_verified":false}),
         )?,
     )?;
+    character::finish(&staged.output)?;
     let failed = results
         .iter()
         .filter(|row| row["passed"] == false)

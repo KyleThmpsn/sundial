@@ -65,6 +65,7 @@ pub(in crate::item) fn build_private_perk_residency_chain(
         "Private perk residency BA",
         "private perk residency BA",
     )?;
+    runtime_tag_allocator.reserve(root_ordinal, 2)?;
     let authored_root_tag = runtime_tag_allocator.assigned_tag(
         root_ordinal,
         "Private perk residency root",

@@ -33,12 +33,8 @@ pub(super) fn author_project_localized_strings(
     let donor_header_tag = TagHash(read_u32(&index, donor_row + 4)?);
     let donor_header = read_tag(manager, donor_header_tag, "localization donor header")?;
     let set_names = plan
-        .gear_pages
-        .keys()
-        .filter_map(|page| {
-            page.set_name(branding.name())
-                .map(|name| (page.hash("name"), name))
-        })
+        .page_names(branding.name())
+        .into_iter()
         .chain(map_strings.iter().cloned())
         .collect::<Vec<_>>();
     let values = |locale| {

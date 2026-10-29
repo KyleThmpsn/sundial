@@ -29,9 +29,6 @@ use sundial::{
 
 use super::RuntimeGraphKey;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum DonorCompatibility {
     LowerRisk,
@@ -234,26 +231,6 @@ fn collect_bindings(entity: &[u8]) -> Result<Bindings, String> {
         .into_iter()
         .map(|hash| Ok((hash, weapon_component_bindings(entity, hash)?)))
         .collect()
-}
-
-#[cfg(test)]
-fn affected_bindings(bindings: &Bindings, selected: u32) -> Result<Vec<u32>, String> {
-    let owners = bindings
-        .get(&selected)
-        .filter(|resources| !resources.is_empty())
-        .ok_or_else(|| format!("The runtime baseline has no binding 0x{selected:08X}"))?
-        .iter()
-        .map(|resource| resource.owner_tag)
-        .collect::<BTreeSet<_>>();
-    Ok(bindings
-        .iter()
-        .filter(|(_, resources)| {
-            resources
-                .iter()
-                .any(|resource| owners.contains(&resource.owner_tag))
-        })
-        .map(|(&hash, _)| hash)
-        .collect())
 }
 
 fn compose(

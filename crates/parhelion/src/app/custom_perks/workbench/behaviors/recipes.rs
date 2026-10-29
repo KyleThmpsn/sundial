@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use sundial::investment::discovery::behaviors::Catalog;
 use sundial::package_authoring::sandbox_perk::program::NativeNode;
 
-/// Set a Weapon Firing Mode's key for Full Auto Fire.
+/// The animation input key used by the full auto perks.
 const FULL_AUTO_FIRE: u32 = 0x75DD_B3C9;
 
 /// The full auto recipe's title, which Suggested also lists by.
@@ -39,7 +39,7 @@ pub(super) fn all() -> Vec<Recipe> {
 }
 
 /// All ten full auto perks set Hold to Fire and the three weapon values to 0.35. Full Auto
-/// Trigger System, Rapid-Fire Frame and Thunderer also set the firing mode to Full Auto Fire.
+/// Trigger System, Rapid-Fire Frame and Thunderer also set the Full Auto Animation input.
 fn full_auto() -> Option<Recipe> {
     let mut trigger = NativeNode::effect(28)?;
     trigger.bytes.get_mut(2..4)?.fill(0);
@@ -60,7 +60,7 @@ fn full_auto() -> Option<Recipe> {
     *mode.bytes.get_mut(8)? = 0;
     Some(Recipe {
         title: FULL_AUTO,
-        detail: "Hold to Fire, Full Auto Fire and the values the full auto perks set.",
+        detail: "Hold to Fire, Full Auto Animation and the values the full auto perks set.",
         kind: 29,
         nodes: vec![trigger, values, mode],
     })

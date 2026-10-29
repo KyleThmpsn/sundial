@@ -131,6 +131,9 @@ pub struct PlugTooltip<'a> {
     /// `Some("")` clears the donor description.
     pub description: Option<&'a str>,
     pub classification_hash: Option<u32>,
+    /// The tier as packages store it, 1 for Common through 5 for Exotic. `None` keeps the
+    /// catalog's.
+    pub rarity: Option<u8>,
 }
 
 /// A tooltip for something that is not an item, such as a subclass ability: its icon, its name, a

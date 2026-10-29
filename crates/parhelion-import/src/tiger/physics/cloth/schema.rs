@@ -1,6 +1,9 @@
 //! Source layouts from HKLib ac40bc9915d8caff0df154c2b9a79656dfca1d77.
 //! Its MIT notice is retained beside the reduced schema. Native layouts and
 //! class signatures come from Shadowkeep 86657.20.08.23.1800.d2_rc___release.
+//! The position/normal skin operator, scratch buffer definition and bone-plane
+//! constraint are reconstructed from serialized source files against their native
+//! counterparts, and their source types carry an `origin` saying so.
 use super::*;
 use serde::Deserialize;
 

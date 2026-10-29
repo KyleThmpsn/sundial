@@ -172,7 +172,9 @@ impl Calibration {
             }
         }
         let grip = weapon_scale
-            .map(|scale| super::grip::Grip::new(source, rig, &parents, scale))
+            .map(|weapon_scale| {
+                super::grip::Grip::new(source, rig, &parents, weapon_scale, scale, source_pelvis)
+            })
             .transpose()?;
         Ok(Self {
             parents,

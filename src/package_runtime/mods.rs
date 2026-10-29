@@ -18,7 +18,7 @@ pub mod merge;
 pub mod mission_script;
 pub mod plaintext;
 mod view;
-pub use content::{Coexistence, Incoming};
+pub use content::{Coexistence, Incoming, Provenance, Source};
 pub use view::View;
 
 pub const ID: &str = "dev.kylethmpsn.parhelion";

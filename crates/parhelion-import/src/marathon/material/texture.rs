@@ -5,15 +5,18 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 
+/// Formats pass through to the native header unchanged, so this admits only formats whose native
+/// resident pitch is known. Source R16G16 and BC6H textures stay unsupported.
 fn mip_size(width: usize, height: usize, format: u32) -> Result<usize> {
     let bytes = match format {
         61 => width.checked_mul(height),
         28 | 29 => width.checked_mul(height).and_then(|n| n.checked_mul(4)),
+        10 => width.checked_mul(height).and_then(|n| n.checked_mul(8)),
         71 | 72 | 80 => width
             .div_ceil(4)
             .checked_mul(height.div_ceil(4))
             .and_then(|n| n.checked_mul(8)),
-        98 | 99 => width
+        77 | 83 | 98 | 99 => width
             .div_ceil(4)
             .checked_mul(height.div_ceil(4))
             .and_then(|n| n.checked_mul(16)),

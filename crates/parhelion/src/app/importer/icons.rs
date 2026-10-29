@@ -5,7 +5,7 @@ use reader::Reader;
 
 // Older thumbnails contain only the primary artwork. The package stamp cannot
 // invalidate those when our layer composition changes.
-const CACHE_VERSION: &str = "v3";
+const CACHE_VERSION: u32 = 3;
 
 #[cfg(test)]
 mod tests;
@@ -83,8 +83,8 @@ impl Icons {
         visible: &[usize],
     ) {
         let folder = match source {
-            Source::Modern => settings.modern_packages.as_deref(),
-            Source::Roi => settings.d1_roi.as_deref(),
+            Source::D2Modern => settings.modern_packages.as_deref(),
+            Source::D1RiseOfIron => settings.d1_roi.as_deref(),
             _ => None,
         };
         let Some(folder) = folder else { return };
@@ -110,16 +110,21 @@ impl Icons {
             self.requests = Some(requests);
             self.results = Some(results);
             thread::spawn(move || {
+                let icons = root.join("importer").join("icons");
+                remove_earlier_layouts(&icons);
+                let cache_root = icons.join(source.folder());
+                // The package reader keeps its files in the importer's cache. Earlier versions
+                // left its empty `raw` folder among the thumbnails.
+                let reads = root
+                    .join("importer")
+                    .join("cache")
+                    .join(source.folder())
+                    .join("icons");
+                let _ = std::fs::remove_dir(cache_root.join("raw"));
                 let generation = service::package_stamp(&folder).ok().and_then(|stamp| {
                     parhelion_import::cache::Generation::directory(
-                        &root.join("importer/icons").join(CACHE_VERSION).join(
-                            if source == Source::Roi {
-                                "d1-roi"
-                            } else {
-                                "d2-mot"
-                            },
-                        ),
-                        &stamp,
+                        &cache_root,
+                        &format!("{CACHE_VERSION}-{stamp}"),
                     )
                 });
                 let cache = generation
@@ -160,7 +165,7 @@ impl Icons {
                             continue;
                         }
                         let reader = reader.get_or_insert_with(|| {
-                            Reader::open(source, &folder, &root.join("importer/icons"), xg.clone())
+                            Reader::open(source, &folder, &reads, xg.clone())
                         });
                         let result = reader
                             .as_mut()
@@ -218,6 +223,28 @@ impl Icons {
             }
             None => {}
         }
+    }
+}
+
+/// Each source's thumbnails live in `icons/<importer>`, one generation per cache version and
+/// package stamp. Anything else there is an earlier layout and goes.
+fn remove_earlier_layouts(icons: &Path) {
+    let Ok(entries) = std::fs::read_dir(icons) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let current = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| service::IMPORTERS.contains(&name));
+        if current {
+            continue;
+        }
+        let _ = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            std::fs::remove_dir_all(entry.path())
+        } else {
+            std::fs::remove_file(entry.path())
+        };
     }
 }
 

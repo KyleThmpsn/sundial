@@ -250,16 +250,25 @@ const POWER_CHANNELS: [u32; 2] = [0x0E36_F79F, 0x2C0A_60A9];
 /// D1 Rise of Iron's Power cap over Shadowkeep's current level (400 over 1060).
 const POWER_SCALE: f32 = 400.0 / 1060.0;
 
+/// What the source gear-dye extern holds when a draw reads it.
+#[derive(Clone, Copy)]
+pub(super) enum Dye<'a> {
+    /// The draw's own local slot writes every field, storing this color lane at `+40`.
+    Selected { dye: &'a Payload, secondary: bool },
+    /// The draw's local slot is unset. Source `00885547` writes specular `(0, 0, 1, 0)` and
+    /// `00885560` normal W one, over the fields an earlier draw wrote or the zeroed allocation.
+    Unset(Option<(&'a Payload, bool)>),
+    /// Which earlier draws precede this one depends on the view, so its fields are unknown.
+    Unresolved,
+}
+
 pub(super) struct Inputs<'a> {
     pub globals: &'a Globals,
-    pub dye: Option<&'a Payload>,
-    /// No channel can populate the freshly zeroed source gear-dye extern.
-    pub empty_palette: bool,
-    pub secondary: bool,
+    pub dye: Dye<'a>,
     pub plates: &'a [String; 3],
     pub detail: &'a [String; 2],
     pub objects: usize,
-    /// The body's channel names by ordinal, which object inputs index.
+    /// The drawing component's input names in order, which object inputs index.
     pub object_channels: &'a [u32],
     pub outputs: usize,
     pub samplers: usize,
@@ -342,6 +351,8 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
         reticle_mask: None,
     };
     let mut at = 0;
+    // The translated instructions that left a loaded object input on top of the stack.
+    let mut divisor = Vec::new();
     while at < code.len() {
         let op = code[at];
         at += 1;
@@ -350,6 +361,7 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
             .get(at..at + size)
             .context("Truncated D1 material expression")?;
         at += size;
+        let top = std::mem::take(&mut divisor);
         match op {
             0x3F => {
                 ensure!(
@@ -392,15 +404,19 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                 };
                 if symbol.is_empty()
                     && let [27, index @ 0..=1] = args
-                    && (if let Some(dye) = inputs.dye {
-                        dye.u32(0x60 + usize::from(*index) * 4)? == u32::MAX
-                    } else {
-                        inputs.empty_palette
-                    })
+                    && match inputs.dye {
+                        Dye::Selected { dye, .. } | Dye::Unset(Some((dye, _))) => {
+                            dye.u32(0x60 + usize::from(*index) * 4)? == u32::MAX
+                        }
+                        Dye::Unset(None) => true,
+                        Dye::Unresolved => anyhow::bail!(
+                            "Source draw reads an unset dye slot whose earlier dye depends on the view"
+                        ),
+                    }
                 {
-                    // Source 008C4080 writes a null resource for an absent tag. With no dyes,
-                    // the gear extern retains the null pointers from allocator 00855E80.
-                    // Native 34 pushes its raw vector and 47 binds its low qword.
+                    // Source 008C4080 writes a null resource for an absent tag. When no earlier
+                    // draw wrote a dye, the gear extern retains the null pointers from allocator
+                    // 00855E80. Native 34 pushes its raw vector and 47 binds its low qword.
                     result.constant([0; 16])?;
                     result.code.extend([0x47, slot]);
                     at += 2;
@@ -430,14 +446,15 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                 let value = match args {
                     // Normal production rendering with the source dye-debug display disabled.
                     [31, 0] => vector([0., 1., 1., 1.]),
-                    [27, index @ 1..=4] => {
-                        if let Some(dye) = inputs.dye {
+                    [27, index @ 1..=4] => match inputs.dye {
+                        Dye::Unset(_) if *index == 2 => vector([0., 0., 1., 0.]),
+                        Dye::Selected { dye, secondary } | Dye::Unset(Some((dye, secondary))) => {
                             let offset = match *index {
                                 1 => 0x70,
                                 2 => 0x50,
                                 3 => 0x80,
                                 4 => {
-                                    if inputs.secondary {
+                                    if secondary {
                                         0xA0
                                     } else {
                                         0x90
@@ -448,25 +465,23 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                             let mut value = dye.bytes::<16>(offset)?;
                             // The source producer overwrites stored normal W with the missing-dye flag.
                             if *index == 3 {
-                                value[12..].fill(0);
+                                let missing = matches!(inputs.dye, Dye::Unset(_));
+                                value[12..]
+                                    .copy_from_slice(&f32::from(u8::from(missing)).to_le_bytes());
                             }
                             value
-                        } else {
-                            ensure!(
-                                inputs.empty_palette || *index == 3,
-                                "Source material needs an absent equipment dye"
-                            );
-                            // Fresh gear externs are zeroed. Source 00885547 sets specular to
-                            // (0, 0, 1, 0), then 00885560 sets normal W to one for a missing dye.
-                            // Only a wholly empty palette guarantees the other fields were not
-                            // populated by a previously drawn channel.
-                            match *index {
-                                2 => vector([0., 0., 1., 0.]),
-                                3 => vector([0., 0., 0., 1.]),
-                                _ => [0; 16],
-                            }
                         }
-                    }
+                        // Fresh gear externs are zeroed. Source 00885547 sets specular to
+                        // (0, 0, 1, 0), then 00885560 sets normal W to one for a missing dye.
+                        Dye::Unset(None) => match *index {
+                            3 => vector([0., 0., 0., 1.]),
+                            _ => [0; 16],
+                        },
+                        Dye::Unresolved => {
+                            ensure!(*index == 3, "Source material needs an absent equipment dye");
+                            vector([0., 0., 0., 1.])
+                        }
+                    },
                     _ => anyhow::bail!("Unsupported source equipment vector {args:?}"),
                 };
                 result.constant(value)?;
@@ -482,11 +497,24 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
             // extern byte offsets 0x20, 0x60 and 0x120 despite camera layout changes.
             0x3E if matches!(args, [2, 2 | 6 | 18]) => result.code.extend([op, 2, args[1]]),
             0x3E | 0x40 => anyhow::bail!("Untranslated source matrix or integer extern {args:?}"),
+            0x04 if !top.is_empty() => {
+                // Both interpreters return infinity or NaN for a zero divisor, and source
+                // materials divide by object inputs the D1 runtime always supplied, such as
+                // magazine capacity. An inherited channel without a native publisher reads zero,
+                // so a zero object divisor yields zero instead, the value the checked saturating
+                // consumers produce for 0 / 0. Nonzero divisors divide unchanged.
+                result.code.extend(&top);
+                result.code.extend([0x07, 0x01, 0x04]);
+                result.constant(vector([1.0; 4]))?;
+                result.code.extend(&top);
+                result.code.extend([0x07, 0x02, 0x03]);
+            }
             0x4A => {
                 ensure!(
                     usize::from(args[0]) < inputs.objects,
                     "Source object input exceeds its declared table"
                 );
+                let start = result.code.len();
                 result.code.extend([0x4D, args[0]]);
                 // The stock weapon bank derives channel 0E36F79F from the Power level
                 // (0.65 times the level, normalised against 500 by the sight-glow curves,
@@ -500,6 +528,15 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                     result.constant(vector([POWER_SCALE; 4]))?;
                     result.code.push(0x03);
                 }
+                divisor = result.code[start..].to_vec();
+            }
+            // A broadcast or lane permutation keeps a loaded object input on top.
+            0x21 | 0x22 if !top.is_empty() => {
+                result.code.push(op);
+                result.code.extend(args);
+                divisor = top;
+                divisor.push(op);
+                divisor.extend(args);
             }
             0x4B => match inputs
                 .globals

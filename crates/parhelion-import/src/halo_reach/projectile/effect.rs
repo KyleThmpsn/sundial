@@ -213,10 +213,7 @@ pub(super) fn build(
         }
     }
     std::fs::create_dir_all(root)?;
-    let mut graph = Graph {
-        root: root.into(),
-        nodes: Vec::new(),
-    };
+    let mut graph = Graph::new(root.into(), Vec::new());
     if profiles.is_empty() {
         return Ok(Effects {
             graph,

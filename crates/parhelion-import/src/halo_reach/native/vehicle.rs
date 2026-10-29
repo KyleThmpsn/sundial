@@ -164,7 +164,7 @@ pub(super) fn build(
     Ok(Some(json!({
         "root":ROOT,"source_kind":controls["kind"],"motion":motion.report,
         "contacts":contacts.report,"body":body.report,"collision":collision,"damage":damage,"lighting":lighting,"effects":effects,"boost_trails":boost.report,"prompts":prompts,"wheel_animation":wheel_animation,"audio":audio,"fire_audio":fire_audio,"camera":camera,"driver_targets":driver_targets,"gameplay_verified":false,
-        "limits":["The carrier supplies interaction and animation state selection. Passenger behavior and full source effect translation are deferred. Handling, collision, audio lifecycle and flight require gameplay acceptance."]
+        "limits":["The carrier supplies interaction and animation state selection. Passenger behavior and full source effect translation are deferred."]
     })))
 }
 
@@ -226,12 +226,12 @@ fn retained(
         None,
     )?;
     let mut report = json!({"root":ROOT,"body":body.report,"collision":collision,"damage":damage,"lighting":lighting,"effects":effects,"driver_targets":driver_targets,"fire_audio":fire_audio,"gameplay_verified":false,
-        "limits":["Native hover handling and interaction are retained. Source solid and hit shapes follow authored damage conditions. Live impacts, hit routing and clearance require gameplay acceptance."]});
+        "limits":["Native hover handling and interaction are retained. Source solid and hit shapes follow authored damage conditions."]});
     if let Some(motion) = motion {
         report["source_kind"] = json!("alien_scout");
         report["motion"] = motion;
         report["limits"] = json!([
-            "Native hover handling and interaction are retained with source speed targets and acceleration limits. Boost, steering and slides stay native. Source solid and hit shapes follow authored damage conditions. Live driving, impacts, hit routing and clearance require gameplay acceptance."
+            "Native hover handling and interaction are retained with source speed targets and acceleration limits. Boost, steering and slides stay native. Source solid and hit shapes follow authored damage conditions."
         ]);
     }
     Ok(report)

@@ -80,6 +80,7 @@ fn fixture() -> (PackageAuthoringApp, WeaponDonor) {
             compatible_plug_count: 2,
             reusable_plug_set_index: None,
             randomized_plug_set_index: None,
+            ordered_randomized_choices: vec![],
         }],
         investment_stats: vec![
             stat(10, "Range", 40, false),

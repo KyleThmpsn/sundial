@@ -163,7 +163,7 @@ impl Pipeline {
         for motion in &model.motions {
             let frame = motion.frame(seconds);
             rows.push([f32::from(u8::from(frame.is_some())), 0.0, 0.0, 0.0]);
-            rows.extend(frame.unwrap_or([[0.0; 4]; 128]));
+            rows.extend(frame.unwrap_or([[0.0; 4]; crate::model_preview::effects::ROWS]));
         }
         self.root = Transform::identity();
         if let Some(animation) = &model.animation {
@@ -303,7 +303,7 @@ unsafe fn feedback(gl: &glow::Context, output: glow::Buffer, count: usize) {
 }
 
 fn source_code(model: &Model) -> (String, usize) {
-    let mut shader = String::from(HEADER);
+    let mut shader = crate::model_preview::effects::with_rows(HEADER);
     shader.push_str(native::GPU_HELPERS);
     for (index, motion) in model.motions.iter().enumerate() {
         shader.push_str(&motion.gpu_source(&format!("motion{index}")));
@@ -312,7 +312,7 @@ fn source_code(model: &Model) -> (String, usize) {
     let mut rows = 0;
     for (index, motion) in model.motions.iter().enumerate() {
         writeln!(shader, "if(vertex>={}&&vertex<{}&&texelFetch(uPalette,{rows}).x!=0.0){{constantBase={};motion{index}(p,n,t);}}", motion.vertices.start, motion.vertices.end, rows+1).unwrap();
-        rows += 129;
+        rows += 1 + crate::model_preview::effects::ROWS;
     }
     if let Some(animation) = &model.animation {
         writeln!(shader, "skin(vertex,{rows},p,n,t);").unwrap();
@@ -337,7 +337,7 @@ uniform samplerBuffer uSource,uPalette,uCloth;
 out vec4 oPosition,oNormal,oTangent;
 int constantBase;
 vec4 nConstant(int buffer,int index){
- if(buffer==0)return (index>=0&&index<128)?texelFetch(uPalette,constantBase+index):vec4(0.0);
+ if(buffer==0)return (index>=0&&index<CONSTANT_ROWS)?texelFetch(uPalette,constantBase+index):vec4(0.0);
  if(buffer==11){if(index==5||index==7)return vec4(0,0,0,1);if(index==6)return vec4(1,1,0,0);if(index>=8&&index<=10){vec4 v=vec4(0);v[index-8]=1.0;return v;}}
  if(buffer==12&&index>=0&&index<=3){vec4 v=vec4(0);v[index]=1.0;return v;}return vec4(0);
 }

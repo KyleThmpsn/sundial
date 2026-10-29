@@ -304,6 +304,7 @@ pub(super) fn asset_edits(
                 patches,
                 appends: Vec::new(),
                 remove_owners: Vec::new(),
+                components: Vec::new(),
                 programs: Vec::new(),
             }),
         }
@@ -414,13 +415,12 @@ fn row_layer(stock: &Stock, icon: u32) -> AuthoringResult<TagHash> {
 
 /// The HUD icon layers the project's own images make, by image and by the stock status whose
 /// layer each copies. A copy keeps its stock layer's layout and replaces each texture with a
-/// private one holding the image fitted to that texture's size. The nodes join `nodes`, the
-/// asset package's first group, as the ammunition HUD icons do.
+/// private one holding the image fitted to that texture's size. Each image reserves a complete
+/// chain in the rolling asset packages, as the ammunition HUD icons do.
 pub(super) fn author_images<'a>(
     manager: &PackageManager,
     programs: impl IntoIterator<Item = &'a Program>,
-    nodes: &mut Vec<NewTagSpec>,
-    references: &mut Vec<NewTagReferenceOverride>,
+    packages: &mut crate::asset_packages::AssetPackages,
 ) -> AuthoringResult<BTreeMap<(String, u32), TagHash>> {
     let assets = statuses(programs);
     let mut layers = BTreeMap::new();
@@ -428,7 +428,6 @@ pub(super) fn author_images<'a>(
         return Ok(layers);
     }
     let stock = stock(manager)?;
-    let allocator = AppendedTagAllocator::new(crate::package_profile::window().first(), 0);
     for (asset, status) in assets {
         let Some(image) = &status.image else {
             continue;
@@ -447,72 +446,79 @@ pub(super) fn author_images<'a>(
                 "HUD icon layer {template} is not an icon layer"
             )));
         }
-        let mut layer = read_tag(manager, template, "HUD icon layer")?;
-        let mut textures = 0;
-        for at in (0..layer.len().saturating_sub(3)).step_by(4) {
-            let texture = TagHash(read_u32(&layer, at)?);
-            let Some(entry) = manager.get_entry(texture) else {
-                continue;
-            };
-            if entry.file_type != 32 || entry.file_subtype != 1 {
-                continue;
+        let tag = packages.author(|package, first| {
+            let allocator = AppendedTagAllocator::new(package, first);
+            let mut nodes = Vec::new();
+            let mut references = Vec::new();
+            let mut layer = read_tag(manager, template, "HUD icon layer")?;
+            let mut textures = 0;
+            for at in (0..layer.len().saturating_sub(3)).step_by(4) {
+                let texture = TagHash(read_u32(&layer, at)?);
+                let Some(entry) = manager.get_entry(texture) else {
+                    continue;
+                };
+                if entry.file_type != 32 || entry.file_subtype != 1 {
+                    continue;
+                }
+                let header = read_tag(manager, texture, "HUD icon texture")?;
+                let width = u32::from(read_u16(&header, 14)?);
+                let height = u32::from(read_u16(&header, 16)?);
+                let data = TagHash(entry.reference);
+                // The stock HUD textures hold plain RGBA (DXGI 28 or its sRGB twin 29), four bytes a
+                // pixel, in their own data tag rather than a large buffer.
+                if header.len() != 40
+                    || u64::from(read_u32(&header, 0)?) != u64::from(width * height * 4)
+                    || !matches!(read_u32(&header, 4)?, 28 | 29)
+                    || read_u32(&header, 36)? != u32::MAX
+                    || manager
+                        .get_entry(data)
+                        .is_none_or(|entry| entry.file_type != 40 || entry.file_subtype != 1)
+                {
+                    return Err(invalid(format!(
+                        "HUD icon texture {texture} is not an uncompressed RGBA texture"
+                    )));
+                }
+                let ordinal = nodes.len();
+                let header_tag =
+                    allocator.assigned_tag(ordinal + 1, "HUD status icon", "HUD icon")?;
+                nodes.extend([
+                    NewTagSpec {
+                        template_tag: data,
+                        payload: crate::image_import::fit(&source, width, height).into_raw(),
+                        storage: crate::NewTagStorageMode::InheritTemplate,
+                    },
+                    NewTagSpec {
+                        template_tag: texture,
+                        payload: header,
+                        storage: crate::NewTagStorageMode::InheritTemplate,
+                    },
+                ]);
+                references.extend([
+                    NewTagReferenceOverride {
+                        new_tag_ordinal: ordinal,
+                        reference: NewTagReference::Appended(ordinal + 1),
+                    },
+                    NewTagReferenceOverride {
+                        new_tag_ordinal: ordinal + 1,
+                        reference: NewTagReference::Appended(ordinal),
+                    },
+                ]);
+                write_u32(&mut layer, at, header_tag.0)?;
+                textures += 1;
             }
-            let header = read_tag(manager, texture, "HUD icon texture")?;
-            let width = u32::from(read_u16(&header, 14)?);
-            let height = u32::from(read_u16(&header, 16)?);
-            let data = TagHash(entry.reference);
-            // The stock HUD textures hold plain RGBA (DXGI 28 or its sRGB twin 29), four bytes a
-            // pixel, in their own data tag rather than a large buffer.
-            if header.len() != 40
-                || u64::from(read_u32(&header, 0)?) != u64::from(width * height * 4)
-                || !matches!(read_u32(&header, 4)?, 28 | 29)
-                || read_u32(&header, 36)? != u32::MAX
-                || manager
-                    .get_entry(data)
-                    .is_none_or(|entry| entry.file_type != 40 || entry.file_subtype != 1)
-            {
+            if textures == 0 {
                 return Err(invalid(format!(
-                    "HUD icon texture {texture} is not an uncompressed RGBA texture"
+                    "HUD icon layer {template} names no texture"
                 )));
             }
-            let ordinal = nodes.len();
-            let header_tag = allocator.assigned_tag(ordinal + 1, "HUD status icon", "HUD icon")?;
-            nodes.extend([
-                NewTagSpec {
-                    template_tag: data,
-                    payload: crate::image_import::fit(&source, width, height).into_raw(),
-                    storage: crate::NewTagStorageMode::InheritTemplate,
-                },
-                NewTagSpec {
-                    template_tag: texture,
-                    payload: header,
-                    storage: crate::NewTagStorageMode::InheritTemplate,
-                },
-            ]);
-            references.extend([
-                NewTagReferenceOverride {
-                    new_tag_ordinal: ordinal,
-                    reference: NewTagReference::Appended(ordinal + 1),
-                },
-                NewTagReferenceOverride {
-                    new_tag_ordinal: ordinal + 1,
-                    reference: NewTagReference::Appended(ordinal),
-                },
-            ]);
-            write_u32(&mut layer, at, header_tag.0)?;
-            textures += 1;
-        }
-        if textures == 0 {
-            return Err(invalid(format!(
-                "HUD icon layer {template} names no texture"
-            )));
-        }
-        let tag = allocator.assigned_tag(nodes.len(), "HUD status icon", "HUD icon")?;
-        nodes.push(NewTagSpec {
-            template_tag: template,
-            payload: layer,
-            storage: crate::NewTagStorageMode::InheritTemplate,
-        });
+            let tag = allocator.assigned_tag(nodes.len(), "HUD status icon", "HUD icon")?;
+            nodes.push(NewTagSpec {
+                template_tag: template,
+                payload: layer,
+                storage: crate::NewTagStorageMode::InheritTemplate,
+            });
+            Ok((tag, nodes, references))
+        })?;
         layers.insert((image.clone(), icon), tag);
     }
     Ok(layers)

@@ -1,5 +1,6 @@
 //! Source label declarations are checked against their own compiled 256-bit masks.
 use super::*;
+use anyhow::bail;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, labels};
 
 const PATH: &[u8] = b"content/common/native/sandbox/label_globals.label_globals.tft\0";
@@ -196,16 +197,25 @@ fn declared(
             let name = p.u32(row)?;
             ensure!(p.u32(row + 4)? == 0, "Unknown source label record flags");
             reference(p, row + 8, tag)?;
-            let bits = registry
-                .get(&name)
-                .context("Source condition label is not registered")?;
+            let bits = match registry.get(&name) {
+                Some(bits) => bits,
+                None if name == 0x811C9DC5 => &[0; 32],
+                None => bail!("Source condition label is not registered"),
+            };
             for (out, bits) in mask.iter_mut().zip(bits) {
                 *out |= bits;
             }
-            lists[operation].push(name);
+            if bits.iter().any(|&bit| bit != 0) {
+                lists[operation].push(name);
+            }
         }
+        // Source 435C00 derives each bypass flag from its compiled mask through
+        // 2760D0. An empty-name declaration can therefore have a row but no bits.
+        // Remove only known zero contributions and require the stored mask and flag
+        // to agree. Dropping an unchecked zero-mask match-any/exclude-all changes
+        // admission when its bypass flag is clear.
         ensure!(
-            p.bytes::<32>(compiled)? == mask && p.u8(empty)? == u8::from(rows.is_empty()),
+            p.bytes::<32>(compiled)? == mask && p.u8(empty)? == u8::from(mask == [0; 32]),
             "Source condition declarations and compiled label mask disagree"
         );
     }

@@ -7,6 +7,7 @@ mod delete;
 mod restore;
 mod sharing;
 mod state;
+mod studio_import;
 use actions::{EntryAction, LibraryAction};
 pub(crate) use state::LibraryState;
 use state::SortOrder;
@@ -25,6 +26,8 @@ struct LibraryRowState {
     can_restore: bool,
     /// The installation carries the item this recipe builds.
     installed: bool,
+    /// Background work holds the library, so only opening and reading a recipe work.
+    library_busy: bool,
 }
 
 /// What a library row's icon is drawn from. The watermark goes by its fingerprint, and the
@@ -40,6 +43,8 @@ struct IconKey {
     plain: bool,
     /// The art the icon shows in place of its image: a vehicle's silhouette or a generated icon.
     art: Option<crate::icon_art::Request>,
+    /// A mod perk's own image, shown as it is in place of an item icon.
+    perk: Option<u64>,
 }
 
 type LibraryIconResult = (PathBuf, IconKey, Result<egui::ColorImage, String>);
@@ -246,6 +251,7 @@ fn draw_recipe_search(
 }
 
 /// Both library navigation and build selection use the authored weapon preview.
+#[allow(clippy::cognitive_complexity)]
 fn draw_library_row(
     ui: &mut egui::Ui,
     catalog: Option<&InvestmentCatalog>,
@@ -268,12 +274,25 @@ fn draw_library_row(
             egui::vec2(ui.available_width(), row_height),
             egui::Sense::hover(),
         );
+        let id = ui.make_persistent_id("weapon-row");
+        // A row well outside the list's visible part keeps its place and draws nothing, so a
+        // library of thousands of recipes lays out only the rows that show. The rows just past
+        // either edge still draw, so Tab reaches the next one and scrolls to it.
+        if !state.reveal
+            && !ui.memory(|memory| memory.has_focus(id))
+            && !ui.is_rect_visible(rect.expand2(egui::vec2(0.0, row_height * 2.0)))
+        {
+            return LibraryRowResponse {
+                activated: false,
+                action: None,
+            };
+        }
         if ui.is_rect_visible(rect) {
             icons.want(ui.ctx(), &entry.path);
         }
         let response = ui.interact(
             rect,
-            ui.make_persistent_id("weapon-row"),
+            id,
             if inclusion.is_some() {
                 egui::Sense::CLICK
             } else {
@@ -295,6 +314,9 @@ fn draw_library_row(
             egui::pos2(rect.left() + 6.0, rect.center().y - 20.0),
             egui::vec2(40.0, 40.0),
         );
+        // A mod without an image of its own shows its template plug's icon.
+        let template =
+            catalog.filter(|_| entry.kind == crate::ItemKind::Mod && entry.perk_icon.is_none());
         match icons.previews.get(&entry.path) {
             Some(AuthoredIconPreview::Ready { texture, key })
                 if key.edit == entry.icon_edit
@@ -308,6 +330,13 @@ fn draw_library_row(
             Some(AuthoredIconPreview::Failed { error, .. }) => {
                 ui.put(icon_rect, egui::Label::new("No icon").wrap())
                     .on_hover_text(error);
+            }
+            _ if template.is_some() => {
+                if let Some(catalog) = template {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
+                        catalog.draw_perk_icon(ui, entry.donor_hash, icon_rect.width());
+                    });
+                }
             }
             _ if icons.worker.is_some() => {
                 ui.put(icon_rect, egui::Spinner::new());
@@ -353,7 +382,12 @@ fn draw_library_row(
                                 crate::app::style::quiet(ui);
                                 let icon = crate::app::style::more_icon(ui);
                                 ui.menu_button(icon, |ui| {
-                                    menu_action = actions::entry_menu(ui, entry, state.can_restore);
+                                    menu_action = actions::entry_menu(
+                                        ui,
+                                        entry,
+                                        state.can_restore,
+                                        state.library_busy,
+                                    );
                                 })
                             })
                             .inner;
@@ -437,7 +471,7 @@ fn draw_library_row(
         };
         if inclusion.is_none() {
             response.context_menu(|ui| {
-                menu_action = actions::entry_menu(ui, entry, state.can_restore);
+                menu_action = actions::entry_menu(ui, entry, state.can_restore, state.library_busy);
             });
         }
         let clicked = library_tooltip(response, catalog, icons, entry, details, action).clicked();
@@ -708,15 +742,23 @@ impl PackageAuthoringApp {
     ) -> bool {
         let busy = busy || self.library_state.export_selection.is_some();
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    !busy && self.recipe_library.is_some(),
-                    egui::Button::new("Import…"),
-                )
-                .clicked()
-            {
-                *action = Some(LibraryAction::Import);
-            }
+            ui.add_enabled_ui(!busy && self.recipe_library.is_some(), |ui| {
+                ui.menu_button("Import", |ui| {
+                    if ui.button("Recipes or Bundles…").clicked() {
+                        *action = Some(LibraryAction::Import);
+                        ui.close();
+                    }
+                    #[cfg(feature = "d2-model-importer")]
+                    if self.importer.enabled && ui.button("From Other Game…").clicked() {
+                        self.importer.open = true;
+                        ui.close();
+                    }
+                    if ui.button("Sunrise Studio Project…").clicked() {
+                        self.library_state.studio_import = true;
+                        ui.close();
+                    }
+                });
+            });
             ui.add_enabled_ui(!busy && self.recipe_library.is_some(), |ui| {
                 ui.menu_button("Export", |ui| {
                     if ui
@@ -834,6 +876,7 @@ impl PackageAuthoringApp {
             }
         }
         let busy = self.has_background_work();
+        let open_only = self.recipes_open_during_work();
         if (self.library_open || self.build_selection_draft.is_some())
             && let Some(catalog) = &self.catalog
         {
@@ -845,9 +888,10 @@ impl PackageAuthoringApp {
                 &self.recipe_entries,
             );
         }
-        self.draw_library_browser(ctx, busy);
+        self.draw_library_browser(ctx, busy, open_only);
         self.draw_recipe_restore(ctx, busy);
         self.draw_recipe_delete(ctx, busy);
+        self.draw_studio_import(ctx);
 
         let Some(mut draft) = self.build_selection_draft.take() else {
             return;

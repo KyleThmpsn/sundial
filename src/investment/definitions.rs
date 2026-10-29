@@ -389,6 +389,9 @@ pub struct WeaponSocket {
     pub compatible_plug_count: usize,
     pub reusable_plug_set_index: Option<u16>,
     pub randomized_plug_set_index: Option<u16>,
+    /// The members of the randomized plug set in native order. Empty when the lane has none or
+    /// it was not decoded completely.
+    pub ordered_randomized_choices: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -456,6 +459,20 @@ pub struct WeaponOrnament {
     pub icon_container_tag: Option<u32>,
     /// Complete ordered custom, default, and locked dye-reference rows carried by the ornament.
     pub render_dye_rows: [Vec<WeaponDyeReference>; 3],
+}
+
+/// A stock ornament that a weapon's ornament socket offers from its shared plug set. An imported
+/// weapon ornament is built on one, so it joins that set and the weapon offers it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SharedWeaponOrnament {
+    pub hash: u32,
+    pub name: String,
+    pub plug_category: u32,
+    /// The ornament's translation-art rows. A private plug built on it takes one art row.
+    pub art_rows: usize,
+    /// The weapon whose ornament socket offers the set.
+    pub weapon: u32,
+    pub weapon_name: String,
 }
 
 /// An ornament paired with a weapon that can lend it the rig it does not have.

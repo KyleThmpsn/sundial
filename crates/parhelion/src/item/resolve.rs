@@ -40,6 +40,8 @@ pub(super) struct ResolvedWeapon {
         Vec<(crate::recipe::AnimationAction, ResolvedSandboxPatternSource)>,
     /// The pattern row of the weapon whose type markers this one carries.
     pub(super) type_marker_pattern_source: Option<ResolvedSandboxPatternSource>,
+    /// The pattern row of the weapon whose behavior the block carries in place of the base's.
+    pub(super) behavior_pattern_source: Option<ResolvedSandboxPatternSource>,
     pub(super) socket_column_indices: Vec<Option<ResolvedSocketColumn>>,
     pub(super) has_authored_shader: bool,
     /// A subclass's own socket-entry list, when its abilities are not all its base's own.
@@ -252,6 +254,23 @@ fn resolve_project_weapon(
         );
     }
     if weapon.kind == ItemKind::Mod {
+        let classes = placements.classes[weapon_ordinal];
+        let collection = if !weapon.has_collections() {
+            None
+        } else if weapon.is_imported_ornament() {
+            Some(ornament_collection(
+                sources,
+                donor_collectible_index,
+                &placements.gear_pages_for(weapon_ordinal),
+                classes,
+            )?)
+        } else {
+            Some(weapon_ornament_collection(
+                sources,
+                donor_collectible_index,
+                classes,
+            )?)
+        };
         return resolve_mod(
             sources,
             weapon,
@@ -260,8 +279,8 @@ fn resolve_project_weapon(
                 definition_tag,
                 string_tag,
             },
-            definition,
-            strings,
+            (definition, strings),
+            collection,
         );
     }
     // Gear may also name itself in its stack and unique-equip labels, which the copy takes over.
@@ -602,6 +621,11 @@ fn resolve_project_weapon(
         .type_marker_donor
         .map(|item_hash| resolve_part_donor(sources, item_hash, "Type marker donor"))
         .transpose()?;
+    let behavior_pattern_source = weapon
+        .overrides
+        .behavior_donor
+        .map(|item_hash| resolve_part_donor(sources, item_hash, "Behavior donor"))
+        .transpose()?;
     if let Some(presentation) = &presentation_donor {
         // Family is checked against the catalog, and the native translation group above
         // must match. Collections placement follows authored rarity independently.
@@ -674,6 +698,7 @@ fn resolve_project_weapon(
         animation_pattern_source,
         animation_action_sources,
         type_marker_pattern_source,
+        behavior_pattern_source,
         socket_column_indices,
         has_authored_shader,
         subclass_list: None,
@@ -885,6 +910,7 @@ fn resolve_subclass(
         animation_pattern_source: None,
         animation_action_sources: Vec::new(),
         type_marker_pattern_source: None,
+        behavior_pattern_source: None,
         socket_column_indices: Vec::new(),
         has_authored_shader: false,
         subclass_list,
@@ -895,15 +921,101 @@ fn resolve_subclass(
     })
 }
 
+/// Where an imported universal ornament lands: its set beside the stock sets of its class's
+/// Universal Ornaments. Its collectible copies its base's own, which acquires through one unlock
+/// flag, or else the stock set's first tile.
+fn ornament_collection(
+    sources: &ProjectSources,
+    base: Option<usize>,
+    pages: &[&super::placements::GearPagePlan],
+    classes: crate::collection::Classes,
+) -> AuthoringResult<ResolvedCollection> {
+    let [page] = pages else {
+        return Err(invalid(
+            "An imported ornament must have one Collections set",
+        ));
+    };
+    let (template, unlock) = crate::progression::collectible_clone_template(
+        &sources.stock_collectibles,
+        base,
+        page.donor,
+        sources.stock_unlock_count,
+    )?;
+    let display = base.unwrap_or(page.donor);
+    Ok(ResolvedCollection {
+        collectible_display_template_index: display,
+        collectible_template_index: template,
+        collection_donor_index: display,
+        source_unlock_index: unlock,
+        source_acquired_flag: u16::try_from(unlock)
+            .map_err(|_| invalid("The ornament's unlock does not fit 16 bits"))?,
+        pages: crate::collection::CollectionPages::one(page.index),
+        classes,
+        count_selection: SunriseAcquiredPoolSelection::default(),
+    })
+}
+
+/// Where an imported weapon ornament lands: its template's own page, which for a stock Exotic
+/// weapon ornament is its weapon type's under Exotics and Weapon Ornaments. Its collectible copies
+/// the template's, which acquires through one unlock flag, and the page counts it as the
+/// template's acquired flag is counted.
+fn weapon_ornament_collection(
+    sources: &ProjectSources,
+    template: Option<usize>,
+    classes: crate::collection::Classes,
+) -> AuthoringResult<ResolvedCollection> {
+    let template = template.ok_or_else(|| {
+        invalid("An imported weapon ornament's stock ornament must be in Collections")
+    })?;
+    let parents =
+        template_presentation_parents(&sources.stock_nodes, &sources.stock_collectibles, template)?;
+    let &[page] = parents.as_slice() else {
+        return Err(invalid(
+            "An imported weapon ornament's stock ornament must be on one Collections page",
+        ));
+    };
+    let (template, unlock) = crate::progression::collectible_clone_template(
+        &sources.stock_collectibles,
+        Some(template),
+        template,
+        sources.stock_unlock_count,
+    )?;
+    let flag =
+        u16::try_from(unlock).map_err(|_| invalid("The ornament's unlock does not fit 16 bits"))?;
+    // A page whose counts cannot be traced keeps the direct count, which still acquires the
+    // ornament and only leaves the page total unchanged.
+    let count_selection = classify_sunrise_count_pools(
+        &sources.stock_pools,
+        &sources.stock_nodes,
+        &sources.stock_collectibles,
+        &sources.stock_objectives,
+        &parents,
+        page,
+        flag,
+    )
+    .unwrap_or_default();
+    Ok(ResolvedCollection {
+        collectible_display_template_index: template,
+        collectible_template_index: template,
+        collection_donor_index: template,
+        source_unlock_index: unlock,
+        source_acquired_flag: flag,
+        pages: crate::collection::CollectionPages::one(page),
+        classes,
+        count_selection,
+    })
+}
+
 /// A mod item. Its definition and strings are its custom perk's, compiled from the template plug
 /// in the item's own place, so this keeps only what the item rows need: the template's rows and
-/// icon. It has no Collections entry, since the sockets of its type offer it.
+/// icon. The sockets of its type offer it, so only an imported ornament has a Collections entry,
+/// which shows it beside the stock ones.
 fn resolve_mod(
     sources: &ProjectSources,
     spec: &WeaponCloneSpec,
     donor: DonorItem,
-    definition: Vec<u8>,
-    strings: Vec<u8>,
+    (definition, strings): (Vec<u8>, Vec<u8>),
+    collection: Option<ResolvedCollection>,
 ) -> AuthoringResult<ResolvedWeapon> {
     if matching_u32_offsets(&definition, spec.donor_item_hash) != [ITEM_DEFINITION_HASH_OFFSET]
         || !matching_u32_offsets(&strings, spec.donor_item_hash).is_empty()
@@ -924,7 +1036,7 @@ fn resolve_mod(
     Ok(ResolvedWeapon {
         weapon: spec.clone(),
         donor_item_index: donor.item_index,
-        collection: None,
+        collection,
         definition_tag: donor.definition_tag,
         string_tag: donor.string_tag,
         definition,
@@ -945,6 +1057,7 @@ fn resolve_mod(
         animation_pattern_source: None,
         animation_action_sources: Vec::new(),
         type_marker_pattern_source: None,
+        behavior_pattern_source: None,
         socket_column_indices: Vec::new(),
         has_authored_shader: false,
         subclass_list: None,

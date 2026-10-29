@@ -527,8 +527,14 @@ fn compile_canonical(
         assembly::prepare(sources, output, &mut linking)
     })?;
     progress.diagnostic(linking.diagnostic());
-    let mut bundle =
-        emission::emit_packages(package_directory, manager, emission, weapons, progress)?;
+    let mut bundle = emission::emit_packages(
+        package_directory,
+        manager,
+        emission,
+        weapons,
+        branding,
+        progress,
+    )?;
     let plug_plan =
         |plug: &ResolvedCustomPlug, (socket_index, choice_index), offered_sets| NewCustomPlugPlan {
             socket_index,

@@ -15,7 +15,9 @@
 //! the map's own places each converted piece's entity, copied from the donor's first prop: an
 //! entity-only placement whose entity has a render model and a fixed physical body in the world's
 //! collision layer. The same container places the map's ambience using a native sound point
-//! table, preferring the donor's and finding a compatible stock table when it has none.
+//! table, preferring the donor's and finding a compatible stock table when it has none. Its
+//! static group's table also places the map's decorator records, each row a copy of a stock
+//! decorator row ([`decorators`]).
 //! The map root also names a bubble layout that lists the
 //! bubble by name, and its copy and the bubble parent's name the map's bubble.
 use std::path::Path;
@@ -37,8 +39,10 @@ use crate::{
 use super::world::{BubbleName, Owner, renamed_counted};
 
 mod cubemaps;
+mod environment;
 mod lights;
 pub(super) use cubemaps::Cubemap;
+pub(super) use environment::Environment;
 pub(super) use lights::Light;
 
 const MAP_ROOT_CLASS: u32 = 0x8080_91DE;
@@ -276,6 +280,7 @@ const WORLD_MESH_RECORD_CLASS: u32 = 0x8080_92DB;
 const WORLD_MESH_RECORD_PACKFILE: usize = 0x14;
 
 /// One table slot of a filtered container copy.
+#[derive(Clone)]
 enum Slot {
     /// A donor table, kept or standing in for a geometry table.
     Table(u32),
@@ -340,6 +345,7 @@ enum Slot {
 /// A donor container a filtered copy stands in for: its owner with its shared-tag companion, or
 /// its tag and payload alone when its package enrolls none, whose tables the bubble's companion
 /// loads.
+#[derive(Clone)]
 enum Container {
     Enrolled(Owner),
     Unenrolled { tag: TagHash, payload: Vec<u8> },
@@ -370,6 +376,7 @@ impl Container {
 }
 
 /// What becomes of one of the donor bubble's containers.
+#[derive(Clone)]
 enum Kept {
     Unchanged,
     /// A copy whose geometry tables give way to an empty table, whose leftovers move and whose
@@ -425,6 +432,7 @@ const VERTEX_ONLY: u32 = 2;
 /// The donor's static instance group: its one-row placement table, the offset of the preheader
 /// tag in that row's resource, the row's entity, which the map's container loads, and the records
 /// the map's statics copy.
+#[derive(Clone)]
 struct StaticGroup {
     table: Vec<u8>,
     preheader: usize,
@@ -550,6 +558,7 @@ pub(super) struct World<'a> {
     pub meshes: &'a [TagHash],
 }
 
+#[derive(Clone)]
 pub(super) struct Chain {
     root: Owner,
     /// The map root's bubble layout and its payload, which already names the map.
@@ -580,9 +589,73 @@ pub(super) struct Chain {
     light_template: Option<lights::Template>,
     /// The map's own lights.
     lights: Vec<Light>,
+    /// The environment volume table, set, channel record and packfile the map's environment
+    /// copies, Distant Shore's whatever the donor ([`environment::template`]).
+    environment_template: Option<environment::Template>,
+    /// The map's own environment: its native sun and its interiors.
+    environment: Option<Environment>,
     /// The donor parent's bounds records, in order, each that bounds something as the type-16
     /// owner the map's copy widens to hold the level ([`widened_bounds`]).
     bounds_rows: Vec<(TagHash, Option<Owner>)>,
+    /// The stock decorator placement the map's decorator records' rows copy, when the level's
+    /// decorators draw as Destiny's instanced decorators ([`Decorators`]).
+    decorators: Option<Decorators>,
+}
+
+/// The resource kind of a placement row that places a decorator, whose 24-byte resource names
+/// its record (`80807164`) at `+0x10`, as a static group's names its preheader.
+const DECORATOR_KIND: u32 = 0x8080_71AD;
+const DECORATOR_RECORD: usize = 0x10;
+const DECORATOR_RESOURCE_SIZE: usize = 0x18;
+
+/// A stock decorator placement: its row, which places the stock decorator entity at the origin
+/// with no turn, its resource and the stock tags a container placing it loads.
+#[derive(Clone)]
+pub(super) struct Decorators {
+    row: Vec<u8>,
+    resource: Vec<u8>,
+    loads: Vec<TagHash>,
+}
+
+/// The decorator placement `table` places, when its only row places one: Distant Shore's
+/// `80EB0311` places entity `80C70D0D` with a resource naming record `80EB0310`, and its other
+/// decorator table the same entity. `loads` are the stock tags the copies name, which the map's
+/// container loads with the row's entity.
+pub(super) fn decorators(
+    manager: &PackageManager,
+    table: TagHash,
+    loads: &[TagHash],
+) -> AuthoringResult<Decorators> {
+    let payload = read_tag(manager, table, "decorator table")?;
+    if read_u64(&payload, TABLE_ROWS)? != 1 {
+        return Err(invalid(
+            "The stock decorator table places more than one row",
+        ));
+    }
+    let (_, _, row, _) = array_at(&payload, TABLE_ROWS)?;
+    let pointer = read_i64(&payload, row + ROW_RESOURCE)?;
+    let resource = usize::try_from((row + ROW_RESOURCE) as i64 + pointer)
+        .map_err(|_| invalid("The stock decorator row's resource lies before its table"))?;
+    if pointer == 0 || resource < 4 || read_u32(&payload, resource - 4)? != DECORATOR_KIND {
+        return Err(invalid(
+            "The stock decorator table's row places no decorator",
+        ));
+    }
+    let resource = payload
+        .get(resource..resource + DECORATOR_RESOURCE_SIZE)
+        .ok_or_else(|| invalid("The stock decorator resource is truncated"))?
+        .to_vec();
+    let entity = TagHash(read_u32(&payload, row)?);
+    if class(manager, entity) != Some(ENTITY_CLASS) {
+        return Err(invalid("The stock decorator row places no entity"));
+    }
+    let mut stock = vec![entity];
+    stock.extend_from_slice(loads);
+    Ok(Decorators {
+        row: payload[row..row + ROW_SIZE].to_vec(),
+        resource,
+        loads: stock,
+    })
 }
 
 /// Crucible worlds whose sky table and sky objects a map copies when its donor's bubble places no
@@ -649,6 +722,50 @@ fn light_template(
         for index in 0..count {
             let table = read_u32(&payload, rows + index * 4)?;
             if let Ok(Some(template)) = lights::template(manager, table) {
+                return Ok(Some(template));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The box `pieces` span, which the map's environment volume holds.
+fn piece_bounds(pieces: &[Piece]) -> AuthoringResult<([f32; 3], [f32; 3])> {
+    if pieces.is_empty() {
+        return Err(invalid(
+            "The map places no pieces for its environment to hold",
+        ));
+    }
+    let mut low = [f32::INFINITY; 3];
+    let mut high = [f32::NEG_INFINITY; 3];
+    for piece in pieces {
+        for k in 0..3 {
+            low[k] = low[k].min(piece.minimum[k]);
+            high[k] = high[k].max(piece.maximum[k]);
+        }
+    }
+    Ok((low, high))
+}
+
+/// The environment template of the first table among those `containers` list that places an
+/// environment volume with a channel modifier record ([`environment::template`]). A table that
+/// cannot serve is passed over, and without one the map keeps the global channels' defaults.
+fn environment_template(
+    manager: &PackageManager,
+    containers: &[TagHash],
+) -> AuthoringResult<Option<environment::Template>> {
+    for &container in containers {
+        if class(manager, container) != Some(CONTAINER_CLASS) {
+            continue;
+        }
+        let payload = read_tag(manager, container, "map container")?;
+        if read_u64(&payload, CONTAINER_TABLES)? == 0 {
+            continue;
+        }
+        let (count, _, rows, _) = array_at(&payload, CONTAINER_TABLES)?;
+        for index in 0..count {
+            let table = read_u32(&payload, rows + index * 4)?;
+            if let Ok(Some(template)) = environment::template(manager, table) {
                 return Ok(Some(template));
             }
         }
@@ -2123,8 +2240,9 @@ impl Chain {
         let containers = tag_rows(manager, &bubble.payload, BUBBLE_CONTAINERS)?;
         let empty = empty_table(manager, &containers)?;
         let sound_points = sound_points(manager, &containers)?;
-        let light_template =
-            light_template(manager, &world_containers(manager, lights::LIGHT_WORLD)?)?;
+        let template_containers = world_containers(manager, lights::LIGHT_WORLD)?;
+        let light_template = light_template(manager, &template_containers)?;
+        let environment_template = environment_template(manager, &template_containers)?;
         let kept = containers
             .into_iter()
             .map(|tag| keep(directory, manager, companions, tag, empty, false))
@@ -2180,7 +2298,40 @@ impl Chain {
             borrowed_sky,
             light_template,
             lights: Vec::new(),
+            environment_template,
+            environment: None,
             bounds_rows,
+            decorators: None,
+        })
+    }
+
+    /// This chain, as loaded for the donor world `donor`, for the map `name` instead. Only the
+    /// bubble layout and the bubble's name differ between the maps of one donor world, as between
+    /// a campaign's connected areas, and loading the chain again took about seven seconds for
+    /// each. `self` must be as [`Self::load`] left it.
+    pub(super) fn renamed(
+        &self,
+        manager: &PackageManager,
+        donor: &str,
+        name: &str,
+    ) -> AuthoringResult<Self> {
+        let bubble_name = BubbleName::new(donor, name);
+        let mut layout_payload = renamed_counted(
+            &read_tag(manager, self.layout, "bubble layout")?,
+            LAYOUT_NAME,
+            donor,
+            name,
+            "bubble layout",
+        )?;
+        if bubble_name.rename(&mut layout_payload) == 0 {
+            return Err(invalid(format!(
+                "Donor {donor}'s bubble layout does not list its bubble"
+            )));
+        }
+        Ok(Self {
+            layout_payload,
+            bubble_name,
+            ..self.clone()
         })
     }
 
@@ -2252,6 +2403,7 @@ impl Chain {
         FIXED_ENTRIES
             + if self.borrowed_sky.is_some() { 2 } else { 0 }
             + lights::entries(self.placed_lights())
+            + environment::entries(self.placed_environment())
             + 2 * self
                 .bounds_rows
                 .iter()
@@ -2336,6 +2488,24 @@ impl Chain {
         }
     }
 
+    /// Sets the map's own environment, which its container places when an environment template
+    /// was found.
+    pub(super) fn set_environment(&mut self, environment: Option<Environment>) {
+        self.environment = environment;
+    }
+
+    /// Sets the stock decorator placement the map's decorator records' rows copy.
+    pub(super) fn set_decorators(&mut self, decorators: Option<Decorators>) {
+        self.decorators = decorators;
+    }
+
+    /// The environment the map's container places.
+    fn placed_environment(&self) -> Option<&Environment> {
+        self.environment_template
+            .as_ref()
+            .and(self.environment.as_ref())
+    }
+
     /// The direction the map's sun takes: its baked light's, when that lies above the horizon.
     fn sun(&self) -> Option<[f32; 3]> {
         self.light.filter(|direction| {
@@ -2406,11 +2576,27 @@ impl Chain {
 
     /// The placement table: a copy of the donor's static instance group table, whose one row
     /// places the map's static instance group with preheader `preheader`, as a stock bubble's
-    /// table places its statics.
-    fn table(&self, preheader: TagHash, props: &[(TagHash, [f32; 3])]) -> AuthoringResult<Vec<u8>> {
+    /// table places its statics. A row follows for each of `props` and for each of `decorators`,
+    /// the map's decorator records, which copies the stock decorator row and names its record in a
+    /// resource after the rows.
+    fn table(
+        &self,
+        preheader: TagHash,
+        props: &[(TagHash, [f32; 3])],
+        decorators: &[TagHash],
+    ) -> AuthoringResult<Vec<u8>> {
         let mut payload = self.statics.table.clone();
         write_u32(&mut payload, self.statics.preheader, preheader.0)?;
-        if !props.is_empty() {
+        let decorator = match (&self.decorators, decorators.is_empty()) {
+            (_, true) => None,
+            (Some(decorator), false) => Some(decorator),
+            (None, false) => {
+                return Err(invalid(
+                    "The map places decorator records without a stock decorator placement",
+                ));
+            }
+        };
+        if !props.is_empty() || !decorators.is_empty() {
             let (count, _, rows, _) = array_at(&payload, TABLE_ROWS)?;
             let mut placements = payload[rows..rows + count * ROW_SIZE].to_vec();
             for (index, &(entity, position)) in props.iter().enumerate() {
@@ -2430,11 +2616,20 @@ impl Chain {
                 }
                 placements.extend(row);
             }
+            if let Some(decorator) = decorator {
+                for _ in decorators {
+                    let mut row = decorator.row.clone();
+                    for at in ROW_POINTERS {
+                        row[at..at + 8].fill(0);
+                    }
+                    placements.extend(row);
+                }
+            }
             append_native_array(
                 &mut payload,
                 TABLE_ROWS,
                 TABLE_ROW_CLASS,
-                count + props.len(),
+                count + props.len() + decorators.len(),
                 &placements,
             )?;
             // Relocating the original static rows also relocates their resource pointers.
@@ -2454,6 +2649,24 @@ impl Chain {
                     }
                 }
             }
+            // Each decorator row's resource follows the rows, its kind word just before it.
+            if let Some(decorator) = decorator {
+                for (index, record) in decorators.iter().enumerate() {
+                    while !(payload.len() + 4).is_multiple_of(16) {
+                        payload.push(0);
+                    }
+                    payload.extend_from_slice(&DECORATOR_KIND.to_le_bytes());
+                    let resource = payload.len();
+                    let mut bytes = decorator.resource.clone();
+                    write_u32(&mut bytes, DECORATOR_RECORD, record.0)?;
+                    payload.extend_from_slice(&bytes);
+                    write_relative_pointer(
+                        &mut payload,
+                        relocated + (count + props.len() + index) * ROW_SIZE + ROW_RESOURCE,
+                        resource,
+                    )?;
+                }
+            }
             payload = synchronize_payload_size(payload)?;
         }
         Ok(payload)
@@ -2466,7 +2679,7 @@ impl Chain {
     /// `atmosphere`, the map's atmosphere volume, and `lookup`, the map's distance lookup, its
     /// occlusion record holds `occlusion`, the map's probes, its cubemap volume table places
     /// `cubemaps`, and its companion loads `content`, every tag the pieces, sky, sounds and
-    /// atmosphere use.
+    /// atmosphere use. The placement table also places `decorators`, the map's decorator records.
     #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     pub(super) fn tags(
         &self,
@@ -2474,6 +2687,7 @@ impl Chain {
         statics: TagHash,
         pieces: &[Piece],
         props: &[(TagHash, [f32; 3])],
+        decorators: &[TagHash],
         spawns: &[Spawn],
         world: &World,
         sky: &[SkyObject],
@@ -2780,12 +2994,31 @@ impl Chain {
             ),
             _ => (Vec::new(), Vec::new()),
         };
+        // The map's environment takes the entries after the widened bounds records', and the
+        // map's own container places its table.
+        let bounded = self
+            .bounds_rows
+            .iter()
+            .filter(|(_, owner)| owner.is_some())
+            .count();
+        let environment_base = next + borrowed.len() + lit.len() + 2 * bounded;
+        let (environed, environment_entity) = match (&self.environment_template, &self.environment)
+        {
+            (Some(template), Some(environment)) => (
+                template.tags(environment, piece_bounds(pieces)?, &|offset| {
+                    at(environment_base + offset)
+                })?,
+                Some(template.entity()),
+            ),
+            _ => (Vec::new(), None),
+        };
         let mut container_payload = self.container.payload.clone();
         let (_, _, _, table_class) = array_at(&container_payload, CONTAINER_TABLES)?;
         let tables = std::iter::once(table)
             .chain(sounds)
             .chain(borrowed.first().map(|(_, _, tag)| *tag))
             .chain(lit.first().map(|(_, _, tag)| *tag))
+            .chain(environed.first().map(|(_, _, tag)| *tag))
             .flat_map(|tag| tag.0.to_le_bytes())
             .collect::<Vec<_>>();
         append_native_array(
@@ -2820,6 +3053,16 @@ impl Chain {
         // as the template's container loads them.
         loads.extend(lit.iter().map(|(_, _, tag)| *tag));
         loads.extend(techniques);
+        // The environment's rows place the template's stock volume entity.
+        loads.extend(environed.iter().map(|(_, _, tag)| *tag));
+        loads.extend(environment_entity);
+        // The decorator rows place the stock decorator entity, and the decorator models draw with
+        // copies of stock techniques whose programs, textures and samplers stay stock.
+        if !decorators.is_empty()
+            && let Some(decorator) = &self.decorators
+        {
+            loads.extend_from_slice(&decorator.loads);
+        }
         // The bubble's companion loads each copy and its companion, or, for a copy without one,
         // the tables it adds.
         let mut bubble_loads = loads[4..6].to_vec();
@@ -2927,7 +3170,7 @@ impl Chain {
                 self.container
                     .companion_with(container_companion, container, &loads[6..])?,
             ),
-            spec(self.prop_table, self.table(statics, props)?),
+            spec(self.prop_table, self.table(statics, props, decorators)?),
             spec(self.layout, self.layout_payload.clone()),
         ];
         let mut tags = tags;
@@ -2972,6 +3215,9 @@ impl Chain {
                 owner.companion_template(),
                 owner.companion_with(own_companion, own, &[])?,
             ));
+        }
+        for (template, payload, _) in environed {
+            tags.push(spec(template, payload));
         }
         Ok((tags, root))
     }

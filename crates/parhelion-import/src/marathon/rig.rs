@@ -1,5 +1,6 @@
 //! Source weapon bones on a private native palette, with attachment bindings retained.
 use super::*;
+use crate::tiger::animation::pose::Pose;
 use std::collections::{BTreeMap, BTreeSet};
 
 type Matrix = [f32; 16];
@@ -35,6 +36,8 @@ pub(super) struct Binding {
     mapping: Vec<u16>,
     attachments: BTreeMap<u32, usize>,
     local: BTreeMap<u32, Vec<u16>>,
+    /// Each local attachment skeleton's candidate rest poses, as bone transforms from its bind.
+    posed: BTreeMap<u32, Vec<Vec<Pose>>>,
     pub bones: u32,
     pub program: String,
     pub report: Value,
@@ -72,7 +75,7 @@ impl Binding {
             Self::assemble(source, parts, root, mapping, &pre, &placements, &attached)?;
         binding.report = json!({"revision":3,"source_entity":format!("{entity:08X}"),"bones":rows,"attachments":binding.attachments,"local_rigs":binding.report,
             "policy":"Every source weapon bone skins to its own private native bone, animated by the translated source controller.",
-            "limits":"Attachment-local source controllers remain untranslated, so local attachment skeletons follow their host bone."});
+            "limits":"Attachment-local source controllers remain untranslated, so local attachment skeletons follow their host bone from their own rest pose."});
         Ok(binding)
     }
 
@@ -202,6 +205,7 @@ impl Binding {
             }
         }
         let mut local = BTreeMap::new();
+        let mut posed = BTreeMap::new();
         let mut local_reports = Vec::new();
         for part in parts {
             let attachment = hash(part, "entity")?;
@@ -236,13 +240,23 @@ impl Binding {
                         .is_none(),
                     "Ambiguous local attachment skeleton"
                 );
-                local_reports.push(json!({"entity":format!("{attachment:08X}"),"bones":nodes.len(),"native_parent":mapping[parent],"policy":"Local source animation is not translated. Every local influence follows the attachment host."}));
+                let (rests, rest) = super::animation::local_pose(source, attachment)?;
+                if !rests.is_empty() {
+                    ensure!(
+                        rests.iter().all(|pose| pose.len() == nodes.len()),
+                        "Local attachment pose count differs"
+                    );
+                    posed.insert(attachment, rests);
+                }
+                local_reports.push(json!({"entity":format!("{attachment:08X}"),"bones":nodes.len(),"native_parent":mapping[parent],"rest":rest,
+                    "policy":"Local source animation is not translated. Every local influence follows the attachment host from the attachment's rest pose."}));
             }
         }
         Ok(Self {
             mapping,
             attachments,
             local,
+            posed,
             bones: u32::try_from(pre.len())?,
             program: program(pre),
             // The caller replaces this with its complete report.
@@ -281,26 +295,98 @@ impl Binding {
                     !self.attachments.contains_key(&entity) || self.local.contains_key(&entity),
                     "Skinned attachment needs its own palette"
                 );
-                let weighted = positions.0.chunks_exact(24).any(|v| {
-                    crate::tiger::skinning::selector(v).is_ok_and(crate::tiger::skinning::weighted)
-                });
-                let auxiliary = if weighted {
-                    source
-                        .tag(source.reference(model.u32(mesh + 24)?)?, None)?
-                        .0
-                        .clone()
-                } else {
-                    Vec::new()
-                };
                 crate::tiger::skinning::native_vertices(
                     &positions.0,
-                    &auxiliary,
+                    &auxiliary(source, model, mesh, positions)?,
                     self.local.get(&entity).unwrap_or(&self.mapping),
                 )
             }
             code => anyhow::bail!("Unsupported Marathon skin declaration {code}"),
         }
     }
+
+    /// How many candidate rest poses an entity's local skeleton has, none outside one.
+    pub fn rests(&self, entity: u32) -> usize {
+        self.posed.get(&entity).map_or(0, Vec::len)
+    }
+
+    /// Each vertex's transform from bind space to its local skeleton's chosen rest pose, blended
+    /// over its own source influences, as row-major 3x4 matrices. `None` for geometry outside a
+    /// posed local skeleton, whose bind positions stand.
+    #[allow(clippy::too_many_arguments)]
+    pub fn posed(
+        &self,
+        source: &mut Reader,
+        model: &Payload,
+        mesh: usize,
+        entity: u32,
+        positions: &Payload,
+        header: &Payload,
+        rest: usize,
+    ) -> Result<Option<Vec<[f32; 12]>>> {
+        let Some(poses) = self.posed.get(&entity).and_then(|rests| rests.get(rest)) else {
+            return Ok(None);
+        };
+        if header.u16(6)? != 1 {
+            return Ok(None);
+        }
+        let bones = (0..poses.len())
+            .map(u16::try_from)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let matrices = poses.iter().map(|pose| pose.matrix()).collect::<Vec<_>>();
+        crate::tiger::skinning::native_vertices(
+            &positions.0,
+            &auxiliary(source, model, mesh, positions)?,
+            &bones,
+        )?
+        .into_iter()
+        .map(|influences| {
+            let mut blended = [0.; 12];
+            for (&weight, &bone) in influences[..4].iter().zip(&influences[4..]) {
+                let matrix = matrices
+                    .get(usize::from(bone))
+                    .context("Posed vertex names an absent local bone")?;
+                for (value, entry) in blended.iter_mut().zip(matrix) {
+                    *value += f32::from(weight) / 255. * entry;
+                }
+            }
+            Ok(blended)
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+    }
+}
+
+/// The weighted influence records a mesh's skinned positions address, or none when every vertex
+/// is rigid.
+fn auxiliary(
+    source: &mut Reader,
+    model: &Payload,
+    mesh: usize,
+    positions: &Payload,
+) -> Result<Vec<u8>> {
+    let weighted = positions
+        .0
+        .chunks_exact(24)
+        .any(|v| crate::tiger::skinning::selector(v).is_ok_and(crate::tiger::skinning::weighted));
+    Ok(if weighted {
+        source
+            .tag(source.reference(model.u32(mesh + 24)?)?, None)?
+            .0
+            .clone()
+    } else {
+        Vec::new()
+    })
+}
+
+/// A row-major 3x4 transform applied to a point, or to a direction without its translation.
+pub(super) fn apply(matrix: &[f32; 12], v: [f32; 3], point: bool) -> [f32; 3] {
+    std::array::from_fn(|row| {
+        matrix[row * 4] * v[0]
+            + matrix[row * 4 + 1] * v[1]
+            + matrix[row * 4 + 2] * v[2]
+            + if point { matrix[row * 4 + 3] } else { 0. }
+    })
 }
 
 fn program(pre: &[Matrix]) -> String {

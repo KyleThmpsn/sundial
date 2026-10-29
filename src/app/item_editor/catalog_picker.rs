@@ -258,6 +258,7 @@ pub(crate) fn authored_item_tooltip(
             name: None,
             description: None,
             classification_hash: None,
+            rarity: None,
         });
         return crate::app::item_art::tooltip::on_hover_authored(
             response,
@@ -267,6 +268,9 @@ pub(crate) fn authored_item_tooltip(
                 name: text.name,
                 description: text.description,
                 classification: text.classification_hash.map(u64::from),
+                rarity: text
+                    .rarity
+                    .map(crate::catalog::ItemRarity::from_package_value),
                 icon: authored.icon,
                 note: authored.note,
                 template: authored.template,

@@ -14,13 +14,46 @@ pub(super) fn fresnel(surface: &surface::Surface<'_>) -> String {
     format!("saturate({coefficient}*pow(saturate({dark}-saturate(dot(n,normalize(v5.xyz)))),2))")
 }
 
+/// Whether `material` refracts the scene behind it, Reach's `refraction` option `dynamic`.
+pub(super) fn refracts(material: &Material) -> bool {
+    material.water()
+        && material
+            .options
+            .get("refraction")
+            .is_some_and(|option| option == "dynamic")
+}
+
+/// The transparent scope's scene inputs refracting water reads ([`SCENE_REGISTERS`]): the scene
+/// depth with its linearization `1 / (depth * CB2[0].y + CB2[0].x)`, as native forward program
+/// `80B38506` and the native particle programs take it, the completed opaque scene color, and the
+/// view row `CB12[12]`, the full-size target's width and height and their reciprocals, which
+/// native transparent programs scale screen positions by.
+pub(super) const SCENE_DECLARATIONS: &str = "Texture2D<float4> SceneDepth:register(t10);Texture2D<float4> SceneColor:register(t18);cbuffer SceneDepthConstants:register(b2){float4 depthData[1];};cbuffer View:register(b12){float4 viewData[14];};float reachSceneDepth(float depth){return 1/max(depth*depthData[0].y+depthData[0].x,0.000001);}float reachSceneDepthAt(float2 uv){int2 size=int2(viewData[12].xy);return reachSceneDepth(SceneDepth.Load(int3(clamp(int2(uv*viewData[12].xy),int2(0,0),size-1),0)).x);}";
+
+/// The end of a refracting water surface's output. Its premultiplied color and coverage cover the
+/// scene behind it, and the refracted scene replaces the unrefracted one by the share left
+/// uncovered, so the blend leaves `water + refracted * (1 - coverage)`.
+pub(super) const REFRACTED_FINISH: &str = "o0.rgb+=(waterRefracted-waterBehind)*(1-o0.a);";
+
 /// The MCC above-water program decodes its reflection's HDR alpha separately from surface
-/// lighting. Scene-depth refraction, ripple buffers and underwater camera state are not bound.
+/// lighting. Ripple buffers and underwater camera state are not bound.
+///
+/// Refracting water follows `water_shading.fx` with `refraction = dynamic`. It offsets its screen
+/// position by its tangent slope times `refraction_texcoord_shift`, `saturate(2 / distance)` and
+/// its bank alpha, and keeps the offset only where the scene there lies behind the water. Its
+/// transparency is `saturate(exp2(murkiness * h)) * saturate(refraction_extinct_distance /
+/// distance)`, with `h` the refracted point's height less the water's and the distance in Reach
+/// units. The body color lit by the baked light blends toward the refracted scene by the
+/// transparency, the reflection blends over that by Fresnel, the diffuse term adds, and the bank
+/// alpha blends the result back toward the scene. The refracted point lies on the water pixel's
+/// own view ray at the scene depth found at the offset, where Reach reconstructs the offset pixel's
+/// ray. Water without refraction keeps its coverage approximation ([`super::water_albedo`]).
 pub(super) fn lighting(
     surface: &surface::Surface<'_>,
     samples: &BTreeMap<usize, String>,
     environment: Option<&str>,
     level: f32,
+    refracts: bool,
 ) -> String {
     let environment = environment.unwrap_or("float4(0,0,0,0)");
     let cut = surface.scalar("sunspot_cut", 1.);
@@ -29,8 +62,19 @@ pub(super) fn lighting(
     let diffuse = surface.color("water_diffuse", [0.; 4]);
     let fresnel = fresnel(surface);
     let foam = foam(surface, samples, level);
+    let light = format!(
+        "float3 waterLight=lightLobeIrradiance*{level:e}+lightAmbient.a;float4 waterEnvironment={environment};float3 waterShadow=saturate(waterLight-{shadow});float waterSunAlpha=min(waterEnvironment.a,{cut})+saturate(waterEnvironment.a-{cut})*dot(waterShadow,waterShadow);float3 waterReflection=waterEnvironment.rgb*(256*waterSunAlpha*{reflection});"
+    );
+    if !refracts {
+        return format!(
+            "{light}albedo.rgb=(lerp(albedo.rgb*waterLight,waterReflection,{fresnel})+{diffuse}*saturate(n.z)*waterLight)/{level:e};{foam}"
+        );
+    }
+    let shift = surface.scalar("refraction_texcoord_shift", 0.);
+    let murkiness = surface.scalar("water_murkiness", 8.);
+    let extinction = surface.scalar("refraction_extinct_distance", 1.);
     format!(
-        "float3 waterLight=lightLobeIrradiance*{level:e}+lightAmbient.a;float4 waterEnvironment={environment};float3 waterShadow=saturate(waterLight-{shadow});float waterSunAlpha=min(waterEnvironment.a,{cut})+saturate(waterEnvironment.a-{cut})*dot(waterShadow,waterShadow);float3 waterReflection=waterEnvironment.rgb*(256*waterSunAlpha*{reflection});albedo.rgb=(lerp(albedo.rgb*waterLight,waterReflection,{fresnel})+{diffuse}*saturate(n.z)*waterLight)/{level:e};{foam}"
+        "{light}float waterFresnel={fresnel};float waterBank=saturate(albedo.a);float2 waterScreen=position.xy*viewData[12].zw;float3 waterTangent=float3(dot(n,v1.xyz),dot(n,v2.xyz),dot(n,v0.xyz));float2 waterUv=saturate(waterScreen+waterTangent.xy/max(waterTangent.z,0.01)*{shift}*saturate(2*v9.z)*waterBank);float waterSurface=reachSceneDepth(position.z);float waterDepth=reachSceneDepthAt(waterUv);if(waterDepth<=waterSurface){{waterUv=waterScreen;waterDepth=reachSceneDepthAt(waterScreen);}}float waterHeight=-v5.z*(waterDepth/max(waterSurface,0.0001)-1)/3.048;float waterClear=saturate(exp2({murkiness}*waterHeight))*saturate({extinction}*v9.z);float waterSeen=waterClear*(1-waterFresnel)*waterBank+1-waterBank;float3 waterColor=(albedo.rgb*waterLight*(1-waterClear)*(1-waterFresnel)+waterReflection*waterFresnel+{diffuse}*saturate(n.z)*waterLight)*waterBank/{level:e};albedo=float4(waterColor/max(1-waterSeen,0.00001),1-waterSeen);float3 waterBehind=SceneColor.SampleLevel(ClampSampler,waterScreen,0).rgb;float3 waterRefracted=SceneColor.SampleLevel(ClampSampler,waterUv,0).rgb;{foam}"
     )
 }
 
@@ -57,7 +101,8 @@ fn foam(surface: &surface::Surface<'_>, samples: &BTreeMap<usize, String>, level
 }
 
 /// Separate native 2D resources avoid interpreting a sixteen-slice array as a native cubemap.
-/// Each resource retains its original BC5_SNORM bytes and mip levels.
+/// Each resource retains its original BC5_SNORM bytes and mip levels, and binds to the next
+/// register clear of `reserved`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn waves(
     c: &Cache,
@@ -67,6 +112,7 @@ pub(super) fn waves(
     material: &Material,
     surface: &surface::Surface<'_>,
     bindings: &mut Vec<(usize, String)>,
+    reserved: &[usize],
 ) -> Result<(String, String)> {
     let mapping = material
         .properties
@@ -77,17 +123,12 @@ pub(super) fn waves(
     let tag = mapping.bitmap.as_ref().context("Wave bitmap")?;
     let frame = mapping.static_frame(c)?;
     let slopes = material::slopes(c, pages, tag, frame)?;
-    let first = bindings.iter().map(|(slot, _)| slot + 1).max().unwrap_or(0);
     let count = slopes.frames.len();
-    ensure!(
-        first + count <= MAX_TEXTURE_REGISTERS,
-        "Water wave array exceeds texture binding capacity"
-    );
     let mut declarations = String::new();
     let mut cases = String::new();
     for (index, bytes) in slopes.frames.iter().enumerate() {
         let symbol = format!("reach-wave-{:08x}-{frame}-{index}", tag.datum);
-        if !graph.nodes.iter().any(|node| node["symbol"] == symbol) {
+        if !graph.contains(&symbol) {
             let template = 0x80ec31bc;
             let mut header = native.tag(template, None)?.0.clone();
             put(&mut header, 0, &u32::try_from(bytes.len())?.to_le_bytes())?;
@@ -113,7 +154,11 @@ pub(super) fn waves(
                 vec![],
             )?;
         }
-        let register = first + index;
+        let register = free_registers(bindings, 1, reserved);
+        ensure!(
+            register < MAX_TEXTURE_REGISTERS,
+            "Water wave array exceeds texture binding capacity"
+        );
         bindings.push((register, symbol));
         declarations.push_str(&format!(
             "Texture2D<float2> Wave{index}:register(t{register});\n"

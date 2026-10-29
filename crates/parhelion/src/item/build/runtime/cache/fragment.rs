@@ -296,7 +296,35 @@ impl Pending<'_> {
         reason: &mut Reason,
     ) -> Option<(BTreeMap<u32, u32>, Vec<GroupPlan>)> {
         let mut moves = BTreeMap::new();
+        // The cached companion records its owner in its independently decoded header fields.
+        // Reserve their complete span before either address is assigned in the new layout.
+        let mut groups = BTreeMap::<usize, usize>::new();
+        for (companion, tag) in entry
+            .host
+            .iter()
+            .enumerate()
+            .filter(|(_, tag)| tag.loading.is_some())
+        {
+            let owner = tag
+                .fields
+                .as_ref()?
+                .iter()
+                .find(|(offset, _)| *offset == 12)?
+                .1;
+            let owner = entry.host.iter().position(|tag| tag.assigned == owner)?;
+            let first = owner.min(companion);
+            let count = owner.max(companion) - first + 1;
+            groups
+                .entry(first)
+                .and_modify(|size| *size = (*size).max(count))
+                .or_insert(count);
+        }
         for (index, tag) in entry.host.iter().enumerate() {
+            if let Some(&count) = groups.get(&index) {
+                self.allocator
+                    .reserve(self.host_start.checked_add(index)?, count)
+                    .ok()?;
+            }
             let assigned = self
                 .allocator
                 .assigned_tag(
@@ -345,6 +373,7 @@ impl Pending<'_> {
         assignments: &mut Vec<u8>,
         animation: &mut AnimationCache,
     ) -> Result<Restored, Reason> {
+        let allocation = crate::appended_tags::checkpoint();
         let mut reason = Reason::RelocationRejected;
         let restored = (|| {
             // No live state changes until all allocations, references and assignment rows agree.
@@ -427,6 +456,7 @@ impl Pending<'_> {
             host.extend(restored_host);
             *assignments = restored_assignments;
             for (plan, (tags, references)) in plans.into_iter().zip(restored_groups) {
+                crate::mod_family::build::native(plan.package_id);
                 assets.packages.reservations.push(plan.reservation());
                 if plan.package_index == assets.packages.packages.len() {
                     assets.packages.packages.push(AssetPackage {
@@ -450,6 +480,9 @@ impl Pending<'_> {
                 result,
             })
         })();
+        if restored.is_some() {
+            allocation.commit();
+        }
         restored.ok_or(reason)
     }
 

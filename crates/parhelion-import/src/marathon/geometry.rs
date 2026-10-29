@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod scope;
-pub(super) use scope::Lens;
+pub(super) use scope::{Framing, Lens};
 
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
@@ -13,6 +13,8 @@ pub struct Mesh {
     pub weights: Vec<[u8; 8]>,
     pub bones: u32,
     pub motion: String,
+    /// The rest pose each posed local attachment skeleton takes, by entity.
+    pub rests: BTreeMap<u32, usize>,
 }
 
 pub struct Surface {
@@ -26,6 +28,9 @@ pub struct Surface {
     pub has_colors: bool,
     pub lens: Option<Lens>,
     pub cutout: Option<Lens>,
+    /// The aimed view that shows this transparent draw, when it is glass ahead of an enclosed
+    /// sight's source eye.
+    pub framed: Option<Framing>,
 }
 
 impl Surface {
@@ -34,6 +39,9 @@ impl Surface {
             0 => 0,
             2 => 1,
             4 => 3,
+            // Aimed glass draws in the reticle pass. At full zoom on a sniper donor the transparent
+            // pass drew neither the framed glass nor a full-window layer, while reticles drew.
+            8 if self.framed.is_some() => 16,
             8 => 7,
             13 => 12,
             15 => {
@@ -56,6 +64,83 @@ fn transform(v: [f32; 3], m: &[f32; 16], point: bool) -> [f32; 3] {
             + if point { m[i * 4 + 3] } else { 0. }
     })
 }
+/// Positions, their header, triangle indices and the index byte width.
+type Streams = (
+    std::sync::Arc<Payload>,
+    std::sync::Arc<Payload>,
+    Vec<u32>,
+    usize,
+);
+
+/// A mesh's positions with their header, and its triangle indices with their byte width.
+fn streams(r: &mut Reader, b: &Payload, m: usize) -> Result<Streams> {
+    let (pt, it) = (b.u32(m)?, b.u32(m + 16)?);
+    let ph = r.tag(pt, None)?;
+    let ih = r.tag(it, None)?;
+    ensure!(ph.u16(4)? == 24, "Marathon vertex stride differs");
+    let p = r.tag(r.reference(pt)?, None)?;
+    let ib = r.tag(r.reference(it)?, None)?;
+    ensure!(
+        p.0.len() == ph.u32(0)? as usize && ib.0.len() == ih.u32(8)? as usize,
+        "buffer lengths differ"
+    );
+    ensure!(p.0.len() % 24 == 0, "vertex counts differ");
+    let width = if ih.u8(1)? == 0 { 2 } else { 4 };
+    let indices = (0..ib.0.len())
+        .step_by(width)
+        .map(|o| {
+            if width == 2 {
+                Ok(ib.u16(o)? as u32)
+            } else {
+                ib.u32(o)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((p, ph, indices, width))
+}
+
+/// The rest pose of each posed local skeleton among the entries. Its idle pose stands unless its
+/// own sight axis misses its aperture there, in which case the first layer rest the axis passes
+/// through is taken. An entity without an aperture keeps its idle pose.
+fn rests(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<BTreeMap<u32, usize>> {
+    let mut chosen = BTreeMap::new();
+    for entry in entries {
+        let entity = hash(entry, "entity")?;
+        let count = rig.rests(entity);
+        if count == 0 || chosen.contains_key(&entity) {
+            continue;
+        }
+        let b = r.tag(hash(entry, "model")?, Some(0x8080881C))?;
+        let mut rest = 0;
+        'meshes: for m in b.array(16, 0x88, Some(0x808087CB))? {
+            let (p, ph, indices, width) = streams(r, &b, m)?;
+            let parts = b.array(m + 32, 40, Some(0x808087D1))?;
+            for candidate in 0..count {
+                let posed = rig.posed(r, &b, m, entity, &p, &ph, candidate)?;
+                let Some(lens) = scope::read(
+                    r,
+                    entry,
+                    &b,
+                    m,
+                    &parts,
+                    (&p, &indices, width),
+                    posed.as_deref(),
+                )?
+                else {
+                    continue 'meshes;
+                };
+                if lens.aimed() {
+                    rest = candidate;
+                    break 'meshes;
+                }
+            }
+            break;
+        }
+        chosen.insert(entity, rest);
+    }
+    Ok(chosen)
+}
+
 pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mesh> {
     let mut out = Mesh {
         positions: vec![],
@@ -67,6 +152,7 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
         weights: vec![],
         bones: rig.bones,
         motion: rig.program.clone(),
+        rests: rests(r, entries, rig)?,
     };
     for entry in entries {
         let tag = hash(entry, "model")?;
@@ -76,21 +162,16 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
             mat.iter().all(|x| x.is_finite()),
             "nonfinite attachment transform"
         );
+        let entity = hash(entry, "entity")?;
+        let rest = out.rests.get(&entity).copied().unwrap_or(0);
         for m in b.array(16, 0x88, Some(0x808087CB))? {
-            let pt = b.u32(m)?;
             let ut = b.u32(m + 4)?;
-            let it = b.u32(m + 16)?;
-            let ph = r.tag(pt, None)?;
             let uh = r.tag(ut, None)?;
-            let ih = r.tag(it, None)?;
-            ensure!(
-                (ph.u16(4)?, uh.u16(4)?) == (24, 4),
-                "Marathon vertex stride differs"
-            );
-            let p = r.tag(r.reference(pt)?, None)?;
-            let weights = rig.vertices(r, &b, m, hash(entry, "entity")?, &p, &ph)?;
+            ensure!(uh.u16(4)? == 4, "Marathon vertex stride differs");
+            let (p, ph, indices, width) = streams(r, &b, m)?;
+            let weights = rig.vertices(r, &b, m, entity, &p, &ph)?;
+            let posed = rig.posed(r, &b, m, entity, &p, &ph, rest)?;
             let uv = r.tag(r.reference(ut)?, None)?;
-            let ib = r.tag(r.reference(it)?, None)?;
             let color_tag = b.u32(m + 20)?;
             let colors = if [0, u32::MAX, 0x811c9dc5].contains(&color_tag) {
                 None
@@ -110,29 +191,18 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
                 );
                 Some(data)
             };
-            ensure!(
-                p.0.len() == ph.u32(0)? as usize
-                    && uv.0.len() == uh.u32(0)? as usize
-                    && ib.0.len() == ih.u32(8)? as usize,
-                "buffer lengths differ"
-            );
-            ensure!(
-                p.0.len() % 24 == 0 && uv.0.len() == p.0.len() / 24 * 4,
-                "vertex counts differ"
-            );
-            let width = if ih.u8(1)? == 0 { 2 } else { 4 };
-            let indices = (0..ib.0.len())
-                .step_by(width)
-                .map(|o| {
-                    if width == 2 {
-                        Ok(ib.u16(o)? as u32)
-                    } else {
-                        ib.u32(o)
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?;
+            ensure!(uv.0.len() == uh.u32(0)? as usize, "buffer lengths differ");
+            ensure!(uv.0.len() == p.0.len() / 24 * 4, "vertex counts differ");
             let parts = b.array(m + 32, 40, Some(0x808087D1))?;
-            let aperture = scope::read(r, entry, &b, m, &parts, (&p, &indices, width))?;
+            let aperture = scope::read(
+                r,
+                entry,
+                &b,
+                m,
+                &parts,
+                (&p, &indices, width),
+                posed.as_deref(),
+            )?;
             let mut selected = vec![];
             let mut seen = BTreeSet::new();
             for stage in 0..25 {
@@ -185,6 +255,22 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
                             && offset.iter().all(|v| v.is_finite()),
                         "Invalid source model decode transform"
                     );
+                    // Glass ahead of an enclosed sight's source eye stays in its aimed view. Glass
+                    // behind the eye leaves that view, as the source camera passes it.
+                    let framed = match aperture.as_ref().and_then(|lens| lens.framing.as_ref()) {
+                        Some(framing)
+                            if stage == 8
+                                && framing.ahead(&scope::points(
+                                    &b,
+                                    &p,
+                                    posed.as_deref(),
+                                    &faces,
+                                )?) =>
+                        {
+                            Some(framing.clone())
+                        }
+                        _ => None,
+                    };
                     out.surfaces.insert(
                         key,
                         Surface {
@@ -196,19 +282,23 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
                             scale,
                             offset,
                             has_colors: colors.is_some(),
+                            framed,
+                            // The aperture's own mask draws take the scope adapter. Its glass is
+                            // ordinary transparent work and keeps its source material.
                             lens: aperture
                                 .as_ref()
-                                .filter(|lens| {
-                                    stage == 15
-                                        || (stage == 8 && scope::covers(lens, &b, &p, &faces))
-                                })
-                                .map(|lens| lens.placed(&mat, stage == 15)),
+                                .filter(|_| stage == 15)
+                                .map(|lens| lens.placed(&mat)),
+                            // An enclosed sight hides every surface at full aim instead, and its
+                            // source draws an unbroken eyepiece before that.
                             cutout: aperture
                                 .as_ref()
                                 .filter(|lens| {
-                                    !lens.outline.is_empty() && matches!(stage, 0 | 4 | 13)
+                                    !lens.enclosed
+                                        && !lens.outline.is_empty()
+                                        && matches!(stage, 0 | 4 | 13)
                                 })
-                                .map(|lens| lens.placed(&mat, false)),
+                                .map(|lens| lens.placed(&mat)),
                         },
                     );
                     selected.push((key, faces));
@@ -218,7 +308,7 @@ pub fn read(r: &mut Reader, entries: &[Value], rig: &rig::Binding) -> Result<Mes
                 &mut out,
                 &b,
                 &mat,
-                &p,
+                (&p, posed.as_deref()),
                 &uv,
                 colors.as_deref(),
                 &weights,
@@ -265,7 +355,7 @@ fn append(
     out: &mut Mesh,
     b: &Payload,
     mat: &[f32; 16],
-    p: &Payload,
+    (p, posed): (&Payload, Option<&[[f32; 12]]>),
     uv: &Payload,
     colors: Option<&Payload>,
     weights: &[[u8; 8]],
@@ -303,6 +393,13 @@ fn append(
             *value = (uv.i16(v as usize * 4 + a * 2)? as f32 / 32767.).max(-1.)
                 * b.f32(0xc0 + a * 4)?
                 + b.f32(0xc8 + a * 4)?;
+        }
+        // A local attachment skeleton's geometry rests in that skeleton's own rest pose.
+        if let Some(posed) = posed {
+            let matrix = posed.get(v as usize).context("Posed vertex is absent")?;
+            xyz = rig::apply(matrix, xyz, true);
+            normal = rig::apply(matrix, normal, false);
+            tangent = rig::apply(matrix, tangent, false);
         }
         xyz = transform(xyz, mat, true);
         normal = transform(normal, mat, false);
@@ -404,6 +501,7 @@ mod tests {
                             has_colors: false,
                             lens: None,
                             cutout: None,
+                            framed: None,
                         },
                     )
                 })
@@ -412,6 +510,7 @@ mod tests {
             weights: vec![],
             bones: 1,
             motion: String::new(),
+            rests: BTreeMap::new(),
         };
         // A native carrier has an opaque body record, including its activation group.
         let mut carrier = vec![0; 0x170];

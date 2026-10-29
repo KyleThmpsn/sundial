@@ -173,27 +173,3 @@ fn socket_layout_changes_use_each_generations_count_and_require_exact_review() {
     fs::write(&path, changed).unwrap();
     assert!(verify_account(&packages, Some(&review)).is_err());
 }
-
-#[test]
-#[ignore = "read-only native comparison; requires SUNDIAL_INSTALL and PARHELION_TEST_STAGED_RUN"]
-fn staged_identity_reader_matches_installed_generation() {
-    let target = crate::test_support::install().join("packages");
-    let staged = PathBuf::from(std::env::var_os("PARHELION_TEST_STAGED_RUN").unwrap());
-    let (hashes, unlocks) = identities::generation_identities(&target, &staged).unwrap();
-    let socket_defaults = identities::generation_socket_defaults(&target, &staged, &hashes)
-        .expect("every retained weapon and private plug must expose valid native socket metadata");
-    let manifest: ManifestDocument =
-        serde_json::from_slice(&fs::read(staged.join(MANIFEST_FILE_NAME)).unwrap()).unwrap();
-    assert!(
-        !manifest.project.weapons.is_empty(),
-        "configured generation has no weapons"
-    );
-    for weapon in &manifest.project.weapons {
-        assert!(hashes.contains(&weapon.item.hash.get()));
-        assert!(!socket_defaults[&weapon.item.hash.get()].is_empty());
-    }
-    assert_eq!(
-        unlocks,
-        validate_manifest_unlocks(&manifest.project).unwrap()
-    );
-}

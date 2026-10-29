@@ -64,7 +64,7 @@ pub(crate) fn export_with_progress(
     outside(&out, modern.parent().context("modern parent")?)?;
     outside(&out, native.parent().context("native parent")?)?;
     ensure!(!out.exists(), "source support output already exists");
-    let source = prepared.join("source");
+    let source = profile::source(prepared)?;
     let report = load(&source.join("report.json"))?;
     let mut r = Reader::new(modern, &out, true)?;
     let mut materials = BTreeSet::new();
@@ -162,22 +162,23 @@ pub(crate) fn export_with_progress(
         }
     }
     drop(r);
-    let template = load(&prepared.join("native/template-report.json"))?;
+    let native_reads = profile::native(prepared)?;
+    let template = load(&native_reads.join("template-report.json"))?;
     let mut owner_metadata = BTreeSet::new();
     let mut bank_metadata = BTreeSet::new();
     for entry in template["models"].as_array().context("native models")? {
-        let owner = Payload(fs::read(prepared.join(format!(
-            "native/raw/{}.bin",
+        let owner = Payload(fs::read(native_reads.join(format!(
+            "raw/{}.bin",
             entry["owner"].as_str().context("native owner")?
         )))?);
         owner_metadata.insert(owner.u32(0x44)?);
-        let entity = Payload(fs::read(prepared.join(format!(
-            "native/raw/{}.bin",
+        let entity = Payload(fs::read(native_reads.join(format!(
+            "raw/{}.bin",
             entry["entity"].as_str().context("native entity")?
         )))?);
         for at in entity.array(16, 12, None)? {
             let tag = entity.u32(at)?;
-            let path = prepared.join(format!("native/raw/{tag:08X}.bin"));
+            let path = native_reads.join(format!("raw/{tag:08X}.bin"));
             if !path.exists() {
                 continue;
             }

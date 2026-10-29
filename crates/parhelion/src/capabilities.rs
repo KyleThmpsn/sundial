@@ -910,7 +910,8 @@ fn validate_socket_choice_values(
             field,
             code: AuthoringDiagnosticCode::UnsupportedPlug,
             message: format!(
-                "Plug {} is outside the base weapon's compatible set for socket {socket_index}. Test its behavior in game.", plug_label(hash)
+                "Plug {} is outside the base weapon's compatible set for socket {socket_index}.",
+                plug_label(hash)
             ),
         });
     }

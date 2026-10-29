@@ -43,7 +43,7 @@ impl ImportedIcon {
         Self::from_normalized(fit(&source, ICON_EDGE, ICON_EDGE))
     }
 
-    pub(super) fn from_normalized(rgba: RgbaImage) -> Result<Self, String> {
+    pub(crate) fn from_normalized(rgba: RgbaImage) -> Result<Self, String> {
         let mut png = Cursor::new(Vec::new());
         rgba.write_to(&mut png, ImageFormat::Png)
             .map_err(|error| format!("Could not encode imported icon: {error}"))?;
@@ -55,6 +55,14 @@ impl ImportedIcon {
 
     pub(crate) fn fit_to(&self, width: u32, height: u32) -> RgbaImage {
         fit(&self.0.rgba, width, height)
+    }
+
+    /// Identifies the artwork by its stored PNG, so a list can tell when it changed.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.0.png_base64.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Artwork drawn by Parhelion, such as a shader's icon from its dyes.

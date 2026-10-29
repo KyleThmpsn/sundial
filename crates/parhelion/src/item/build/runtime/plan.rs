@@ -22,7 +22,6 @@ pub(in crate::item::build) struct Payloads {
     /// Every imported runtime asset placed in the asset packages, for the dependency index.
     runtime_asset_tags: Vec<TagHash>,
     /// The badge artwork's entries in the primary asset package, which the HUD icons end.
-    badge_tag_count: usize,
     pub(in crate::item::build) private_perk_allocator: AppendedTagAllocator,
 }
 
@@ -67,19 +66,12 @@ pub(in crate::item::build) fn author(
     custom_plugs::CustomPlugPayloads,
     custom_plugs::CustomPlugPayloads,
 )> {
-    let weapon_runtime_tag_allocator = AppendedTagAllocator::new(
-        crate::package_profile::host().id,
-        assets.weapon_runtime_start,
-    );
+    let weapon_runtime_tag_allocator = AppendedTagAllocator::records(assets.weapon_runtime_start);
     let mut weapon_runtime_new_tags = Vec::new();
     // The badge artwork opens the asset packages. Each weapon's imported runtime assets then
     // reserve a group of their own, so they roll over into further packages as one fills
     // rather than filling the host package, whose id is fixed.
-    let badge_tag_count = assets.badge.new_tags.len();
-    let mut asset_packages = crate::asset_packages::AssetPackages::primary(
-        std::mem::take(&mut assets.badge.new_tags),
-        std::mem::take(&mut assets.badge.reference_overrides),
-    )?;
+    let mut asset_packages = std::mem::take(&mut assets.packages);
     let mut runtime_asset_tags = Vec::new();
     let mut impacts = Vec::new();
     #[cfg(feature = "d2-model-importer")]
@@ -236,7 +228,6 @@ pub(in crate::item::build) fn author(
             subclass_entries,
             weapon_allocator: weapon_runtime_tag_allocator,
             runtime_asset_tags,
-            badge_tag_count,
             private_perk_allocator: private_perk_runtime_tag_allocator,
             grafted_graphs,
         },
@@ -272,7 +263,7 @@ impl Payloads {
             && self.weapon_tags.is_empty()
             && self.runtime_asset_tags.is_empty()
             && self.grafted_graphs.is_empty()
-            && assets.hud_asset_start == self.badge_tag_count
+            && assets.hud_assets.is_empty()
         {
             return Ok(None);
         }
@@ -303,12 +294,7 @@ impl Payloads {
             "investment runtime dependency index",
         )?;
         let mut additions = assets.perk_icon_dependencies.clone();
-        for index in assets.hud_asset_start..self.badge_tag_count {
-            additions.push(
-                AppendedTagAllocator::new(crate::package_profile::window().first(), 0)
-                    .assigned_tag(index, "HUD dependency", "HUD icon")?,
-            );
-        }
+        additions.extend(assets.hud_assets.iter().copied());
         for index in 0..self.private_perk_tags.len() {
             additions.push(self.private_perk_allocator.assigned_tag(
                 index,

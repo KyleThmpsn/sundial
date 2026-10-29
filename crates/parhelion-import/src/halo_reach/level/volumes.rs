@@ -556,7 +556,7 @@ pub fn read(
 
 /// A Havok packfile holding each volume's prisms, in the layout of `template`, a stock volume
 /// packfile: a shape array with a list shape of up to three prisms or a static compound of more
-/// per volume.
+/// per volume, or a static compound for every volume when the template has no list shape.
 pub fn packfile(template: &[u8], volumes: &[Volume]) -> Result<Vec<u8>> {
     let hulls = volumes
         .iter()

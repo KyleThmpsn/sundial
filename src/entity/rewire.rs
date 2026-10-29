@@ -1190,7 +1190,11 @@ fn order(kept: Vec<Row>, added: Vec<Row>, target: &[Row]) -> Result<Vec<Row>, St
 /// Replaces the event array, in place when the rows fit and appended to the payload otherwise.
 fn write_events(entity: &mut Vec<u8>, rows: &[Row]) -> Result<(), String> {
     let events = native_array(entity, EVENTS_DESCRIPTOR)?;
-    if events.omitted || events.row_class != EVENT_ROW_CLASS {
+    // An omitted table stays omitted until composition adds an actual connection.
+    if events.omitted && rows.is_empty() {
+        return Ok(());
+    }
+    if !events.omitted && events.row_class != EVENT_ROW_CLASS {
         return Err("The weapon entity has no event table to rewire".into());
     }
     let count = u64::try_from(rows.len()).map_err(|_| "Event count is too large")?;

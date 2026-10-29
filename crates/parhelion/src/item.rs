@@ -50,6 +50,7 @@ mod raw_payload;
 use raw_payload::*;
 
 mod validation;
+pub(crate) use validation::MAX_ROLLED_CHOICES;
 pub(crate) use validation::validate_catalog_with_progress;
 pub(crate) use validation::validate_socket_plug_variant_shapes;
 #[cfg(test)]

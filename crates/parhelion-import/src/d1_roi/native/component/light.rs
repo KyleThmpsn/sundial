@@ -130,7 +130,7 @@ impl Assembly<'_> {
         )?;
         component.patch(n + 0xF8, &draw_symbol)?;
         component.seal()?;
-        self.approximations.insert("Sight lights retain source local poses, volumes and supported live parameter expressions on native light shaders. Supplemental light parameters use the source initial color. Rendering across light passes requires gameplay acceptance.".into());
+        self.approximations.insert("Sight lights retain source local poses, volumes and supported live parameter expressions on native light shaders. Supplemental light parameters use the source initial color.".into());
         self.evidence.push(json!({"source_component":source_tag,"resource_class":0x80801B6Fu32,
             "native_resource_class":0x80807134u32,"light":{"source_draw":source_draw,
             "native_template":template_tag,"input_names":channels,"source_flags":source_flags,

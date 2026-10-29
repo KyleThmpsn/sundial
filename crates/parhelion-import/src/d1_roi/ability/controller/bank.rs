@@ -268,10 +268,14 @@ fn allocation(template: &Payload, bank: &Bank) -> Result<Payload> {
             && template.u32(28)? == 0,
         "Native ability bank allocation envelope differs"
     );
-    // A derived bank inherits the common bank allocation through two native base
-    // nodes. The root's fields and the two inherited roots have no own children.
+    // Templates can be the common bank itself or a derived bank with empty own fields.
+    // Find the common allocation by its declared arrays, rather than inheriting a donor's
+    // class depth. The retained 417A bank has exactly one base, 44FC.
     let mut at = 8;
-    for _ in 0..2 {
+    for _ in 0..32 {
+        if template.u64(at + 24)? != 0 {
+            break;
+        }
         ensure!(
             template.u64(at + 24)? == 0 && template.u64(at + 8)? != 0,
             "Native bank allocation inheritance differs"
@@ -302,14 +306,10 @@ fn allocation(template: &Payload, bank: &Bank) -> Result<Payload> {
     let mut out = Payload(template.0[..48].to_vec());
     put(&mut out.0, 16, &[0; 8])?;
     put(&mut out.0, 32, &[0; 16])?;
-    let mut parent = 8;
-    for _ in 0..2 {
-        let child = block(&mut out.0, 0x80808852, &[0; 40])?;
-        put(&mut out.0, child, &NO_NAME.to_le_bytes())?;
-        put(&mut out.0, child + 16, &u32::MAX.to_le_bytes())?;
-        pointer(&mut out.0, parent + 8, child)?;
-        parent = child;
-    }
+    let parent = block(&mut out.0, 0x80808852, &[0; 40])?;
+    put(&mut out.0, parent, &NO_NAME.to_le_bytes())?;
+    put(&mut out.0, parent + 16, &u32::MAX.to_le_bytes())?;
+    pointer(&mut out.0, 16, parent)?;
     let rows = bank
         .rows
         .iter()
@@ -348,6 +348,103 @@ pub fn build(
     resources: &BTreeMap<u32, String>,
 ) -> Result<Built> {
     let bank = read(source, source_bank)?;
+    write(
+        bank,
+        source_bank,
+        template,
+        allocation_template,
+        id,
+        symbol,
+        resources,
+    )
+}
+
+/// Prepare only complete selected source groups for a bounded ability choice. Unselected
+/// choices are not advertised by this bank. Every row of every admitted key stays ordered.
+#[allow(clippy::too_many_arguments)]
+pub fn selected(
+    source: &Source,
+    source_bank: u32,
+    keys: &BTreeSet<u32>,
+    template: &Payload,
+    allocation_template: &Payload,
+    id: u32,
+    symbol: &str,
+    resources: &BTreeMap<u32, String>,
+) -> Result<Built> {
+    ensure!(
+        !keys.is_empty(),
+        "A selected source bank needs at least one property key"
+    );
+    let mut bank = read(source, source_bank)?;
+    let present = bank.rows.iter().map(|row| row.key).collect::<BTreeSet<_>>();
+    ensure!(
+        keys.is_subset(&present),
+        "A selected property key is absent from its source bank"
+    );
+    bank.rows.retain(|row| keys.contains(&row.key));
+    write(
+        bank,
+        source_bank,
+        template,
+        allocation_template,
+        id,
+        symbol,
+        resources,
+    )
+}
+
+/// Admission for a self-revive choice requires the entire group to be the original flag and
+/// positive active-energy drain. Other properties need their own integration contract.
+pub(in crate::d1_roi::ability) fn revival_keys(
+    source: &Source,
+    source_bank: u32,
+    keys: &BTreeSet<u32>,
+) -> Result<bool> {
+    let payload = source.read(source_bank)?;
+    let instance = payload.pointer(16)?;
+    let definition = payload.pointer(24)?;
+    if instance < 4
+        || definition < 4
+        || payload.u32(instance - 4)? != SOURCE_CLASSES.0
+        || payload.u32(definition - 4)? != SOURCE_CLASSES.1
+    {
+        return Ok(false);
+    }
+    let bank = read(source, source_bank)?;
+    let rows = bank
+        .rows
+        .iter()
+        .filter(|row| keys.contains(&row.key))
+        .collect::<Vec<_>>();
+    Ok(keys.len() == 1
+        && rows.len() == 2
+        && rows.iter().all(|row| row.priority == 255)
+        && rows
+            .iter()
+            .filter(|row| row.class == 0x80804189 && row.body[16] == 1)
+            .count()
+            == 1
+        && rows
+            .iter()
+            .filter(|row| {
+                row.class == 0x8080452E
+                    && f32::from_le_bytes(row.body[16..20].try_into().unwrap()) > 0.0
+            })
+            .count()
+            == 1)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write(
+    bank: Bank,
+    source_bank: u32,
+    template: &Payload,
+    allocation_template: &Payload,
+    id: u32,
+    symbol: &str,
+    resources: &BTreeMap<u32, String>,
+) -> Result<Built> {
     for tag in bank.rows.iter().filter_map(|row| row.resource) {
         ensure!(
             resources.get(&tag).is_some_and(|value| !value.is_empty()),
@@ -415,7 +512,7 @@ pub fn build(
         (0x48, NATIVE_CLASSES.0, 1),
         (0x60, 0x808044FC, 12),
     ] {
-        owner.callback(owner.runtime + field, implementation, index)?;
+        owner.callback(owner.runtime + field, implementation, index, owner.runtime)?;
     }
     for (field, tag) in [(0x48, 0x80BFA51Cu32), (0x60, 0x80BFA52Bu32)] {
         pointer(

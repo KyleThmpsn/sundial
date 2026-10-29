@@ -205,6 +205,6 @@ pub(super) fn build(
         "solid_bodies":report,"hit_bodies":hit_report,"groups":groups,"native_bodies":count,
         "source_initial_mass":initial_mass,"native_initial_mass":target_mass,
         "root_bone":0,"solid_shape":"convex_leaf","child_filter":"inherit_live_parent","gameplay_verified":false,
-        "limits":["Source cooked masses, inertia, solid forms and separate hit geometry are authored. Live impacts, hit routing, state changes and wreck behavior require gameplay acceptance."]}),
+        "limits":["Source cooked masses, inertia, solid forms and separate hit geometry are authored."]}),
     )
 }

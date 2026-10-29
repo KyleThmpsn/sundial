@@ -17,6 +17,7 @@ pub(crate) mod compiler;
 pub use compiler::draft as native_draft;
 pub use compiler::{Compiled, compile, compile_with_labels};
 mod assets;
+pub mod changes;
 pub mod decompile;
 pub mod projectile;
 pub mod properties;
@@ -26,10 +27,12 @@ pub use assets::Asset;
 pub use assets::HudStatus;
 pub use assets::ImportedAsset;
 pub use assets::ModifierRow;
+pub use assets::NativeAssetComponent;
 pub use assets::NativeAssetPatch;
 pub use assets::NativeAssetProgram;
 pub use assets::NativeAssetResourceAppend;
 pub use assets::NativeAssetResourcePatch;
+pub use assets::{FixedDamageProfile, HealthResponse};
 mod ability;
 pub use ability::ABILITY_PROPERTY_KIND;
 pub use ability::AbilityInput;
@@ -37,7 +40,7 @@ pub use ability::AbilityTuning;
 mod ability_row;
 pub use ability::ability_properties_in;
 use ability::*;
-pub use ability_row::{AbilityRow, AbilityRowModifier};
+pub use ability_row::{AbilityRow, AbilityRowModifier, AbilityRowOrigin};
 pub use properties::{KeyCatalog, KeyEvidence};
 
 /// The empty FNV-1 hash. A native key holds this value when nothing is named.
@@ -431,19 +434,19 @@ pub enum Action {
         #[serde(with = "hex_key")]
         key: u32,
     },
-    /// Replaces a key on the host while the effect is active, the way stock perks swap a
-    /// weapon firing mode.
+    /// Overrides an animation input while the effect is active and restores its previous
+    /// selection on removal. Trigger behavior belongs to the weapon's other actions.
     OverrideHostKey {
         /// The target selector byte at `+0x02`.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
         target: u8,
-        /// The interface selector byte at `+0x03`.
+        /// The animation builtin selector byte at `+0x03`.
         #[serde(default, skip_serializing_if = "is_zero_byte")]
         interface: u8,
         /// The key written in place of the host's own, at `+0x04`.
         #[serde(with = "hex_key")]
         key: u32,
-        /// Whether the replacement applies to the player rather than the weapon, at `+0x08`.
+        /// Also apply the override to the controller's player, at `+0x08`.
         #[serde(default, skip_serializing_if = "is_false")]
         apply_to_player: bool,
     },
@@ -578,8 +581,9 @@ impl Program {
             );
         }
         (self.native.is_none()
-            && (!self.native_asset_patches.is_empty() || !self.imported_assets.is_empty())).then_some(
-            "This effect edits private copies of the objects it attaches, which editing it here would drop. It stays as it is.",
+            && (!self.native_asset_patches.is_empty() || !self.imported_assets.is_empty()
+                || !self.damage_profiles.is_empty())).then_some(
+            "This effect edits private resources that a native draft cannot keep. It stays in its authored form.",
         )
     }
 
@@ -1083,6 +1087,9 @@ pub struct Program {
     /// Checked resource edits for a graph referenced by a verbatim native effect.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_asset_patches: Vec<NativeAssetPatch>,
+    /// Qualified outgoing damage or health profiles owned by direct resource effects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub damage_profiles: Vec<FixedDamageProfile>,
     /// Complete privately allocated attachment groups, independent of a weapon's model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imported_assets: Vec<ImportedAsset>,
@@ -1300,6 +1307,7 @@ impl Default for Program {
             chance_permyriad: 10_000,
             actions: Vec::new(),
             native_asset_patches: Vec::new(),
+            damage_profiles: Vec::new(),
             imported_assets: Vec::new(),
             imported_labels: None,
             removal_key: None,
@@ -1412,6 +1420,7 @@ impl Program {
                 })
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn validate_asset_patches(&self) -> Result<(), String> {
         if let Some(symbol) = &self.imported_labels
             && (self.imported_assets.is_empty()
@@ -1423,6 +1432,22 @@ impl Program {
             );
         }
         let mut patched_actions = BTreeSet::new();
+        for profile in &self.damage_profiles {
+            let amount = f32::from_bits(profile.amount_bits);
+            if !patched_actions.insert(profile.action_index)
+                || matches!(profile.template, 0 | u32::MAX)
+                || !amount.is_finite()
+                || profile.health.as_ref().map_or(amount <= 0.0, |health| {
+                    !health.valid() || profile.amount_bits != 0 || profile.damage_type != 0
+                })
+                || profile.damage_type > 3
+                || !matches!(self.actions.get(profile.action_index), Some(Action::Native { node })
+                    if node.kind == 4 && node.bytes.get(16..20) == Some(&profile.template.to_le_bytes()[..])
+                        && (profile.health.is_none() || node.bytes.get(..8) == Some(&[4, 0, 1, 0, 0, 0, 0, 0][..])))
+            {
+                return Err("A direct profile needs a unique resource effect, a live template and valid damage or player-healing amounts.".into());
+            }
+        }
         for imported in &self.imported_assets {
             if !patched_actions.insert(imported.action_index)
                 || !imported.directory.is_absolute()
@@ -1467,14 +1492,36 @@ impl Program {
             if !matches_graph || matches!(edit.source_graph, 0 | u32::MAX) {
                 return Err("A native asset patch must name its effect's live graph.".into());
             }
-            if edit.patches.len() + edit.programs.len() == 0
-                || edit.patches.len() + edit.programs.len() > 32
-            {
+            let resource_count = edit.patches.len()
+                + edit
+                    .components
+                    .iter()
+                    .map(|component| component.patches.len())
+                    .sum::<usize>()
+                + edit.programs.len();
+            if resource_count == 0 || resource_count > 32 {
                 return Err(
                     "A native asset patch needs one to 32 resource edits or controllers.".into(),
                 );
             }
-            for patch in &edit.patches {
+            let mut component_graphs = BTreeSet::new();
+            for component in &edit.components {
+                if matches!(component.source_graph, 0 | u32::MAX)
+                    || component.source_graph == edit.source_graph
+                    || component.patches.is_empty()
+                    || component
+                        .replication
+                        .is_some_and(|tag| matches!(tag, 0 | u32::MAX))
+                    || !component_graphs.insert(component.source_graph)
+                {
+                    return Err("An added component needs a unique native graph and private resource edits.".into());
+                }
+            }
+            for patch in edit.patches.iter().chain(
+                edit.components
+                    .iter()
+                    .flat_map(|component| &component.patches),
+            ) {
                 if patch.binding_hash == 0
                     || patch.expected.is_empty()
                     || patch.expected.len() != patch.bytes.len()
@@ -1502,14 +1549,18 @@ impl Program {
             if edit.appends.len() > 32 {
                 return Err("An asset patch can append up to 32 resources.".into());
             }
-            for (index, left) in edit.patches.iter().enumerate() {
-                for right in &edit.patches[index + 1..] {
-                    if left.binding_hash == right.binding_hash
-                        && left.resource_index == right.resource_index
-                        && left.offset < right.offset + right.bytes.len() as u32
-                        && right.offset < left.offset + left.bytes.len() as u32
-                    {
-                        return Err("Native asset resource edits overlap.".into());
+            for patches in std::iter::once(&edit.patches)
+                .chain(edit.components.iter().map(|component| &component.patches))
+            {
+                for (index, left) in patches.iter().enumerate() {
+                    for right in &patches[index + 1..] {
+                        if left.binding_hash == right.binding_hash
+                            && left.resource_index == right.resource_index
+                            && left.offset < right.offset + right.bytes.len() as u32
+                            && right.offset < left.offset + left.bytes.len() as u32
+                        {
+                            return Err("Native asset resource edits overlap.".into());
+                        }
                     }
                 }
             }
@@ -1581,6 +1632,7 @@ impl Program {
             let defaults = Self::default();
             if !self.actions.is_empty()
                 || !self.native_asset_patches.is_empty()
+                || !self.damage_profiles.is_empty()
                 || !self.imported_assets.is_empty()
                 || self.imported_labels.is_some()
                 || self.native_trigger.is_some()

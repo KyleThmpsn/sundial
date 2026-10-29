@@ -3,6 +3,8 @@ use super::*;
 use crate::tiger::markers::{self, Marker};
 use std::collections::BTreeMap;
 mod native;
+pub use native::restore_source_eye;
+pub(super) use native::sight_key;
 
 pub(super) struct Sight {
     pub entity: u32,

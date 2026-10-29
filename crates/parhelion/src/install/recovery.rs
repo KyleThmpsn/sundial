@@ -242,28 +242,38 @@ pub(super) fn validate_install_transaction(
             ));
         }
     }
-    let actual_names = transaction
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.file_name.as_str())
-        .collect::<Vec<_>>();
-    authored_packages_for_file_names(actual_names).map_err(|error| {
-        InstallError::validation(format!(
-            "Package-install recovery record has an invalid recipe-selected artifact set: {error}"
-        ))
-    })?;
-
-    let mut temporary_names = BTreeSet::new();
     let uninstall = transaction
         .artifacts
         .iter()
         .all(|artifact| artifact.remove_target);
+    // An install's selected set is what it writes. The files it retires may hold the same ids
+    // under an earlier name.
+    let actual_names = transaction
+        .artifacts
+        .iter()
+        .filter(|artifact| uninstall || !artifact.remove_target)
+        .map(|artifact| artifact.file_name.as_str())
+        .collect::<Vec<_>>();
+    let written = authored_packages_for_file_names(actual_names)
+        .map_err(|error| {
+            InstallError::validation(format!(
+                "Package-install recovery record has an invalid recipe-selected artifact set: {error}"
+            ))
+        })?
+        .into_iter()
+        .map(|profile| profile.package_id)
+        .collect::<BTreeSet<_>>();
+
+    let mut temporary_names = BTreeSet::new();
     for artifact in &transaction.artifacts {
+        // A required output is removed only by an uninstall, or when the install writes its id
+        // under another name.
         if artifact.remove_target
             && (artifact.original.as_ref() != Some(&artifact.authored)
                 || (!uninstall
-                    && authored_package_for_file_name(&artifact.file_name)
-                        .is_none_or(|profile| profile.required_output)))
+                    && authored_package_for_file_name(&artifact.file_name).is_none_or(|profile| {
+                        profile.required_output && !written.contains(&profile.package_id)
+                    })))
         {
             return Err(InstallError::validation(
                 "Invalid package removal recovery metadata",

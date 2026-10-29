@@ -146,6 +146,7 @@ fn persisted_imported_abilities_equip_private_roots_and_retarget_child_condition
                 patches: Vec::new(),
                 appends: Vec::new(),
                 remove_owners: Vec::new(),
+                components: Vec::new(),
                 programs: vec![NativeAssetProgram {
                     binding_hash: binding.binding_hash,
                     resource_index: binding.resource_index.try_into().unwrap(),

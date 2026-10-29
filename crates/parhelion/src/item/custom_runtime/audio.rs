@@ -43,41 +43,6 @@ impl ImportedAudio {
     pub(in crate::item) fn set_item(&mut self, item: u32) {
         self.item = item;
     }
-
-    /// Upper bounds of the payloads `author` places in the weapon's asset group: the PCM
-    /// media of every event, and a bank and sound for each sound, which fit one block.
-    pub(in crate::item) fn asset_bounds(&self) -> Vec<usize> {
-        let mut bounds = Vec::new();
-        for sound in self
-            .events
-            .iter()
-            .chain(&self.firing)
-            .chain(&self.clips)
-            .chain(&self.impacts)
-            .chain(&self.responses)
-            .flat_map(|event| event["sounds"].as_array().into_iter().flatten())
-        {
-            for media in sound["media"].as_array().into_iter().flatten() {
-                if let Some(pcm) = media.as_str().and_then(|tag| self.media.get(tag)) {
-                    bounds.push(pcm.len());
-                }
-            }
-            bounds.push(
-                sound["bank"]
-                    .as_str()
-                    .and_then(|tag| self.banks.get(tag))
-                    .map_or(crate::format::BLOCK_SIZE, |bank| bank.bytes.len()),
-            );
-            bounds.push(crate::format::BLOCK_SIZE);
-        }
-        if self.impact_key.is_some() {
-            bounds.push(crate::format::BLOCK_SIZE);
-        }
-        if !self.responses.is_empty() {
-            bounds.push(crate::format::BLOCK_SIZE);
-        }
-        bounds
-    }
 }
 
 fn hex(value: &Value, label: &str) -> AuthoringResult<u32> {
@@ -315,7 +280,6 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAu
 }
 
 pub(in crate::item) use clips::author as author_clip_events;
-pub(in crate::item) use clips::growth as clip_event_growth;
 
 fn list<'a>(value: &'a Value, what: &str) -> AuthoringResult<&'a Vec<Value>> {
     value
@@ -349,6 +313,7 @@ fn append(
             "Imported audio {what} template 0x{template:08X} is unavailable"
         )));
     }
+    allocator.reserve_payload(tags.len(), payload.len())?;
     let tag = allocator
         .assigned_tag(tags.len(), "Imported audio", what)?
         .0;
@@ -801,6 +766,7 @@ pub(in crate::item) fn author(
             return Err(invalid("Audio parent group link changed"));
         }
         put(&mut parent, 16, private_group)?;
+        allocator.reserve(tags.len(), 2)?;
         let private_parent = append(
             manager,
             allocator,

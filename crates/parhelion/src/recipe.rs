@@ -358,10 +358,10 @@ pub struct WeaponSocketColumnRecipe {
     pub reusable_plug_set_index: Option<u16>,
     pub randomized_plug_set_index: Option<u16>,
     pub randomized_selection_program: Vec<WeaponNumericInstructionRecipe>,
-    /// How many leading `choices` stay freely swappable in the socket's own list. When set, every
-    /// choice also joins a private randomized plug set the socket rolls from, the way a stock
-    /// random-roll perk column keeps its curated perks beside its randomized pool. Omitted keeps
-    /// every choice swappable and adds no pool.
+    /// How many leading `choices` are reusable plug items in the socket's own list. When set,
+    /// every choice also joins a private randomized plug set the socket rolls from, the way a
+    /// stock random-roll perk column keeps its curated perks beside its randomized plug set.
+    /// Omitted keeps every choice reusable and adds no set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reusable_choices: Option<u16>,
 }
@@ -695,6 +695,10 @@ pub struct WeaponRecipeOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "d2-model-importer")]
     pub imported_graph: Option<parhelion_import::GraphReference>,
+    /// The stock weapon an imported weapon ornament mod applies to. Its model is fitted to that
+    /// weapon, and the weapon's ornament socket offers the mod through its shared plug set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ornament_weapon: Option<HexHash>,
     /// Optional Collections override. `None` combines the authored ammo type with the gameplay
     /// donor's weapon type and creates the shared page when that combination is not stock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -790,6 +794,14 @@ pub struct WeaponRecipeOverrides {
     /// carries, such as `pulse_rifle` on a scout rifle. Absent keeps the base weapon's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_marker_donor: Option<WeaponDonorReference>,
+    /// Another weapon whose behavior the weapon's block takes in place of the base weapon's own.
+    /// One in the base's content owner lends its firing graph, firing values, state and behavior
+    /// records, labels and type markers. One in another owner lends its records and labels only,
+    /// and a fired graph and Barrel edits carry its shot. An import on an exotic base whose runtime
+    /// it needs names an ordinary weapon here, so the exotic's own behavior stays behind. Absent
+    /// keeps the base weapon's behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior_donor: Option<WeaponDonorReference>,
     /// Gear-art markers moved from where the appearance puts them: the sight, the muzzle and the
     /// other named points. Every row of one name moves together. Changing the appearance clears
     /// them.
@@ -967,6 +979,37 @@ pub struct WeaponRecipe {
 }
 
 impl WeaponRecipe {
+    /// Whether the item has a Collections entry and an unlock: its kind's rule, and for a mod,
+    /// whether an importer converted it. Only importers make mods from a converted graph, the
+    /// universal and weapon ornaments, and stock ornaments of both have entries.
+    #[must_use]
+    pub fn has_collections(&self) -> bool {
+        self.kind.has_collections() || self.is_imported_mod()
+    }
+
+    /// Whether the item is a mod an importer converted from a graph.
+    fn is_imported_mod(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        if self.kind == crate::ItemKind::Mod && self.overrides.imported_graph.is_some() {
+            return true;
+        }
+        false
+    }
+
+    /// Whether the item is a universal ornament an importer converted. An imported weapon
+    /// ornament names the weapon it applies to instead.
+    #[must_use]
+    pub fn is_imported_ornament(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        if self.kind == crate::ItemKind::Mod
+            && self.overrides.imported_graph.is_some()
+            && self.overrides.ornament_weapon.is_none()
+        {
+            return true;
+        }
+        false
+    }
+
     /// The weapon whose type this one shows and files under in Collections: its appearance,
     /// unless it keeps the base weapon's type.
     pub(crate) fn type_donor_hash(&self) -> u32 {
@@ -1315,6 +1358,8 @@ pub fn namespace_for_weapon_name(name: &str) -> Result<String, RecipeError> {
     Ok(format!("{PARHELION_NAMESPACE_PREFIX}{slug}"))
 }
 
+/// Lowercase ASCII words joined by hyphens. Spaces, dashes, underscores and slashes separate
+/// words. Other characters are dropped, so "Silimar's Wrath" is `silimars-wrath`.
 fn slug_from_text(text: &str) -> String {
     let mut slug = String::with_capacity(text.len());
     let mut separator_pending = false;
@@ -1325,7 +1370,9 @@ fn slug_from_text(text: &str) -> String {
             }
             slug.push(character.to_ascii_lowercase());
             separator_pending = false;
-        } else {
+        } else if character.is_whitespace()
+            || matches!(character, '-' | '_' | '/' | '\\' | '\u{2010}'..='\u{2015}')
+        {
             separator_pending = true;
         }
     }

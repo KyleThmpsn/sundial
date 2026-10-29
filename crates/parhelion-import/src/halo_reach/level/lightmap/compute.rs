@@ -1,5 +1,5 @@
 //! Row-bounded GPU work. The CPU still owns atlas placement and whole-level normalization.
-use super::{LAYERS, Texel};
+use super::{LAYERS, LOG_RANGE, Texel};
 use crate::compute::{self, Input};
 use anyhow::{Result, ensure};
 
@@ -128,7 +128,7 @@ fn encode_chunks(texels: &[Texel], peak: f32) -> Result<Option<Vec<u8>>> {
         }
         let Some(bytes) = compute::dispatch(
             ENCODE,
-            [chunk.len() as u32, peak.to_bits(), 0, 0],
+            [chunk.len() as u32, peak.to_bits(), LOG_RANGE.to_bits(), 0],
             &[Input {
                 bytes: &input,
                 stride: STRIDE,

@@ -1,6 +1,6 @@
 // Ports of the decoded Shadowkeep pixel forms in effects/shade.rs.
 uniform int uEffect;
-uniform vec4 uEffectConstants[128];
+uniform vec4 uEffectConstants[CONSTANT_ROWS];
 uniform sampler2D uEffectTexture0;
 uniform sampler2D uEffectTexture1;
 uniform sampler2D uEffectTexture2;

@@ -56,6 +56,9 @@ fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
     {
         return Some(setting);
     }
+    if spec.kind != ItemKind::Mod && overrides.ornament_weapon.is_some() {
+        return Some("an ornament's weapon");
+    }
     if spec.kind == ItemKind::Subclass {
         if let Some(setting) = crate::subclass::authoring::unsupported_setting(overrides) {
             return Some(setting);
@@ -76,6 +79,10 @@ fn unsupported_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
         (spec.presentation_donor.is_some(), "an appearance donor"),
         (overrides.animation_donor.is_some(), "an animation donor"),
         (overrides.type_marker_donor.is_some(), "type markers"),
+        (
+            overrides.behavior_donor.is_some(),
+            "another weapon's behavior",
+        ),
         (!overrides.marker_offsets.is_empty(), "moved markers"),
         (
             !overrides.component_splices.is_empty(),
@@ -199,7 +206,9 @@ fn unsupported_mod_setting(spec: &WeaponCloneSpec) -> Option<&'static str> {
                 || !overrides.removed_investment_stats.is_empty(),
             "item stats",
         ),
-        (overrides.rarity.is_some(), "a rarity"),
+        // An imported ornament takes its source's rarity rather than its template plug's.
+        // Only importers make mods from a converted graph, the universal and weapon ornaments.
+        (overrides.rarity.is_some() && !imported(spec), "a rarity"),
         (spec.icon_donor.is_some(), "an icon donor"),
     ]
     .into_iter()
@@ -240,6 +249,21 @@ fn validate_mod_against_catalog(
         return Err(invalid(format!(
             "No stock socket offers {}, so the mod would appear nowhere. Choose another type.",
             catalog.plug_label(offered, true)
+        )));
+    }
+    // A weapon ornament's model is fitted to one weapon, and its plug takes the art row a stock
+    // ornament of that weapon's shared set has, so its base must be one.
+    if let Some(weapon) = spec.overrides.ornament_weapon
+        && !catalog.shared_weapon_ornaments().iter().any(|ornament| {
+            ornament.weapon == weapon
+                && ornament.hash == perk.source_plug_hash
+                && ornament.art_rows == 1
+        })
+    {
+        return Err(invalid(format!(
+            "{} is not an ornament the shared set of {}'s ornament socket offers",
+            catalog.plug_label(perk.source_plug_hash, true),
+            catalog.plug_label(weapon, true)
         )));
     }
     Ok(())
@@ -763,6 +787,7 @@ pub(super) fn resolve(
         animation_pattern_source: None,
         animation_action_sources: Vec::new(),
         type_marker_pattern_source: None,
+        behavior_pattern_source: None,
         socket_column_indices,
         has_authored_shader,
         subclass_list: None,

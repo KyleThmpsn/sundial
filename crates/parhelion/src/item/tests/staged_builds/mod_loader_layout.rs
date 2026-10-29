@@ -23,6 +23,8 @@ use crate::perk::PerkRecipe;
 use crate::recipe::WeaponSocketColumnRecipe;
 use crate::workflow::FilteredPackageView;
 
+mod overflow;
+
 const BREACHLIGHT: u32 = 0x4CE3_CE93;
 const BOSS_SPEC: u32 = 0xA63B_627D;
 const RECORDS_PREFIX: &str = "w64_parhelion_investment_";

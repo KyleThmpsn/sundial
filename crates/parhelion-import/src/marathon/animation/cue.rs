@@ -259,7 +259,7 @@ impl<'a> Donors<'a> {
 }
 
 /// Bones below `handle` in a rig's hierarchy.
-fn parts(rig: &control::Rig, handle: usize) -> Vec<usize> {
+pub(super) fn parts(rig: &control::Rig, handle: usize) -> Vec<usize> {
     let mut below = BTreeSet::from([handle]);
     let mut parts = Vec::new();
     for bone in handle + 1..rig.parents.len() {

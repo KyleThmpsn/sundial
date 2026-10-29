@@ -64,9 +64,9 @@ impl Support {
 pub struct NodeKind {
     /// Dispatch index used by the node header byte.
     pub kind: u8,
-    /// Native structure class, or zero when the kind was never observed.
+    /// Qualified native structure class, or zero when its allocation is unresolved.
     pub class: u32,
-    /// Native structure size in bytes, or zero when the kind was never observed.
+    /// Native structure size in bytes, or zero when its allocation is unresolved.
     pub struct_size: u32,
     /// Occurrences across the surveyed action resources.
     pub occurrences: u32,
@@ -247,10 +247,11 @@ pub fn plain_effect_title(kind: u8) -> Option<&'static str> {
         // them (see `fields::values`).
         28 => "Change How the Trigger Fires",
         29 => "Replace Three Weapon Values",
-        30 => "Hold a Weapon Count",
+        // Kind 30: every stock holder is a tracking perk (see its evidence).
+        30 => "Enable Tracking",
         33 => "Change Incoming Damage",
         32 => "Extend Timers",
-        35 => "Set a Weapon Firing Mode",
+        35 => "Override Animation Input",
         37 => "Label the Event When the Damage Source Matches",
         40 => "Change Outgoing Damage",
         41 => "Hold a Named Count",

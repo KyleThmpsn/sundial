@@ -106,12 +106,23 @@ fn generated(data: &[u8]) -> Result<Record, String> {
 }
 
 fn decode(size: usize, layout: &[(usize, u32)]) -> Result<Record, String> {
-    let mut fields = BTreeMap::new();
-    expand(layout, 0, size, 0, &mut 100_000, &mut fields)?;
+    let fields = expand_layout(size, layout, false)?;
     Ok(Record {
         size,
         fields: fields.into_iter().collect::<Vec<_>>().into(),
     })
+}
+
+/// Expand the serialized repeat program once. Native declarations already include inherited
+/// fields. Relocation clients also need raw and string pointers, which reference discovery skips.
+pub(crate) fn expand_layout(
+    size: usize,
+    layout: &[(usize, u32)],
+    pointers: bool,
+) -> Result<BTreeMap<usize, u32>, String> {
+    let mut fields = BTreeMap::new();
+    expand(layout, 0, size, 0, &mut 100_000, &mut fields, pointers)?;
+    Ok(fields)
 }
 
 fn expand(
@@ -121,6 +132,7 @@ fn expand(
     depth: usize,
     remaining: &mut usize,
     fields: &mut BTreeMap<usize, u32>,
+    pointers: bool,
 ) -> Result<(), String> {
     if depth > 32 || fields.len() > 100_000 {
         return Err("Native reference layout exceeded its expansion limit".into());
@@ -136,9 +148,10 @@ fn expand(
             .checked_add(offset)
             .ok_or("Native layout offset overflow")?;
         match kind {
-            3 | 4 | 9 => {
+            1 | 2 if !pointers => {}
+            1..=4 | 9 => {
                 let width = match kind {
-                    3 => 8,
+                    1..=3 => 8,
                     4 => 4,
                     _ => 16,
                 };
@@ -181,6 +194,7 @@ fn expand(
                         depth + 1,
                         remaining,
                         fields,
+                        pointers,
                     )?;
                 }
                 i = end;
@@ -192,7 +206,7 @@ fn expand(
                 i += 1;
             }
             // Raw pointers and scalar identifiers contain no declared package references.
-            1 | 2 | 5 | 6 | 8 | 12 => {}
+            5 | 6 | 8 | 12 => {}
             _ => return Err(format!("Unsupported native layout operation {kind}")),
         }
     }

@@ -34,9 +34,7 @@ impl Residency {
             Self::Player => {
                 "Used by player weapons or abilities. The build checks its loading requirements separately."
             }
-            Self::Unverified => {
-                "Nothing names this asset, so where it loads is unknown. Test it in game before sharing the perk."
-            }
+            Self::Unverified => "Nothing names this asset, so where it loads is unknown.",
             Self::Activity => {
                 "Used by enemies or activities. It may need dependencies that are not loaded with the player. The build checks its loading requirements separately."
             }

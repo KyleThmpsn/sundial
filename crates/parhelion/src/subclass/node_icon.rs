@@ -8,6 +8,7 @@ use crate::{AuthoringResult, NewTagReferenceOverride, NewTagSpec, NewTagStorageM
 pub(crate) fn author(
     manager: &PackageManager,
     icon: &NodeIcon,
+    destination: (u16, usize),
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
@@ -16,14 +17,13 @@ pub(crate) fn author(
             manager,
             artwork,
             icon.source_container,
+            destination,
             nodes,
             references,
         )?
     } else {
-        let allocator = crate::appended_tags::AppendedTagAllocator::new(
-            crate::package_profile::window().first(),
-            0,
-        );
+        let allocator =
+            crate::appended_tags::AppendedTagAllocator::new(destination.0, destination.1);
         let tag = allocator.assigned_tag(nodes.len(), "Node icon", "ability color")?;
         let container = crate::icon_edit::read_icon_container(manager, icon.source_container)?;
         let donor = crate::shared_tag_memory::read_and_validate_icon_companion(
@@ -54,7 +54,9 @@ pub(crate) fn author(
         tag
     };
     if let Some(rgb) = icon.color {
-        let container = &mut nodes[usize::from(tag.entry_index())].payload;
+        let index = crate::appended_tags::AppendedTagAllocator::new(destination.0, destination.1)
+            .ordinal(tag)?;
+        let container = &mut nodes[index].payload;
         for (channel, value) in rgb
             .map(|v| (f32::from(v) / 255.0).powf(2.2))
             .into_iter()

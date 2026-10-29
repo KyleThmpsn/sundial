@@ -200,6 +200,18 @@ fn damage(perks: &[u32]) -> Option<&'static str> {
     source_element(perks).filter(|element| !matches!(*element, "stasis" | "strand"))
 }
 
+/// The recipe rarity of a modern definition's rarity byte at `+0xA0`.
+pub(crate) fn rarity(value: u64) -> Option<&'static str> {
+    match value {
+        1 => Some("common"),
+        2 => Some("uncommon"),
+        3 => Some("rare"),
+        4 => Some("legendary"),
+        5 => Some("exotic"),
+        _ => None,
+    }
+}
+
 fn properties(source: &Value) -> Value {
     let mut result = json!({});
     for (field, value) in [
@@ -221,17 +233,7 @@ fn properties(source: &Value) -> Value {
                 _ => None,
             },
         ),
-        (
-            "rarity",
-            match source["rarity"].as_u64() {
-                Some(1) => Some("common"),
-                Some(2) => Some("uncommon"),
-                Some(3) => Some("rare"),
-                Some(4) => Some("legendary"),
-                Some(5) => Some("exotic"),
-                _ => None,
-            },
-        ),
+        ("rarity", source["rarity"].as_u64().and_then(rarity)),
     ] {
         if let Some(value) = value {
             result[field] = json!(value);

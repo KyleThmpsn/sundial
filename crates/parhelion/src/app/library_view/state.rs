@@ -38,6 +38,8 @@ pub(crate) struct LibraryState {
     pub(super) export_selection: Option<BTreeSet<PathBuf>>,
     pub(super) restore: Option<crate::recipe_library::RestoreRecipe>,
     pub(super) delete: Option<crate::recipe_library::DeleteRecipe>,
+    /// Whether the Studio project import window is open.
+    pub(super) studio_import: bool,
     pub(in crate::app) notice: Option<String>,
     pub(super) errors: Vec<String>,
     pub(super) job: Option<thread::JoinHandle<TransferResult>>,

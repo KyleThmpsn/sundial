@@ -3,6 +3,8 @@ use super::*;
 use sundial::package_authoring::sandbox_perk::action::native::{Block, Graph, NodeKind};
 mod ability_event;
 mod accumulator;
+mod damage_taken;
+mod duration;
 mod event_filter;
 mod group;
 mod player;
@@ -18,7 +20,27 @@ pub(super) fn read(
     }
     let class = p.u32(at - 4)?;
     let kind = p.u8(at + 5)?;
-    if (class, kind) == (0x808031BF, 10) {
+    if (class, kind) == (0x8080314D, 6) {
+        ensure!(
+            (0.0..=1.0).contains(&p.f32(at)?)
+                && p.u8(at + 4)? == 255
+                && p.u8(at + 6)? == 0
+                && p.u8(at + 8)? & !7 == 0
+                && p.bytes::<3>(at + 9)? == [0; 3],
+            "Source ammunition pickup has unqualified state or inventory slots"
+        );
+        // Source 698788 selects the recipient weapon with the pickup's +300 ordinal,
+        // then 698978 publishes that ordinal after a positive transfer. Native E94E6B
+        // sets event byte zero from the recipient slot. Byte one independently tracks
+        // ammo type. Keeping its filter zero preserves slot-based refill companions
+        // when Kinetic and Energy weapons use a different ammo type from D1.
+        // Shadowkeep aggregates accepted recipients into one event per pickup.
+        return Ok(Some(NativeNode {
+            kind,
+            bytes: p.bytes::<12>(at)?.to_vec(),
+        }));
+    }
+    if matches!((class, kind), (0x808031BF, 10) | (0x8080308E, 11)) {
         return ability_event::read(
             source,
             native.context("Source ability events need native ability definitions")?,
@@ -34,7 +56,7 @@ pub(super) fn read(
         return group::predicate(source, p, at, native).map(Some);
     }
     if (class, kind) == (0x80803101, 20) {
-        return player::read(p, at).map(Some);
+        return player::read(source, p, at, native).map(Some);
     }
     if (class, kind) == (0x808030DB, 33) {
         ensure!(
@@ -64,11 +86,28 @@ pub(super) fn read(
             bytes: graph.emit().map_err(anyhow::Error::msg)?,
         }));
     }
+    if (class, kind) == (0x808030ED, 34) {
+        ensure!(
+            (0.0..=1.0).contains(&p.f32(at)?)
+                && p.u8(at + 4)? == 0xFF
+                && p.u8(at + 6)? == 0
+                && p.u8(at + 8)? <= 1
+                && p.bytes::<3>(at + 9)? == [0; 3],
+            "Source byte-difference event has unqualified probability, state or selectors"
+        );
+        // Source 76DE40 and native 107E260 compare node +8 with the event byte.
+        // Both publishers send the same zero/one transitions. Native 373180
+        // accepts the 12-byte 80803DE3 allocation through a typed condition pointer,
+        // and ECB950 dispatches its explicit kind 33 without a class-specific gate.
+        let mut bytes = p.bytes::<12>(at)?.to_vec();
+        bytes[5] = 33;
+        return Ok(Some(NativeNode { kind: 33, bytes }));
+    }
     if (class, kind) == (0x808030D4, 12) {
         ensure!(
             (0.0..=1.0).contains(&p.f32(at)?)
                 && p.u8(at + 4)? == 0xFF
-                && p.bytes::<2>(at + 6)? == [0; 2]
+                && p.u8(at + 6)? == 0
                 && matches!(
                     (p.u32(at + 8)?, p.u32(at + 12)?),
                     (0x6CEC7A87, 0x18CCBF24) | (0xB3311944, 0xC7161F86)
@@ -80,6 +119,8 @@ pub(super) fn read(
         // production in source 5D768E and native F95A77. Its C7161F86 context
         // selects the compared source +48/native +50 member in both registries.
         // Other source activity signals still need their own producer evidence.
+        // Byte +7 is a compiled condition index, not a reserved flag. Native
+        // compilation rebuilds it, including the FF sentinel on extension children.
         return Ok(Some(NativeNode {
             kind,
             bytes: p.bytes::<16>(at)?.to_vec(),
@@ -107,21 +148,37 @@ pub(super) fn read(
     if (class, kind) == (0x8080307B, 4) {
         return hit::read(source, p, at, native).map(Some);
     }
+    if (class, kind) == (0x8080313D, 5) {
+        return damage_taken::read(source, p, at, native).map(Some);
+    }
     if matches!((class, kind), (0x808031FD, 7) | (0x80803147, 8)) {
         ensure!(
             (0.0..=1.0).contains(&p.f32(at)?)
                 && p.u8(at + 4)? == 0xFF
                 && p.u8(at + 6)? == 0
                 && (kind == 8 || p.u8(at + 8)? & !7 == 0)
-                && p.bytes::<7>(at + 9)? == [0; 7]
-                && p.bytes::<16>(at + 0x10)? == [0; 16],
-            "Source ability event has additional player restrictions"
+                && p.bytes::<7>(at + 9)? == [0; 7],
+            "Source ability event has unqualified state or slot restrictions"
         );
-        // Both original callbacks select the event's ability slot with +8. An empty
-        // player filter passes without consulting the player's numeric components.
+        // Both callbacks select the event's ability slot with +8 and evaluate the
+        // shared ability ranges at +10. Native kind 8 queries the ranges first.
+        let mut bytes = vec![0; 0x20];
+        bytes[..0x10].copy_from_slice(&p.bytes::<0x10>(at)?);
+        let mut graph = Graph {
+            blocks: vec![Block {
+                class: if kind == 7 { 0x80803DFD } else { 0x80803E01 },
+                count: None,
+                bytes,
+                links: BTreeMap::new(),
+            }],
+        };
+        player::ability_ranges(p, at + 0x10, &mut graph, 0x10)?;
+        graph
+            .validate_node(NodeKind::Condition(kind))
+            .map_err(anyhow::Error::msg)?;
         return Ok(Some(NativeNode {
             kind,
-            bytes: p.bytes::<32>(at)?.to_vec(),
+            bytes: graph.emit().map_err(anyhow::Error::msg)?,
         }));
     }
     let weapon_class = match (class, kind) {
@@ -176,20 +233,21 @@ pub(super) fn read(
     } else {
         ensure!(
             p.u8(at + 8)? <= 1
-                && p.u8(at + 9)? == 0
+                && p.u8(at + 9)? & !7 == 0
                 && p.bytes::<6>(at + 10)? == [0; 6]
                 && p.bytes::<3>(at + 0xE5)? == [0; 3],
             "Source shot condition has an unsupported slot mask or header"
         );
-        // Source 76B510 mode 1 accepts a nonzero event flag and mode 2 accepts zero.
-        // Native 107E300 reverses these two selectors. Mode 3 adds different target gates.
+        // Source 4F9F50 writes a miss flag, while native CFE490 writes a hit flag.
+        // Their checkers invert the flag test too, preserving 1 = miss and 2 = hit.
+        // Mode 3 still needs qualification of the native target-category restriction.
         bytes[0x90] = match p.u8(at + 0xE4)? {
-            0 => 0,
-            1 => 2,
-            2 => 1,
+            mode @ 0..=2 => mode,
             _ => anyhow::bail!("Source shot condition mode requires target translation"),
         };
         bytes[8] = p.u8(at + 8)?;
+        // The shared weapon-slot domain is 0..2. Zero bypasses slot filtering.
+        bytes[9] = p.u8(at + 9)?;
     }
     bytes[labels + 0x50] = 0xFF;
     let mut graph = Graph {

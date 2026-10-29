@@ -46,7 +46,7 @@ pub(super) fn with_row(
     with_row_under(payload, key, input, value, multiply)
 }
 
-/// Whether the bank shows the handler slot of numeric property rows.
+/// Whether the bank shows a priority-storage index for numeric property rows.
 pub(super) fn has_handler(payload: &[u8]) -> Result<bool, String> {
     let modifier = Modifier::Scalar {
         input: 0,

@@ -25,20 +25,27 @@ pub(super) enum EntryAction {
     Delete,
 }
 
+/// `library_busy` leaves only the actions that read the recipe.
 pub(super) fn entry_menu(
     ui: &mut egui::Ui,
     entry: &RecipeLibraryEntry,
     can_restore: bool,
+    library_busy: bool,
 ) -> Option<EntryAction> {
+    const BUSY: &str = "Recipe library busy.";
     let mut action = None;
     ui.weak(&entry.name);
     ui.separator();
-    for (label, choice) in [
-        ("Open", EntryAction::Open),
-        ("Duplicate", EntryAction::Duplicate),
-        ("Export…", EntryAction::Export),
+    for (label, choice, enabled) in [
+        ("Open", EntryAction::Open, true),
+        ("Duplicate", EntryAction::Duplicate, !library_busy),
+        ("Export…", EntryAction::Export, !library_busy),
     ] {
-        if ui.button(label).clicked() {
+        if ui
+            .add_enabled(enabled, egui::Button::new(label))
+            .on_disabled_hover_text(BUSY)
+            .clicked()
+        {
             action = Some(choice);
             ui.close();
         }
@@ -56,8 +63,15 @@ pub(super) fn entry_menu(
     if entry.bundled {
         ui.separator();
         if ui
-            .add_enabled(can_restore, egui::Button::new("Restore This Recipe…"))
-            .on_disabled_hover_text("Save or discard open edits first.")
+            .add_enabled(
+                can_restore && !library_busy,
+                egui::Button::new("Restore This Recipe…"),
+            )
+            .on_disabled_hover_text(if can_restore {
+                BUSY
+            } else {
+                "Save or discard open edits first."
+            })
             .clicked()
         {
             action = Some(EntryAction::Restore);
@@ -65,7 +79,11 @@ pub(super) fn entry_menu(
         }
     }
     ui.separator();
-    if ui.button("Delete…").clicked() {
+    if ui
+        .add_enabled(!library_busy, egui::Button::new("Delete…"))
+        .on_disabled_hover_text(BUSY)
+        .clicked()
+    {
         action = Some(EntryAction::Delete);
         ui.close();
     }

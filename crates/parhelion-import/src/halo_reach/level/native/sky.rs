@@ -10,14 +10,20 @@ use crate::{
     halo_reach::{
         cache::{Cache, Tag},
         choices,
-        material::Material,
+        material::{self as source_material, Material},
         model::{self, Primitive},
         native::material::{
-            SKY_RADIANCE,
-            sky::{SkyScale, SkySurface, surfaces},
+            Fog, SKY_RADIANCE,
+            sky::{
+                SkyParallax, SkyScale, SkySurface,
+                lens::{self, Lens, Reflection},
+                patchy::{self, Patchy},
+                surfaces, weather,
+            },
         },
         object::Object as SourceObject,
         resource::Pages,
+        rig,
     },
     presentation::{
         Graph,
@@ -159,6 +165,693 @@ fn chunks(primitives: &[(Primitive, Vec<[f32; 3]>)]) -> Result<Vec<Chunk>> {
     Ok(out)
 }
 
+/// A render method's transparent sort layer, an `enum8` at `+0x5A`: invalid, pre-pass, normal and
+/// post-pass from 0, per Assembly's MCC Reach shader definition.
+const SORT_LAYER: usize = 0x5A;
+const SORT_LAYER_NORMAL: u8 = 2;
+
+/// The transparent sort layer of a sky surface's shader, by which Reach orders the sky's blended
+/// parts. In the Xbox `halo3_tag_play` build, `s_render_type_default_opaque::render_object_mesh_parts`
+/// (`825AC0A0`) adds an object's transparent parts between `begin_fixed_order_group` and
+/// `end_fixed_order_group`, each through `add_transparent_mesh_part` (`825A9D58`) to
+/// `c_transparency_renderer::add_element` with the shader's sort layer (`tag_get('rm  ')+0x5A`).
+/// A part takes its own sorting position (render model `+0x80`, `0x30`-byte rows of a plane and a
+/// point, indexed by the part's `int16` at `+0x02`) only when its mesh leaves flag bit 1 (`Use
+/// Region Index For Sorting`) clear. Every sampled sky mesh sets mesh flags `0x0003`, so its parts
+/// share the object's one point, offset only by the mesh's index, and their order comes from the
+/// sort layer, then the mesh, then the part. A surface without a shader, or an invalid layer,
+/// sorts as normal.
+pub(super) fn sort_layer(cache: &Cache, material: Option<&Material>) -> u8 {
+    material
+        .and_then(|material| material.tag.as_ref())
+        .and_then(|tag| tag.address().ok())
+        .and_then(|at| cache.u8(at + SORT_LAYER).ok())
+        .filter(|&layer| (1..=3).contains(&layer))
+        .unwrap_or(SORT_LAYER_NORMAL)
+}
+
+/// An object's model (`hlmt`) reference, the model's flags and its sky parallax percent, with the
+/// flag that makes a sky follow the camera ([`SkyParallax`]).
+const OBJECT_MODEL: usize = 0x64;
+const MODEL_FLAGS: usize = 0x15C;
+const MODEL_SKY_PARALLAX: usize = 0x1B4;
+const SKY_ATTACHES_TO_CAMERA: u32 = 1 << 6;
+
+/// How the level's sky follows the camera, from the first sky row active on the `loaded` BSPs,
+/// as Reach moves every sky by the first visible one's parallax, and a report. The sky object
+/// stands at the level's origin, which the map moves by `offset`. In the U13 caches only The
+/// Package's and Long Night of Solace's space skies (`sky_wafer`, `sky_corvette`, 0.6) and
+/// `space_alpha_halo` of `m70_a` and `m70_bonus` (0, held at the camera) set the flag. Every other
+/// sky of the U13 caches leaves it clear and stays where it is.
+fn parallax(cache: &Cache, loaded: u32, offset: [f32; 3]) -> Result<(Option<SkyParallax>, Value)> {
+    let scenario = cache.only("scnr")?.address()?;
+    for row in cache.block(scenario + SKIES, SKY_SIZE)? {
+        if u32::from(cache.u16(row + SKY_BSPS)?) & loaded == 0 {
+            continue;
+        }
+        let Some(sky) = cache.reference(row, Some("scen"))? else {
+            continue;
+        };
+        let Some(model) = cache.reference(sky.address()? + OBJECT_MODEL, Some("hlmt"))? else {
+            return Ok((None, json!({"sky": sky.path, "model": null})));
+        };
+        let at = model.address()?;
+        let flags = cache.u32(at + MODEL_FLAGS)?;
+        let percent = cache.f32(at + MODEL_SKY_PARALLAX)?;
+        ensure!(
+            percent.is_finite(),
+            "Sky model {} holds a nonfinite parallax",
+            model.path
+        );
+        // `get_object_values` truncates the percent times 255 to a byte.
+        let byte = (percent * 255.).clamp(0., 255.).trunc();
+        let parallax = (flags & SKY_ATTACHES_TO_CAMERA != 0).then_some(SkyParallax {
+            origin: offset,
+            follow: 1. - byte / 255.,
+        });
+        return Ok((
+            parallax,
+            json!({
+                "sky": sky.path,
+                "model": model.path,
+                "flags": format!("{flags:08X}"),
+                "parallax_percent": percent,
+                "follow": parallax.map(|p| p.follow),
+            }),
+        ));
+    }
+    Ok((None, json!({"sky": null})))
+}
+
+/// The key bits of a lens flare's reflections and of the patchy fog's sheets, apart from the
+/// sky's own surfaces.
+const FLARE_KEY: u32 = 0x5000_0000;
+const PATCHY_KEY: u32 = 0x5100_0000;
+/// A scenario object's attachments: `0x20`-byte rows naming a tag at `+0x00` and a marker's string
+/// id at `+0x10`, as Assembly's MCC Reach object definitions lay them out.
+const OBJECT_ATTACHMENTS: (usize, usize) = (0x104, 0x20);
+const ATTACHMENT_MARKER: usize = 0x10;
+/// A lens flare tag (`lens`, Assembly's Reach definition): the occlusion inner radius scale, the
+/// bitmap, the flags (bit 1, no occlusion test) and the reflections, `0x58`-byte rows of flags, a
+/// bitmap index, a rotation offset in degrees, an axis offset, radius and brightness functions, a
+/// modulation factor, a color and a tint power.
+const LENS_OCCLUSION_SCALE: usize = 0x10;
+const LENS_BITMAP: usize = 0x24;
+const LENS_FLAGS: usize = 0x34;
+const LENS_NO_OCCLUSION: u16 = 1 << 1;
+const LENS_REFLECTIONS: (usize, usize) = (0x44, 0x58);
+const REFLECTION_BITMAP: usize = 0x02;
+const REFLECTION_ROTATION: usize = 0x04;
+const REFLECTION_AXIS: usize = 0x08;
+const REFLECTION_RADIUS: usize = 0x1C;
+const REFLECTION_BRIGHTNESS: usize = 0x30;
+const REFLECTION_MODULATION: usize = 0x44;
+const REFLECTION_COLOR: usize = 0x48;
+const REFLECTION_TINT_POWER: usize = 0x54;
+/// A bitmap's images, `0x38`-byte rows at `+0x7C`.
+const BITMAP_IMAGES: (usize, usize) = (0x7C, 0x38);
+/// A sampler address byte that clamps both coordinates, as Reach draws flare sprites.
+const CLAMP_ADDRESS: u8 = 0x11;
+/// A fog tag's flags, with patchy fog at bit 3, its patchy fog parameters (the tag build's
+/// `Patchy Fog Per-Cluster Parameters`): sheet density, tint, inner tint, intensity, full and half
+/// intensity heights, wind direction and reference plane height, and the atmosphere globals'
+/// (`atgf`) noise bitmap, texture repeat rate, distance between sheets and depth fade factor.
+const FOG_PATCHY: u16 = 1 << 3;
+const PATCHY_DENSITY: usize = 0x74;
+const PATCHY_TINT: usize = 0x78;
+const PATCHY_INNER: usize = 0x84;
+const PATCHY_INTENSITY: usize = 0x90;
+const PATCHY_FULL: usize = 0x94;
+const PATCHY_HALF: usize = 0x98;
+const PATCHY_WIND: usize = 0x9C;
+const PATCHY_REFERENCE: usize = 0xA8;
+const GLOBALS_REPEAT: usize = 0x10;
+const GLOBALS_SPACING: usize = 0x14;
+const GLOBALS_DEPTH_FADE: usize = 0x18;
+/// How far the patchy fog's sheets reach past the level's pieces, in meters.
+const SHEET_MARGIN: f32 = 64.;
+
+/// The value of the Reach function whose data reference is at `field`, at an input of one and a
+/// range input of zero, as a sky attachment's lens flare evaluates its curves: the minimum for a
+/// constant (kind 1), the maximum for an identity (kind 0). Other kinds take their maximum, with a
+/// note.
+fn function_value(cache: &Cache, field: usize, notes: &mut Vec<String>) -> Result<f32> {
+    let size = usize::try_from(cache.i32(field)?)?;
+    if size < 12 {
+        return Ok(0.);
+    }
+    let data = cache.meta(cache.expand(cache.u32(field + 0x0C)?)?, size)?;
+    ensure!(data[2] == 0, "Lens flare function holds colors");
+    let low = f32::from_le_bytes(data[4..8].try_into()?);
+    let high = f32::from_le_bytes(data[8..12].try_into()?);
+    let weight = match data[0] {
+        0 => 1.,
+        1 => 0.,
+        kind => {
+            notes.push(format!("Function kind {kind} takes its maximum"));
+            1.
+        }
+    };
+    let mut value = low + (high - low) * weight;
+    if data[1] & 4 != 0 {
+        value = value.clamp(0., 1.);
+    }
+    ensure!(value.is_finite(), "Lens flare function is not finite");
+    Ok(value)
+}
+
+/// A lens flare and the point it is attached at.
+type Placed = (Lens, [f32; 3]);
+
+/// The lens flare the first sky active on the `loaded` BSPs attaches at a marker of its model, in
+/// the map's space (`offset`), with a report. Reach's sky attachments name the flare at the
+/// `sun_flare` marker. Reflections whose bitmap index lies past the bitmap's images are left out,
+/// as Reach draws none of them: Breakneck's flare keeps only its first.
+fn read_lens(
+    cache: &Cache,
+    pages: &mut Pages,
+    loaded: u32,
+    offset: [f32; 3],
+) -> Result<(Option<Placed>, Value)> {
+    let scenario = cache.only("scnr")?.address()?;
+    let Some(sky) = cache
+        .block(scenario + SKIES, SKY_SIZE)?
+        .into_iter()
+        .map(|row| -> Result<Option<Tag>> {
+            if u32::from(cache.u16(row + SKY_BSPS)?) & loaded == 0 {
+                return Ok(None);
+            }
+            cache.reference(row, Some("scen"))
+        })
+        .find_map(|sky| sky.transpose())
+        .transpose()?
+    else {
+        return Ok((None, json!({"lens": null})));
+    };
+    let at = sky.address()?;
+    let mut attachment = None;
+    for row in cache.block(at + OBJECT_ATTACHMENTS.0, OBJECT_ATTACHMENTS.1)? {
+        if let Some(tag) = cache.reference(row, Some("lens"))? {
+            attachment = Some((tag, cache.string_id(cache.u32(row + ATTACHMENT_MARKER)?)?));
+            break;
+        }
+    }
+    let Some((tag, marker_name)) = attachment else {
+        return Ok((None, json!({"sky": sky.path, "lens": null})));
+    };
+    let object = SourceObject::read(cache, &sky)?;
+    let render = object
+        .world
+        .as_ref()
+        .and_then(|branch| branch.model.as_ref())
+        .context("Sky has no render model")?;
+    let selection = choices(&object, None, &BTreeMap::new())?;
+    let model = model::read(cache, pages, render, &selection)?;
+    let worlds = rig::world(&model.bones)?;
+    let mut marker = None;
+    for candidate in model.markers.iter().filter(|m| m.name == marker_name) {
+        if model.marker_selected(candidate)? {
+            marker = Some(candidate);
+            break;
+        }
+    }
+    let Some(marker) = marker else {
+        return Ok((
+            None,
+            json!({"sky": sky.path, "lens": tag.path, "marker": marker_name, "reason": "No selected marker"}),
+        ));
+    };
+    let local = match marker.bone {
+        Some(bone) => rig::point(
+            worlds.get(bone).context("Lens flare marker bone")?,
+            marker.translation,
+            true,
+        ),
+        None => marker.translation,
+    };
+    let position: [f32; 3] = std::array::from_fn(|k| local[k] + offset[k]);
+    let lens_at = tag.address()?;
+    let bitmap = cache
+        .reference(lens_at + LENS_BITMAP, Some("bitm"))?
+        .context("Lens flare has no bitmap")?;
+    let images = cache
+        .block(bitmap.address()? + BITMAP_IMAGES.0, BITMAP_IMAGES.1)?
+        .len();
+    let mut notes = Vec::new();
+    let mut reflections = Vec::new();
+    let mut skipped = 0;
+    for row in cache.block(lens_at + LENS_REFLECTIONS.0, LENS_REFLECTIONS.1)? {
+        let Ok(frame) = usize::try_from(cache.i16(row + REFLECTION_BITMAP)?) else {
+            skipped += 1;
+            continue;
+        };
+        if frame >= images {
+            skipped += 1;
+            continue;
+        }
+        let radius = function_value(cache, row + REFLECTION_RADIUS, &mut notes)?;
+        let brightness = function_value(cache, row + REFLECTION_BRIGHTNESS, &mut notes)?;
+        if radius <= 0. || brightness <= 0. {
+            skipped += 1;
+            continue;
+        }
+        let color = cache.floats::<3>(row + REFLECTION_COLOR)?;
+        let values = [
+            cache.f32(row + REFLECTION_ROTATION)?,
+            cache.f32(row + REFLECTION_AXIS)?,
+            cache.f32(row + REFLECTION_MODULATION)?,
+            cache.f32(row + REFLECTION_TINT_POWER)?,
+        ];
+        ensure!(
+            values.iter().chain(&color).all(|v| v.is_finite()),
+            "Lens flare {} holds a nonfinite reflection",
+            tag.path
+        );
+        reflections.push(Reflection {
+            flags: cache.u8(row)?,
+            sprite: source_material::Mapping {
+                role: "lens_flare".into(),
+                bitmap: Some(bitmap.clone()),
+                transform: [1., 1., 0., 0.],
+                frame,
+                address: CLAMP_ADDRESS,
+                filter: 0,
+                functions: Vec::new(),
+            },
+            rotation: values[0].to_radians(),
+            axis: values[1],
+            radius,
+            brightness,
+            modulation: values[2],
+            color,
+            tint_power: values[3],
+        });
+    }
+    let flags = cache.u16(lens_at + LENS_FLAGS)?;
+    let occlusion_scale = cache.f32(lens_at + LENS_OCCLUSION_SCALE)?;
+    let report = json!({
+        "sky": sky.path,
+        "lens": tag.path,
+        "marker": marker_name,
+        "position": position,
+        "bitmap": bitmap.path,
+        "images": images,
+        "reflections": reflections.len(),
+        "skipped_reflections": skipped,
+        "flags": format!("{flags:04X}"),
+        "occlusion_scale": occlusion_scale,
+        "notes": notes,
+    });
+    if reflections.is_empty() {
+        return Ok((None, report));
+    }
+    Ok((
+        Some((
+            Lens {
+                reflections,
+                occlusion_scale: if occlusion_scale.is_finite() {
+                    occlusion_scale.clamp(0., 1.)
+                } else {
+                    0.
+                },
+                occluded: flags & LENS_NO_OCCLUSION == 0,
+            },
+            position,
+        )),
+        report,
+    ))
+}
+
+/// The flare's mesh: one quad per reflection at `position`, keyed from [`FLARE_KEY`], whose
+/// surfaces draw both faces since their programs turn and mirror it on screen. Its size only
+/// bounds the object for culling, the largest reflection's radius at the flare's distance.
+fn flare_mesh(lens: &Lens, position: [f32; 3], offset: [f32; 3]) -> Result<Mesh> {
+    let distance = (0..3)
+        .map(|k| (position[k] - offset[k]).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    let size = lens
+        .reflections
+        .iter()
+        .map(|reflection| {
+            if reflection.flags & 2 != 0 {
+                reflection.radius * distance
+            } else {
+                reflection.radius * 3.048
+            }
+        })
+        .fold(1f32, f32::max);
+    let mut mesh = Mesh {
+        positions: Vec::new(),
+        attributes: Vec::new(),
+        groups: Vec::new(),
+        weights: Vec::new(),
+        bones: 0,
+    };
+    for index in 0..lens.reflections.len() {
+        let first = u32::try_from(mesh.positions.len())?;
+        for (u, v) in [(0., 0.), (1., 0.), (1., 1.), (0., 1.)] {
+            mesh.positions.push([
+                position[0] + (u * 2. - 1.) * size,
+                position[1] + (v * 2. - 1.) * size,
+                position[2],
+            ]);
+            mesh.attributes.push([u, v, 0., 0., 1., 1., 1., 1., 1., 1.]);
+        }
+        let key = FLARE_KEY | u32::try_from(index)?;
+        mesh.groups.push((
+            key,
+            vec![[first, first + 1, first + 2], [first, first + 2, first + 3]],
+        ));
+    }
+    Ok(mesh)
+}
+
+/// The level's patchy fog, from its fog tag `fog_tag` when the tag enables it with a sheet density
+/// above zero, and the atmosphere globals' noise, with a report.
+#[allow(clippy::cognitive_complexity)]
+fn read_patchy(
+    cache: &Cache,
+    fog_tag: Option<&str>,
+    offset: [f32; 3],
+) -> Result<(Option<Patchy>, Value)> {
+    let Some(path) = fog_tag else {
+        return Ok((None, json!({"reason": "The level has no fog tag"})));
+    };
+    let fog = cache.find("fogg", path)?;
+    let at = fog.address()?;
+    let flags = cache.u16(at)?;
+    let density = cache.f32(at + PATCHY_DENSITY)?;
+    if flags & FOG_PATCHY == 0 || density.is_nan() || density <= 0. {
+        return Ok((
+            None,
+            json!({"fog": path, "flags": format!("{flags:04X}"), "density": density, "reason": "Patchy fog is off"}),
+        ));
+    }
+    let Some(globals) = cache.tags.iter().flatten().find(|tag| tag.group == "atgf") else {
+        return Ok((
+            None,
+            json!({"fog": path, "reason": "No atmosphere globals"}),
+        ));
+    };
+    let globals_at = globals.address()?;
+    let Some(noise) = cache.reference(globals_at, Some("bitm"))? else {
+        return Ok((
+            None,
+            json!({"fog": path, "globals": globals.path, "reason": "No noise bitmap"}),
+        ));
+    };
+    let floats = |at: usize| -> Result<f32> {
+        let value = cache.f32(at)?;
+        ensure!(
+            value.is_finite(),
+            "Patchy fog of {path} holds a nonfinite value"
+        );
+        Ok(value)
+    };
+    let patchy = Patchy {
+        noise: source_material::Mapping {
+            role: "patchy_fog".into(),
+            bitmap: Some(noise.clone()),
+            transform: [1., 1., 0., 0.],
+            frame: 0,
+            address: 0,
+            filter: 0,
+            functions: Vec::new(),
+        },
+        density,
+        tint: cache.floats::<3>(at + PATCHY_TINT)?,
+        inner: cache.floats::<3>(at + PATCHY_INNER)?,
+        intensity: floats(at + PATCHY_INTENSITY)?,
+        full_height: floats(at + PATCHY_FULL)?,
+        half_height: floats(at + PATCHY_HALF)?,
+        wind: cache.floats::<3>(at + PATCHY_WIND)?,
+        reference: floats(at + PATCHY_REFERENCE)?,
+        repeat: floats(globals_at + GLOBALS_REPEAT)?.max(0.001),
+        spacing: floats(globals_at + GLOBALS_SPACING)?.max(0.01),
+        depth_fade: floats(globals_at + GLOBALS_DEPTH_FADE)?.max(0.),
+        origin: offset,
+    };
+    ensure!(
+        patchy
+            .tint
+            .iter()
+            .chain(&patchy.inner)
+            .chain(&patchy.wind)
+            .all(|v| v.is_finite()),
+        "Patchy fog of {path} holds a nonfinite color or wind"
+    );
+    let report = json!({"fog": path, "globals": globals.path, "noise": noise.path});
+    Ok((Some(patchy), report))
+}
+
+/// The patchy fog's sheets over the level's `area` (in the level's meters, moved by `offset`):
+/// [`patchy::SHEETS`] horizontal quads, each carrying its order in the stack in `normal.w`, whose
+/// vertex program sets their heights around the camera. Their corners span the level's height,
+/// which only bounds the object. Returns the band of heights above the reference plane where the
+/// fog's height fade is above zero within the level, or none where it lies outside the level.
+fn sheet_mesh(
+    patchy: &Patchy,
+    area: ([f32; 3], [f32; 3]),
+    offset: [f32; 3],
+) -> Result<Option<(Mesh, (f32, f32))>> {
+    let (low, high) = area;
+    let height = |z: f32| z / 3.048 - patchy.reference;
+    let Some(band) = patchy.band(height(low[2]), height(high[2])) else {
+        return Ok(None);
+    };
+    let mut mesh = Mesh {
+        positions: Vec::new(),
+        attributes: Vec::new(),
+        groups: Vec::new(),
+        weights: Vec::new(),
+        bones: 0,
+    };
+    let mut faces = Vec::new();
+    for sheet in 0..patchy::SHEETS {
+        let order = sheet as f32 / patchy::SHEETS as f32;
+        let z = low[2] + (high[2] - low[2]) * order + offset[2];
+        let first = u32::try_from(mesh.positions.len())?;
+        for (u, v) in [(0., 0.), (1., 0.), (1., 1.), (0., 1.)] {
+            mesh.positions.push([
+                if u == 0. {
+                    low[0] - SHEET_MARGIN
+                } else {
+                    high[0] + SHEET_MARGIN
+                } + offset[0],
+                if v == 0. {
+                    low[1] - SHEET_MARGIN
+                } else {
+                    high[1] + SHEET_MARGIN
+                } + offset[1],
+                z,
+            ]);
+            mesh.attributes
+                .push([u, v, 0., 0., 1., order, 1., 1., 1., 1.]);
+        }
+        faces.extend([[first, first + 1, first + 2], [first, first + 2, first + 3]]);
+    }
+    mesh.groups.push((PATCHY_KEY, faces));
+    Ok(Some((mesh, band)))
+}
+
+/// The key bits of the weather effect's particle fields.
+const WEATHER_KEY: u32 = 0x5200_0000;
+/// A fog tag's weather effect reference.
+const FOG_WEATHER: usize = 0xAC;
+/// An effect emitter's properties (`effect::source` offsets): radius, maximum count, rate, life,
+/// velocity, size, scale, tint and alpha. A property holds its inputs, its function's size at
+/// `+0x04` and data at `+0x10`, a compiled constant at `+0x18` and flags at `+0x1C`, bit 5 marking
+/// the constant valid.
+const EMITTER_RADIUS: usize = 0xB8;
+const EMITTER_MAXIMUM_COUNT: usize = 0x138;
+const EMITTER_RATE: usize = 0x158;
+const EMITTER_LIFE: usize = 0x178;
+const EMITTER_VELOCITY: usize = 0x200;
+const EMITTER_SIZE: usize = 0x260;
+const EMITTER_SCALE: usize = 0x280;
+const EMITTER_TINT: usize = 0x2A0;
+const EMITTER_ALPHA: usize = 0x2C0;
+/// A particle's (`prt3`) embedded material and the property read as its sprite's aspect, the
+/// length over the width: 4 and 5 on Sword Base's raindrops, 1 and 1.5 on Breakneck's ash.
+const PARTICLE_MATERIAL: usize = 0x40;
+const PARTICLE_ASPECT: usize = 0xD8;
+/// A particle's model (`pmdf`), which it draws in place of a sprite, as Hang 'Em High's space junk
+/// draws debris. A sprite field cannot stand for it, as the effect importer's particles cannot.
+const PARTICLE_MODEL: usize = 0x1BC;
+/// The slowest a weather particle is taken to fall, in meters per second, so ash with no
+/// velocity of its own still drifts.
+const SLOWEST_FALL: f32 = 0.2;
+
+/// The low and high values of the effect property at `at`: its compiled constant, a constant
+/// function's minimum, or its function's minimum and maximum. Colors are read by
+/// [`property_color`].
+fn property_range(cache: &Cache, at: usize) -> Result<[f32; 2]> {
+    if cache.u16(at + 0x1C)? & 0x20 != 0 {
+        let value = cache.f32(at + 0x18)?;
+        ensure!(value.is_finite(), "Effect property constant is not finite");
+        return Ok([value; 2]);
+    }
+    let size = usize::try_from(cache.i32(at + 4)?)?;
+    if size < 12 {
+        return Ok([0.; 2]);
+    }
+    let data = cache.meta(cache.expand(cache.u32(at + 0x10)?)?, size)?;
+    let low = f32::from_le_bytes(data[4..8].try_into()?);
+    let high = f32::from_le_bytes(data[8..12].try_into()?);
+    ensure!(
+        low.is_finite() && high.is_finite(),
+        "Effect property range is not finite"
+    );
+    Ok(if data[0] == 1 && data[1] & 1 == 0 {
+        [low; 2]
+    } else {
+        [low.min(high), low.max(high)]
+    })
+}
+
+/// The first color of the color property at `at`, a packed `0xAARRGGBB` value over 255, or none
+/// when the property holds no colors.
+fn property_color(cache: &Cache, at: usize) -> Result<Option<[f32; 3]>> {
+    let size = usize::try_from(cache.i32(at + 4)?)?;
+    if size < 12 {
+        return Ok(None);
+    }
+    let data = cache.meta(cache.expand(cache.u32(at + 0x10)?)?, size)?;
+    if data[2] == 0 {
+        return Ok(None);
+    }
+    let packed = u32::from_le_bytes(data[4..8].try_into()?);
+    Ok(Some(
+        [16, 8, 0].map(|shift| ((packed >> shift) & 0xFF) as f32 / 255.),
+    ))
+}
+
+/// The particle fields of the weather effect fog tag `fog_tag` names, one per emitter that draws a
+/// sprite, with a report.
+fn read_weather(cache: &Cache, fog_tag: Option<&str>) -> Result<(Vec<weather::Particles>, Value)> {
+    let Some(path) = fog_tag else {
+        return Ok((Vec::new(), json!({"reason": "The level has no fog tag"})));
+    };
+    let fog = cache.find("fogg", path)?;
+    let Some(effect) = cache.reference(fog.address()? + FOG_WEATHER, Some("effe"))? else {
+        return Ok((Vec::new(), json!({"fog": path, "effect": null})));
+    };
+    let source = crate::halo_reach::effect::source::read(cache, effect.address()?)?;
+    let mut fields = Vec::new();
+    let mut skipped = Vec::new();
+    for event in source["events"].as_array().context("Weather events")? {
+        for system in event["particles"].as_array().context("Weather systems")? {
+            if system["tag"].is_null() {
+                continue;
+            }
+            let particle: Tag = serde_json::from_value(system["tag"].clone())?;
+            let particle_at = particle.address()?;
+            if let Some(model) = cache.reference(particle_at + PARTICLE_MODEL, None)? {
+                skipped.push(json!({"particle": particle.path, "model": model.path,
+                    "reason": "Draws a particle model"}));
+                continue;
+            }
+            let material = source_material::embedded(
+                cache,
+                particle.clone(),
+                particle_at + PARTICLE_MATERIAL,
+            )?;
+            let Some(sprite) = material.mapping(&["base_map"]).cloned() else {
+                skipped.push(json!({"particle": particle.path, "reason": "No sprite"}));
+                continue;
+            };
+            let additive = material
+                .options
+                .get("blend_mode")
+                .is_some_and(|mode| mode == "additive");
+            let aspect = property_range(cache, particle_at + PARTICLE_ASPECT)?[1].max(0.1);
+            for emitter in system["emitters"].as_array().context("Weather emitters")? {
+                let at = usize::try_from(emitter["offset"].as_u64().context("Weather emitter")?)?;
+                let mean = |[low, high]: [f32; 2]| (low + high) / 2.;
+                let radius = property_range(cache, at + EMITTER_RADIUS)?;
+                let maximum = property_range(cache, at + EMITTER_MAXIMUM_COUNT)?[1];
+                let rate = mean(property_range(cache, at + EMITTER_RATE)?);
+                let life = mean(property_range(cache, at + EMITTER_LIFE)?);
+                let velocity = mean(property_range(cache, at + EMITTER_VELOCITY)?).abs();
+                let size = property_range(cache, at + EMITTER_SIZE)?[1];
+                let scale = property_range(cache, at + EMITTER_SCALE)?[1];
+                let alpha = mean(property_range(cache, at + EMITTER_ALPHA)?);
+                let color = property_color(cache, at + EMITTER_TINT)?.unwrap_or([1.; 3]);
+                let count = (rate * life).min(if maximum > 0. { maximum } else { f32::MAX });
+                let width = size * if scale > 0. { scale } else { 1. } * 3.048;
+                if !(count >= 1. && width > 0. && radius[1] > 0. && alpha > 0.) {
+                    skipped.push(
+                        json!({"particle": particle.path, "reason": "No steady particles",
+                        "count": count, "width": width, "radius": radius, "alpha": alpha}),
+                    );
+                    continue;
+                }
+                fields.push(weather::Particles {
+                    sprite: sprite.clone(),
+                    additive,
+                    color,
+                    alpha: alpha.min(1.),
+                    width,
+                    aspect,
+                    count,
+                    radii: [radius[0].max(0.1) * 3.048, radius[1] * 3.048],
+                    fall: (velocity * 3.048).max(SLOWEST_FALL),
+                });
+            }
+        }
+    }
+    Ok((
+        fields,
+        json!({"fog": path, "effect": effect.path, "location": source["locations"], "skipped": skipped}),
+    ))
+}
+
+/// The weather fields' shell: the corners of the level's `area`, moved by `offset`, as a closed
+/// box of triangles, one group per field keyed by `keys`. Its vertex program only
+/// takes the corners' directions from the object's center, so the shell stays around the camera,
+/// while its bounds cover the level and the object is never culled there.
+fn shell_mesh(area: ([f32; 3], [f32; 3]), offset: [f32; 3], keys: &[u32]) -> Result<Mesh> {
+    let (low, high) = area;
+    let mut mesh = Mesh {
+        positions: Vec::new(),
+        attributes: Vec::new(),
+        groups: Vec::new(),
+        weights: Vec::new(),
+        bones: 0,
+    };
+    for corner in 0..8 {
+        let pick = |axis: usize| {
+            if corner >> axis & 1 == 0 {
+                low[axis] - SHEET_MARGIN
+            } else {
+                high[axis] + SHEET_MARGIN
+            }
+        };
+        mesh.positions
+            .push(std::array::from_fn(|k| pick(k) + offset[k]));
+        mesh.attributes
+            .push([0., 0., 0., 0., 1., 1., 1., 1., 1., 1.]);
+    }
+    // The cube's six faces, each as two triangles. The surfaces draw both faces.
+    let quads: [[u32; 4]; 6] = [
+        [0, 1, 3, 2],
+        [4, 6, 7, 5],
+        [0, 4, 5, 1],
+        [2, 3, 7, 6],
+        [0, 2, 6, 4],
+        [1, 5, 7, 3],
+    ];
+    let mut faces = Vec::new();
+    for [a, b, c, d] in quads {
+        faces.extend([[a, b, c], [a, c, d]]);
+    }
+    for &key in keys {
+        mesh.groups.push((key, faces.clone()));
+    }
+    Ok(mesh)
+}
+
 /// The keys of a sky primitive's transparent and light-shaft materials.
 fn keys(primitive: &Primitive) -> Result<(u32, u32)> {
     let index = match primitive.material {
@@ -277,8 +970,13 @@ pub(super) fn radiance(cache: &Cache, level: Option<f32>) -> Result<(f32, Value)
 /// origin and moved by `offset`, with materials among `materials`, each with its vertex colors.
 /// The colors ride in the tangent stream, as square roots over the sky's largest color, since
 /// the sky's surfaces are unlit and need no tangents. `level` is the lightmap's average lit level,
-/// which the level's surfaces' light is a share of. Returns the sky objects, in draw order, and a
-/// report.
+/// which the level's surfaces' light is a share of, and `fog` the level's fog, which the sky takes
+/// as Reach's does. A sky that follows the camera in Reach, by the first sky active on the
+/// `loaded` BSPs, follows it here ([`parallax`]). That sky's lens flare draws as one more sky
+/// object at its marker ([`read_lens`]), the patchy fog of fog tag `fog_tag` as soft sheets over
+/// the level's `area` ([`read_patchy`]), and its weather effect's sprite emitters as particle fields
+/// around the camera ([`read_weather`]), all after the sky. Returns the sky objects, in draw order,
+/// and a report.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn add(
     cache: &Cache,
@@ -290,6 +988,10 @@ pub(super) fn add(
     primitives: &[(Primitive, Vec<[f32; 3]>)],
     offset: [f32; 3],
     level: Option<f32>,
+    fog: Option<Fog>,
+    loaded: u32,
+    fog_tag: Option<&str>,
+    area: Option<([f32; 3], [f32; 3])>,
 ) -> Result<(Vec<Object>, Value)> {
     if primitives.is_empty() {
         return Ok((Vec::new(), json!({"objects": 0})));
@@ -338,6 +1040,7 @@ pub(super) fn add(
         stages.insert(transparent, TRANSPARENT_STAGE);
         stages.insert(shafts, LIGHT_SHAFT_STAGE);
     }
+    let (parallax, parallax_report) = parallax(cache, loaded, offset)?;
     let sky_surfaces = used
         .iter()
         .map(|(&transparent, &(shafts, material))| SkySurface {
@@ -354,6 +1057,8 @@ pub(super) fn add(
         &sky_surfaces,
         [templates.surface, templates.shafts],
         scale,
+        fog.as_ref(),
+        parallax,
     )?;
     let template = native
         .tag(templates.model, Some(MODEL_CLASS))
@@ -365,57 +1070,34 @@ pub(super) fn add(
     let mut objects = Vec::new();
     let mut models = Vec::new();
     for (index, chunk) in chunks(primitives)?.into_iter().enumerate() {
-        let name = format!("sky{index}");
-        let mut mesh = chunk_mesh(primitives, &chunk, offset, vertex_color)?;
-        let (low, high) = bounds(mesh.positions.iter().copied());
-        // The object sits at the center of its bounds, and its geometry is relative to it.
-        let center: [f32; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.);
-        for position in &mut mesh.positions {
-            *position = sub(*position, center);
-        }
-        let used_stages = mesh
-            .groups
-            .iter()
-            .map(|(key, _)| (*key, stages[key]))
-            .collect::<BTreeMap<_, _>>();
-        let mut encoded = geometry::encode_source_passes(&mesh, &template, row, &used_stages)?;
-        let radius = Payload(encoded.header.clone()).f32(MODEL_RADIUS)?;
-        for offset in MODEL_EXTENTS {
-            put(&mut encoded.header, offset, &radius.to_le_bytes())?;
-        }
-        let records = (encoded.header.len() - DRAW_RECORDS) / DRAW_RECORD_SIZE;
-        for record in 0..records {
-            put(
-                &mut encoded.header,
-                DRAW_RECORDS + record * DRAW_RECORD_SIZE + DRAW_FLAGS,
-                &SKY_DRAW_FLAGS.to_le_bytes(),
-            )?;
-        }
-        let patches = add_streams(native, graph, &template, row, &name, &encoded)?;
-        let model = format!("{name}-model");
-        graph.add(&model, templates.model, &encoded.header, None, patches)?;
-        if let Some(node) = graph.nodes.iter_mut().find(|node| node["symbol"] == model) {
-            node["model"] = json!(true);
-        }
-        let mut reference = vec![0u8; REFERENCE_SIZE];
-        put(&mut reference, 0, &(REFERENCE_SIZE as u64).to_le_bytes())?;
-        put(&mut reference, REFERENCE_MODEL, &u32::MAX.to_le_bytes())?;
-        let symbol = format!("{name}-reference");
-        graph.add(
-            &symbol,
-            templates.reference,
-            &reference,
-            None,
-            vec![json!({"offset": REFERENCE_MODEL, "symbol": model})],
+        let mesh = chunk_mesh(primitives, &chunk, offset, vertex_color)?;
+        let (object, mut model) = add_model(
+            native,
+            graph,
+            templates,
+            &template,
+            row,
+            &format!("sky{index}"),
+            mesh,
+            &stages,
+            index as f32,
         )?;
-        let world_low = std::array::from_fn(|k| low[k]);
-        let world_high = std::array::from_fn(|k| high[k]);
-        models.push(json!({
-            "model": model,
-            "vertices": mesh.positions.len(),
-            "triangles": chunk.runs.iter().map(|(_, faces)| faces.len()).sum::<usize>(),
-            "primitives": chunk.runs.iter().map(|(index, _)| index).collect::<Vec<_>>(),
-            "surfaces": chunk
+        model["triangles"] = json!(
+            chunk
+                .runs
+                .iter()
+                .map(|(_, faces)| faces.len())
+                .sum::<usize>()
+        );
+        model["primitives"] = json!(
+            chunk
+                .runs
+                .iter()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>()
+        );
+        model["surfaces"] = json!(
+            chunk
                 .runs
                 .iter()
                 .map(|(index, faces)| {
@@ -428,18 +1110,106 @@ pub(super) fn add(
                         })
                     })
                 })
-                .collect::<Result<Vec<_>>>()?,
-            "position": center,
-            "bounds": [world_low, world_high],
-            "draws": records,
-        }));
-        objects.push(Object {
-            reference: symbol,
-            position: center,
-            minimum: world_low,
-            maximum: world_high,
-            order: index as f32,
-        });
+                .collect::<Result<Vec<_>>>()?
+        );
+        models.push(model);
+        objects.push(object);
+    }
+    let (lens_found, mut lens_report) = read_lens(cache, pages, loaded, offset)?;
+    if let Some((lens, position)) = lens_found {
+        let keys = (0..lens.reflections.len())
+            .map(|index| Ok(FLARE_KEY | u32::try_from(index)?))
+            .collect::<Result<Vec<_>>>()?;
+        lens_report["surfaces"] = json!(lens::surfaces(
+            cache,
+            pages,
+            native,
+            graph,
+            &lens,
+            &keys,
+            templates.surface,
+            scale,
+            parallax,
+        )?);
+        let stages = keys
+            .iter()
+            .map(|&key| (key, TRANSPARENT_STAGE))
+            .collect::<BTreeMap<_, _>>();
+        let (object, model) = add_model(
+            native,
+            graph,
+            templates,
+            &template,
+            row,
+            "sky-flare",
+            flare_mesh(&lens, position, offset)?,
+            &stages,
+            objects.len() as f32,
+        )?;
+        lens_report["model"] = model;
+        objects.push(object);
+    }
+    let (patchy_found, mut patchy_report) = read_patchy(cache, fog_tag, offset)?;
+    if let (Some(patchy), Some(area)) = (patchy_found, area)
+        && let Some((mesh, band)) = sheet_mesh(&patchy, area, offset)?
+    {
+        patchy_report["surface"] = patchy::surface(
+            cache,
+            pages,
+            native,
+            graph,
+            &patchy,
+            PATCHY_KEY,
+            templates.surface,
+            scale,
+        )?;
+        let (object, model) = add_model(
+            native,
+            graph,
+            templates,
+            &template,
+            row,
+            "sky-patchy-fog",
+            mesh,
+            &BTreeMap::from([(PATCHY_KEY, TRANSPARENT_STAGE)]),
+            objects.len() as f32,
+        )?;
+        patchy_report["band_above_reference"] = json!(band);
+        patchy_report["model"] = model;
+        objects.push(object);
+    }
+    let (fields, mut weather_report) = read_weather(cache, fog_tag)?;
+    if let (false, Some(area)) = (fields.is_empty(), area) {
+        let keys = (0..fields.len())
+            .map(|index| Ok(WEATHER_KEY | u32::try_from(index)?))
+            .collect::<Result<Vec<_>>>()?;
+        weather_report["surfaces"] = json!(weather::surfaces(
+            cache,
+            pages,
+            native,
+            graph,
+            &fields,
+            &keys,
+            templates.surface,
+            scale,
+        )?);
+        let stages = keys
+            .iter()
+            .map(|&key| (key, TRANSPARENT_STAGE))
+            .collect::<BTreeMap<_, _>>();
+        let (object, model) = add_model(
+            native,
+            graph,
+            templates,
+            &template,
+            row,
+            "sky-weather",
+            shell_mesh(area, offset, &keys)?,
+            &stages,
+            objects.len() as f32,
+        )?;
+        weather_report["model"] = model;
+        objects.push(object);
     }
     Ok((
         objects,
@@ -452,12 +1222,98 @@ pub(super) fn add(
             "white": scale.white,
             "sky_radiance": radiance,
             "lit_level": level,
+            "fogged": fog.is_some(),
+            "parallax": parallax_report,
+            "lens_flare": lens_report,
+            "patchy_fog": patchy_report,
+            "weather": weather_report,
             "templates": {
                 "reference": format!("{:08X}", templates.reference),
                 "model": format!("{:08X}", templates.model),
                 "surface": format!("{:08X}", templates.surface),
                 "shafts": format!("{:08X}", templates.shafts),
             },
+        }),
+    ))
+}
+
+/// Adds sky model `name` drawing `mesh`, each group in its stage of `stages`, with its model
+/// reference, as one sky object at the center of its bounds with draw order `order`. The donor's
+/// model `template` lends its mesh `row` and stream headers. Returns the object and a report.
+#[allow(clippy::too_many_arguments)]
+fn add_model(
+    native: &mut Reader,
+    graph: &mut Graph,
+    templates: &Templates,
+    template: &Payload,
+    row: usize,
+    name: &str,
+    mut mesh: Mesh,
+    stages: &BTreeMap<u32, u8>,
+    order: f32,
+) -> Result<(Object, Value)> {
+    let (low, high) = bounds(mesh.positions.iter().copied());
+    // The object sits at the center of its bounds, and its geometry is relative to it.
+    let center: [f32; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.);
+    for position in &mut mesh.positions {
+        *position = sub(*position, center);
+    }
+    let used_stages = mesh
+        .groups
+        .iter()
+        .map(|(key, _)| {
+            stages
+                .get(key)
+                .map(|&stage| (*key, stage))
+                .with_context(|| format!("Sky surface {key:08X} has no stage"))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let mut encoded = geometry::encode_source_passes(&mesh, template, row, &used_stages)?;
+    let radius = Payload(encoded.header.clone()).f32(MODEL_RADIUS)?;
+    for offset in MODEL_EXTENTS {
+        put(&mut encoded.header, offset, &radius.to_le_bytes())?;
+    }
+    let records = (encoded.header.len() - DRAW_RECORDS) / DRAW_RECORD_SIZE;
+    for record in 0..records {
+        put(
+            &mut encoded.header,
+            DRAW_RECORDS + record * DRAW_RECORD_SIZE + DRAW_FLAGS,
+            &SKY_DRAW_FLAGS.to_le_bytes(),
+        )?;
+    }
+    let patches = add_streams(native, graph, template, row, name, &encoded)?;
+    let model = format!("{name}-model");
+    graph.add(&model, templates.model, &encoded.header, None, patches)?;
+    if let Some(node) = graph.nodes.iter_mut().find(|node| node["symbol"] == model) {
+        node["model"] = json!(true);
+    }
+    let mut reference = vec![0u8; REFERENCE_SIZE];
+    put(&mut reference, 0, &(REFERENCE_SIZE as u64).to_le_bytes())?;
+    put(&mut reference, REFERENCE_MODEL, &u32::MAX.to_le_bytes())?;
+    let symbol = format!("{name}-reference");
+    graph.add(
+        &symbol,
+        templates.reference,
+        &reference,
+        None,
+        vec![json!({"offset": REFERENCE_MODEL, "symbol": model})],
+    )?;
+    let minimum = std::array::from_fn(|k| low[k]);
+    let maximum = std::array::from_fn(|k| high[k]);
+    Ok((
+        Object {
+            reference: symbol,
+            position: center,
+            minimum,
+            maximum,
+            order,
+        },
+        json!({
+            "model": model,
+            "vertices": mesh.positions.len(),
+            "position": center,
+            "bounds": [minimum, maximum],
+            "draws": records,
         }),
     ))
 }

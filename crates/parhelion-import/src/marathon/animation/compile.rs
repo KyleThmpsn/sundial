@@ -228,9 +228,9 @@ fn layout(candidate: &Payload, rig: &source::Rig) -> Result<(u16, usize, usize)>
 
 /// Weapon-local motion: per frame, each weapon bone's pose in the weapon root frame, in the
 /// order of [`Overlay::bones`].
-struct Mechanism {
+pub(super) struct Mechanism {
     name: u32,
-    frames: Vec<Vec<Pose>>,
+    pub frames: Vec<Vec<Pose>>,
 }
 
 /// The weapon bones below the weapon root, as native control slots with their weapon bone, the
@@ -243,7 +243,7 @@ struct Overlay<'a> {
 }
 
 /// Sample one absolute weapon-local clip on the weapon rig.
-fn mechanism(
+pub(super) fn mechanism(
     source: &mut Reader,
     local: &controller::Controller,
     descriptor: u32,
@@ -302,6 +302,40 @@ fn mechanism(
         name: entry.name,
         frames: sampled,
     })
+}
+
+/// One frame of a clip as control values on a rig, and whether the clip is additive. Channels the
+/// clip omits take the rig's defaults when it is absolute and identity when it is additive. A
+/// frame past the end selects the last.
+pub(super) fn values(
+    source: &mut Reader,
+    clip: u32,
+    rig: &source::Rig,
+    frame: usize,
+) -> Result<(Vec<Pose>, bool)> {
+    let original = source.tag(clip, Some(0x8080AE01))?;
+    let (candidate, _) = clip::lower(&original, Some(&clip::Vocabulary::new()))?;
+    let additive = candidate.u8(0x181)? != 0;
+    let (frames, slots, common) = layout(&candidate, rig)?;
+    ensure!(frames > 0, "Source clip has no frames");
+    ensure!(
+        common == rig.controls.len(),
+        "Source clip addresses controls outside its rig"
+    );
+    let defaults = (0..slots)
+        .map(|slot| {
+            if slot < common && !additive {
+                rig.defaults[slot]
+            } else {
+                Pose::IDENTITY.0
+            }
+        })
+        .collect::<Vec<_>>();
+    let sampled = native_clip::sample(&candidate, &defaults, frame.min(usize::from(frames) - 1))?;
+    let values = (0..rig.controls.len())
+        .map(|slot| Pose::checked(sampled[slot]))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((values, additive))
 }
 
 /// Whether a lowered source clip omitted cues of the kinds carrier cues stand in for, value-2

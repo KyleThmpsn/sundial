@@ -4,6 +4,8 @@ use super::*;
 
 pub(super) enum CatalogEvent {
     Progress(CatalogLoadProgress),
+    /// Which installed mods add or change items, sent just before the catalog it describes.
+    Sources(Result<item_sources::ItemSources, String>),
     Finished(Box<Result<InvestmentCatalog, String>>),
 }
 

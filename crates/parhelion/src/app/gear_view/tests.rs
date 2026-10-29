@@ -147,26 +147,29 @@ fn imported_shader_opens_material_controls_without_a_base_catalog() {
     .unwrap();
     recipe.overrides.imported_graph = Some(GraphReference::new(folder.path(), item).unwrap());
     let original_icon = crate::shader::source_icon(&recipe).unwrap();
-    // Saving and sharing must carry source materials, so reopening cannot depend on this folder.
-    let portable = recipe.to_json_pretty().unwrap();
-    let document: serde_json::Value = serde_json::from_str(&portable).unwrap();
-    let mut damaged = document.clone();
+    // Recipes saved by earlier versions embed their assets. Loading one refuses payloads that
+    // differ from the content pin or name a path outside the graph folder, before restoring any.
+    let legacy: serde_json::Value =
+        serde_json::from_str(&crate::imported::archive::encode(&recipe).unwrap()).unwrap();
+    let mut damaged = legacy.clone();
     damaged["overrides"]["imported_graph"]["embedded_assets"]["files"]["dye-0-scope.bin"] =
         serde_json::json!("AAAA");
     assert!(WeaponRecipe::from_json_str(&damaged.to_string()).is_err());
-    let mut escaped = document.clone();
+    let mut escaped = legacy;
     escaped["overrides"]["imported_graph"]["embedded_assets"]["files"]["../escaped.bin"] =
         serde_json::json!("AAAA");
     assert!(WeaponRecipe::from_json_str(&escaped.to_string()).is_err());
-    folder.close().unwrap();
-    let reopened = WeaponRecipe::from_json_str(&portable).unwrap();
+    // A saved recipe names its source folder, as a weapon's does.
+    let saved = recipe.to_json_pretty().unwrap();
+    let document: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert!(document["overrides"]["imported_graph"]["embedded_assets"].is_null());
+    let reopened = WeaponRecipe::from_json_str(&saved).unwrap();
     assert!(recipe.same_saved_content(&reopened));
     assert_eq!(crate::shader::source_materials(&reopened).unwrap().len(), 3);
     assert_eq!(
         crate::shader::source_icon(&reopened).unwrap(),
         original_icon
     );
-    assert!(WeaponRecipe::from_json_str(&damaged.to_string()).is_err());
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&reopened.to_json_pretty().unwrap()).unwrap(),
         document,

@@ -188,7 +188,10 @@ fn match_recipe(
     }
     let bank_end = pristine.color.row.checked_add(54)?;
     let declared = code.buffers.iter().find(|&&(buffer, _)| buffer == 0)?.1;
-    if bank_end > declared || bank_end > constants.len() || bank_end > 128 {
+    if bank_end > declared
+        || bank_end > constants.len()
+        || bank_end > crate::model_preview::effects::ROWS
+    {
         return None;
     }
     let selector = final_op.arg(1);

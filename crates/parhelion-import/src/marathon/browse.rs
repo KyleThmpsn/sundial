@@ -10,9 +10,11 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+pub(super) mod camo;
+pub use camo::Camo;
 
 /// Bumped when the stored row changes, so an older listing is read again.
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 4;
 
 /// Each of these classes has exactly one instance, the table the listing reads.
 const STRING_INDEX: u32 = 0x8080_71C8;
@@ -53,10 +55,17 @@ pub struct Entry {
     /// The cosmetic entity, whose models join the body.
     pub cosmetic: Option<u32>,
     pub models: usize,
+    /// The weapon's other camos, imported as ornaments.
+    #[serde(default)]
+    pub camos: Vec<Camo>,
     /// A saved recipe's namespace that a reimport keeps, so the authored item retains its
     /// identity and edits whichever naming scheme made it. Unset for a new import.
     #[serde(skip)]
     pub saved_namespace: Option<String>,
+    /// The stamp of the packages this entry was listed from. Its tags encode a package and an
+    /// entry index, which a game update can renumber, so [`current`] lists it again after one.
+    #[serde(skip)]
+    pub listed: String,
 }
 
 impl Entry {
@@ -164,7 +173,7 @@ impl Failures {
 }
 
 /// Localized string banks, read on first use.
-struct Strings {
+pub(super) struct Strings {
     banks: Vec<u32>,
     /// Read banks, `None` for one that could not be read.
     loaded: BTreeMap<usize, Option<BTreeMap<u32, String>>>,
@@ -175,7 +184,7 @@ struct Strings {
 }
 
 impl Strings {
-    fn new(r: &mut Reader) -> Result<Self> {
+    pub(super) fn new(r: &mut Reader) -> Result<Self> {
         let index = r.tag(single(r, STRING_INDEX)?, None)?;
         let banks = index
             .array(8, 24, None)?
@@ -243,7 +252,12 @@ impl Strings {
     /// The label at `field` of an item strings record. Empty when its bank does not resolve.
     /// A bank that resolves but cannot be read fails with `StringBank` and keeps the first read
     /// error in `failure`.
-    fn label(&mut self, r: &mut Reader, strings: &Payload, field: usize) -> Result<Option<String>> {
+    pub(super) fn label(
+        &mut self,
+        r: &mut Reader,
+        strings: &Payload,
+        field: usize,
+    ) -> Result<Option<String>> {
         let Ok(index) = usize::try_from(strings.u32(field)? as i32) else {
             return Ok(None);
         };
@@ -317,6 +331,7 @@ fn read_item(
     r: &mut Reader,
     strings: &mut Strings,
     tables: &Tables,
+    camos: Option<&camo::Index>,
     item: u32,
     definition: u32,
 ) -> Result<Option<Entry>> {
@@ -388,6 +403,11 @@ fn read_item(
     if count == 0 {
         return Ok(None);
     }
+    // Only weapons import, so only their camos are read.
+    let camos = match (native, camos) {
+        (Some(_), Some(index)) => camo::find(r, strings, tables, index, art, entity, cosmetic)?,
+        _ => Vec::new(),
+    };
     Ok(Some(Entry {
         item,
         name,
@@ -396,7 +416,9 @@ fn read_item(
         entity,
         cosmetic,
         models: count,
+        camos,
         saved_namespace: None,
+        listed: String::new(),
     }))
 }
 
@@ -422,6 +444,8 @@ pub fn browse(
     scratch: &Path,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Listing> {
+    // Taken before reading, so a package that changes during the read leaves a stale stamp.
+    let listed = crate::tiger::reader::package_stamp(packages)?;
     let mut r = Reader::marathon_discovery(packages, scratch)?;
     let mut strings = Strings::new(&mut r)?;
     let table = r.tag(single(&r, ITEM_STRINGS)?, None)?;
@@ -453,6 +477,12 @@ pub fn browse(
     };
     let definitions = r.tag(single(&r, ITEM_DEFINITIONS)?, None)?;
     let rows = definitions.array(8, 32, None)?;
+    let camos = match camo::Index::read(&mut r, &definitions) {
+        Ok(index) => Some(index),
+        Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
+        // Packages without the camo tables list their weapons without camos.
+        Err(_) => None,
+    };
     let mut entries = Vec::new();
     let mut failures = Failures::default();
     let mut unnamed = 0;
@@ -463,7 +493,14 @@ pub fn browse(
         let item = definitions.u32(*o)?;
         let definition = definitions.u32(o + 16)?;
         // An item whose records do not follow this layout is not a modeled pattern item.
-        match read_item(&mut r, &mut strings, &tables, item, definition) {
+        match read_item(
+            &mut r,
+            &mut strings,
+            &tables,
+            camos.as_ref(),
+            item,
+            definition,
+        ) {
             Ok(Some(entry)) => entries.push(entry),
             Ok(None) => {}
             Err(error) if error.is::<StringBank>() => unnamed += 1,
@@ -486,6 +523,9 @@ pub fn browse(
         return Err(error.context(format!("Could not read {count} Marathon items")));
     }
     entries.sort_by_key(|entry| (entry.name.to_lowercase(), entry.item));
+    for entry in &mut entries {
+        entry.listed.clone_from(&listed);
+    }
     Ok(Listing { entries, warning })
 }
 
@@ -506,39 +546,72 @@ pub fn browse_cached(
     let packages = packages
         .canonicalize()
         .context("Marathon packages folder")?;
-    let stamp = format!(
-        "{SCHEMA}-{}",
-        crate::tiger::reader::package_stamp(&packages)?
-    );
-    let path = cache_dir.join("marathon-listing.json");
+    fs::create_dir_all(cache_dir)?;
+    // The importer and its import workers share this listing. After a package change one of
+    // them reads it again while the others wait, then they load what it stored.
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(cache_dir.join("marathon.lock"))
+        .ok();
+    if let Some(lock) = &lock {
+        crate::cancellation::lock(lock)?;
+    }
+    let listed = crate::tiger::reader::package_stamp(&packages)?;
+    let stamp = format!("{SCHEMA}-{listed}");
+    let path = cache_dir.join("marathon.json");
+    crate::cache::take_over(&cache_dir.join("marathon-listing.json"), &path);
+    let _ = fs::remove_file(cache_dir.join("marathon-listing.lock"));
     if !refresh
         && let Some(stored) = fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Stored>(&bytes).ok())
             .filter(|stored| stored.stamp == stamp)
     {
+        let mut entries = stored.entries;
+        for entry in &mut entries {
+            entry.listed.clone_from(&listed);
+        }
         return Ok(Listing {
-            entries: stored.entries,
+            entries,
             warning: None,
         });
     }
-    fs::create_dir_all(cache_dir)?;
     let scratch = tempfile::Builder::new()
-        .prefix("marathon-listing-")
+        .prefix("marathon-")
         .tempdir_in(cache_dir)?;
     let listing = browse(&packages, scratch.path(), progress)?;
     ensure!(!listing.entries.is_empty(), "No importable Marathon items");
     if listing.warning.is_none() {
-        // A failed write only costs the next listing a reread.
+        // A failed write only costs the next listing a reread. The stamp is the one the read
+        // started from, so a package that changed during it is listed again next time.
         let _ = crate::cache::write_json(
             &path,
             &Stored {
-                stamp,
+                stamp: format!("{SCHEMA}-{}", listing.entries[0].listed),
                 entries: listing.entries.clone(),
             },
         );
     }
     Ok(listing)
+}
+
+/// `entry` as the packages list it now. An entry listed from other packages, such as before a
+/// game update, is found again by its item hash in the current listing, which that change
+/// makes `browse_cached` read again. Its saved namespace carries over.
+pub fn current(packages: &Path, cache_dir: &Path, entry: &Entry) -> Result<Entry> {
+    if entry.listed == crate::tiger::reader::package_stamp(packages)? {
+        return Ok(entry.clone());
+    }
+    let mut current = browse_cached(packages, cache_dir, false, |_, _| {})?
+        .entries
+        .into_iter()
+        .find(|listed| listed.item == entry.item)
+        .with_context(|| format!("{} is no longer in the Marathon packages", entry.name))?;
+    current.saved_namespace.clone_from(&entry.saved_namespace);
+    Ok(current)
 }
 
 fn four(b: &Payload, o: usize) -> Result<[f64; 4]> {
@@ -673,21 +746,73 @@ fn assembly(r: &mut Reader, entry: &Entry) -> Result<(Vec<Value>, Vec<Value>)> {
     Ok((placed, parts))
 }
 
-/// Translate one entry into `output`, which must not exist. `donors` lists native weapons of the
-/// entry's type in the caller's order of preference. With `source_animation`, the source
-/// controller plays on the first donor whose first-person states request the source's own
-/// magazine reloads, else the first. Otherwise the first donor's own animation plays. Returns
-/// the prepared recipe.
-pub fn import(
+/// The native weapon an import builds on and why.
+pub struct DonorChoice {
+    /// An index into the candidates.
+    pub index: usize,
+    /// Recipe overrides that leave an exotic donor's own firing, perks and tier behind. Empty
+    /// for an ordinary donor.
+    pub overrides: Value,
+    /// The report `donor-choice.json` records.
+    pub report: Value,
+}
+
+/// The donor an import of `entry` builds on, from `donors`, which lists native weapons of the
+/// entry's type in the caller's order of preference. `source` reads the Marathon packages and
+/// `native` the Shadowkeep ones.
+///
+/// Ordinary donors come before exotics, whose runtime keeps their own effects. With
+/// `source_animation`, the source controller plays on the first donor whose first-person states
+/// request the source's own magazine reloads, else the first ordinary donor. Otherwise the donor's
+/// own animation plays, and the earliest ordinary donor whose hold class, reloads and reload motion
+/// best fit the source's is chosen. An exotic donor, chosen only when no ordinary one serves,
+/// lends its runtime, and the earliest ordinary candidate in its weapon-content owner lends its
+/// firing, perks and tier.
+pub fn choose_donor(
+    source: &mut Reader,
+    native: &mut Reader,
     entry: &Entry,
     donors: &[(u32, String)],
     source_animation: bool,
+) -> Result<DonorChoice> {
+    let (index, mut report) =
+        super::animation::choose_donor(source, native, entry.entity, donors, source_animation)?;
+    let overrides = super::animation::plain_behavior(native, donors, index, &mut report)?;
+    Ok(DonorChoice {
+        index,
+        overrides,
+        report,
+    })
+}
+
+/// What an import translates beyond the weapon on its donor.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// The weapon plays its own Marathon animations instead of the donor's.
+    pub source_animation: bool,
+    /// The weapon's camos import as ornaments. Each camo translates a model of its own, unless
+    /// another weapon already converted it on the same donor.
+    pub ornaments: bool,
+}
+
+/// Translate one entry into `output`, which must not exist, on the donor [`choose_donor`]
+/// picks. Returns the prepared recipe.
+pub fn import(
+    entry: &Entry,
+    donors: &[(u32, String)],
+    options: Options,
     packages: &Path,
     native_packages: &Path,
     output: &Path,
     progress: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
     ensure!(!donors.is_empty(), "{} has no native donor", entry.name);
+    // Its tags would name other entries in changed packages. `current` lists it again.
+    ensure!(
+        entry.listed == crate::tiger::reader::package_stamp(packages)?,
+        "The Marathon packages changed after {} was listed. List them again to import it.",
+        entry.name
+    );
     let parent = output.parent().context("Marathon import folder")?;
     fs::create_dir_all(parent)?;
     let work = tempfile::Builder::new()
@@ -700,17 +825,34 @@ pub fn import(
     progress("Reading native weapon…".into());
     let template_dir = work.path().join("native");
     let mut native = Reader::new(native_packages, &template_dir, false)?;
-    let (chosen, mut donor_choice) = if source_animation {
-        super::animation::choose_donor(&mut source, &mut native, entry.entity, donors)?
-    } else {
-        (0, json!({"chosen_by":"order"}))
-    };
-    donor_choice["source_animation"] = json!(source_animation);
+    progress("Matching native animation…".into());
+    let DonorChoice {
+        index: chosen,
+        overrides,
+        report: mut donor_choice,
+    } = choose_donor(
+        &mut source,
+        &mut native,
+        entry,
+        donors,
+        options.source_animation,
+    )?;
+    donor_choice["source_animation"] = json!(options.source_animation);
     let (donor, donor_name) = (donors[chosen].0, donors[chosen].1.as_str());
+    progress(format!("Building on {donor_name}…"));
     donor_choice["donor"] = json!(format!("{donor:08X}"));
+    donor_choice["donor_name"] = json!(donor_name);
     donor_choice["candidates"] = json!(donors.len());
     let template = crate::tiger::shadowkeep::extract(&mut native, donor)?;
     crate::io::write_json(&template_dir.join("template-report.json"), &template)?;
+    let mut camo_report = json!({});
+    let camos = if options.ornaments {
+        camo::layout(&mut native, entry, donors, donor, &mut camo_report)?
+    } else {
+        camo_report["camos"] = json!(entry.camos.len());
+        camo_report["skipped"] = json!("Ornaments were not imported");
+        None
+    };
     native.finish()?;
     let namespace = entry.namespace();
     let identity = crate::graph::import_identity(&namespace)?;
@@ -730,9 +872,9 @@ pub fn import(
         "identity": identity,
         "name": entry.name,
         "source": "Source: Marathon",
-        "overrides": {},
+        "overrides": overrides,
     });
-    let plan = json!([{
+    let mut plan = json!([{
         "slug": slug,
         "source_item_identity": entry.item,
         "name": entry.name,
@@ -742,13 +884,60 @@ pub fn import(
         "target_item": target,
         "art_key": format!("{art_key:08X}"),
         "native_template": template_dir,
-        "source_animation": source_animation,
+        "source_animation": options.source_animation,
         "recipe": recipe,
     }]);
+    if let Some((layout, _)) = &camos {
+        progress("Assembling camos…".into());
+        let owner = crate::graph::hash(&identity, "item_hash")?;
+        let camo_entries = camo::plan(&mut source, entry, layout, owner, &plan[0])?;
+        plan.as_array_mut()
+            .context("Marathon plan")?
+            .extend(camo_entries);
+    }
     let plan_path = work.path().join("plan.json");
     crate::io::write_json(&plan_path, &plan)?;
-    progress("Translating model…".into());
-    super::prepare(&plan_path, packages, native_packages, output)?;
+    let prepared = super::prepare(&plan_path, packages, native_packages, output, progress)?;
     crate::io::write_json(&output.join(&slug).join("donor-choice.json"), &donor_choice)?;
-    Ok(output.join(slug).join("weapon.parhelion.json"))
+    let recipe = output.join(&slug).join("weapon.parhelion.json");
+    if let Some((layout, sockets)) = &camos {
+        // A camo that could not be translated is left out with its reason. The weapon and the
+        // other camos still import.
+        camo_report["omitted"] = prepared["omitted"].clone();
+        let built = prepared["camos"].as_array().context("Prepared camos")?;
+        // Camos another weapon had already converted on this donor were copied.
+        camo_report["reused"] = json!(built.iter().filter(|camo| camo["reused"] == true).count());
+        camo_report["conversions"] = built
+            .iter()
+            .map(|camo| json!({"name":camo["name"],"conversion":camo["conversion"],"reused":camo["reused"]}))
+            .collect();
+        if !built.is_empty() {
+            camo::attach(&recipe, output, built, layout, sockets)?;
+        }
+    }
+    crate::io::write_json(&output.join(&slug).join("ornaments.json"), &camo_report)?;
+    Ok(recipe)
+}
+
+/// Moves the graphs of the prepared recipe at `recipe` into their places in the conversion folder
+/// `conversion`, as [`crate::graph::settle`] does, and notes each camo there again so a later
+/// import of the same camo copies it from its final place.
+pub fn settle(recipe: &Path, conversion: &Path) -> Result<()> {
+    renote(&crate::graph::settle(recipe, conversion)?);
+    Ok(())
+}
+
+/// Notes each camo among the graphs `moves` moved at its new place, so a later import of the same
+/// camo copies it from there. A camo graph records the digest of its conversion, which no other
+/// graph does.
+pub fn renote(moves: &[(PathBuf, PathBuf)]) {
+    for (_, graph) in moves {
+        let digest = fs::read(graph.join("asset-graph.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|report| report["conversion"].as_str().map(str::to_owned));
+        if let Some(digest) = digest {
+            crate::store::remember_folder(camo::CONVERSION, digest.as_bytes(), graph);
+        }
+    }
 }

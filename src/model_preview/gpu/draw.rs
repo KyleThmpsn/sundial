@@ -7,10 +7,77 @@ pub(super) enum Pass {
     Depth(glow::Buffer),
 }
 
+/// The values every program takes for one frame. A group that switches program sets them again.
+pub(super) struct View {
+    pub deformed: bool,
+    pub direction: [f32; 3],
+    pub distance: f32,
+    pub center: [f32; 3],
+    pub rotate: [f32; 9],
+    pub scale: [f32; 2],
+    pub depth_scale: f32,
+    pub pan: [f32; 2],
+    pub key: [f32; 3],
+    pub half: [f32; 3],
+    pub strength: f32,
+    pub fill: f32,
+    pub exposure: f32,
+    pub style: i32,
+    pub flat: bool,
+}
+
+impl View {
+    unsafe fn bind(&self, gl: &glow::Context, linked: &program::Linked, uploaded: &Uploaded) {
+        let uniforms = &linked.uniforms;
+        // SAFETY: called by groups with the current painter context and a linked program.
+        unsafe {
+            gl.use_program(Some(linked.program));
+            gl.uniform_1_i32(uniforms.deformed.as_ref(), i32::from(self.deformed));
+            // samplerBuffer and sampler2D uniforms must have distinct texture units even
+            // when the dynamic branch does not sample the deformation buffer.
+            gl.uniform_1_i32(uniforms.geometry.as_ref(), 11);
+            if self.deformed
+                && let Some(deformation) = &uploaded.deformation
+            {
+                deformation.bind(gl, linked.program);
+            }
+            let [x, y, z] = self.direction;
+            gl.uniform_3_f32(uniforms.native_direction.as_ref(), x, y, z);
+            gl.uniform_1_f32(uniforms.native_distance.as_ref(), self.distance);
+            let [x, y, z] = self.center;
+            gl.uniform_3_f32(uniforms.center.as_ref(), x, y, z);
+            gl.uniform_matrix_3_f32_slice(uniforms.rotate.as_ref(), false, &self.rotate);
+            gl.uniform_2_f32(uniforms.scale.as_ref(), self.scale[0], self.scale[1]);
+            gl.uniform_1_f32(uniforms.depth_scale.as_ref(), self.depth_scale);
+            gl.uniform_2_f32(uniforms.pan.as_ref(), self.pan[0], self.pan[1]);
+            let [x, y, z] = self.key;
+            gl.uniform_3_f32(uniforms.key_dir.as_ref(), x, y, z);
+            let [x, y, z] = self.half;
+            gl.uniform_3_f32(uniforms.half_dir.as_ref(), x, y, z);
+            gl.uniform_1_f32(uniforms.key.as_ref(), self.strength);
+            gl.uniform_1_f32(uniforms.fill.as_ref(), self.fill);
+            gl.uniform_1_f32(uniforms.exposure.as_ref(), self.exposure);
+            gl.uniform_1_i32(uniforms.style.as_ref(), self.style);
+            gl.uniform_1_i32(uniforms.flat.as_ref(), i32::from(self.flat));
+            for (unit, location) in uniforms.samplers.iter().enumerate() {
+                gl.uniform_1_i32(location.as_ref(), unit as i32);
+            }
+            gl.uniform_1_i32(uniforms.scene_depth.as_ref(), 9);
+            for (unit, location) in uniforms.effect_textures.iter().enumerate() {
+                gl.uniform_1_i32(location.as_ref(), 6 + unit as i32);
+            }
+            for (unit, location) in uniforms.native_textures.iter().enumerate() {
+                let unit = crate::model_preview::effects::native::gl_unit(9 + unit);
+                gl.uniform_1_i32(location.as_ref(), unit as i32);
+            }
+        }
+    }
+}
+
 #[allow(clippy::cognitive_complexity)]
 pub(super) unsafe fn groups(
     gl: &glow::Context,
-    uniforms: &Uniforms,
+    (programs, view): (&program::Programs, &View),
     uploaded: &Uploaded,
     frame: &Frame,
     target: &Target,
@@ -24,10 +91,8 @@ pub(super) unsafe fn groups(
             .dyes
             .unwrap_or_else(|| shader::dyes(&frame.model, frame.seconds));
         let effect_frames = crate::model_preview::effects::frames(&frame.model, frame.seconds);
-        gl.uniform_1_i32(uniforms.scene_depth.as_ref(), 9);
-        for (unit, location) in uniforms.effect_textures.iter().enumerate() {
-            gl.uniform_1_i32(location.as_ref(), 6 + unit as i32);
-        }
+        gl.bind_vertex_array(Some(uploaded.vao));
+        let mut bound = None;
         let mut copied_depth = false;
         let hide_emitter = frame.style == Style::Textured
             && (uploaded.hide_emitter
@@ -41,7 +106,17 @@ pub(super) unsafe fn groups(
             if hide_emitter && group.key.emitter {
                 continue;
             }
-            for unit in 0..10 {
+            let effect = group.key.effect.filter(|_| frame.style == Style::Textured);
+            let Some(linked) = programs.of(effect) else {
+                continue;
+            };
+            if bound != Some(linked.program) {
+                view.bind(gl, linked, uploaded);
+                bound = Some(linked.program);
+            }
+            let uniforms = &linked.uniforms;
+            // Native samplers and scene depth, including the native units past the ninth.
+            for unit in (0..10).chain(12..15) {
                 gl.bind_sampler(unit, None);
             }
             gl.uniform_1_i32(uniforms.native_index.as_ref(), -1);
@@ -54,7 +129,6 @@ pub(super) unsafe fn groups(
                 uniforms.cutoff.as_ref(),
                 group.key.cutoff.map(f32::from_bits).unwrap_or(0.5),
             );
-            let effect = group.key.effect.filter(|_| frame.style == Style::Textured);
             let sample_lod = effect
                 .and_then(|index| {
                     let material = &frame.model.effects[index];
@@ -186,7 +260,8 @@ pub(super) unsafe fn groups(
                 let Some(constants) = native.vertex_frame(frame.seconds) else {
                     continue;
                 };
-                gl.uniform_1_i32(uniforms.native_index.as_ref(), index as i32);
+                // A native material's own program knows it as material 0.
+                gl.uniform_1_i32(uniforms.native_index.as_ref(), 0);
                 gl.uniform_1_i32(
                     uniforms.native_quaternion.as_ref(),
                     i32::from(native.quaternion()),
@@ -197,9 +272,10 @@ pub(super) unsafe fn groups(
                 );
                 let vectors = dye.map_or([[0.0; 4]; 27], |d| d.vectors);
                 gl.uniform_4_f32_slice(uniforms.native_dye.as_ref(), vectors.as_flattened());
-                let mut present = [0; 9];
+                let mut present = [0; crate::model_preview::effects::native::TEXTURES];
                 for (unit, binding) in native.bindings.iter().enumerate() {
-                    let texture_unit = native.texture_unit(unit);
+                    let texture_unit =
+                        crate::model_preview::effects::native::gl_unit(native.texture_unit(unit));
                     use crate::model_preview::effects::native::Role;
                     let texture = match binding.role {
                         Role::Texture(index) => Some(index),
@@ -233,10 +309,10 @@ pub(super) unsafe fn groups(
                     }
                     // A positive level count also marks this binding as present.
                     present[unit] = levels * i32::from(texture.is_some());
-                    gl.active_texture(glow::TEXTURE0 + texture_unit as u32);
+                    gl.active_texture(glow::TEXTURE0 + texture_unit);
                     gl.bind_texture(glow::TEXTURE_2D, texture);
                     gl.bind_sampler(
-                        texture_unit as u32,
+                        texture_unit,
                         binding
                             .sampler
                             .and_then(|s| {

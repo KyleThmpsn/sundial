@@ -1,18 +1,30 @@
-//! Portable native item assets at the recipe's load and save boundary.
+//! Recipes that earlier versions saved with their native item assets embedded.
 //!
-//! The editor keeps a small pinned graph reference. Only the saved JSON carries the native
-//! payloads, and loading restores a checked local copy before the usual editor and build read it.
-use crate::{WeaponRecipe, recipe::HexHash};
+//! A recipe names its imported graph folder, as a weapon recipe does. Earlier versions saved gear,
+//! shader and universal ornament recipes with the graph's payloads embedded instead. Loading one
+//! checks every payload against its content pin and restores them into the `graph` folder of a
+//! conversion of the source item, as its importer would have named one, with each attachment in
+//! that conversion's `ornaments/<HASH>/graph`. A later load of the same assets reuses them.
+//! Saving the recipe then names those folders.
+#[cfg(test)]
+use crate::WeaponRecipe;
+use crate::recipe::HexHash;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use parhelion_import::GraphReference;
+use parhelion_import::{
+    GraphReference,
+    d2_mot::service::{IMPORTERS, IMPORTS, item_directory, reserve_assets},
+};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::io::Read;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Read,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 const SCHEMA: u32 = 1;
@@ -45,6 +57,8 @@ struct Assets {
     files: BTreeMap<String, String>,
 }
 
+/// Writes the embedded form earlier versions saved, so tests can load one.
+#[cfg(test)]
 pub(crate) fn encode(recipe: &WeaponRecipe) -> Result<String, String> {
     let reference = recipe
         .overrides
@@ -61,6 +75,7 @@ pub(crate) fn encode(recipe: &WeaponRecipe) -> Result<String, String> {
     serde_json::to_string_pretty(&document).map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 fn encode_reference(
     reference: &GraphReference,
     kind: &str,
@@ -138,16 +153,14 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
     {
         return Ok(());
     }
-    let kind = document["kind"]
+    document["kind"]
         .as_str()
-        .ok_or("Embedded assets require an item kind")?
-        .to_owned();
-    if !matches!(
-        kind.as_str(),
-        "shader" | "armor" | "ghost_shell" | "ship" | "sparrow"
-    ) {
-        return Err("Embedded assets require a supported gear recipe".into());
-    }
+        .ok_or("Embedded assets require an item kind")?;
+    // The recipe's kind names the kind of assets it embeds, as a mod's names a universal ornament.
+    let kind = serde_json::from_value::<crate::ItemKind>(document["kind"].clone())
+        .ok()
+        .and_then(super::kind)
+        .ok_or("Embedded assets require a supported gear recipe")?;
     let item: HexHash = serde_json::from_value(document["identity"]["item_hash"].clone())
         .map_err(|e| e.to_string())?;
     item.parse_u32().map_err(|e| e.to_string())?;
@@ -155,7 +168,7 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
         .pointer_mut(field)
         .ok_or("Imported item reference missing")?
         .take();
-    let restored = expand_reference(value, &kind, &mut 0, true)?;
+    let restored = expand_reference(value, kind, &mut 0, None)?;
     *document
         .pointer_mut(field)
         .ok_or("Imported item reference missing")? =
@@ -163,15 +176,17 @@ pub(crate) fn expand(document: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Restores one embedded graph and its attachments. `owner` is the conversion folder of the graph
+/// an attachment belongs to, `None` for the recipe's own graph.
 fn expand_reference(
     value: Value,
     kind: &str,
     total: &mut usize,
-    owner: bool,
+    owner: Option<&Path>,
 ) -> Result<GraphReference, String> {
     let reference: Reference = serde_json::from_value(value).map_err(|e| e.to_string())?;
     if reference.attachments.len() > 32
-        || (!reference.attachments.is_empty() && (!owner || kind != "armor"))
+        || (!reference.attachments.is_empty() && (owner.is_some() || kind != "armor"))
     {
         return Err("Only armor supports a bounded list of direct appearance attachments".into());
     }
@@ -215,63 +230,16 @@ fn expand_reference(
     if content_pin(&assets.graph, &ordered, &files) != reference.sha256 {
         return Err("Embedded item assets differ from their content pin".into());
     }
-    // Incoming bytes are checked even when cached. Only a missing cache needs extraction,
-    // avoiding hundreds of temporary file writes on every library scan or save.
-    let root = std::env::temp_dir().join(if kind == "shader" {
-        "sundial-native-shaders"
-    } else {
-        "sundial-native-gear"
-    });
-    fs::create_dir_all(&root).map_err(|e| format!("Could not create item asset cache: {e}"))?;
-    // Serialize publication so concurrent loads cannot partially publish each other's assets.
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join(".publish.lock"))
-        .map_err(|e| e.to_string())?;
-    fs2::FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
-    let destination = root.join(&reference.sha256);
-    match fs::symlink_metadata(&destination) {
-        Ok(metadata) => {
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err("Cached item assets are not a local folder".into());
-            }
+    let directory = match owner {
+        None => restore(&reference.sha256, &assets.graph, files, kind)?,
+        Some(conversion) => {
+            restore_ornament(conversion, &reference.sha256, &assets.graph, files, kind)?
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let temporary = tempfile::tempdir_in(&root).map_err(|e| e.to_string())?;
-            fs::write(temporary.path().join("asset-graph.json"), assets.graph)
-                .map_err(|e| e.to_string())?;
-            for (name, bytes) in files {
-                let path = temporary.path().join(name);
-                fs::create_dir_all(path.parent().ok_or("Item asset has no parent folder")?)
-                    .map_err(|e| e.to_string())?;
-                // A path alias must not overwrite another payload or the graph.
-                let mut file = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)
-                    .map_err(|e| format!("Could not restore item asset: {e}"))?;
-                std::io::Write::write_all(&mut file, &bytes).map_err(|e| e.to_string())?;
-            }
-            GraphReference {
-                directory: temporary.path().to_owned(),
-                sha256: reference.sha256.clone(),
-                attachments: Vec::new(),
-                converter_revision: 0,
-                material_inputs: reference.material_inputs.clone(),
-            }
-            .validate_reusable(kind)
-            .map_err(|e| format!("Embedded item assets are invalid: {e}"))?;
-            fs::rename(temporary.path(), &destination).map_err(|e| e.to_string())?;
-        }
-        Err(error) => return Err(error.to_string()),
-    }
-    let directory = destination.canonicalize().map_err(|e| e.to_string())?;
-    if directory.parent() != Some(root.canonicalize().map_err(|e| e.to_string())?.as_path()) {
-        return Err("Cached item assets must stay inside their cache folder".into());
-    }
+    };
+    let conversion = directory
+        .parent()
+        .ok_or("Restored graph has no conversion folder")?
+        .to_owned();
     let converter_revision = parhelion_import::manifest_converter_revision(&directory);
     if reference
         .converter_revision
@@ -279,11 +247,10 @@ fn expand_reference(
     {
         return Err("Embedded item converter revision differs from its pinned graph".into());
     }
-    drop(lock);
     let attachments = reference
         .attachments
         .into_iter()
-        .map(|attachment| expand_reference(attachment, kind, total, false))
+        .map(|attachment| expand_reference(attachment, kind, total, Some(&conversion)))
         .collect::<Result<Vec<_>, _>>()?;
     let restored = GraphReference {
         directory,
@@ -298,6 +265,145 @@ fn expand_reference(
     Ok(restored)
 }
 
+/// The graph folder the checked assets with content pin `sha256` are restored in: the `graph`
+/// folder of a conversion of the source item, of the kind its importer gives such a graph. A
+/// conversion there whose graph is the same text and whose payloads match the pin is reused.
+/// Otherwise a new one is reserved and filled, and a restore that stops partway is removed by the
+/// sweep once nothing names it.
+fn restore(
+    sha256: &str,
+    graph: &str,
+    files: BTreeMap<String, Vec<u8>>,
+    kind: &str,
+) -> Result<PathBuf, String> {
+    let (item, conversion) = restore_folder(graph)?;
+    if let Some(found) = restored(&item, graph, sha256, kind) {
+        return Ok(found);
+    }
+    let folder = reserve_assets(&item, conversion).map_err(|e| e.to_string())?;
+    let directory = folder.join(parhelion_import::GRAPH);
+    if let Err(error) = write_graph(&directory, sha256, graph, files, kind) {
+        // Removing it only saves space. The sweep removes it otherwise.
+        let _ = fs::remove_dir_all(&folder);
+        return Err(error);
+    }
+    directory.canonicalize().map_err(|e| e.to_string())
+}
+
+/// The graph folder an attachment of the graph restored in the conversion folder `conversion` is
+/// restored in, `ornaments/<HASH>/graph` there, named by its source item. One holding the same
+/// graph text whose payloads match the pin `sha256` is reused.
+fn restore_ornament(
+    conversion: &Path,
+    sha256: &str,
+    graph: &str,
+    files: BTreeMap<String, Vec<u8>>,
+    kind: &str,
+) -> Result<PathBuf, String> {
+    let parsed: Value = sundial::package_authoring::parse_json(graph).map_err(|e| e.to_string())?;
+    let source = [&parsed["ornament"]["source_item"], &parsed["source_item"]]
+        .into_iter()
+        .find_map(|value| u32::try_from(value.as_u64()?).ok())
+        .ok_or("Embedded ornament graph names no source item")?;
+    let directory = conversion
+        .join(parhelion_import::ORNAMENTS)
+        .join(format!("{source:08X}"))
+        .join(parhelion_import::GRAPH);
+    if directory.exists() {
+        if holds(&directory, graph, sha256, kind) {
+            return directory.canonicalize().map_err(|e| e.to_string());
+        }
+        return Err(format!("{} holds another ornament", directory.display()));
+    }
+    if let Err(error) = write_graph(&directory, sha256, graph, files, kind) {
+        let _ = fs::remove_dir_all(&directory);
+        return Err(error);
+    }
+    directory.canonicalize().map_err(|e| e.to_string())
+}
+
+/// Writes the payloads and then the graph text into the new folder `directory`, and checks them
+/// against the content pin `sha256`.
+fn write_graph(
+    directory: &Path,
+    sha256: &str,
+    graph: &str,
+    files: BTreeMap<String, Vec<u8>>,
+    kind: &str,
+) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    for (name, bytes) in files {
+        let path = directory.join(name);
+        fs::create_dir_all(path.parent().ok_or("Item asset has no parent folder")?)
+            .map_err(|e| e.to_string())?;
+        // A path alias must not overwrite another payload or the graph.
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| format!("Could not restore item asset: {e}"))?;
+        std::io::Write::write_all(&mut file, &bytes).map_err(|e| e.to_string())?;
+    }
+    fs::write(directory.join("asset-graph.json"), graph).map_err(|e| e.to_string())?;
+    pinned(directory, sha256)
+        .validate_reusable(kind)
+        .map_err(|e| format!("Embedded item assets are invalid: {e}"))
+}
+
+/// The import folder of the item the embedded graph `graph` was converted from, its importer's,
+/// named by the graph's `source`, or the modern importer's when it names none, and the kind of
+/// conversion folder that importer gives such a graph.
+fn restore_folder(graph: &str) -> Result<(PathBuf, &'static str), String> {
+    let graph: Value = sundial::package_authoring::parse_json(graph).map_err(|e| e.to_string())?;
+    let importer = graph["source"]
+        .as_str()
+        .filter(|source| IMPORTERS.contains(source))
+        .unwrap_or("d2_mot");
+    let conversion = match (importer, graph["kind"].as_str()) {
+        (_, Some("shader")) => "shader",
+        ("d1_roi", _) => "armor",
+        ("halo_reach", _) => "vehicle",
+        _ => "gear",
+    };
+    let item = ["source_item", "item_hash"]
+        .into_iter()
+        .find_map(|key| u32::try_from(graph[key].as_u64()?).ok())
+        .ok_or("Embedded item graph names no item")?;
+    let imports = sundial::package_authoring::parhelion_data_directory()
+        .ok_or("No data folder to restore embedded item assets in")?
+        .join(IMPORTS);
+    let folder = item_directory(&imports, importer, item).map_err(|e| e.to_string())?;
+    Ok((folder, conversion))
+}
+
+/// The graph folder of a conversion of `item` that holds the graph text `graph` with payloads
+/// matching the content pin `sha256`.
+fn restored(item: &Path, graph: &str, sha256: &str, kind: &str) -> Option<PathBuf> {
+    fs::read_dir(item).ok()?.find_map(|entry| {
+        let directory = entry.ok()?.path().join(parhelion_import::GRAPH);
+        holds(&directory, graph, sha256, kind)
+            .then(|| directory.canonicalize().ok())
+            .flatten()
+    })
+}
+
+/// Whether `directory` holds the graph text `graph` with payloads matching the pin `sha256`.
+fn holds(directory: &Path, graph: &str, sha256: &str, kind: &str) -> bool {
+    fs::read(directory.join("asset-graph.json")).is_ok_and(|text| text == graph.as_bytes())
+        && pinned(directory, sha256).validate_reusable(kind).is_ok()
+}
+
+/// A reference to the assets in `folder` that must match the content pin `sha256`.
+fn pinned(folder: &Path, sha256: &str) -> GraphReference {
+    GraphReference {
+        directory: folder.to_owned(),
+        sha256: sha256.to_owned(),
+        attachments: Vec::new(),
+        converter_revision: 0,
+        material_inputs: None,
+    }
+}
+
 /// Leaves out the embedded assets of a recipe that is only listed. Lists and searches of saved
 /// recipes read names, icons and sockets, never the model, and restoring decodes and hashes
 /// every embedded payload twice.
@@ -307,6 +413,29 @@ pub(crate) fn skip(document: &mut Value) {
     {
         *graph = Value::Null;
     }
+}
+
+/// Removes the payloads of an embedded model and of its attachments, keeping their graph text,
+/// content pins and converter revisions, which a listing still reads. Whether there were any.
+pub(crate) fn strip(document: &mut Value) -> bool {
+    fn strip_reference(reference: &mut Value) -> bool {
+        let mut stripped = reference
+            .get_mut("embedded_assets")
+            .and_then(Value::as_object_mut)
+            .is_some_and(|assets| assets.remove("files").is_some());
+        for attachment in reference
+            .get_mut("attachments")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            stripped |= strip_reference(attachment);
+        }
+        stripped
+    }
+    document
+        .pointer_mut("/overrides/imported_graph")
+        .is_some_and(strip_reference)
 }
 
 /// The existing graph fingerprint, including repeated references in manifest order.
@@ -329,7 +458,7 @@ fn asset_files(raw: &str) -> Result<Vec<String>, String> {
     let graph: Value = sundial::package_authoring::parse_json(raw).map_err(|e| e.to_string())?;
     if !matches!(
         graph["kind"].as_str(),
-        Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow")
+        Some("shader" | "armor" | "ghost_shell" | "ship" | "sparrow" | "ornament")
     ) {
         return Err("Embedded native asset graph is not reusable gear".into());
     }
@@ -423,6 +552,7 @@ fn checked_total(total: usize, size: usize) -> Result<usize, String> {
         .ok_or_else(|| "Embedded item assets are too large".into())
 }
 
+#[cfg(test)]
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     let file =
         fs::File::open(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;

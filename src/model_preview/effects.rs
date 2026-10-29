@@ -39,7 +39,21 @@ pub(crate) struct Material {
     pub(in crate::model_preview) normal: Option<native::LegacyNormal>,
 }
 
-pub(super) type Frame = [[f32; 4]; 128];
+/// The rows of a material's own constants, scope 0, the preview holds, enough for imported
+/// materials that use more than 128. Every shader sizes its scope 0 array by the `CONSTANT_ROWS`
+/// define that `with_rows` adds after its version line.
+pub(super) const ROWS: usize = 256;
+
+pub(super) type Frame = [[f32; 4]; ROWS];
+
+/// `source` with the scope 0 row count defined after its version line.
+pub(super) fn with_rows(source: &str) -> String {
+    source.replacen(
+        "#version 330 core",
+        &format!("#version 330 core\n#define CONSTANT_ROWS {ROWS}"),
+        1,
+    )
+}
 
 impl Material {
     pub(in crate::model_preview) fn sampling(&self) -> Option<[usize; 5]> {
@@ -56,10 +70,10 @@ impl Material {
         self.native.as_ref().is_some_and(|n| n.decal)
     }
     pub fn frame(&self, seconds: f32) -> Option<Frame> {
-        if self.kind == Kind::Unavailable || self.constants.len() > 128 {
+        if self.kind == Kind::Unavailable || self.constants.len() > ROWS {
             return None;
         }
-        let mut frame = [[0.0; 4]; 128];
+        let mut frame = [[0.0; 4]; ROWS];
         frame[..self.constants.len()].copy_from_slice(&self.constants);
         if let Some(program) = &self.program {
             let output = &mut frame[..self.constants.len()];

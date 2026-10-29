@@ -1264,6 +1264,7 @@ fn perk_row_body(
                     .classification
                     .as_ref()
                     .and_then(|hash| hash.parse_u32().ok()),
+                rarity: None,
             },
             crate::artwork_browser::preview::icon(ui, catalog, recipe.icon.as_ref()),
         ),

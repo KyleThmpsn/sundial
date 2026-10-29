@@ -1,12 +1,13 @@
-//! Wwise 89 streamed banks to 113. Both dialects are little endian.
+//! Wwise 89 streamed and generated-source banks to 113. Both dialects are little endian.
 //!
 //! The hierarchy remains intact. Typed references join the shared private namespace, while
 //! media must be decoded separately. Global buses and game parameters need target validation
 //! by the caller. Unsupported features fail before any converted bank is returned.
 use super::*;
 mod parameter;
+mod silence;
 
-/// Upgrade the streamed Wwise 89 dialect found in Rise of Iron to the native 113 format.
+/// Upgrade the supported Wwise 89 dialect found in Rise of Iron to native 113.
 pub fn upgrade(bytes: &[u8]) -> Result<Bank> {
     convert(bytes, None)
 }
@@ -69,9 +70,8 @@ fn convert(
     let count = r.count()?;
     ensure!(count > 0, "empty early bank hierarchy");
     let mut objects = BTreeSet::new();
-    let mut dependencies = settings::Dependencies::default();
-    let mut converted = Write::default();
-    converted.u32(count as u32);
+    let mut entries = Vec::with_capacity(count);
+    let mut source_plugins = BTreeMap::new();
     for _ in 0..count {
         let kind = r.u8()?;
         let size = r.u32()? as usize;
@@ -84,9 +84,20 @@ fn convert(
             id != 0 && objects.insert(id),
             "duplicate early object {id:08X}"
         );
+        if kind == 19 {
+            source_plugins.insert(id, item.u32()?);
+        }
+        entries.push((kind, id, item.bytes));
+    }
+    r.end()?;
+    let mut dependencies = settings::Dependencies::default();
+    let mut converted = Write::default();
+    converted.u32(count as u32);
+    for (kind, id, bytes) in entries {
+        let mut item = Read { bytes, at: 4 };
         let mut w = Write::default();
         w.reference(id, Kind::Object);
-        object(kind, &mut item, &mut w, &mut dependencies)
+        object(kind, &mut item, &mut w, &mut dependencies, &source_plugins)
             .with_context(|| format!("early object {id:08X} type {kind} at {}", item.at))?;
         item.end()
             .with_context(|| format!("early object {id:08X} type {kind}"))?;
@@ -94,7 +105,6 @@ fn convert(
         converted.u32(u32::try_from(w.bytes.len())?);
         converted.append(w);
     }
-    r.end()?;
     let mut header = Write::default();
     header.u32(113);
     header.reference(bank_id, Kind::Bank);
@@ -205,8 +215,17 @@ fn action(
     Ok(())
 }
 
-fn sound(r: &mut Read<'_>, w: &mut Write, dependencies: &mut settings::Dependencies) -> Result<()> {
+fn sound(
+    r: &mut Read<'_>,
+    w: &mut Write,
+    dependencies: &mut settings::Dependencies,
+    source_plugins: &BTreeMap<u32, u32>,
+) -> Result<()> {
     let plugin = r.u32()?;
+    if plugin == silence::PLUGIN {
+        silence::source(r, w, source_plugins)?;
+        return parameter::node(r, w, dependencies);
+    }
     ensure!(
         matches!(plugin, 0x00010001 | 0x00030001 | 0x00040001),
         "unsupported early source plugin {plugin:08X}"
@@ -345,10 +364,11 @@ fn object(
     r: &mut Read<'_>,
     w: &mut Write,
     dependencies: &mut settings::Dependencies,
+    source_plugins: &BTreeMap<u32, u32>,
 ) -> Result<()> {
     match kind {
         1 => parameter::properties(r, w, false),
-        2 => sound(r, w, dependencies),
+        2 => sound(r, w, dependencies, source_plugins),
         3 => action(r, w, dependencies),
         4 => children(r, w),
         5 => random(r, w, dependencies),
@@ -359,6 +379,7 @@ fn object(
         }
         9 => layer(r, w, dependencies),
         14 => attenuation(r, w, dependencies),
+        19 => silence::preset(r, w),
         _ => bail!("unsupported early hierarchy object type {kind}"),
     }
 }

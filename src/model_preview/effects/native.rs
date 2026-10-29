@@ -23,7 +23,7 @@ pub(in crate::model_preview) use attributes::{Attributes, load as load_attribute
 pub(in crate::model_preview) use coverage::load as load_cutoff;
 pub(in crate::model_preview) use gear::map_transform;
 pub(in crate::model_preview) use glsl::HELPERS as GPU_HELPERS;
-pub(in crate::model_preview) use gpu::source;
+pub(in crate::model_preview) use gpu::{Scope, source};
 pub(crate) use motion::Motion;
 pub(in crate::model_preview) use motion::load as load_motion;
 pub(in crate::model_preview) use opaque::intensity::ambient as ambient_visibility;
@@ -200,6 +200,7 @@ impl Native {
     pub(in crate::model_preview) fn grain(&self, frame: &Frame) -> Option<[f32; 3]> {
         self.paint.as_ref()?.grain(frame)
     }
+    /// The native sampler a binding reads, an index into the GPU program's native samplers.
     pub(in crate::model_preview) fn texture_unit(&self, binding: usize) -> usize {
         binding
             + if self.opaque() && !self.deferred {
@@ -208,6 +209,18 @@ impl Native {
                 0
             }
     }
+}
+
+/// The textures one native program may bind. Imported Marathon surfaces bind up to ten.
+pub(in crate::model_preview) const TEXTURES: usize = 12;
+
+/// The OpenGL texture unit of native sampler `unit`. Samplers past the ninth skip units 9 to 11,
+/// which hold scene depth, the dye map and deformed geometry.
+pub(in crate::model_preview) fn gl_unit(unit: usize) -> u32 {
+    (if unit < 9 { unit } else { unit + 3 }) as u32
+}
+
+impl Native {
     pub(in crate::model_preview) fn animated(&self) -> bool {
         self.vertex
             .as_ref()
@@ -224,7 +237,7 @@ impl Native {
     }
 
     pub(in crate::model_preview) fn vertex_frame(&self, seconds: f32) -> Option<Frame> {
-        let mut output = [[0.0; 4]; 128];
+        let mut output = [[0.0; 4]; crate::model_preview::effects::ROWS];
         if let Some(vertex) = &self.vertex {
             output[..vertex.constants.len()].copy_from_slice(&vertex.constants);
             if let Some(expression) = &vertex.expression {
@@ -413,7 +426,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
         // The vertex object scope ends with a motion palette of three rows per bone from row 8,
         // which the preview holds at the bind pose for up to 256 bones.
         let limit = match (vertex, slot) {
-            (_, 0) => 128,
+            (_, 0) => crate::model_preview::effects::ROWS,
             (true, 11) => 8 + 256 * 3,
             (true, 12) => 14,
             (false, 2) => 1,

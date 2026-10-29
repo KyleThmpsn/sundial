@@ -39,7 +39,8 @@ impl WorkbenchPage {
             crate::ItemKind::Weapon => &Self::ALL,
             // A subclass has no Collections entry. Its Appearance holds its screen art.
             crate::ItemKind::Subclass => &[Self::Weapon, Self::Appearance, Self::Identity],
-            // Nor has a mod, which the sockets of its type offer.
+            // Nor has a mod, which the sockets of its type offer. An imported ornament's entry
+            // follows its base, with nothing to choose.
             crate::ItemKind::Mod => &[Self::Weapon, Self::Identity],
             _ => &[Self::Weapon, Self::Collections, Self::Identity],
         }

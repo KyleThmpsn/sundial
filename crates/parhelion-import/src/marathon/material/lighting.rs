@@ -43,6 +43,33 @@ pub(super) fn adapt(options: &mut dxil::Options, surface: &geometry::Surface) {
     }
 }
 
+/// The 37-vector `cb8` scope carries one local reflection probe, a cube at `t26` placed and
+/// faded by rows 10 to 21. Weight `cb8[14].w` blends the probe over the hemisphere reflection the
+/// material has already evaluated, and `cb8[36].x` is that blend at zero weight. Shadowkeep's
+/// forward scope has no local probe. With both rows at zero the blend reduces to its hemisphere
+/// input and the compiler drops the cube and the probe rows. `inspect` refuses any probe read
+/// that survives, and the unbound-texture check refuses a surviving cube.
+pub(super) fn local_probe(
+    options: &mut dxil::Options,
+    bindings: &BTreeMap<(u32, u32), (u32, u32)>,
+    material_slots: &BTreeSet<u32>,
+) -> Result<()> {
+    let probe = bindings
+        .get(&(2, 8))
+        .is_some_and(|&(_, size)| size == 37 * 16)
+        && bindings.get(&(0, 26)).is_some_and(|&(kind, _)| kind == 5);
+    if probe {
+        ensure!(
+            !material_slots.contains(&26),
+            "Local reflection probe conflicts with a material texture"
+        );
+        for row in [14, 36] {
+            options.constants.insert((8, row), "float4(0,0,0,0)".into());
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate(
     source: &mut Reader,
     native: &mut Reader,

@@ -153,7 +153,11 @@ fn convert(source: &Payload, native: &Payload) -> Result<Payload> {
             );
         }
         result.0[n + nd - 32..n + nd - 28].copy_from_slice(&source.bytes::<4>(s + sd - 32)?);
-        let modern = read(
+        // A source optic can list several default transforms for one aim point, each row ending
+        // in a word no native row carries. The examined ornament optics list their own first, and
+        // a later row repeats it within rounding or holds the weapon's own default. The first is
+        // the transform the optic's own sight geometry was authored with, so it is the one kept.
+        let mut modern = read(
             source,
             s + sd,
             Layout {
@@ -161,6 +165,13 @@ fn convert(source: &Payload, native: &Payload) -> Result<Payload> {
                 ..SOURCE
             },
         )?;
+        ensure!(
+            modern.iter().all(|row| modern
+                .first()
+                .is_some_and(|first| row.name == first.name && row.binding == first.binding)),
+            "source optic default transforms differ in name or binding"
+        );
+        modern.truncate(1);
         let old = read(
             native,
             n + nd,
@@ -170,8 +181,8 @@ fn convert(source: &Payload, native: &Payload) -> Result<Payload> {
             },
         )?;
         ensure!(
-            modern.len() <= 1 && old.len() <= 1,
-            "optic has multiple default aim transforms"
+            old.len() <= 1,
+            "native optic has multiple default aim transforms"
         );
         let mut rows = Vec::new();
         for from in &modern {

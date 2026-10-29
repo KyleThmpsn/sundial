@@ -27,7 +27,11 @@
 use super::occlusion;
 use crate::{
     halo_reach::{
-        cache::Cache, level::Level, material, native, resource::Pages, rig::METRES_PER_UNIT,
+        cache::{Cache, Tag},
+        level::{Level, lighting::Analytical},
+        material, native,
+        resource::Pages,
+        rig::METRES_PER_UNIT,
     },
     presentation::Graph,
     tiger::reader::Reader,
@@ -330,4 +334,199 @@ pub(super) fn volumes(
         "skipped": skipped,
     });
     Ok((volumes, report))
+}
+
+/// One cluster of a loaded structure BSP: its BSP, its box in meters in the level's coordinates,
+/// and the image and capture point of each cube serving it.
+struct Cluster {
+    bsp: usize,
+    low: [f32; 3],
+    high: [f32; 3],
+    cubes: Vec<(usize, [f32; 3])>,
+}
+
+/// The clusters of a level's loaded structure BSPs and each BSP's cubemap bitmap, for finding the
+/// cube Reach gives a surface's `dynamic` environment map. Reach binds the cube of the cluster a
+/// surface's geometry belongs to and blends toward the cluster's second cube by distance. This
+/// takes the cluster by position and its nearest cube.
+pub(super) struct Clusters {
+    bitmaps: BTreeMap<usize, Tag>,
+    clusters: Vec<Cluster>,
+}
+
+impl Clusters {
+    /// The clusters of the structure BSPs in `loaded`, a mask by scenario index, that name a
+    /// cubemap bitmap.
+    pub(super) fn read(cache: &Cache, loaded: u32) -> Result<Self> {
+        let scenario = cache.only("scnr")?.address()?;
+        let metres = |v: f32| v * METRES_PER_UNIT;
+        let mut result = Self {
+            bitmaps: BTreeMap::new(),
+            clusters: Vec::new(),
+        };
+        for (bsp, row) in cache
+            .block(scenario + SCENARIO_BSPS.0, SCENARIO_BSPS.1)?
+            .into_iter()
+            .enumerate()
+        {
+            if bsp >= 32 || (loaded >> bsp) & 1 == 0 {
+                continue;
+            }
+            let (Some(structure), Ok(Some(bitmap))) = (
+                cache.reference(row, Some("sbsp"))?,
+                cache.reference(row + BSP_CUBEMAP, Some("bitm")),
+            ) else {
+                continue;
+            };
+            result.bitmaps.insert(bsp, bitmap);
+            let clusters = cache.block(structure.address()? + CLUSTERS.0, CLUSTERS.1)?;
+            let images = images(cache, &clusters)?;
+            for cluster in clusters {
+                let bounds = cache.floats::<6>(cluster)?;
+                let mut cubes = Vec::new();
+                for entry in cache.block(cluster + CLUSTER_CUBES.0, CLUSTER_CUBES.1)? {
+                    let Some(&image) = usize::try_from(cache.i16(entry)?)
+                        .ok()
+                        .and_then(|index| images.get(&index))
+                    else {
+                        continue;
+                    };
+                    let points = cache
+                        .block(entry + CUBE_POINTS.0, CUBE_POINTS.1)?
+                        .into_iter()
+                        .map(|point| Ok(cache.floats::<3>(point)?.map(metres)))
+                        .collect::<Result<Vec<_>>>()?;
+                    if !points.is_empty() {
+                        cubes.push((image, mean(&points)));
+                    }
+                }
+                if !cubes.is_empty() {
+                    result.clusters.push(Cluster {
+                        bsp,
+                        low: [bounds[0], bounds[2], bounds[4]].map(metres),
+                        high: [bounds[1], bounds[3], bounds[5]].map(metres),
+                        cubes,
+                    });
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// The cube at `point`, in meters in the level's coordinates, among the structure BSPs `bsps`
+    /// (a primitive's mask, zero for any): the cube nearest the point of the smallest cluster
+    /// whose box holds it, or of the cluster whose box lies nearest. Its BSP's cubemap bitmap and
+    /// image.
+    pub(super) fn cube(&self, point: [f32; 3], bsps: u32) -> Option<(Tag, usize)> {
+        let distance =
+            |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt();
+        // Distance outside a box, zero within it, then the box's volume.
+        let rank = |cluster: &Cluster| {
+            let outside = (0..3)
+                .map(|k| {
+                    (cluster.low[k] - point[k])
+                        .max(point[k] - cluster.high[k])
+                        .max(0.)
+                        .powi(2)
+                })
+                .sum::<f32>()
+                .sqrt();
+            let volume = (0..3)
+                .map(|k| (cluster.high[k] - cluster.low[k]).max(0.))
+                .product::<f32>();
+            (outside, volume)
+        };
+        let cluster = self
+            .clusters
+            .iter()
+            .filter(|cluster| bsps == 0 || (bsps >> cluster.bsp) & 1 != 0)
+            .min_by(|a, b| {
+                let (a, b) = (rank(a), rank(b));
+                a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+            })?;
+        let &(image, _) = cluster
+            .cubes
+            .iter()
+            .min_by(|a, b| distance(a.1, point).total_cmp(&distance(b.1, point)))?;
+        Some((self.bitmaps.get(&cluster.bsp)?.clone(), image))
+    }
+}
+
+/// `material` with the cube `cube` as its dynamic environment map
+/// ([`native::material::DYNAMIC_ROLE`]).
+pub(super) fn with_dynamic_cube(
+    material: &material::Material,
+    (bitmap, image): (Tag, usize),
+) -> material::Material {
+    let mut material = material.clone();
+    if let Some(property) = material.properties.first_mut() {
+        property.textures.push(material::Mapping {
+            role: native::material::DYNAMIC_ROLE.into(),
+            bitmap: Some(bitmap),
+            transform: [1., 1., 0., 0.],
+            frame: image,
+            address: 0x11,
+            filter: 0,
+            functions: Vec::new(),
+        });
+    }
+    material
+}
+
+/// Whether `material`'s environment map is Reach's `dynamic` one, which reads the cube of the
+/// cluster it is drawn in.
+pub(super) fn dynamic_environment(material: &material::Material) -> bool {
+    material
+        .options
+        .get("environment_mapping")
+        .is_some_and(|option| option == "dynamic")
+        && !material.properties.is_empty()
+}
+
+/// Splits each of the level's surfaces with a `dynamic` environment map by the cube of the cluster
+/// it stands in ([`Clusters::cube`], at the middle of its bounds), each variant carrying its cube
+/// ([`with_dynamic_cube`]) and the analytical light of the material it copies. Returns the
+/// variants added.
+pub(super) fn dynamic(
+    cache: &Cache,
+    level: &mut Level,
+    loaded: u32,
+    analytical: &mut BTreeMap<u32, Analytical>,
+) -> Result<usize> {
+    if !level.materials.iter().any(dynamic_environment) {
+        return Ok(0);
+    }
+    let clusters = Clusters::read(cache, loaded)?;
+    let mut variants = BTreeMap::<(usize, u32, usize), usize>::new();
+    for primitive in &mut level.primitives {
+        let Some(index) = primitive.material else {
+            continue;
+        };
+        if !level.materials.get(index).is_some_and(dynamic_environment)
+            || primitive.vertices.is_empty()
+        {
+            continue;
+        }
+        let (low, high) = super::bounds(primitive.vertices.iter().map(|v| v.position));
+        let middle = std::array::from_fn(|k| (low[k] + high[k]) / 2.);
+        let Some(cube) = clusters.cube(middle, primitive.bsps) else {
+            continue;
+        };
+        let key = (index, cube.0.datum, cube.1);
+        let variant = match variants.get(&key) {
+            Some(&variant) => variant,
+            None => {
+                let variant = level.materials.len();
+                let copy = with_dynamic_cube(&level.materials[index], cube);
+                level.materials.push(copy);
+                if let Some(&light) = analytical.get(&u32::try_from(index)?) {
+                    analytical.insert(u32::try_from(variant)?, light);
+                }
+                variants.insert(key, variant);
+                variant
+            }
+        };
+        primitive.material = Some(variant);
+    }
+    Ok(variants.len())
 }

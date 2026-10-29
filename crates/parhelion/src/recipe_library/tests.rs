@@ -1,5 +1,7 @@
 use super::*;
 
+mod listing_cache;
+
 #[cfg(unix)]
 #[test]
 fn exporting_through_a_link_and_parent_cannot_overwrite_a_library_recipe() {

@@ -27,7 +27,7 @@ pub(super) fn bind(
     let frame = mapping.static_frame(cache)?;
     let lookup = material::lookup::read(cache, pages, tag, frame)?;
     let symbol = format!("reach-specular-{:08x}-{frame}", tag.datum);
-    if !graph.nodes.iter().any(|node| node["symbol"] == symbol) {
+    if !graph.contains(&symbol) {
         rgba_texture(
             native,
             graph,

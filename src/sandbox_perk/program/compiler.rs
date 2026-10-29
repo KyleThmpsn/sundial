@@ -25,7 +25,8 @@ mod coverage;
 pub struct Compiled {
     pub payload: Vec<u8>,
     /// One entry per authored action, in the same order as `Program::actions`: the offset of
-    /// the tag lane for typed asset actions and native kind-2 attachments, `None` for the rest.
+    /// the tag lane for typed assets, native kind-2 attachments and kind-4 direct resources.
+    /// Other actions have no resource operand.
     pub graph_offsets: Vec<Option<usize>>,
     /// Editable asset index and every relocated tag lane that references it.
     pub asset_offsets: Vec<(usize, Vec<usize>)>,
@@ -242,7 +243,7 @@ fn assemble_records(program: &Program, label_mask: LabelMask) -> Result<Compiled
         .zip(&program.actions)
         .map(|(at, action)| {
             (action.asset().is_some()
-                || matches!(action, Action::Native { node } if node.kind == 2))
+                || matches!(action, Action::Native { node } if matches!(node.kind, 2 | 4)))
             .then_some(at + 0x10)
         })
         .collect();

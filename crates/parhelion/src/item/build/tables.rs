@@ -76,16 +76,10 @@ impl WeaponTables {
             .get(ordinal)
             .ok_or_else(|| validation("Authored weapon icon container is missing"))?;
         let host = crate::package_profile::host();
-        let definition_tag = TagHash::new(
-            host.id,
-            u16::try_from(host.first + ordinal * 2)
-                .map_err(|_| invalid("Definition tag index does not fit 16 bits"))?,
-        );
-        let string_tag = TagHash::new(
-            host.id,
-            u16::try_from(host.first + ordinal * 2 + 1)
-                .map_err(|_| invalid("String tag index does not fit 16 bits"))?,
-        );
+        let allocator = AppendedTagAllocator::records(host.first);
+        let definition_tag =
+            allocator.assigned_tag(ordinal * 2, "Item definition", "definition")?;
+        let string_tag = allocator.assigned_tag(ordinal * 2 + 1, "Item strings", "strings")?;
         let item_index = u16::try_from(context.stock_item_count + ordinal)
             .map_err(|_| invalid("Authored item index does not fit 16 bits"))?;
         // A subclass has no collectible, so the others are numbered in the order they appear.
@@ -352,16 +346,14 @@ impl WeaponTables {
             // companion, the display record and its companion, then each authored entry's pool
             // and node record.
             let host = crate::package_profile::host();
-            let first = host.first
-                + 2 * (context.weapon_count
-                    + context.custom_plugs.len()
-                    + self.subclass_records.len());
+            let first = 2
+                * (context.weapon_count + context.custom_plugs.len() + self.subclass_records.len());
             let tag = |offset: usize| -> AuthoringResult<TagHash> {
-                Ok(TagHash::new(
-                    host.id,
-                    u16::try_from(first + offset)
-                        .map_err(|_| invalid("Subclass list tag index does not fit 16 bits"))?,
-                ))
+                AppendedTagAllocator::records(host.first).assigned_tag(
+                    first + offset,
+                    "Subclass list",
+                    "record",
+                )
             };
             let compiled = context
                 .subclass_entries
@@ -479,13 +471,14 @@ impl WeaponTables {
 
     /// A mod is its custom perk, compiled from the template plug into the item's own place. It
     /// takes the rows a private socket plug takes, its type's presentation and a hash-index row
-    /// so sockets and accounts resolve it, and has no Collections entry or unlock.
+    /// so sockets and accounts resolve it. Only an imported ornament also has a Collections entry
+    /// and unlock, with its base's reacquisition material set.
     fn author_mod(
         &mut self,
         context: &WeaponBuildContext<'_>,
         ordinal: usize,
         donor: &resolve::ResolvedWeapon,
-        row: WeaponRow,
+        mut row: WeaponRow,
         _template_definition: Vec<u8>,
         _template_strings: Vec<u8>,
     ) -> AuthoringResult<()> {
@@ -501,7 +494,15 @@ impl WeaponTables {
         ) else {
             return Err(validation("The mod's compiled perk is missing"));
         };
-        let (definition, strings) = (definition.payload.clone(), strings.payload.clone());
+        let (mut definition, strings) = (definition.payload.clone(), strings.payload.clone());
+        // An imported ornament takes its source's rarity. Other mods keep their template's.
+        if let Some(rarity) = donor.weapon.overrides.rarity {
+            write_bytes(
+                &mut definition,
+                ITEM_RARITY_OFFSET,
+                &[rarity.package_value()],
+            )?;
+        }
         if read_u32(&definition, ITEM_DEFINITION_HASH_OFFSET)? != row.identity.item_hash
             || plug.authored_item_index != row.item_index
             || plug.authored_definition_tag != row.definition_tag
@@ -535,6 +536,13 @@ impl WeaponTables {
             row.identity.item_hash,
             row.item_index,
         )?;
+        if let Some(collection) = &donor.collection {
+            row.collection_material_set = gear::base_material_set(
+                &self.collectibles,
+                collection.collectible_display_template_index,
+            )?;
+            self.append_collection(donor, &row)?;
+        }
         self.record_authored(donor, &row, definition, strings)
     }
 

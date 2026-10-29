@@ -1,4 +1,4 @@
-//! A source optic's physical aperture mask identifies lens draws without material or item hashes.
+//! A source optic's physical aperture mask locates its opening without material or item hashes.
 use super::*;
 
 #[derive(Clone)]
@@ -7,33 +7,153 @@ pub(crate) struct Lens {
     pub aim: [f32; 3],
     pub axes: [[f32; 3]; 2],
     pub radii: [f32; 2],
-    pub reticle: bool,
     pub artwork: bool,
     pub outline: Vec<[f32; 3]>,
+    /// The source eye lies within the bounds of the mesh that carries the aperture, as in the
+    /// long-range sights whose eye sits inside their sight box. The source shows such a sight's
+    /// aimed view through the aperture alone.
+    pub enclosed: bool,
+    /// The aimed view an enclosed sight with an angular override shows.
+    pub framing: Option<Framing>,
+}
+
+/// An enclosed sight's aimed view as the source frames it. The source view at full aim spans the
+/// sight's angular override horizontally, and the aperture seen from the source eye bounds the
+/// scene in it, with the housing dark around it.
+#[derive(Clone)]
+pub(crate) struct Framing {
+    /// Tangent of half the source horizontal view.
+    pub tangent: f32,
+    /// The aperture outline in view tangents from the source eye, with screen X to the right and
+    /// Y up. A tangent point is inside the window when every `a * x + b * y + c` is positive.
+    pub window: Vec<[f32; 3]>,
+    /// Distance from the source eye to the aperture along the sight axis.
+    pub eye: f32,
+    /// The source eye, the unit sight axis and the aperture axes, in the sight model's space.
+    pub origin: [f32; 3],
+    pub forward: [f32; 3],
+    pub axes: [[f32; 3]; 2],
+}
+
+impl Framing {
+    /// Whether every point lies ahead of the source eye, so the aimed view can show it.
+    pub(super) fn ahead(&self, points: &[[f32; 3]]) -> bool {
+        points.iter().all(|p| {
+            (0..3)
+                .map(|a| (p[a] - self.origin[a]) * self.forward[a])
+                .sum::<f32>()
+                > 0.
+        })
+    }
+
+    fn new(lens: &Lens, angle: f32, rear: [f32; 3], front: [f32; 3]) -> Option<Self> {
+        if !lens.enclosed || !(angle > 0. && angle < std::f32::consts::PI) {
+            return None;
+        }
+        let axis: [f32; 3] = std::array::from_fn(|a| front[a] - rear[a]);
+        let length = axis.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let eye = (0..3)
+            .map(|a| (lens.center[a] - rear[a]) * axis[a])
+            .sum::<f32>()
+            / length;
+        if !(eye.is_finite() && eye > 0.) {
+            return None;
+        }
+        let offset: [f32; 3] = std::array::from_fn(|a| lens.aim[a] - lens.center[a]);
+        let origin = lens
+            .axes
+            .map(|axis| (0..3).map(|a| axis[a] * offset[a]).sum::<f32>());
+        let edges = if lens.outline.is_empty() {
+            let [x, y] = lens.radii;
+            vec![[-1., 0., x], [1., 0., x], [0., -1., y], [0., 1., y]]
+        } else {
+            lens.outline.clone()
+        };
+        // Aperture axes run along model +Y and +Z. With the source forward along +X and +Z up,
+        // +Y points to the left of the view.
+        let window = edges
+            .into_iter()
+            .map(|[a, b, c]| [-a * eye, b * eye, a * origin[0] + b * origin[1] + c])
+            .collect();
+        Some(Self {
+            tangent: (angle * 0.5).tan(),
+            window,
+            eye,
+            origin: rear,
+            forward: axis.map(|v| v / length),
+            axes: lens.axes,
+        })
+    }
+}
+
+/// Model-space positions of a draw's vertices, in their local skeleton's rest pose when posed.
+pub(super) fn points(
+    model: &Payload,
+    vertices: &Payload,
+    posed: Option<&[[f32; 12]]>,
+    faces: &[[u32; 3]],
+) -> Result<Vec<[f32; 3]>> {
+    faces
+        .iter()
+        .flatten()
+        .map(|&index| position(model, vertices, posed, index))
+        .collect()
 }
 
 impl Lens {
-    pub(super) fn placed(&self, matrix: &[f32; 16], reticle: bool) -> Self {
+    /// Whether the sight axis passes through the opening: inside every outline edge, or within
+    /// the aperture radii when the outline is unsupported.
+    pub(super) fn aimed(&self) -> bool {
+        let offset: [f32; 3] = std::array::from_fn(|a| self.aim[a] - self.center[a]);
+        let point = self
+            .axes
+            .map(|axis| (0..3).map(|a| axis[a] * offset[a]).sum::<f32>());
+        if self.outline.is_empty() {
+            (0..2).all(|k| point[k].abs() <= self.radii[k])
+        } else {
+            self.outline
+                .iter()
+                .all(|edge| edge[0] * point[0] + edge[1] * point[1] + edge[2] > 0.)
+        }
+    }
+
+    pub(super) fn placed(&self, matrix: &[f32; 16]) -> Self {
         Self {
             center: transform(self.center, matrix, true),
             aim: transform(self.aim, matrix, true),
             axes: self.axes.map(|v| transform(v, matrix, false)),
             radii: self.radii,
-            reticle,
             artwork: self.artwork,
             outline: self.outline.clone(),
+            enclosed: self.enclosed,
+            framing: self.framing.clone(),
         }
     }
 }
 
-fn position(model: &Payload, vertices: &Payload, index: u32) -> Result<[f32; 3]> {
+/// A vertex's model-space position, in its local skeleton's rest pose when that is posed.
+fn position(
+    model: &Payload,
+    vertices: &Payload,
+    posed: Option<&[[f32; 12]]>,
+    index: u32,
+) -> Result<[f32; 3]> {
     let mut result = [0.; 3];
     for (axis, value) in result.iter_mut().enumerate() {
         *value = (f32::from(vertices.i16(index as usize * 24 + axis * 2)?) / 32767.).max(-1.)
             * model.f32(0xA0 + axis * 4)?
             + model.f32(0xB0 + axis * 4)?;
     }
-    Ok(result)
+    Ok(match posed {
+        Some(posed) => rig::apply(
+            posed
+                .get(index as usize)
+                .context("Posed aperture vertex is absent")?,
+            result,
+            true,
+        ),
+        None => result,
+    })
 }
 
 fn axis(owner: &Payload) -> Result<Option<[[f32; 3]; 2]>> {
@@ -70,7 +190,9 @@ fn axis(owner: &Payload) -> Result<Option<[[f32; 3]; 2]>> {
 
 type Axis = [[f32; 3]; 2];
 
-fn source_axis(reader: &mut Reader, entry: &Value) -> Result<(bool, Option<Axis>)> {
+/// Whether the entity has a sight, and the rear-to-front axis and angular override of the sight
+/// that has one.
+fn source_axis(reader: &mut Reader, entry: &Value) -> Result<(bool, Option<(Axis, f32)>)> {
     let entity = reader.tag(hash(entry, "entity")?, None)?;
     let mut optic = false;
     let mut sight_axis = None;
@@ -81,7 +203,7 @@ fn source_axis(reader: &mut Reader, entry: &Value) -> Result<(bool, Option<Axis>
             optic = true;
             if let Some(points) = axis(&owner)? {
                 ensure!(sight_axis.is_none(), "Ambiguous scope aim axis");
-                sight_axis = Some(points);
+                sight_axis = Some((points, owner.f32(data + 0xE0)?));
             }
         }
     }
@@ -95,6 +217,7 @@ pub(super) fn read(
     mesh: usize,
     parts: &[usize],
     streams: (&Payload, &[u32], usize),
+    posed: Option<&[[f32; 12]]>,
 ) -> Result<Option<Lens>> {
     let (vertices, indices, width) = streams;
     let start = model.u16(mesh + 0x30 + 15 * 2)? as usize;
@@ -103,10 +226,11 @@ pub(super) fn read(
     if masks.is_empty() {
         return Ok(None);
     }
-    let (optic, sight_axis) = source_axis(reader, entry)?;
+    let (optic, sight) = source_axis(reader, entry)?;
     if !optic {
         return Ok(None);
     }
+    let sight_axis = sight.map(|(points, _)| points);
     let mut points = Vec::new();
     for &part in masks {
         if model.u8(part + 33)? > 3 {
@@ -114,7 +238,7 @@ pub(super) fn read(
         }
         for triangle in faces(model, part, indices, width, vertices.0.len() / 24)? {
             for index in triangle {
-                points.push(position(model, vertices, index)?);
+                points.push(position(model, vertices, posed, index)?);
             }
         }
     }
@@ -149,6 +273,16 @@ pub(super) fn read(
     });
     let axes = [[-slope[0], 1., 0.], [-slope[1], 0., 1.]];
     let outline = outline(&points, center, axes)?;
+    let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
+    for index in 0..vertices.0.len() / 24 {
+        let point = position(model, vertices, posed, u32::try_from(index)?)?;
+        for a in 0..3 {
+            bounds[0][a] = bounds[0][a].min(point[a]);
+            bounds[1][a] = bounds[1][a].max(point[a]);
+        }
+    }
+    let enclosed = sight_axis
+        .is_some_and(|[rear, _]| (0..3).all(|a| (bounds[0][a]..=bounds[1][a]).contains(&rear[a])));
     let start = usize::from(model.u16(mesh + 0x30 + 17 * 2)?);
     let end = usize::from(model.u16(mesh + 0x32 + 17 * 2)?);
     let mut artwork = false;
@@ -159,15 +293,18 @@ pub(super) fn read(
             artwork = true;
         }
     }
-    Ok(Some(Lens {
+    let mut lens = Lens {
         center,
         aim,
         axes,
         radii,
-        reticle: true,
         artwork,
         outline,
-    }))
+        enclosed,
+        framing: None,
+    };
+    lens.framing = sight.and_then(|([rear, front], angle)| Framing::new(&lens, angle, rear, front));
+    Ok(Some(lens))
 }
 
 /// A convex, filled source mask supplies the opening, including its rounded corners. Other
@@ -223,41 +360,4 @@ fn outline(points: &[[f32; 3]], center: [f32; 3], axes: [[f32; 3]; 2]) -> Result
             [x, y, -x * a[0] - y * a[1]]
         })
         .collect())
-}
-
-pub(super) fn covers(lens: &Lens, model: &Payload, vertices: &Payload, faces: &[[u32; 3]]) -> bool {
-    // Confine this adapter to transparent geometry contained by the scope's physical aperture.
-    // Other transparent parts, including weapon lights outside it, retain source translation.
-    let Ok(points) = faces
-        .iter()
-        .flatten()
-        .map(|&index| position(model, vertices, index))
-        .collect::<Result<Vec<_>>>()
-    else {
-        return false;
-    };
-    if points
-        .iter()
-        .all(|p| (1..3).all(|a| (p[a] - lens.center[a]).abs() <= lens.radii[a - 1] * 1.05))
-    {
-        return true;
-    }
-    let lo = std::array::from_fn::<_, 3, _>(|a| {
-        points.iter().map(|p| p[a]).fold(f32::INFINITY, f32::min)
-    });
-    let hi = std::array::from_fn::<_, 3, _>(|a| {
-        points
-            .iter()
-            .map(|p| p[a])
-            .fold(f32::NEG_INFINITY, f32::max)
-    });
-    // A separate planar coating can overhang the stencil aperture. Its center
-    // and depth still identify the same lens, unlike distributed housing lights.
-    let radius = lens.radii.into_iter().fold(f32::INFINITY, f32::min);
-    hi[0] - lo[0] <= radius * 0.1
-        && ((lo[0] + hi[0]) * 0.5 - lens.center[0]).abs() <= radius
-        && (1..3).all(|a| {
-            ((lo[a] + hi[a]) * 0.5 - lens.center[a]).abs() <= lens.radii[a - 1] * 0.1
-                && (hi[a] - lo[a]) * 0.5 <= lens.radii[a - 1] * 2.
-        })
 }

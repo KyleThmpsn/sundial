@@ -66,6 +66,7 @@ pub struct View {
     /// The mods this view leaves out for their configuration.
     refused: Vec<Refusal>,
     notices: Vec<String>,
+    provenance: content::Provenance,
 }
 
 impl View {
@@ -246,6 +247,7 @@ impl View {
                 .into_iter()
                 .chain(copy_notice(unlinked))
                 .collect(),
+            provenance: plan.provenance,
         })
     }
 
@@ -276,6 +278,11 @@ impl View {
     /// Why each mod the loader refuses was left out, and whose version of a shared entry is read.
     pub fn notices(&self) -> &[String] {
         &self.notices
+    }
+
+    /// Which admitted mod adds each new package and which change each installed entry.
+    pub fn provenance(&self) -> &content::Provenance {
+        &self.provenance
     }
 }
 

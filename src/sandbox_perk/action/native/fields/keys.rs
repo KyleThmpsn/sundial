@@ -81,8 +81,8 @@ const RESURRECTION: EventKey = EventKey {
 };
 const FULL_AUTO: EventKey = EventKey {
     hash: 0x75DD_B3C9,
-    name: "Full Auto Fire",
-    evidence: "Written by Full Auto Trigger System, Rapid-Fire Frame and Thunderer, the stock perks that fire a weapon at full auto or raise its rate of fire.",
+    name: "Full Auto Animation",
+    evidence: "Written to animation input 14 by Full Auto Trigger System, Rapid-Fire Frame and Thunderer. Their other actions control trigger behavior and weapon values.",
 };
 
 // Named Property keys, read the same way. The three ammo find chances are split by ammo
@@ -915,8 +915,8 @@ const SWORDMASTERS_GUARD: EventKey = EventKey {
 };
 const CHARGED_FIRE: EventKey = EventKey {
     hash: 0x9510_8C87,
-    name: "Charged Fire",
-    evidence: "Set only by Close the Gap (\"Charges to fire a high-powered laser\"), where Full Auto Fire is set by the full auto perks.",
+    name: "Charged Fire Animation",
+    evidence: "Written to animation input 14 by Close the Gap. This names an animation context and does not establish the weapon's charge behavior by itself.",
 };
 
 // The frame keys Override a Pattern Key writes, the status a kill can require, and the name

@@ -7,7 +7,7 @@ pub(super) fn read(
     source: &Source,
     native: &mut Reader,
     graph: &Payload,
-) -> Result<(u32, Vec<NativeAssetResourcePatch>)> {
+) -> Result<NativeAssetPatch> {
     let owners = graph.array(32, 12, Some(0x80800715))?;
     ensure!(
         owners.len() == 2 && graph.bytes::<32>(48)? == [0; 32],
@@ -37,7 +37,10 @@ pub(super) fn read(
         3 => 0x80BC5841,
         4 => 0x80BC57F9,
         5 => 0x80BC57F6,
-        _ => anyhow::bail!("Connected duration modifier count needs a native allocation"),
+        // Larger banks keep their complete standalone native owner. The private
+        // graph composer replaces this carrier's bank without changing either
+        // owner's live allocation or separating their shared entity lifetime.
+        _ => 0x80BC581E,
     };
     let graph = native.tag(tag, Some(0x80809C0F))?;
     let owners = graph.array(16, 12, Some(0x80809C04))?;
@@ -149,7 +152,25 @@ pub(super) fn read(
         "Native duration binding differs"
     );
     let binding = &bindings[0];
-    let mut patches = modifier_patches(native, &graph, bank, &rows)?;
+    let (mut patches, components, remove_owners) = if rows.len() <= 5 {
+        (
+            modifier_patches(native, &graph, bank, &rows)?,
+            Vec::new(),
+            Vec::new(),
+        )
+    } else {
+        let (source_graph, patches) = modifier_patch(native, &rows)?;
+        allocation(native, source_graph, rows.len())?;
+        (
+            Vec::new(),
+            vec![NativeAssetComponent {
+                source_graph,
+                patches,
+                replication: None,
+            }],
+            vec![bank],
+        )
+    };
     patches.push(NativeAssetResourcePatch {
         binding_hash: binding.binding_hash,
         resource_index: u16::try_from(binding.resource_index)?,
@@ -158,7 +179,177 @@ pub(super) fn read(
         bytes: policy.to_vec(),
         imported_particle: None,
     });
-    Ok((tag, patches))
+    Ok(NativeAssetPatch {
+        action_index: 0,
+        source_graph: tag,
+        patches,
+        appends: Vec::new(),
+        remove_owners,
+        components,
+        programs: Vec::new(),
+    })
+}
+
+/// The complete stock owner supplies live rows and their lifecycle, not only
+/// a settings array. Its parameter providers remain inside the same owner.
+pub(super) fn allocation(native: &mut Reader, tag: u32, count: usize) -> Result<()> {
+    let graph = native.tag(tag, Some(0x80809C0F))?;
+    let owners = graph.array(16, 12, Some(0x80809C04))?;
+    ensure!(
+        owners.len() == 1
+            && graph.bytes::<32>(32)? == [0; 32]
+            && graph.u64(0x78)? == 0
+            && graph.u32(0x88)? == u32::MAX,
+        "Native modifier allocation has another graph contract"
+    );
+    let owner = graph.u32(owners[0])?;
+    let p = native.tag(owner, Some(0x80809C36))?;
+    let (live, definition) = (p.pointer(16)?, p.pointer(24)?);
+    let extent = definition
+        .checked_sub(live)
+        .context("Native modifier source extent underflows")?;
+    let prefix = live
+        .checked_sub(p.pointer(8)?)
+        .context("Native modifier prefix extent underflows")?;
+    ensure!(
+        p.u32(live - 4)? == 0x80803AFD
+            && p.u32(definition - 4)? == 0x80803AFE
+            && p.u64(0x48)? == extent as u64
+            && p.u64(0x50)? == prefix as u64
+            && p.array(32, 8, Some(0x8080919F))?.is_empty(),
+        "Native modifier allocation has another source extent"
+    );
+    for (instance, settings, instance_class, settings_class) in [
+        (live, definition, 0x80803AFD, 0x80803AFE),
+        (live + 48, definition + 72, 0x80803B00, 0x80803B01),
+    ] {
+        ensure!(
+            p.u32(instance)? == owner
+                && p.u32(settings)? == owner
+                && p.u32(instance + 4)? == settings_class
+                && p.u32(settings + 4)? == instance_class
+                && p.u64(instance + 8)? == settings as u64
+                && p.u64(settings + 8)? == instance as u64,
+            "Native modifier root pair differs"
+        );
+    }
+    let rows = p.array(definition + 88, 88, Some(0x80803B06))?;
+    let instances = p.array(live + 80, 128, Some(0x80803B05))?;
+    let lifecycle = p.array(48, 16, Some(0x808091A4))?;
+    ensure!(
+        rows.len() == count && instances.len() == count && lifecycle.len() == count + 1,
+        "Native modifier allocation or lifecycle count differs"
+    );
+    let allocation = native.tag(p.u32(0x44)?, Some(0x80809BBB))?;
+    ensure!(
+        allocation.u64(8)? == 0x811C9DC5
+            && allocation.u64(16)? == 0
+            && allocation.u64(24)? == u32::MAX as u64,
+        "Native modifier allocation root differs"
+    );
+    let members = allocation.array(32, 40, Some(0x80808852))?;
+    ensure!(
+        members.len() == 1
+            && allocation.u64(members[0])? == 0xFB05ED04
+            && allocation.u64(members[0] + 8)? == 0
+            && allocation.u64(members[0] + 16)? == u32::MAX as u64,
+        "Native modifier allocation member differs"
+    );
+    let counted = allocation.array(members[0] + 24, 40, Some(0x80808852))?;
+    ensure!(
+        counted.len() == 1
+            && allocation.u64(counted[0])? == 0x587BC3F9
+            && allocation.u64(counted[0] + 8)? == 0
+            && allocation.u32(counted[0] + 16)? == 0x80803B05
+            && allocation.u32(counted[0] + 20)? as usize == count
+            && allocation
+                .array(counted[0] + 24, 40, Some(0x80808852))?
+                .is_empty(),
+        "Native modifier counted allocation differs"
+    );
+    for ((&row, &instance), &call) in rows.iter().zip(&instances).zip(&lifecycle) {
+        ensure!(
+            instance + 128 <= definition
+                && p.u32(instance)? == owner
+                && p.u32(instance + 4)? == 0x80803B06
+                && p.u32(row)? == owner
+                && p.u32(row + 4)? == 0x80803B05
+                && p.u64(row + 8)? == instance as u64
+                && p.u64(instance + 8)? == row as u64
+                && p.pointer(call)? == instance
+                && p.u32(call + 8)? == 0x808045BE
+                && p.u16(call + 12)? == 0
+                && p.u16(call + 14)? == 1,
+            "Native modifier allocation needs another constructor or cleanup"
+        );
+    }
+    let cleanup = lifecycle[count];
+    ensure!(
+        p.pointer(cleanup)? == live + 48
+            && p.u32(cleanup + 8)? == 0x80803B00
+            && p.u16(cleanup + 12)? == u16::MAX
+            && p.u16(cleanup + 14)? == 1,
+        "Native modifier bank cleanup differs"
+    );
+    let maps = graph.array(0x58, 40, Some(0x80809C22))?;
+    let refs = graph.array(0x68, 24, Some(0x80809C20))?;
+    ensure!(
+        maps.len() == count * 2 + 3 && refs.len() == maps.len(),
+        "Native modifier exports differ"
+    );
+    let mut expected = BTreeSet::from([
+        (live + 48, definition + 0x68, 0x80BFD9EB),
+        (live + 48, definition + 0x80, 0x80BFD9EC),
+        (live + 48, definition + 0xA0, 0x80BFD9ED),
+    ]);
+    for (&row, &instance) in rows.iter().zip(&instances) {
+        expected.extend([
+            (instance, row + 16, 0x80BFD9F1),
+            (instance, row + 48, 0x80BFD9EE),
+        ]);
+    }
+    for (&map, &reference) in maps.iter().zip(&refs) {
+        let instance = usize::try_from(graph.u64(reference + 8)?)?;
+        let parameter = usize::try_from(graph.u64(map + 24)?)?;
+        let provider = graph.u32(map + 32)?;
+        ensure!(
+            graph.u32(reference)? == owner
+                && graph.u64(reference + 16)? == 0
+                && graph.u32(map + 16)? == owner
+                && graph.u32(map + 20)? == 0x80809C50
+                && graph.u32(map)? == 0
+                && graph.u32(map + 12)? == graph.u32(reference + 4)?
+                && p.u64(parameter + 8)? == provider as u64
+                && expected.remove(&(instance, parameter, provider)),
+            "Native modifier provider partition differs"
+        );
+    }
+    ensure!(
+        expected.is_empty(),
+        "Native modifier exports are incomplete"
+    );
+    for (key, size, bank) in [
+        (0x7330E39F, count, false),
+        (0x95A60F29, count + 1, true),
+        (0xACD79FE6, 1, true),
+        (0x245BEBBA, 1, true),
+    ] {
+        let bindings = weapon_component_bindings(&graph.0, key).map_err(anyhow::Error::msg)?;
+        ensure!(
+            bindings.len() == size
+                && bindings.iter().all(|binding| {
+                    binding.owner_tag == owner
+                        && binding.component_index == 0
+                        && ((binding.concrete_class == 0x80803B05
+                            && instances.contains(&(binding.resource_offset as usize)))
+                            || (bank
+                                && binding.concrete_class == 0x80803B00
+                                && binding.resource_offset == (live + 48) as u64))
+                }),
+            "Native modifier binding partition differs"
+        );
+    }
+    Ok(())
 }
 
 fn duration(graph: &Payload, p: &Payload, owner: u32) -> Result<[u8; 20]> {

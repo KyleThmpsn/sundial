@@ -11,12 +11,14 @@ impl Assembly<'_> {
         self.container_icon(container)
     }
 
+    /// The talent grid display of `ornament` on the item whose definition is `owner`: its name
+    /// and icon container.
     pub(super) fn ornament_display(
         &mut self,
-        armor: &Armor,
+        owner: u32,
         ornament: &Value,
     ) -> Result<(String, u32)> {
-        let definition = self.source.read(armor.definition)?;
+        let definition = self.source.read(owner)?;
         let holder = definition.pointer(0x58)?;
         ensure!(
             definition.u32(holder - 4)? == 0x808017BD,

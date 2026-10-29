@@ -39,12 +39,11 @@ pub(super) fn group(
     if let Some(reference) = &weapon.overrides.imported_graph {
         return crate::collection::armor::imported(reference).map_err(invalid);
     }
-    let donor = weapon
-        .presentation_donor
-        .as_ref()
-        .map(|d| d.item_hash)
-        .unwrap_or(weapon.donor_item_hash);
-    let item = placements::item_index(sources, donor)?;
+    let (donor, role) = match &weapon.presentation_donor {
+        Some(donor) => (donor.item_hash, "armor appearance donor"),
+        None => (weapon.donor_item_hash, "armor base"),
+    };
+    let item = placements::item_index(sources, donor, role)?;
     let (node_count, _, nodes, _) = array_at(&sources.stock_nodes, 8)?;
     let mut sets = BTreeSet::new();
     for collectible in 0..sources.stock_collectible_count {
@@ -90,9 +89,7 @@ pub(super) fn group(
                 })
                 .collect::<AuthoringResult<BTreeSet<_>>>()?;
             if hashes.contains(&0x5FAB_0042)
-                && [0x305A_5226, 0xDF3B_D502, 0x4BB1_6895]
-                    .iter()
-                    .any(|hash| hashes.contains(hash))
+                && ARMOR_CLASSES.iter().any(|hash| hashes.contains(hash))
             {
                 sets.insert(u64::from(read_u32(
                     &sources.stock_nodes,
@@ -133,7 +130,7 @@ pub(super) fn page(
             .ok_or_else(|| invalid("The native Armor Collections branch is unavailable"))
     };
     let armor = node(0x5FAB_0042)?;
-    let parent = node([0x305A_5226, 0xDF3B_D502, 0x4BB1_6895][usize::from(class)])?;
+    let parent = node(ARMOR_CLASSES[usize::from(class)])?;
     let ancestors = presentation_ancestor_nodes(&sources.stock_nodes, &[parent as u16])?;
     if !ancestors.contains(&armor) {
         return Err(invalid(
@@ -211,6 +208,93 @@ pub(super) fn page(
     }
     Err(invalid(
         "The armor class has no counted Collections page template",
+    ))
+}
+
+/// The Armor class categories of Collections, in Titan, Hunter, Warlock order.
+const ARMOR_CLASSES: [u32; 3] = [0x305A_5226, 0xDF3B_D502, 0x4BB1_6895];
+/// Each class's Universal Ornaments category under its Armor class, in the same order. Its sets
+/// each hold up to one ornament per armor slot.
+const UNIVERSAL_ORNAMENTS: [u32; 3] = [0x94E2_5251, 0x1BCD_6A65, 0xD9E8_C2EA];
+
+/// Clone a stock set of the class's Universal Ornaments for an ornament set added beside them.
+pub(super) fn ornament_page(
+    sources: &sources::ProjectSources,
+    page: crate::collection::GearPage,
+    index: u16,
+) -> AuthoringResult<placements::GearPagePlan> {
+    let class = usize::from(
+        page.class()
+            .ok_or_else(|| invalid("Ornament set has no class"))?,
+    );
+    let (count, _, rows, _) = array_at(&sources.stock_nodes, 8)?;
+    let node = |hash| {
+        (0..count)
+            .find(|&i| {
+                read_u32(
+                    &sources.stock_nodes,
+                    rows + i * PRESENTATION_NODE_ROW_SIZE + PRESENTATION_NODE_HASH_OFFSET,
+                )
+                .ok()
+                    == Some(hash)
+            })
+            .ok_or_else(|| invalid("The native Universal Ornaments Collections are unavailable"))
+    };
+    let armor_class = node(ARMOR_CLASSES[class])?;
+    let parent = node(UNIVERSAL_ORNAMENTS[class])?;
+    let parent_row = rows + parent * PRESENTATION_NODE_ROW_SIZE;
+    let (parents, _, parent_rows, _) = array_at(&sources.stock_nodes, parent_row + 0x18)?;
+    if parents != 1 || usize::from(read_u16(&sources.stock_nodes, parent_rows)?) != armor_class {
+        return Err(invalid(
+            "The class's Universal Ornaments are outside its Armor Collections",
+        ));
+    }
+    let (sets, _, children, child_class) = array_at(
+        &sources.stock_nodes,
+        parent_row + PRESENTATION_NODE_CHILD_NODES_OFFSET,
+    )?;
+    if sets == 0 || child_class != PRESENTATION_NODE_CHILD_NODE_ROW_CLASS {
+        return Err(invalid("The class's Universal Ornaments have no sets"));
+    }
+    let set = |position: usize| {
+        read_u16(
+            &sources.stock_nodes,
+            children + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE,
+        )
+    };
+    let sibling = set(sets - 1)?;
+    for position in 0..sets {
+        let template = set(position)?;
+        let row = rows + usize::from(template) * PRESENTATION_NODE_ROW_SIZE;
+        if read_u16(
+            &sources.stock_nodes,
+            row + PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
+        )? == u16::MAX
+            || read_u64(
+                &sources.stock_nodes,
+                row + PRESENTATION_NODE_CHILD_NODES_OFFSET,
+            )? != 0
+        {
+            continue;
+        }
+        let members =
+            crate::progression::node_collectible_children(&sources.stock_nodes, template)?;
+        if members.is_empty() || members.len() > crate::collection::ARMOR_SET_SIZE {
+            continue;
+        }
+        return Ok(placements::GearPagePlan {
+            page,
+            index,
+            template,
+            parent: parent as u16,
+            sibling,
+            donor: members[0],
+            children: Vec::new(),
+            members: Vec::new(),
+        });
+    }
+    Err(invalid(
+        "The class's Universal Ornaments have no counted set template",
     ))
 }
 

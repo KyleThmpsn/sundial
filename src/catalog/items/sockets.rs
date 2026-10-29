@@ -336,6 +336,16 @@ impl SocketDef {
             .map_or(&[], |source| source.ordered_members.as_slice())
     }
 
+    /// Returns the members of the shared set the socket offers, in their package order.
+    pub(crate) fn ordered_reusable_choices(&self) -> &[u64] {
+        self.sources
+            .iter()
+            .find(|source| {
+                source.valid && matches!(source.kind, SocketOptionSourceKind::ReusableSet { .. })
+            })
+            .map_or(&[], |source| source.ordered_members.as_slice())
+    }
+
     pub(crate) fn reusable_set_index(&self) -> Option<u16> {
         self.sources.iter().find_map(|source| match source.kind {
             SocketOptionSourceKind::ReusableSet { index } => Some(index),

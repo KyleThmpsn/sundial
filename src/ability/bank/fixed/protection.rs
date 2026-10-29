@@ -26,7 +26,9 @@ pub(super) fn check(p: &[u8], d: usize, i: usize) -> Result<(), String> {
     if i.checked_add(40).is_none_or(|end| end > split)
         || d < split
         || p.get(d..d + 96).is_none()
-        || u32_at(p, d + 16)? != (-1.0f32).to_bits()
+        // A stock witness may have a finite duration. Its program and duration
+        // are not copied into the private, full-activation source modifier.
+        || !f32::from_bits(u32_at(p, d + 16)?).is_finite()
         || u64_at(p, d + 24)? != 0
         || u64_at(p, d + 64)? != 1
         || u64_at(p, d + 72)? != 1

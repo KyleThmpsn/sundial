@@ -8,19 +8,22 @@
 //! and its instance block at +0x18. The instance block's descriptor at +0x88, a count and a
 //! relative pointer, is what the client's lookup walks: it lands on an array header, a count
 //! and a class behind the `80809FBD` marker, followed by 56 byte definition rows with the key
-//! at +0x10, a handler index at +0x1C and a pointer to the row's modifier at +0x30. A gated
+//! at +0x10, a bank-local priority index at +0x1C and a pointer to the row's modifier at +0x30. A gated
 //! row keeps a second pointer at +0x28 to an eight byte `8080454A` gate block holding a key.
 //! The bank's per-key row walk (exe+0xFC8360) applies such a row only while that key is
 //! applied too, and reads the gate block's class, so a moved row carries the pointer along or
 //! the client faults at world load with a sword equipped. The definition block's
 //! descriptor at +0x170 lands on the matching 64 byte instance rows, which point back at the
-//! bank and at the modifier's instance twin. The handler index is the slot
-//! of the ability's component that consumes the row's modifier, numbered per bank: charges go
-//! to slot 0 in the Hunter melee bank, 1 in the Titan and Warlock melee banks and 2 in the
-//! Barricade bank, and a modifier handed to the wrong slot faults the client at world load,
-//! so a new row copies the slot from the bank's rows with the same modifier class.
+//! bank and at the modifier's instance twin. The index selects one byte of this bank's
+//! per-class priority storage. It does not select a callback. Native FC8320 first combines
+//! priorities across all applied keys, then FC7690 checks each row's priority before separate
+//! typed compatibility and application dispatch. Charges use index 0 in the Hunter melee
+//! bank, 1 in the Titan and Warlock melee banks and 2 in the Barricade bank. New rows retain
+//! a checked bank-local class index and its allocated storage rather than copying an ordinal
+//! from a different bank. The public HandlerIndex name describes this serialized index.
 //!
-//! Two modifier shapes are edited here. A charge is the pair `80804534` (definition, the
+//! Common base-bank modifiers include charges and script parameters. A charge is the pair
+//! `80804534` (definition, the
 //! integer at +0x10) and `80804535`, which the base bank handler adds to the ability's charge
 //! count. A script parameter is the pair `80804516` (definition, a first index at +0x20 and a
 //! count at +0x24 into the bank's parameter table) and `80804517`: the table hangs off the
@@ -57,6 +60,8 @@ mod handler;
 pub use crate::ability::AbilityTarget;
 pub use handler::HandlerIndex;
 mod names;
+mod ordered;
+pub use ordered::{FixedRow, FixedWitness, ordered_rows_match, with_ordered_rows};
 mod read;
 mod registry;
 mod scalar;
@@ -69,8 +74,8 @@ pub use names::{
 };
 pub(crate) use read::has_property_rows;
 pub use read::{
-    bank_owner, block_count, handler_slot, instance_shift, parameter_rows, parameters,
-    property_rows, retarget_references, row_modifiers, validate, validate_native_owner,
+    bank_owner, block_count, handler_slot, instance_shift, membership_keys, parameter_rows,
+    parameters, property_rows, retarget_references, row_modifiers, validate, validate_native_owner,
 };
 pub use registry::{bank_name, bank_names, parameter_abilities, register_bank_names};
 
@@ -183,9 +188,10 @@ pub const CHARGE_ROWS: [ChargeRow; 2] = [
 ];
 
 /// The stock banks each Ability Property slot resolves to, by the slots the stock perks
-/// apply their keys on, matched against the banks that define those keys. A tuning for a slot
-/// goes to every bank of it that lists the parameter. Nine of the 54 root banks are touched
-/// by no stock key and sit in `UNPLACED_BANKS`.
+/// apply their keys on, matched against the banks that define those keys. Native subclass pool
+/// destinations also qualify banks without stock perk-action use, through their equipped rows,
+/// ability patterns and entity components. A tuning for a slot goes to every bank of it that
+/// lists the parameter. Six root banks remain in `UNPLACED_BANKS`.
 pub const SLOT_BANKS: [(AbilityTarget, &[u32]); 6] = [
     (
         GRENADE_SLOT,
@@ -216,10 +222,13 @@ pub const SLOT_BANKS: [(AbilityTarget, &[u32]); 6] = [
     (
         SUPER_SLOT,
         &[
+            0x80B8_1C0F,
             0x80BC_3424,
+            0x80BC_3CB0,
             0x80BC_3DA2,
             0x80BC_3F6C,
             0x80BC_3FBD,
+            0x80BC_41DF,
             0x80BC_4993,
             0x80BC_4FF1,
             0x80BC_5602,
@@ -247,14 +256,11 @@ pub const SLOT_BANKS: [(AbilityTarget, &[u32]); 6] = [
     (CLASS_ABILITY_SLOT, &[0x80BC_2BCC, 0x80BC_2C8A, 0x80BC_2CA3]),
 ];
 
-/// Root banks no stock key touches, so no slot is established for them.
-pub const UNPLACED_BANKS: [u32; 9] = [
+/// Root banks with no qualified property action or subclass destination establishing a slot.
+pub const UNPLACED_BANKS: [u32; 6] = [
     0x80B8_16B3,
-    0x80B8_1C0F,
     0x80B8_1CBD,
     0x80BA_A293,
-    0x80BC_3CB0,
-    0x80BC_41DF,
     0x80BC_45C5,
     0x80BC_967E,
     0x80F2_E34B,
@@ -304,7 +310,7 @@ pub struct Parameter {
 pub struct PropertyRow {
     pub key: u32,
     pub name: u32,
-    /// The handler slot that consumes the modifier, numbered per bank.
+    /// The modifier class's priority-storage index, numbered per bank.
     pub handler: HandlerIndex,
     pub modifier_class: u32,
     /// The integer of a charge modifier, absent for any other modifier class.
@@ -396,7 +402,7 @@ pub fn with_property_row_mode(
 /// The bank with one more property row under `key`, doing what `modifier` says. A charge row
 /// takes the Dodge bank's shape (no name); a parameter row takes the stock parameter rows'
 /// shape and appends its parameter to the table with the bank's own reset value. Either
-/// goes to the handler slot the bank's own rows of that modifier class use. A melee attack
+/// uses the priority-storage index the bank's own rows of that modifier class use. A melee attack
 /// takes priority over every melee the bank's keys give: it also goes under each of the bank's
 /// own attack keys, gated on `key` and ahead of that key's rows (`own_attack_keys`), and closes
 /// the ranged melee window, under `key` and, gated on `key`, after the rows of each key that
@@ -476,7 +482,7 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
         .iter()
         .map(|&(_, _, _, closes)| row_classes(closes).definition)
         .collect();
-    let mut region = open_definition_region(payload, &layout, rows, &markers);
+    let mut region = open_definition_region(payload, &layout, rows, &markers)?;
     let shift = Shift {
         instance: layout.instance,
         delta: region.delta,

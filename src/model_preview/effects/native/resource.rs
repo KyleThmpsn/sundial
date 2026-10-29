@@ -85,7 +85,7 @@ impl<'a> Plan<'a> {
             binding.vertex = vertex;
             self.bindings.push(binding);
         }
-        if self.bindings.len() > 9 {
+        if self.bindings.len() > super::TEXTURES {
             return Err("The effect texture count exceeds preview limits".into());
         }
         Ok(())
@@ -185,6 +185,11 @@ fn implicit(
         && expression.is_some_and(|program| program.sky_hemisphere(resource.slot))
     {
         Role::Sky
+    } else if resource.dimension == 3
+        && !resource.integer
+        && expression.is_some_and(|program| program.scene_depth(resource.slot))
+    {
+        Role::Depth
     } else if (12..=15).contains(&resource.slot)
         && resource.dimension == 3
         && code

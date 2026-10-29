@@ -650,13 +650,13 @@ fn draw_program_reading(ui: &mut egui::Ui, program: &Program) {
         if program.actions.is_empty() {
             ui.weak("No Actions");
         }
-        for (index, action) in program.actions.iter().enumerate() {
+        for index in 0..program.actions.len() {
             block(ui, index, |ui| {
                 ui.add(
                     egui::Label::new(format!(
                         "{}. {}",
                         index + 1,
-                        program::action_text(action, None)
+                        program::action_reading(program, index, None)
                     ))
                     .wrap(),
                 );

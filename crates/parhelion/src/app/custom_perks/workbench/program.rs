@@ -14,6 +14,8 @@ use sundial::package_authoring::sandbox_perk::{
     },
 };
 
+mod changes;
+
 #[derive(Default)]
 pub(super) struct Keys {
     index: Option<Arc<KeyIndex>>,
@@ -233,6 +235,9 @@ pub(super) fn decoded_condition_title(
 /// The locked reading of a native effect: its name and its mapped fields.
 fn native_action_text(node: &NativeNode) -> String {
     let name = native_action_label(node.kind, &node.bytes);
+    if node.kind == 28 && matches!(node.bytes.get(2..4), Some([0, 0] | [1, 1])) {
+        return name;
+    }
     let facts = layout::EFFECT_LAYOUTS
         .iter()
         .find(|layout| layout.kind == node.kind)
@@ -348,7 +353,15 @@ pub(super) fn brief(program: &Program) -> Option<(String, Vec<String>, usize)> {
     let Some(native) = &program.native else {
         return Some((
             trigger_text(program),
-            program.actions.iter().map(action_title).collect(),
+            program
+                .actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| {
+                    changes::reading(program, index)
+                        .map_or_else(|| action_title(action), |reading| reading.title)
+                })
+                .collect(),
             0,
         ));
     };
@@ -429,6 +442,14 @@ fn brief_condition(
 }
 
 /// The locked reading of one action block: its name, then what it is set to.
+pub(super) fn action_reading(program: &Program, index: usize, keys: Option<&KeyCatalog>) -> String {
+    match changes::reading(program, index) {
+        Some(reading) => format!("{}\n{}", reading.title, reading.lines.join("\n")),
+        None => action_text(&program.actions[index], keys),
+    }
+}
+
+/// The fields of an action without its owning program's private resource edits.
 pub(super) fn action_text(action: &Action, keys: Option<&KeyCatalog>) -> String {
     use sundial::package_authoring::sandbox_perk::action::{ability_slot, component_target};
     let asset_name = |asset: &Asset| {
@@ -618,8 +639,10 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
         }
         // Kind 29: what the three values drive is not established.
         29 => "Replace three of the weapon's own values, and restore them afterwards.",
-        // Kind 30: other weapon state changes as the count crosses zero.
-        30 => "Hold one weapon count while the effect is active.",
+        // Kind 30: Tracking Module, Precision Frame, Häkke Precision Frame, Prototype Trueseeker
+        // and Twintails hold it while aiming, Revolution and Charge Shot from equip. Their
+        // projectiles track, and no stock perk holds it for anything else.
+        30 => "Let tracking projectiles lock onto targets, as Tracking Module does while aiming.",
         // Kind 33: every stock use scales the damage its wearer takes. Chaotic Exchanger
         // ("resist incoming damage") and Resistant Tether sit below 1, Riven's Curse
         // ("also take more damage from all sources") above it, so below 1 takes less and
@@ -627,11 +650,9 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
         // turns the distance limit off.
         33 => "Scale the damage the wearer takes: down as Chaotic Exchanger, up as Riven's Curse.",
         32 => "Another matching kill adds time to the effect's timers, as Outlaw does.",
-        // Kind 35: every stock use is a firing mode. Full Auto Trigger System, Rapid-Fire
-        // Frame and Thunderer write the same key, and Fan Fire clears it.
-        35 => {
-            "Set the weapon's firing mode while the effect is active, as Full Auto Trigger System does."
-        }
+        // Kind 35 writes an animation input. Full Auto Trigger System uses builtin 14,
+        // while Fan Fire selects builtin 3's default profile.
+        35 => "Override a named animation input and restore its previous selection on removal.",
         // Kind 37: the stock filters name weapon families and abilities, and the champion
         // mods use it to add labels such as stagger and overload.
         37 => "Label the triggering event by damage source, so other perks can read it.",
@@ -653,7 +674,7 @@ pub(super) fn plain_action_summary(kind: u8) -> Option<&'static str> {
         // Kind 48: the referenced resource is a behavior script whose path names it, such
         // as apply_tiered_charge_of_light, the one 17 Charged with Light mods run. Some
         // scripts need specific game state or an owning object.
-        48 => "Run a game behavior script, such as Charged with Light. Test it in game.",
+        48 => "Run a game behavior script, such as Charged with Light.",
         // Kind 49: Vengeance ("Highlights the enemy who dares to damage you") stores the
         // enemy under a name, and its When a Remembered Target Is Far Away condition reads
         // the same name back. The player keeps at most four names.
@@ -791,6 +812,13 @@ pub(super) fn native_action_reading(kind: u8, decoded: &str) -> String {
 /// The name a native effect carries. An ability energy change names the ability it targets,
 /// in the verb its kind's name uses.
 pub(super) fn native_action_label(kind: u8, bytes: &[u8]) -> String {
+    if kind == 28 {
+        match bytes.get(2..4) {
+            Some([0, 0]) => return "Hold to Fire".into(),
+            Some([1, 1]) => return "Hold to Charge".into(),
+            _ => {}
+        }
+    }
     if kind == 8
         && let Some(values) = bytes.get(2..5)
         && let Some(role) = sundial::package_authoring::sandbox_perk::action::component_target(
@@ -940,7 +968,7 @@ pub(super) fn common_actions(
             Action::transmat_context(EMPTY_KEY),
         ),
         (
-            "Replace a key on the weapon or the player while the effect is active, as the firing mode perks do.",
+            "Override a named animation input on the weapon or player while the effect is active.",
             Action::override_host_key(EMPTY_KEY),
         ),
         (

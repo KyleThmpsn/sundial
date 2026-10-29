@@ -84,6 +84,7 @@ pub(in crate::app) fn fixture() -> PrivatePerkRuntimeGraph {
         projectile_slots: vec![],
         projectile_catalog: Arc::default(),
         native_assets: Vec::new(),
+        tracking: Vec::new(),
     }
 }
 

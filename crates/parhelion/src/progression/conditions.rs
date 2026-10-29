@@ -33,6 +33,78 @@ pub(super) fn canonical_single_flag_program(
     Ok(program)
 }
 
+/// Resolved placement adds flags to the destination objectives directly, keeping every
+/// stock donor pool intact even when the authored ammo type selects another branch.
+pub(crate) fn add_direct_acquired_counts(
+    objectives: &mut Vec<u8>,
+    nodes: &[u8],
+    rows: &[ProjectAuthoredRow],
+    pools: &[u8],
+) -> AuthoringResult<()> {
+    let (pool_rows, _) = validate_shared_expression_table(pools, true)?;
+    let flag =
+        shared_numeric_instruction_template(pools, pool_rows, NUMERIC_FLAG_INSTRUCTION, None)?;
+    let add = shared_numeric_instruction_template(
+        pools,
+        pool_rows,
+        NUMERIC_ADD_INSTRUCTION,
+        Some(u16::MAX),
+    )?;
+    let (_, _, node_rows, _) = array_at(nodes, 8)?;
+    let (objective_count, _, objective_rows, _) = array_at(objectives, 8)?;
+    let mut additions = BTreeMap::<u16, BTreeSet<u16>>::new();
+    for row in rows.iter().filter(|row| row.count_selection.is_direct()) {
+        for node in presentation_ancestor_nodes(nodes, &row.pages.iter().collect::<Vec<_>>())? {
+            let objective = read_u16(
+                nodes,
+                node_rows
+                    + node * PRESENTATION_NODE_ROW_SIZE
+                    + PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
+            )?;
+            if objective != u16::MAX {
+                additions
+                    .entry(objective)
+                    .or_default()
+                    .insert(row.authored_unlock_index);
+            }
+        }
+    }
+    for (objective, flags) in additions {
+        if usize::from(objective) >= objective_count {
+            return Err(invalid("Collections objective is out of range"));
+        }
+        let row = objective_rows + usize::from(objective) * OBJECTIVE_ROW_SIZE;
+        // +08 counts acquisitions. +38 counts hidden, unacquired entries which the
+        // client subtracts from the completion target. Authored entries are always
+        // visible, so acquiring one must never reduce the displayed denominator.
+        let field = 0x08;
+        if read_u64(objectives, row + field)? == 0 {
+            return Err(invalid(
+                "Collections objective has no acquired-count program",
+            ));
+        }
+        let mut instructions = numeric_program_layout(objectives, row + field)?
+            .instructions
+            .into_iter()
+            .map(|i| i.serialized)
+            .collect::<Vec<_>>();
+        for &index in &flags {
+            instructions.push(
+                flag.with_semantics(NUMERIC_FLAG_INSTRUCTION, index)
+                    .serialized,
+            );
+            instructions.push(add.serialized);
+        }
+        super::presentation::append_numeric_program(
+            objectives,
+            row + field,
+            &instructions,
+            "Collections acquired count",
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(any(test, feature = "d2-model-importer"))]
 pub(crate) fn patch_project_collection_objectives(
     objectives: Vec<u8>,

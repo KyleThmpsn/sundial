@@ -1,4 +1,4 @@
-//! Atomic source movement imports onto an identity-matched native controller.
+//! Saved source ability candidates using private native graphs and property grants.
 use std::{collections::BTreeSet, fs, path::Path};
 
 use parhelion_import::{
@@ -17,6 +17,8 @@ use sundial::{
 
 use super::{EntryEdits, StockModifier, SubclassChoice, layout};
 use crate::{ItemKind, WeaponRecipe, perk::PerkRecipe};
+mod revival;
+pub use revival::prepare as prepare_revival;
 
 pub struct Request<'a> {
     pub source_packages: &'a Path,

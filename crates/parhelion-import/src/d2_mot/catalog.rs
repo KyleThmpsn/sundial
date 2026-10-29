@@ -1,8 +1,5 @@
 //! Discover equippable source families and distinguish existing native items.
-use crate::d2_mot::{
-    localization,
-    reader::{Reader, write_json},
-};
+use crate::d2_mot::{localization, reader::Reader};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -29,8 +26,19 @@ pub fn weapons(modern: &Path, native: &Path, out: &Path) -> Result<Value> {
     weapons_with_progress(modern, native, out, |_| {})
 }
 
-/// Installed identities are independent of modern labels, icons and item families.
+/// What the listing reads from the target packages.
+pub(crate) struct Native {
+    /// Installed identities, independent of modern labels, icons and item families.
+    pub hashes: BTreeSet<u32>,
+    /// The plug categories of stock weapon ornaments. A modern plug of one is a weapon ornament.
+    pub ornament_categories: BTreeSet<u32>,
+}
+
 pub(crate) fn native_hashes(native: &Path, out: &Path) -> Result<BTreeSet<u32>> {
+    Ok(read_native(native, out)?.hashes)
+}
+
+pub(crate) fn read_native(native: &Path, out: &Path) -> Result<Native> {
     let mut old = Reader::discovery(native, &out.join("native"), false)?;
     let globals_tag = old
         .manager
@@ -44,13 +52,17 @@ pub(crate) fn native_hashes(native: &Path, out: &Path) -> Result<BTreeSet<u32>> 
     let globals = old.tag(globals_tag, None)?;
     let root = old.tag(globals.u32(16)?, Some(0x80807D84))?;
     let items = old.tag(root.u32(8 + 48 * 16)?, None)?;
-    let native_hashes = items
+    let hashes = items
         .array(8, 24, Some(0x80807BE8))?
         .into_iter()
         .map(|at| items.u32(at))
         .collect::<Result<BTreeSet<_>>>()?;
+    let ornament_categories = crate::tiger::ornament::categories(&mut old)?;
     old.finish()?;
-    Ok(native_hashes)
+    Ok(Native {
+        hashes,
+        ornament_categories,
+    })
 }
 
 pub(crate) fn match_native(
@@ -77,7 +89,10 @@ pub fn weapons_with_progress(
     progress(ScanProgress::OpeningModernPackages);
     let mut r = Reader::discovery(modern, out, true)?;
     progress(ScanProgress::OpeningNativePackages);
-    let native_hashes = native_hashes(native, out)?;
+    let Native {
+        hashes: native_hashes,
+        ornament_categories,
+    } = read_native(native, out)?;
     let tags = r.classes(0x80805499);
     ensure!(tags.len() == 1, "ambiguous source item strings");
     let table = r.tag(tags[0], None)?;
@@ -116,15 +131,37 @@ pub fn weapons_with_progress(
                 return Ok(());
             };
             let item = r.tag(definition, Some(0x8080799D))?;
-            let Some((family, bucket_hash, class_type)) =
+            // A plug of a stock weapon ornament's category is a weapon ornament, which applies
+            // to that category's weapon. Armor carries plug blocks too and stays armor.
+            let weapon_ornament = !(3..=7).contains(&item.u8(0x98)?)
+                && crate::tiger::universal_ornament::modern_category(&item)?
+                    .is_some_and(|category| ornament_categories.contains(&category));
+            let Some((family, bucket_hash, class_type)) = (if weapon_ornament {
+                Some((super::service::Family::WeaponOrnament, None, None))
+            } else {
                 super::service::Family::source(&item, &strings)?
-            else {
+                    .map(|(family, bucket, class)| (family, Some(bucket), class))
+            }) else {
                 return Ok(());
             };
             let name = labels.label(&mut r, &strings, 0x80)?;
             if !name.is_empty() {
                 // Display-only definitions cannot equip. Do not infer this from duplicate names.
-                let dummy = family != super::service::Family::Shader && item.u64(0x18)? == 0;
+                // Shaders and ornaments are plugs, which never equip.
+                let dummy = !matches!(
+                    family,
+                    super::service::Family::Shader
+                        | super::service::Family::Ornament
+                        | super::service::Family::WeaponOrnament
+                ) && item.u64(0x18)? == 0;
+                let plug_category = if matches!(
+                    family,
+                    super::service::Family::Ornament | super::service::Family::WeaponOrnament
+                ) {
+                    crate::tiger::universal_ornament::modern_category(&item)?
+                } else {
+                    None
+                };
                 let icon_index = strings.u32(0x78)?;
                 let icon_index = (icon_index != u32::MAX).then_some(icon_index);
                 let present = native_hashes.contains(&hash)
@@ -144,7 +181,7 @@ pub fn weapons_with_progress(
                         (None, None, None)
                     }
                 };
-                weapons.push(json!({"hash":hash,"index":index,"name":name,"weapon_type":kind,"bucket_hash":bucket_hash,"class_type":class_type,"rarity":rarity,"ammo":ammo,"damage":damage,"present_in_native":present,"native_item":native_item,"dummy":dummy,"icon_index":icon_index}));
+                weapons.push(json!({"hash":hash,"index":index,"name":name,"weapon_type":kind,"bucket_hash":bucket_hash,"class_type":class_type,"plug_category":plug_category,"rarity":rarity,"ammo":ammo,"damage":damage,"present_in_native":present,"native_item":native_item,"dummy":dummy,"icon_index":icon_index}));
             }
             Ok(())
         })();
@@ -161,8 +198,8 @@ pub fn weapons_with_progress(
         }
     }
     progress(ScanProgress::SavingCatalog);
+    // The caller keeps the listing, `scan_cached` in `weapon-cache.json`.
     let result = json!({"weapons":weapons,"unavailable":unavailable,"conversion_verified":false});
-    write_json(&out.join("catalog.json"), &result)?;
     r.finish()?;
     Ok(result)
 }

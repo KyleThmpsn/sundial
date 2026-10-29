@@ -5,7 +5,10 @@ pub(crate) const MIN_AUTHORED_STANDALONE_PACKAGE_ID: u16 = 0x0AA0;
 pub(crate) const MAX_AUTHORED_STANDALONE_PACKAGE_ID: u16 = 0x0CFF;
 pub(crate) const PARHELION_ASSET_PACKAGE_ID: u16 = 0x0AA0;
 pub(crate) const PARHELION_ASSET_PATCH_ID: u16 = 0;
-pub(crate) const PARHELION_ASSET_FILE_NAME: &str = "w64_parhelion_assets_0aa0_0.pkg";
+/// The family of Parhelion's own standalone packages. Like stock `w64_sandbox`, they hold the
+/// entities, models, textures and runtime resources a build authors.
+pub(crate) const SANDBOX_FAMILY: &str = "parhelion_sandbox";
+pub(crate) const PARHELION_ASSET_FILE_NAME: &str = "w64_parhelion_sandbox_0aa0_0.pkg";
 pub(crate) const PRIVATE_PERK_RUNTIME_PACKAGE_ID: u16 = 0x01BB;
 pub(crate) const PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT: usize = 6_468;
 
@@ -13,11 +16,11 @@ pub(crate) const PRIVATE_PERK_RUNTIME_EXPECTED_ENTRY_COUNT: usize = 6_468;
 /// first id: asset packages, then map packages.
 ///
 /// Without a mod loader the window ascends from `0x0AA0`, the names those installs have always
-/// had, and private runtime overflow counts down from its top toward the assets, so the two meet
-/// only once the window is spent. On Sunrise's mod loader it descends from its top. Sunrise Studio
+/// had, and private runtime and investment overflow reserve free IDs from its top. On Sunrise's
+/// mod loader it descends from its top. Sunrise Studio
 /// gives a mod's new packages the first ids no stock package holds, `0x0AA0` upward, without
 /// reading other mods, and the loader refuses a mod whose package id another mod already adds, so
-/// every package of a build sits at the other end. The private runtime's packages and imported
+/// every package of a build sits at the other end. Record overflow, private runtime and imported
 /// content take the highest ids still free as they need them, and asset and map packages count
 /// past those. The loader window also skips ids an installed package or another mod already
 /// holds.
@@ -65,24 +68,15 @@ impl Window {
 
     /// The id `n` packages from the window's first, if the window holds it.
     pub(crate) fn nth(self, n: usize) -> Option<u16> {
-        if self.descending && host().is_standalone() {
+        if self.descending {
             return (self.base..=self.top)
                 .rev()
                 .filter(|id| !crate::mod_family::build::reserved(*id))
                 .nth(n);
         }
-        let n = u16::try_from(n).ok()?;
-        if self.descending {
-            self.top.checked_sub(n).filter(|id| *id >= self.base)
-        } else {
-            self.base.checked_add(n).filter(|id| *id <= self.top)
-        }
-    }
-
-    /// The window's last id, where private runtime overflow starts without a mod loader, counting
-    /// toward the first.
-    pub(crate) fn last(self) -> u16 {
-        if self.descending { self.base } else { self.top }
+        (self.base..=self.top)
+            .filter(|id| !crate::mod_family::build::reserved(*id))
+            .nth(n)
     }
 
     /// The window without its first id, or `None` when that leaves nothing.
@@ -242,6 +236,8 @@ pub(crate) fn hold(window: Window, host: Host) -> Profile {
     HOLDING.set(true);
     set_window(window);
     set_host(host);
+    crate::mod_family::build::begin_native();
+    crate::appended_tags::clear();
     Profile { turn: Some(turn) }
 }
 
@@ -254,10 +250,15 @@ pub(crate) fn join() -> Profile {
     }
 }
 
+pub(crate) fn holding() -> bool {
+    HOLDING.get()
+}
+
 impl Drop for Profile {
     fn drop(&mut self) {
         if self.turn.is_some() {
             crate::mod_family::build::clear();
+            crate::appended_tags::clear();
             set_window(Window::FULL);
             set_host(Host::APPENDED);
             set_presentation_nodes_shared(false);
@@ -707,6 +708,10 @@ fn standalone_id(file_name: &str) -> Option<u16> {
 /// refuses a patch that appends them to a stock package as Dawn and earlier Sunrise builds do.
 pub(crate) const RECORDS_FAMILY: &str = "parhelion_investment";
 
+/// The managed records family is also an installation-layout marker. Legacy overflow uses a
+/// different family so a valid appended build is not mistaken for a mod-loader-only build.
+pub(crate) const LEGACY_RECORDS_FAMILY: &str = "parhelion_records";
+
 /// Whether `file_name` is a build's records package, which only builds for the mod loader have.
 pub(crate) fn is_records_package(file_name: &str) -> bool {
     standalone_id(file_name).is_some()
@@ -817,11 +822,11 @@ fn standalone_package(package_id: u16, file_name: &'static str) -> AuthoredPacka
     }
 }
 
-/// Standalone package `package_id` under Parhelion's asset name.
+/// Standalone package `package_id` under Parhelion's sandbox name.
 fn default_asset_package(package_id: u16) -> AuthoredPackage {
     static NAMES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
         (MIN_AUTHORED_STANDALONE_PACKAGE_ID..=MAX_AUTHORED_STANDALONE_PACKAGE_ID)
-            .map(|id| format!("w64_parhelion_assets_{id:04x}_0.pkg"))
+            .map(|id| format!("w64_{SANDBOX_FAMILY}_{id:04x}_0.pkg"))
             .collect()
     });
     standalone_package(
@@ -844,7 +849,7 @@ fn asset_package(package_id: u16) -> AuthoredPackage {
 }
 
 /// Includes optional spill packages for ownership checks, retirement, and recovery, under
-/// Parhelion's asset names and the names the current build gives them.
+/// Parhelion's sandbox names and the names the current build gives them.
 pub(crate) fn all_authored_packages() -> impl Iterator<Item = AuthoredPackage> {
     let named = STANDALONE_NAMES
         .read()
@@ -941,7 +946,7 @@ mod tests {
     #[test]
     fn authored_artifact_selection_requires_core_and_accepts_optional_runtime_hosts() {
         let required = [
-            "w64_parhelion_assets_0aa0_0.pkg",
+            "w64_parhelion_sandbox_0aa0_0.pkg",
             "w64_investment_0361_7.pkg",
             "w64_investment_globals_client_058c_4.pkg",
             "w64_investment_globals_client_0593_4.pkg",
@@ -985,7 +990,7 @@ mod tests {
     #[test]
     fn spill_profiles_are_optional_canonical_and_installed_before_roots() {
         let spill = authored_package(0x0AA1).unwrap();
-        assert_eq!(spill.file_name, "w64_parhelion_assets_0aa1_0.pkg");
+        assert_eq!(spill.file_name, "w64_parhelion_sandbox_0aa1_0.pkg");
         assert!(!spill.required_output);
         assert!(!spill.stock_overlay);
         let mut names = CANONICAL_ARTIFACT_FILE_NAMES.to_vec();
@@ -1010,9 +1015,9 @@ mod tests {
                 .all(|profile| profile.stock_overlay)
         );
         for name in [
-            "w64_parhelion_assets_0AA1_0.pkg",
-            "w64_parhelion_assets_0aa1_1.pkg",
-            "w64_parhelion_assets_0d00_0.pkg",
+            "w64_parhelion_sandbox_0AA1_0.pkg",
+            "w64_parhelion_sandbox_0aa1_1.pkg",
+            "w64_parhelion_sandbox_0d00_0.pkg",
         ] {
             assert!(authored_package_for_file_name(name).is_none());
         }

@@ -32,6 +32,11 @@ impl Emitter<'_> {
             .then_some(())
     }
 
+    /// The depth texture register and the coefficients' buffer and row.
+    fn depth_source(&self) -> (u32, u32, u32) {
+        self.options.depth_source.unwrap_or((10, 2, 0))
+    }
+
     fn depth_texel(&self, source: &str) -> Option<()> {
         let parts = self.binary(source, "extractvalue ")?;
         if number(parts[1]).ok()? != 0 {
@@ -41,11 +46,12 @@ impl Emitter<'_> {
         (name == "textureLoad"
             && args.len() >= 2
             && number(args[0]).ok()? == 66
-            && self.handles.get(&id(args[1]).ok()?) == Some(&(0, 10)))
+            && self.handles.get(&id(args[1]).ok()?) == Some(&(0, self.depth_source().0)))
         .then_some(())
     }
 
     fn linear_depth(&self, source: &str) -> Option<()> {
+        let (_, buffer, row) = self.depth_source();
         let sum = self.binary(source, "fadd ")?;
         for swap in [false, true] {
             let (x, product) = if swap {
@@ -53,15 +59,15 @@ impl Emitter<'_> {
             } else {
                 (sum[0], sum[1])
             };
-            if self.component(x, 2, 0, 0).is_none() {
+            if self.component(x, buffer, row, 0).is_none() {
                 continue;
             }
             let Some(product) = self.binary(product, "fmul ") else {
                 continue;
             };
-            if (self.component(product[0], 2, 0, 1).is_some()
+            if (self.component(product[0], buffer, row, 1).is_some()
                 && self.depth_texel(product[1]).is_some())
-                || (self.component(product[1], 2, 0, 1).is_some()
+                || (self.component(product[1], buffer, row, 1).is_some()
                     && self.depth_texel(product[0]).is_some())
             {
                 return Some(());

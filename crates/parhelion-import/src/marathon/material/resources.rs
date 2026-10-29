@@ -387,11 +387,15 @@ pub(super) fn colors(
 
 pub(super) fn fresh(shell: &Payload, source: &Payload, stage: u8) -> Result<Vec<u8>> {
     let state = source.u32(0x30)?;
+    // Byte +0x32 selects the rasterizer. Its 0x81 override is native row 1, which
+    // draws both faces in any pass. Shadowkeep's cloth surface and shadow techniques
+    // and its alpha-tested shadow technique store the same byte.
     ensure!(
-        matches!(
-            (stage, state),
-            (0, 0 | 0x810000) | (2, 0x9a) | (4 | 13, 0) | (8 | 17, 0x88)
-        ),
+        matches!((state >> 16) & 0xff, 0 | 0x81)
+            && matches!(
+                (stage, state & !0xff_0000),
+                (0 | 4 | 13, 0) | (2, 0x9a) | (8 | 17, 0x88)
+            ),
         "Unsupported Marathon render state {state:08X} in stage {stage}"
     );
     envelope(shell, state)

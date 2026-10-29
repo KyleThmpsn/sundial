@@ -249,7 +249,6 @@ fn vehicle_parts(
         nodes,
         "part0-parent",
         companions,
-        0,
         |_, _| Ok(()),
         None,
     )?;

@@ -239,6 +239,9 @@ pub(crate) struct ContentGroups {
     /// The content group whose block lends its type markers, when another weapon's are chosen
     /// over the base weapon's own.
     pub(crate) kind: Option<u32>,
+    /// The content group and item of the weapon whose behavior the selected block carries in
+    /// place of the base weapon's own, when another weapon's is chosen.
+    pub(crate) behavior: Option<(u32, u32)>,
     /// The first-person animations another weapon lends the selected group's row.
     pub(crate) animations: Option<crate::weapon::animations::Profile>,
     /// The hold of a pinned appearance's own rig, which the kept rig's attachment takes.
@@ -270,8 +273,9 @@ fn selected_block(content: &Content, group: Option<u32>) -> AuthoringResult<usiz
 ///
 /// When the pattern row selects another weapon's block, the base weapon's own type markers,
 /// firing graph, firing values, behavior record and labels go back into it first, so an
-/// appearance changes how the weapon looks and not how it fires. A requested behavior still
-/// replaces the half it brings, and chosen type markers replace the base's.
+/// appearance changes how the weapon looks and not how it fires. A chosen behavior donor's go
+/// there in place of the base's. A requested behavior still replaces the half it brings, and
+/// chosen type markers replace the base's.
 pub(crate) fn patches(
     manager: &PackageManager,
     entity: &[u8],
@@ -279,10 +283,11 @@ pub(crate) fn patches(
     requested: &[String],
     speed_boost: f32,
 ) -> AuthoringResult<Grafted> {
-    let restores_own = groups.own.is_some() && groups.own != groups.selected;
+    let own_group = groups.behavior.map(|(group, _)| group).or(groups.own);
+    let restores_own = own_group.is_some() && own_group != groups.selected;
     // Putting the base's own behavior back is a best effort that never fails a build asking for
-    // nothing else. A behavior or type markers the recipe asks for are not.
-    let asked = !requested.is_empty() || groups.kind.is_some();
+    // nothing else. A behavior, a behavior donor or type markers the recipe asks for are not.
+    let asked = !requested.is_empty() || groups.kind.is_some() || groups.behavior.is_some();
     if !asked && !restores_own {
         return Ok(Grafted::default());
     }
@@ -312,11 +317,15 @@ pub(crate) fn patches(
             })
         })
         .transpose()?;
-    let own = groups
-        .own
+    let own = own_group
         .filter(|_| restores_own)
-        .and_then(|group| exact_block(&content, group))
-        .filter(|&own| own != block);
+        .map(|group| exact_block(&content, group));
+    // A behavior donor whose block sits in another owner lends its behavior across owners.
+    let foreign = groups
+        .behavior
+        .filter(|_| own == Some(None))
+        .map(|(_, item)| item);
+    let own = own.flatten().filter(|&own| own != block);
     let mut graph_requested = false;
     let mut patches = Vec::with_capacity(behaviors.len() * 3);
     // One block holds one behavior record, so the same record must not be written twice. Two
@@ -430,24 +439,18 @@ pub(crate) fn patches(
             });
         }
     }
-    // Putting the base's own behavior back is a best effort, so a block it cannot read keeps
-    // what the requested behaviors bring, as it did before.
-    let mut own_labels = None;
-    if let Some(own) = own
-        && let Ok(restored) = own_patches(
-            manager,
-            &content,
-            block,
-            own,
-            applied_records.is_empty(),
-            !graph_requested,
-        )
-    {
-        patches.extend(restored);
-        // Its perks key on its labels wherever its behavior runs, as a borrowed source's do.
-        label_sources.push((content.owner.clone(), own));
-        own_labels = Some(own);
-    }
+    let restored = restore_own(
+        manager,
+        &content,
+        (block, own, foreign),
+        (applied_records.is_empty(), !graph_requested),
+        groups.behavior.is_some(),
+    )?;
+    patches.extend(restored.patches);
+    appends.extend(restored.appends);
+    // Its perks key on its labels wherever its behavior runs, as a borrowed source's do.
+    label_sources.extend(restored.labels);
+    let own_labels = restored.own;
     // Chosen type markers win over the base's own, which the block otherwise gets whatever the
     // appearance. Firing stays the base's through its graph, values and records above.
     let own_markers = own_labels;
@@ -474,7 +477,7 @@ pub(crate) fn patches(
         });
     }
     // The base's labels still go on, so its perks key on them, whichever row 0 the block keeps.
-    if !requested.is_empty() || kind_block.is_some() || own_labels.is_some() {
+    if !requested.is_empty() || kind_block.is_some() || own_labels.is_some() || foreign.is_some() {
         let labels =
             label_append(&content, block, kind_block, &label_sources).or_else(|error| {
                 if own_labels.is_some() && kind.is_none() {
@@ -489,6 +492,164 @@ pub(crate) fn patches(
         }
     }
     Ok(Grafted { patches, appends })
+}
+
+/// What putting a weapon's own behavior back, or a behavior donor's, writes.
+#[derive(Default)]
+struct Restored {
+    patches: Vec<WeaponRuntimeResourcePatch>,
+    appends: Vec<crate::item::WeaponRuntimeResourceAppend>,
+    /// Owners and blocks whose labels travel with the behavior.
+    labels: Vec<(Vec<u8>, usize)>,
+    /// The block in this owner whose type markers and type label the selected block takes.
+    own: Option<usize>,
+}
+
+/// Writes the base weapon's own behavior, or a chosen behavior donor's, into the selected
+/// `block`: from block `own` in this owner, as [`own_patches`] writes it, or from the item
+/// `foreign`'s block in its own owner, as [`foreign_patches`] does. Records and graph are written
+/// only where the two flags allow. Putting the base's own behavior back is a best effort, so a
+/// block it cannot read keeps what the requested behaviors bring. A `required` donor's is not.
+fn restore_own(
+    manager: &PackageManager,
+    content: &Content,
+    (block, own, foreign): (usize, Option<usize>, Option<u32>),
+    (records, graph): (bool, bool),
+    required: bool,
+) -> AuthoringResult<Restored> {
+    if let Some(item) = foreign {
+        return foreign_patches(manager, content, block, item, records);
+    }
+    let Some(own) = own else {
+        return Ok(Restored::default());
+    };
+    match own_patches(manager, content, block, own, records, graph) {
+        Ok(patches) => Ok(Restored {
+            patches,
+            labels: vec![(content.owner.clone(), own)],
+            own: Some(own),
+            ..Restored::default()
+        }),
+        Err(error) if required => Err(error),
+        Err(_) => Ok(Restored::default()),
+    }
+}
+
+/// A runtime patch of `bytes` at owner offset `at` in the weapon-content resource.
+fn content_patch(
+    content: &Content,
+    at: usize,
+    bytes: Vec<u8>,
+) -> AuthoringResult<WeaponRuntimeResourcePatch> {
+    Ok(WeaponRuntimeResourcePatch {
+        binding_hash: BINDING,
+        resource_index: 0,
+        offset: slot_offset(at, content.resource)?,
+        bytes,
+        graph_values: Vec::new(),
+        graph_removals: Vec::new(),
+        graph_trajectories: None,
+    })
+}
+
+/// Writes a behavior donor's records from its own weapon-content owner into the selected block.
+///
+/// Its state array and behavior record are copied into this owner, or the selected block's are
+/// emptied where the donor's block has none, and its labels travel with them. Its firing graph,
+/// firing values and type markers stay behind: another owner's tags are not loaded with this
+/// one, and every block of an owner names that owner's own values. A fired graph and Barrel edits
+/// carry such a donor's shot, and the base keeps its values and type markers.
+fn foreign_patches(
+    manager: &PackageManager,
+    content: &Content,
+    block: usize,
+    item_hash: u32,
+    records: bool,
+) -> AuthoringResult<Restored> {
+    use sundial::package_authoring::runtime::load_weapon_runtime_entity_for_item_with_manager;
+    let runtime = load_weapon_runtime_entity_for_item_with_manager(manager, item_hash)
+        .map_err(|error| invalid(format!("Behavior donor: {error}")))?;
+    let donor = self::content(manager, &runtime.payload)?;
+    let group = runtime.weapon_content_group_hash;
+    let source = exact_block(&donor, group)
+        .ok_or_else(|| invalid("The weapon chosen for Behavior has no variant block of its own"))?;
+    let mut restored = Restored {
+        labels: vec![(donor.owner.clone(), source)],
+        ..Restored::default()
+    };
+    if records {
+        foreign_records(content, block, (&donor, source, group), &mut restored)?;
+    }
+    Ok(restored)
+}
+
+/// Points the selected block's state and behavior slots at a copy of the donor block's own, or
+/// at an empty state array and no behavior record where the donor's block has none.
+fn foreign_records(
+    content: &Content,
+    block: usize,
+    (donor, source, group): (&Content, usize, u32),
+    restored: &mut Restored,
+) -> AuthoringResult<()> {
+    let triple = first_triple(&content.owner, block)?;
+    let (state_slot, behavior_slot) = (triple + SLOT_STRIDE, triple + SLOT_STRIDE * 2);
+    let count = |slot: usize| -> AuthoringResult<i64> {
+        i64::try_from(u64_at(&donor.owner, slot + 8)?)
+            .map_err(|_| invalid("Behavior record count overflow"))
+    };
+    let donor_triple = find_triple(&donor.owner, source)?
+        .filter(|&triple| slot_target(&donor.owner, triple + SLOT_STRIDE).is_some());
+    let Some(donor_triple) = donor_triple else {
+        // An empty state array: the marker word, a zero count, the class and padding.
+        let mut bytes = ARRAY_HEADER_CLASS.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&STATE_ARRAY_CLASS.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        restored
+            .appends
+            .push(crate::item::WeaponRuntimeResourceAppend {
+                binding_hash: BINDING,
+                resource_index: 0,
+                bytes,
+                slots: vec![(slot_offset(state_slot, content.resource)?, 4, 0)],
+                arrays: Vec::new(),
+                pointers: Vec::new(),
+                references: Vec::new(),
+            });
+        restored
+            .patches
+            .push(content_patch(content, behavior_slot, vec![0; 16])?);
+        return Ok(());
+    };
+    let has_behavior = slot_target(&donor.owner, donor_triple + SLOT_STRIDE * 2).is_some();
+    let record = extract_record(&donor.owner, group, has_behavior)?;
+    let mut slots = vec![(
+        slot_offset(state_slot, content.resource)?,
+        record.state_offset,
+        count(donor_triple + SLOT_STRIDE)?,
+    )];
+    match record.behavior_offset {
+        Some(offset) => slots.push((
+            slot_offset(behavior_slot, content.resource)?,
+            offset,
+            count(donor_triple + SLOT_STRIDE * 2)?,
+        )),
+        None => restored
+            .patches
+            .push(content_patch(content, behavior_slot, vec![0; 16])?),
+    }
+    restored
+        .appends
+        .push(crate::item::WeaponRuntimeResourceAppend {
+            binding_hash: BINDING,
+            resource_index: 0,
+            bytes: record.bytes,
+            slots,
+            arrays: Vec::new(),
+            pointers: Vec::new(),
+            references: Vec::new(),
+        });
+    Ok(())
 }
 
 /// Writes `source`'s type marker keys into the selected block. The label array's first row, the

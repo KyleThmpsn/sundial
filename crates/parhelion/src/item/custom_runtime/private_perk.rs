@@ -1,6 +1,8 @@
 //! A private sandbox perk's runtime: its cloned action, asset graphs and programs, with
 //! the patches that bind them.
 use super::*;
+mod component;
+mod replication;
 
 #[derive(Default)]
 pub(in crate::item) struct PrivateRuntimeEdits<'a> {
@@ -59,7 +61,13 @@ pub(in crate::item) fn program_names_imported_particles(
             || program
                 .native_asset_patches
                 .iter()
-                .flat_map(|edit| &edit.patches)
+                .flat_map(|edit| {
+                    edit.patches.iter().chain(
+                        edit.components
+                            .iter()
+                            .flat_map(|component| &component.patches),
+                    )
+                })
                 .any(|patch| patch.imported_particle.is_some())
     })
 }
@@ -313,8 +321,8 @@ pub(in crate::item) fn append_private_action(
 }
 
 /// Clones a stock graph privately with checked raw patches and definition appends, and every
-/// component owner they touch. Each patch must find its expected stock bytes, and each append
-/// its expected owner size, so a different package version is refused rather than edited.
+/// component owner they touch. Complete added owners retain their native instance storage and
+/// lifecycle. Each edit is checked against its own original graph before composition.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn append_private_asset_graph(
     manager: &PackageManager,
@@ -322,11 +330,49 @@ pub(super) fn append_private_asset_graph(
     edit_patches: &[sundial::package_authoring::sandbox_perk::program::NativeAssetResourcePatch],
     edit_appends: &[sundial::package_authoring::sandbox_perk::program::NativeAssetResourceAppend],
     removals: &BTreeSet<u32>,
+    components: &[sundial::package_authoring::sandbox_perk::program::NativeAssetComponent],
+    resources: &[TagHash],
+    label: &str,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<TagHash> {
+    let checkpoint = crate::appended_tags::checkpoint();
+    let first = tags.len();
+    let result = asset_graph(
+        manager,
+        source,
+        edit_patches,
+        edit_appends,
+        removals,
+        components,
+        resources,
+        label,
+        allocator,
+        tags,
+    );
+    if result.is_ok() {
+        checkpoint.commit();
+    } else {
+        tags.truncate(first);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn asset_graph(
+    manager: &PackageManager,
+    source: TagHash,
+    edit_patches: &[sundial::package_authoring::sandbox_perk::program::NativeAssetResourcePatch],
+    edit_appends: &[sundial::package_authoring::sandbox_perk::program::NativeAssetResourceAppend],
+    removals: &BTreeSet<u32>,
+    components: &[sundial::package_authoring::sandbox_perk::program::NativeAssetComponent],
+    resources: &[TagHash],
     label: &str,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<TagHash> {
     let graph = read_tag(manager, source, "native asset graph")?;
+    let replication = replication::Plan::prepare(manager, source, &graph, removals, components)?;
     let mut appends = Vec::with_capacity(edit_appends.len());
     let mut appended_owners = BTreeSet::new();
     for (append_index, append) in edit_appends.iter().enumerate() {
@@ -352,9 +398,67 @@ pub(super) fn append_private_asset_graph(
             references: Vec::new(),
         });
     }
+    let mut patches =
+        checked_asset_patches(manager, &graph, edit_patches, &appended_owners, label)?;
+    let mut authored_graph = graph.clone();
+    if !components.is_empty() {
+        if !removals.is_empty() {
+            sundial::package_authoring::entity::remove_weapon_components(
+                &mut authored_graph,
+                removals,
+            )
+            .map_err(|error| invalid(format!("{label}: {error}")))?;
+        }
+        let added = component::append(manager, &mut authored_graph, components)?;
+        component::remap_patches(&graph, &authored_graph, &mut patches)?;
+        for append in &mut appends {
+            append.resource_index = component::resource_index(
+                &graph,
+                &authored_graph,
+                append.binding_hash,
+                append.resource_index,
+            )?;
+        }
+        patches.extend(added);
+    }
+    sundial::package_authoring::sandbox_perk::entity::residency::inspect(manager, source.0)
+        .map_err(invalid)?;
+    append_patched_runtime_resource_owners(
+        manager,
+        &mut authored_graph,
+        &[],
+        &patches,
+        &appends,
+        allocator,
+        tags,
+    )?;
+    if components.is_empty() && !removals.is_empty() {
+        sundial::package_authoring::entity::remove_weapon_components(&mut authored_graph, removals)
+            .map_err(|error| invalid(format!("{label}: {error}")))?;
+    }
+    if let Some(replication) = replication {
+        return replication.finish(manager, source, authored_graph, resources, allocator, tags);
+    }
+    let private = allocator.assigned_tag(tags.len(), "Private asset graph", "runtime graph")?;
+    tags.push(NewTagSpec {
+        template_tag: source,
+        payload: authored_graph,
+        storage: crate::NewTagStorageMode::InheritTemplate,
+    });
+    Ok(private)
+}
+
+/// Validate serialized edits before any owner is cloned or its graph selectors move.
+fn checked_asset_patches(
+    manager: &PackageManager,
+    graph: &[u8],
+    edit_patches: &[sundial::package_authoring::sandbox_perk::program::NativeAssetResourcePatch],
+    appended_owners: &BTreeSet<u32>,
+    label: &str,
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
     let mut patches = Vec::with_capacity(edit_patches.len());
     for (patch_index, patch) in edit_patches.iter().enumerate() {
-        let bindings = weapon_component_bindings(&graph, patch.binding_hash).map_err(invalid)?;
+        let bindings = weapon_component_bindings(graph, patch.binding_hash).map_err(invalid)?;
         let binding = bindings
             .get(usize::from(patch.resource_index))
             .ok_or_else(|| {
@@ -398,31 +502,7 @@ pub(super) fn append_private_asset_graph(
             graph_trajectories: None,
         });
     }
-    // Appends extend serialized definitions only. The graph still uses its
-    // native runtime allocation and interface topology.
-    let mut authored_graph = graph;
-    sundial::package_authoring::sandbox_perk::entity::residency::inspect(manager, source.0)
-        .map_err(invalid)?;
-    append_patched_runtime_resource_owners(
-        manager,
-        &mut authored_graph,
-        &[],
-        &patches,
-        &appends,
-        allocator,
-        tags,
-    )?;
-    if !removals.is_empty() {
-        sundial::package_authoring::entity::remove_weapon_components(&mut authored_graph, removals)
-            .map_err(|error| invalid(format!("{label}: {error}")))?;
-    }
-    let private = allocator.assigned_tag(tags.len(), "Private asset graph", "runtime graph")?;
-    tags.push(NewTagSpec {
-        template_tag: source,
-        payload: authored_graph,
-        storage: crate::NewTagStorageMode::InheritTemplate,
-    });
-    Ok(private)
+    Ok(patches)
 }
 
 fn compile_program(
@@ -485,39 +565,65 @@ fn compile_program(
     Ok(compiled)
 }
 
-pub(super) fn append_private_program_runtime(
+/// Each direct effect's damage profile becomes a private copy with the authored amount or
+/// healing response and damage type.
+fn private_damage_profiles(
     manager: &PackageManager,
-    action_template: TagHash,
     program: &sundial::package_authoring::sandbox_perk::program::Program,
-    particle_symbols: Option<&BTreeMap<String, TagHash>>,
-    label_dictionaries: Option<&BTreeMap<TagHash, NewTagSpec>>,
+    compiled: &mut sundial::package_authoring::sandbox_perk::program::Compiled,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
-) -> AuthoringResult<TagHash> {
-    let mut compiled = compile_program(
-        manager,
-        action_template,
-        program,
-        particle_symbols,
-        label_dictionaries,
-        allocator,
-        tags,
-    )?;
-    super::hud_status::rebind_auxiliary(manager, program, &mut compiled.payload)?;
-    for (index, offsets) in &compiled.asset_offsets {
-        let asset = program
-            .asset(*index)
-            .ok_or_else(|| invalid("A compiled asset has no authored component settings."))?;
-        let Some(graph) = private_asset(manager, program, asset, allocator, tags)? else {
-            continue;
-        };
-        for &offset in offsets {
-            write_u32(&mut compiled.payload, offset, graph.0)?;
+) -> AuthoringResult<()> {
+    for edit in &program.damage_profiles {
+        use sundial::package_authoring::ability_damage;
+        let offset = compiled
+            .graph_offsets
+            .get(edit.action_index)
+            .copied()
+            .flatten()
+            .ok_or_else(|| invalid("The direct effect has no compiled resource reference"))?;
+        if read_u32(&compiled.payload, offset)? != edit.template {
+            return Err(invalid(
+                "The direct effect changed its profile during compilation",
+            ));
         }
+        let (mut payload, shape) = if edit.health.is_some() {
+            ability_damage::read_healing_profile(manager, edit.template)
+        } else {
+            ability_damage::read_neutral_profile(manager, edit.template)
+        }
+        .map_err(invalid)?;
+        let private =
+            allocator.assigned_tag(tags.len(), "Private perk", "outgoing damage profile")?;
+        if let Some(health) = &edit.health {
+            ability_damage::set_health_response(&mut payload, shape, health.amounts())
+                .map_err(invalid)?;
+        } else {
+            ability_damage::set_fixed_amount(&mut payload, shape, f32::from_bits(edit.amount_bits))
+                .map_err(invalid)?;
+        }
+        ability_damage::retype(&mut payload, shape, private.0, edit.damage_type)
+            .map_err(invalid)?;
+        tags.push(NewTagSpec {
+            template_tag: TagHash(edit.template),
+            payload,
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        });
+        write_u32(&mut compiled.payload, offset, private.0)?;
     }
-    // A graph a behavior script names takes its private copy in a private copy of the script,
-    // which the program's Run a Game Script effects then run. A script whose graphs are all
-    // unedited stays the stock one.
+    Ok(())
+}
+
+/// A graph a behavior script names takes its private copy in a private copy of the script,
+/// which the program's Run a Game Script effects then run. A script whose graphs are all
+/// unedited stays the stock one.
+fn private_scripts(
+    manager: &PackageManager,
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+    compiled: &mut sundial::package_authoring::sandbox_perk::program::Compiled,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<()> {
     for script in &compiled.scripts {
         let mut payload = read_tag(manager, TagHash(script.tag), "behavior script")?;
         let mut edited = false;
@@ -552,6 +658,41 @@ pub(super) fn append_private_program_runtime(
             write_u32(&mut compiled.payload, operand, private.0)?;
         }
     }
+    Ok(())
+}
+
+pub(super) fn append_private_program_runtime(
+    manager: &PackageManager,
+    action_template: TagHash,
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+    particle_symbols: Option<&BTreeMap<String, TagHash>>,
+    label_dictionaries: Option<&BTreeMap<TagHash, NewTagSpec>>,
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<TagHash> {
+    let mut compiled = compile_program(
+        manager,
+        action_template,
+        program,
+        particle_symbols,
+        label_dictionaries,
+        allocator,
+        tags,
+    )?;
+    super::hud_status::rebind_auxiliary(manager, program, &mut compiled.payload)?;
+    private_damage_profiles(manager, program, &mut compiled, allocator, tags)?;
+    for (index, offsets) in &compiled.asset_offsets {
+        let asset = program
+            .asset(*index)
+            .ok_or_else(|| invalid("A compiled asset has no authored component settings."))?;
+        let Some(graph) = private_asset(manager, program, asset, allocator, tags)? else {
+            continue;
+        };
+        for &offset in offsets {
+            write_u32(&mut compiled.payload, offset, graph.0)?;
+        }
+    }
+    private_scripts(manager, program, &mut compiled, allocator, tags)?;
     // A HUD status of the project's own on an asset without settings joins its action's asset
     // edits.
     let edits = super::hud_status::asset_edits(manager, program)?;
@@ -572,6 +713,40 @@ pub(super) fn append_private_program_runtime(
             )));
         }
         let mut patches = resolve_program_patches(&edit.patches, particle_symbols)?;
+        let components = edit
+            .components
+            .iter()
+            .map(|component| {
+                let mut component = component.clone();
+                component.patches = resolve_program_patches(&component.patches, particle_symbols)?;
+                Ok(component)
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        // Symbols come from the completed imported asset group. Enroll the whole
+        // group when this graph or one of its owned controllers refers to it, so
+        // a cue carries its bank, profiles and media into the replica companion.
+        let imports = edit
+            .patches
+            .iter()
+            .chain(
+                edit.components
+                    .iter()
+                    .flat_map(|component| &component.patches),
+            )
+            .any(|patch| patch.imported_particle.is_some())
+            || edit
+                .programs
+                .iter()
+                .any(|child| program_names_imported_particles(&child.program));
+        let mut resources = if imports {
+            particle_symbols
+                .ok_or_else(|| invalid("Private graph imported resources have not been allocated"))?
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
         if !edit.programs.is_empty() {
             let graph = read_tag(
                 manager,
@@ -580,6 +755,7 @@ pub(super) fn append_private_program_runtime(
             )?;
             validate_child_references(manager, &graph, edit)?;
         }
+        let children_start = tags.len();
         for child in &edit.programs {
             let private = append_private_program_runtime(
                 manager,
@@ -601,12 +777,24 @@ pub(super) fn append_private_program_runtime(
                 },
             );
         }
+        // Child actions can append their own graphs and residency records. Use
+        // their complete emitted range rather than only the final action tag.
+        for ordinal in children_start..tags.len() {
+            resources.insert(allocator.assigned_tag(
+                ordinal,
+                "Private graph dependency",
+                "owned controller resource",
+            )?);
+        }
+        let resources = resources.into_iter().collect::<Vec<_>>();
         let private = append_private_asset_graph(
             manager,
             TagHash(edit.source_graph),
             &patches,
             &edit.appends,
             &edit.remove_owners.iter().copied().collect(),
+            &components,
+            &resources,
             &format!("Native asset edit {edit_index}"),
             allocator,
             tags,

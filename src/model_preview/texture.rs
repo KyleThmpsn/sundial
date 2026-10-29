@@ -157,6 +157,7 @@ pub(crate) fn iridescence(manager: &PackageManager) -> Option<Texture> {
 }
 
 pub(crate) fn load(manager: &PackageManager, tag: u32) -> Result<Texture, String> {
+    let _stage = super::timing::stage("textures");
     let entry = manager.get_entry(tag).ok_or("Texture header is missing")?;
     if entry.file_type != 32 || !matches!(entry.file_subtype, 1..=3) {
         return Err("Unsupported texture header type".into());
@@ -189,6 +190,7 @@ pub(crate) fn load(manager: &PackageManager, tag: u32) -> Result<Texture, String
 
 /// Decode a complete local native texture without looking up a package tag.
 pub(crate) fn from_payload(tag: u32, header: &[u8], bytes: &[u8]) -> Result<Texture, String> {
+    let _stage = super::timing::stage("textures");
     if bytes.len() > MAX_PAYLOAD as usize {
         return Err("Texture data exceeds the preview budget".into());
     }
@@ -309,10 +311,68 @@ pub(super) fn decode(
                 })
                 .collect());
         }
-        71 | 72 => return crate::image_processing::decode_bc1(bytes, width, height),
+        71 | 72 => {
+            return banded(bytes, 8, [width, height], |band, rows| {
+                crate::image_processing::decode_bc1(band, width, rows)
+            });
+        }
         74 | 75 | 77 | 78 | 80 | 83 | 98 | 99 => {}
         _ => return Err(format!("Unsupported base-color texture format {format}")),
     }
+    let block_size = if format == 80 { 8 } else { 16 };
+    banded(bytes, block_size, [width, height], |band, rows| {
+        blocks(band, format, width, rows)
+    })
+}
+
+/// Below this many pixels an image decodes on the calling thread. A vehicle decodes about a
+/// thousand smaller levels, and starting threads for each cost more than they saved.
+const BANDED_PIXELS: usize = 1024 * 1024;
+
+/// Decodes a block-compressed image as bands of block rows, one band per thread. `decode` turns
+/// a band's bytes into its pixels, given the band's height in pixels. A large plate takes tens of
+/// milliseconds on one thread.
+fn banded<T: Send>(
+    bytes: &[u8],
+    block_size: usize,
+    [width, height]: [usize; 2],
+    decode: impl Fn(&[u8], usize) -> Result<Vec<T>, String> + Sync,
+) -> Result<Vec<T>, String> {
+    let rows = height.div_ceil(4);
+    let row_bytes = width.div_ceil(4) * block_size;
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(8)
+        .min(rows);
+    // A truncated image is reported by decoding it whole.
+    if width * height < BANDED_PIXELS || threads < 2 || bytes.len() < rows * row_bytes {
+        return decode(bytes, height);
+    }
+    let per_band = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let bands: Vec<_> = (0..rows)
+            .step_by(per_band)
+            .map(|first| {
+                let last = (first + per_band).min(rows);
+                let band = &bytes[first * row_bytes..last * row_bytes];
+                let pixels = (last * 4).min(height) - first * 4;
+                let decode = &decode;
+                scope.spawn(move || decode(band, pixels))
+            })
+            .collect();
+        let mut pixels = Vec::new();
+        for band in bands {
+            pixels.extend(
+                band.join()
+                    .map_err(|_| "Texture decoding stopped unexpectedly".to_owned())??,
+            );
+        }
+        Ok(pixels)
+    })
+}
+
+/// RGBA pixels of a BC2, BC3, BC4, BC5 or BC7 image.
+fn blocks(bytes: &[u8], format: u32, width: usize, height: usize) -> Result<Vec<u8>, String> {
     let columns = width.div_ceil(4);
     let rows = height.div_ceil(4);
     let block_size = if format == 80 { 8 } else { 16 };

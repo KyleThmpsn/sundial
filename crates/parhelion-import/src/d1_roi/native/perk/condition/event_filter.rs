@@ -1,4 +1,4 @@
-//! Event slot, ADS and dual-label predicates with matched original consumers.
+//! Event slot, spawn, ADS, status, adjustment and dual-label predicates with matched consumers.
 use super::*;
 
 pub(super) fn read(
@@ -10,7 +10,13 @@ pub(super) fn read(
     let kind = p.u8(at + 5)?;
     if !matches!(
         (p.u32(at - 4)?, kind),
-        (0x808030F1, 3) | (0x808030A1, 9) | (0x80802192, 23)
+        (0x808030F1, 3)
+            | (0x808030A1, 9)
+            | (0x80802192, 23)
+            | (0x80802193, 28)
+            | (0x808031FA, 30)
+            | (0x80803174, 31)
+            | (0x808030AE, 35)
     ) {
         return Ok(None);
     }
@@ -21,7 +27,22 @@ pub(super) fn read(
     if kind == 3 {
         return value(source, p, at, native).map(Some);
     }
-    if kind == 9 {
+    if kind == 35 {
+        return adjustment(p, at).map(Some);
+    }
+    if matches!(kind, 30 | 31) {
+        return duration::read(source, p, at, native).map(Some);
+    }
+    if kind == 28 {
+        ensure!(
+            p.u8(at + 8)? & !0x7F == 0 && p.bytes::<3>(at + 9)? == [0; 3],
+            "Source spawn event has an unsupported type or reserved field"
+        );
+        // Source 4C7B98 and native DC8270 publish the saved pending spawn type as
+        // kind 28. Packet setters sign-extend +4/+8 into pending state +5B0/+750.
+        // Both 76CE90/1080840 checkers require its bit in +8. Zero selects nothing.
+        // Keep the matched low seven types without naming their individual ordinals.
+    } else if kind == 9 {
         ensure!(
             p.u8(at + 8)? & !7 == 0 && p.bytes::<3>(at + 9)? == [0; 3],
             "Source ability-slot event requires an unsupported slot or reserved field"
@@ -42,6 +63,28 @@ pub(super) fn read(
         kind,
         bytes: p.bytes::<12>(at)?.to_vec(),
     }))
+}
+
+fn adjustment(p: &Payload, at: usize) -> Result<NativeNode> {
+    ensure!(
+        p.u64(at + 8)? == 0 && p.u32(at + 0x10)? == u32::MAX && p.u32(at + 0x14)? == 0,
+        "Source adjustment condition requires a specific identity or nonzero metadata"
+    );
+    for offset in [0x18, 0x20] {
+        let low = p.f32(at + offset)?;
+        let high = p.f32(at + offset + 4)?;
+        ensure!(
+            low.is_finite() && high.is_finite() && low <= high,
+            "Source adjustment condition has an invalid numeric range"
+        );
+    }
+    // Source 69D046 and native FBA8B4 publish the requested amount followed by
+    // Float32(after - before). Their 76CAC0/107E220 checkers retain both inclusive
+    // ranges. The event's identity is unresolved across builds, so only the wildcard
+    // is admitted. Native request evaluation and adjustment still use native behavior.
+    let mut bytes = p.bytes::<40>(at)?.to_vec();
+    bytes[5] = 34;
+    Ok(NativeNode { kind: 34, bytes })
 }
 
 fn value(

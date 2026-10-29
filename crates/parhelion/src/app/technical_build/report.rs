@@ -502,11 +502,16 @@ pub(super) fn append_install(out: &mut String, recipe: &WeaponRecipe) {
     let class = overrides
         .subclass_class
         .and_then(crate::ArmorClass::native_class);
-    field(
-        out,
-        "goes to",
-        install_text(recipe.kind, class, overrides.subclass_every_class),
-    );
+    let goes_to = if recipe.is_imported_ornament() {
+        "every socket of its class and slot, and Collections, unlocked".to_owned()
+    } else if let Some(weapon) = &overrides.ornament_weapon {
+        format!(
+            "the ornament socket of stock weapon {weapon}, and Collections beside its stock ornament, unlocked"
+        )
+    } else {
+        install_text(recipe.kind, class, overrides.subclass_every_class)
+    };
+    field(out, "goes to", goes_to);
 }
 
 /// What only one kind of item carries: a subclass's class and authored abilities, armor's class
@@ -529,11 +534,6 @@ pub(super) fn append_kind(out: &mut String, recipe: &WeaponRecipe, donor: Option
                     "{}% of the complete forward and reverse motion programs",
                     settings.speed_percent
                 ),
-            );
-            field(
-                out,
-                "Gameplay Verification",
-                "Speed, boost and alternate summoning require an in-game test",
             );
         }
         ItemKind::Armor => {
@@ -916,6 +916,11 @@ pub(super) fn append_donors(out: &mut String, recipe: &WeaponRecipe, donor: Opti
             recipe.overrides.type_marker_donor.as_ref(),
             "none  (base weapon)",
         ),
+        (
+            "behavior donor",
+            recipe.overrides.behavior_donor.as_ref(),
+            "none  (base weapon)",
+        ),
     ] {
         match reference {
             Some(reference) => donor_reference(out, name, reference),
@@ -1052,8 +1057,8 @@ pub(super) fn append_item(out: &mut String, recipe: &WeaponRecipe, donor: Option
     if weapon {
         append_weapon_item(out, recipe, donor);
     }
-    // A subclass or mod has no Collections entry.
-    if recipe.kind.has_collections() {
+    // A subclass, or a mod other than an imported ornament, has no Collections entry.
+    if recipe.has_collections() {
         field(
             out,
             "collection placement",
@@ -1564,7 +1569,7 @@ pub(super) fn append_sockets(out: &mut String, recipe: &WeaponRecipe, donor: Opt
         for (name, index) in [
             ("reusable plug set", column.reusable_plug_set_index),
             ("randomized plug set", column.randomized_plug_set_index),
-            ("rolls from its choices, swappable", column.reusable_choices),
+            ("rolls from its choices, reusable", column.reusable_choices),
         ] {
             if let Some(index) = index {
                 let _ = writeln!(out, "                    {name} {index}");

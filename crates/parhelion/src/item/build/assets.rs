@@ -8,11 +8,12 @@ pub(super) struct Plan {
     pub weapon_tag_count: usize,
     pub weapon_runtime_start: usize,
     pub watermark: crate::watermark::WatermarkPlan,
-    pub badge: crate::icon_chain::Plan,
+    pub badge: TagHash,
+    pub packages: crate::asset_packages::AssetPackages,
     pub hud_table: Option<ReplacementSpec>,
     pub subclass_hud_table: Option<ReplacementSpec>,
     pub subclass_ui: Vec<ReplacementSpec>,
-    pub hud_asset_start: usize,
+    pub hud_assets: Vec<TagHash>,
     /// The HUD icon layers the project's own HUD status images make, by image and by the stock
     /// status whose layer each copies.
     pub hud_status_layers: BTreeMap<(String, u32), TagHash>,
@@ -197,7 +198,16 @@ pub(super) fn plan(
             .reference_overrides
             .extend(plan.reference_overrides);
     }
-    let hud_asset_start = badge_icon_plan.new_tags.len();
+    let badge = badge_icon_plan.container_tag;
+    let mut packages = crate::asset_packages::AssetPackages::primary(
+        badge_icon_plan.new_tags,
+        badge_icon_plan.reference_overrides,
+    )?;
+    let hud_starts = packages
+        .packages
+        .iter()
+        .map(|package| (package.id, package.tags.len()))
+        .collect::<BTreeMap<_, _>>();
     let hud_table = crate::hud_icon::assets::build(
         manager,
         resolved.iter().filter_map(|donor| {
@@ -208,8 +218,7 @@ pub(super) fn plan(
                 .as_ref()
                 .map(|image| (donor.weapon.identity.type_hash, image))
         }),
-        &mut badge_icon_plan.new_tags,
-        &mut badge_icon_plan.reference_overrides,
+        &mut packages,
     )
     .map_err(|error| {
         error.context(format!(
@@ -227,28 +236,30 @@ pub(super) fn plan(
         ))
     })?;
     // HUD status images follow the ammunition HUD icons, within the enrolled HUD range.
-    let hud_status_layers = super::super::hud_status::author_images(
-        manager,
-        programs,
-        &mut badge_icon_plan.new_tags,
-        &mut badge_icon_plan.reference_overrides,
-    )?;
+    let hud_status_layers =
+        super::super::hud_status::author_images(manager, programs, &mut packages)?;
     let mut perk_icon_dependencies = Vec::new();
     // A private icon container goes in the asset package, and `author` appends it with its
     // companion and anything it paints.
     type ContainerAuthor<'a> = dyn FnMut(
+            (u16, usize),
             &mut Vec<crate::NewTagSpec>,
             &mut Vec<crate::NewTagReferenceOverride>,
         ) -> AuthoringResult<TagHash>
         + 'a;
     let mut private_container = |author: &mut ContainerAuthor<'_>| {
-        let container = author(
-            &mut badge_icon_plan.new_tags,
-            &mut badge_icon_plan.reference_overrides,
-        )?;
+        let container = packages.author(|package, first| {
+            let mut nodes = Vec::new();
+            let mut references = Vec::new();
+            let container = author((package, first), &mut nodes, &mut references)?;
+            Ok((container, nodes, references))
+        })?;
         let companion = crate::shared_tag_memory::adjacent_companion_tag(container)?;
         let dependencies = crate::shared_tag_memory::validate_shared_tag_companion_payload(
-            &badge_icon_plan.new_tags[usize::from(companion.entry_index())].payload,
+            &packages
+                .tag(companion)
+                .ok_or_else(|| invalid("Private icon companion is missing"))?
+                .payload,
             companion,
             container,
         )?;
@@ -258,16 +269,17 @@ pub(super) fn plan(
             dependencies
                 .into_iter()
                 .map(TagHash)
-                .filter(|tag| tag.pkg_id() != crate::package_profile::window().first()),
+                .filter(|tag| packages.tag(*tag).is_none()),
         );
         AuthoringResult::Ok(container)
     };
     let mut private_icon = |icon: &crate::perk::Icon, source_container: TagHash| {
-        private_container(&mut |nodes, references| {
+        private_container(&mut |destination, nodes, references| {
             crate::icon_edit::package_icons::author(
                 manager,
                 icon,
                 source_container,
+                destination,
                 nodes,
                 references,
             )
@@ -291,8 +303,14 @@ pub(super) fn plan(
                         .icon
                         .as_ref()
                         .map(|icon| {
-                            private_container(&mut |nodes, references| {
-                                crate::subclass::node_icon::author(manager, icon, nodes, references)
+                            private_container(&mut |destination, nodes, references| {
+                                crate::subclass::node_icon::author(
+                                    manager,
+                                    icon,
+                                    destination,
+                                    nodes,
+                                    references,
+                                )
                             })
                         })
                         .transpose()
@@ -318,8 +336,14 @@ pub(super) fn plan(
                 .icon
                 .as_ref()
                 .map(|icon| {
-                    private_container(&mut |nodes, references| {
-                        crate::subclass::node_icon::author(manager, icon, nodes, references)
+                    private_container(&mut |destination, nodes, references| {
+                        crate::subclass::node_icon::author(
+                            manager,
+                            icon,
+                            destination,
+                            nodes,
+                            references,
+                        )
                     })
                 })
                 .transpose()?;
@@ -332,8 +356,8 @@ pub(super) fn plan(
         .iter()
         .map(|donor| {
             if let Some(art) = &donor.screen_art {
-                return private_container(&mut |nodes, references| {
-                    crate::subclass::art::author(manager, art, nodes, references)
+                return private_container(&mut |destination, nodes, references| {
+                    crate::subclass::art::author(manager, art, destination, nodes, references)
                 })
                 .map(Some)
                 .map_err(|error| {
@@ -347,8 +371,8 @@ pub(super) fn plan(
                 .nameplate
                 .as_ref()
                 .map(|nameplate| {
-                    private_container(&mut |nodes, references| {
-                        crate::emblem::author(manager, nameplate, nodes, references)
+                    private_container(&mut |destination, nodes, references| {
+                        crate::emblem::author(manager, nameplate, destination, nodes, references)
                     })
                 })
                 .transpose()
@@ -391,11 +415,7 @@ pub(super) fn plan(
         .map(|(mut row, container)| {
             if let Some(crate::subclass::hud::Art::OwnIcon) = row.art {
                 let payload = container
-                    .and_then(|container| {
-                        badge_icon_plan
-                            .new_tags
-                            .get(usize::from(container.entry_index()))
-                    })
+                    .and_then(|container| packages.tag(container))
                     .ok_or_else(|| invalid("An ability's HUD art names an icon the build lacks"))?;
                 row.art = Some(crate::subclass::hud::Art::Layer(
                     crate::subclass::hud::primary_layer(manager, &payload.payload, true)?,
@@ -427,9 +447,17 @@ pub(super) fn plan(
         weapon_tag_count: weapon_tag_ordinal_base,
         weapon_runtime_start: weapon_runtime_tag_start,
         watermark: watermark_plan,
-        badge: badge_icon_plan,
+        badge,
+        hud_assets: packages
+            .packages
+            .iter()
+            .flat_map(|package| {
+                let start = hud_starts.get(&package.id).copied().unwrap_or(0);
+                (start..package.tags.len()).map(move |index| TagHash::new(package.id, index as u16))
+            })
+            .collect(),
+        packages,
         hud_table,
-        hud_asset_start,
         hud_status_layers,
         weapon_icon_containers: authored_weapon_icon_containers,
         entry_icon_containers,
@@ -459,7 +487,7 @@ pub(super) fn author_icon_rows(
     custom_plugs: &mut [ResolvedCustomPlug],
 ) -> AuthoringResult<IconRows> {
     let (mut authored_item_icons, badge_icon_index) =
-        append_badge_icon_row(stock_icons, assets.badge.container_tag)?;
+        append_badge_icon_row(stock_icons, assets.badge)?;
     let mut authored_weapon_icon_indices = Vec::with_capacity(resolved.len());
     for (donor, authored_container) in resolved
         .iter()

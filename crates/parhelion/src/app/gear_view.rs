@@ -761,11 +761,14 @@ impl PackageAuthoringApp {
             let selected_detail = selected
                 .filter(|_| kind == ItemKind::Armor)
                 .map(|donor| armor_detail(catalog, donor.hash, Some(donor.type_name.as_str())));
+            let sources = &self.item_sources;
             catalog.draw_weapon_donor_header_picker(
                 ui,
                 ("gear-base", kind),
                 &mut self.donor_query,
-                candidates.iter(),
+                candidates
+                    .iter()
+                    .filter(|donor| sources.listed(catalog, donor.hash)),
                 WeaponDonorPickerOptions {
                     selected_hash: current_hash,
                     selected_label: &selected_text,
@@ -782,6 +785,7 @@ impl PackageAuthoringApp {
         if self.catalog.is_none() {
             ui.add_enabled(false, egui::Button::new(selected_text));
         }
+        self.draw_base_source(ui, current_hash);
         if let Some(WeaponDonorPickerAction::Select(hash)) = selection
             && current_hash != Some(hash)
             && let Some(name) = self
@@ -981,6 +985,7 @@ impl PackageAuthoringApp {
                     show_plug_safety_warnings: *show_plug_safety_warnings,
                     show_experimental_options: false,
                     show_technical_rows: show_technical_socket_rows,
+                    view: SocketView::Reusable,
                     perk_request,
                     donor,
                     log,

@@ -86,7 +86,7 @@ pub enum Codec {
 }
 
 impl Codec {
-    pub(super) const fn width(self) -> usize {
+    pub const fn width(self) -> usize {
         match self {
             Self::Float | Self::Integer => 4,
             Self::Byte | Self::UnsignedByte => 1,

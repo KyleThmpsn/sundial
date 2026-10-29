@@ -19,16 +19,6 @@ pub(super) struct RuntimeAssets<'a> {
     pub particle_symbols: &'a mut BTreeMap<usize, BTreeMap<String, TagHash>>,
 }
 
-/// The allocator and tag list of one reserved asset group's package.
-#[cfg(feature = "d2-model-importer")]
-fn asset_target(
-    packages: &mut crate::asset_packages::AssetPackages,
-    index: usize,
-) -> (AppendedTagAllocator, &mut Vec<NewTagSpec>) {
-    let package = &mut packages.packages[index];
-    (AppendedTagAllocator::new(package.id, 0), &mut package.tags)
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct EntitySources<'a> {
     pub sandbox_patterns: &'a [u8],
@@ -329,6 +319,7 @@ fn weapon_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
         || !donor.animation_action_sources.is_empty()
         || donor.pinned_appearance.is_some()
         || donor.type_marker_pattern_source.is_some()
+        || donor.behavior_pattern_source.is_some()
         || overrides.ammo_type.is_some()
         || !overrides.runtime_values.is_empty()
         || overrides.fired_graph.is_some()
@@ -410,6 +401,7 @@ fn author_entity(
         crosshair: imported_crosshair,
         zoom: imported_zoom,
         inputs: imported_inputs,
+        timing: imported_timing,
     } = imported;
     let vehicle_settings = donor.weapon.overrides.sparrow.as_ref();
     let has_runtime_edits = recipe_runtime_edits(donor)
@@ -514,6 +506,11 @@ fn author_entity(
         kind: donor
             .type_marker_pattern_source
             .map(|source| source.weapon_content_group_hash),
+        // The pattern row's identity can differ from the investment item a runtime is loaded by.
+        behavior: donor
+            .behavior_pattern_source
+            .zip(donor.weapon.overrides.behavior_donor)
+            .map(|(source, item)| (source.weapon_content_group_hash, item)),
         hold: donor
             .pinned_appearance
             .map(|source| {
@@ -631,6 +628,16 @@ fn author_entity(
     #[cfg(feature = "d2-model-importer")]
     let extended_overrides = {
         let mut overrides = runtime_overrides.clone();
+        if let Some(particles) = &imported_particles {
+            overrides
+                .runtime_resource_patches
+                .extend(particles.sword_patches(
+                    manager,
+                    &pattern_entity,
+                    &particle_symbols,
+                    overrides.sword_profile.is_some(),
+                )?);
+        }
         if let Some(character) = &imported_character {
             character.apply(
                 manager,
@@ -755,6 +762,14 @@ fn author_entity(
     }
     let with_stats;
     #[cfg(feature = "d2-model-importer")]
+    if let Some(timing) = imported_timing {
+        stat_patches.extend(timing.patches(
+            manager,
+            &pattern_entity,
+            pattern_source.weapon_translation_group_hash,
+        )?);
+    }
+    #[cfg(feature = "d2-model-importer")]
     stat_patches.extend(crate::weapon::input::patches(
         manager,
         &pattern_entity,
@@ -851,24 +866,17 @@ fn author_entity(
     // Clips and audio media grow with every imported weapon, so they take a group in
     // the asset packages. Only the owners that route them stay in the host package.
     #[cfg(feature = "d2-model-importer")]
-    let group = imported_asset_group(
-        assets.packages,
-        imported_audio.as_ref(),
-        imported_animation.as_ref(),
-        equipment_animation.as_ref(),
-    )?;
+    let mut asset_stream = crate::asset_packages::stream::Stream::new(assets.packages)?;
     #[cfg(feature = "d2-model-importer")]
-    if let (Some(audio), Some(animation), Some((index, _))) =
-        (&imported_audio, &mut imported_animation, group)
-    {
-        let (allocator, tags) = asset_target(assets.packages, index);
+    if let (Some(audio), Some(animation)) = (&imported_audio, &mut imported_animation) {
+        let (allocator, tags) = asset_stream.target();
         crate::item::custom_runtime::audio::author_clip_events(
             manager, audio, animation, allocator, tags,
         )?;
     }
     #[cfg(feature = "d2-model-importer")]
-    let private_animation_owner = match (&imported_animation, group) {
-        (Some(animation), Some((index, _))) => {
+    let private_animation_owner = match &imported_animation {
+        Some(animation) => {
             let (_, owner) = crate::item::custom_runtime::animation::author(
                 manager,
                 animation,
@@ -876,7 +884,7 @@ fn author_entity(
                 &mut pattern_entity,
                 weapon_runtime_tag_allocator,
                 weapon_runtime_new_tags,
-                asset_target(assets.packages, index),
+                asset_stream.target(),
                 animation_cache,
             )?;
             Some(owner)
@@ -884,7 +892,7 @@ fn author_entity(
         _ => None,
     };
     #[cfg(feature = "d2-model-importer")]
-    if let (Some(animation), Some((index, _))) = (&equipment_animation, group) {
+    if let Some(animation) = &equipment_animation {
         crate::item::custom_runtime::animation::equipment::author(
             manager,
             animation,
@@ -892,14 +900,14 @@ fn author_entity(
             &mut pattern_entity,
             weapon_runtime_tag_allocator,
             weapon_runtime_new_tags,
-            asset_target(assets.packages, index),
+            asset_stream.target(),
             animation_cache,
             &particle_symbols,
         )?;
     }
     #[cfg(feature = "d2-model-importer")]
-    if let (Some(audio), Some((index, _))) = (&imported_audio, group) {
-        let (allocator, tags) = asset_target(assets.packages, index);
+    if let Some(audio) = &imported_audio {
+        let (allocator, tags) = asset_stream.target();
         if let Some(impact) =
             crate::item::custom_runtime::audio::author_impacts(manager, audio, allocator, tags)?
         {
@@ -913,21 +921,11 @@ fn author_entity(
             private_animation_owner,
             weapon_runtime_tag_allocator,
             weapon_runtime_new_tags,
-            asset_target(assets.packages, index),
+            asset_stream.target(),
         )?;
     }
     #[cfg(feature = "d2-model-importer")]
-    if let Some((index, start)) = group {
-        let package = &assets.packages.packages[index];
-        let allocator = AppendedTagAllocator::new(package.id, 0);
-        for ordinal in start..package.tags.len() {
-            assets.placed.push(allocator.assigned_tag(
-                ordinal,
-                "Imported runtime asset",
-                "dependency",
-            )?);
-        }
-    }
+    assets.placed.extend(asset_stream.finish(assets.packages)?);
     crate::vehicle::authoring::apply(
         manager,
         vehicle_settings,
@@ -1012,6 +1010,7 @@ struct ImportedRuntime {
     crosshair: Option<crate::item::custom_runtime::crosshair::Crosshair>,
     zoom: Option<f32>,
     inputs: Vec<crate::weapon::input::Input>,
+    timing: Option<crate::weapon::input::timing::Timing>,
 }
 
 #[cfg(feature = "d2-model-importer")]
@@ -1027,6 +1026,7 @@ impl ImportedRuntime {
             || self.crosshair.is_some()
             || self.zoom.is_some()
             || !self.inputs.is_empty()
+            || self.timing.is_some()
     }
 
     /// Reads each part from `donor`'s imported graph, all empty for a weapon without one.
@@ -1045,6 +1045,7 @@ impl ImportedRuntime {
             crosshair: None,
             zoom: None,
             inputs: Vec::new(),
+            timing: None,
         };
         let mut directories = BTreeSet::new();
         if let Some(reference) = donor.weapon.overrides.imported_graph.as_ref() {
@@ -1065,6 +1066,7 @@ impl ImportedRuntime {
                 crosshair: crosshair::load(graph)?,
                 zoom: crate::weapon::zoom::imported(graph.value())?,
                 inputs: crate::weapon::input::imported(graph.value())?,
+                timing: crate::weapon::input::timing::imported(graph.value())?,
             };
             if let Some(audio) = loaded.audio.as_mut() {
                 audio.set_item(donor.weapon.identity.item_hash);
@@ -1142,38 +1144,6 @@ fn resolved_hud_key(
             Ok(Some((entity, appearance.weapon_content_group_hash)))
         },
     )
-}
-
-#[cfg(feature = "d2-model-importer")]
-fn imported_asset_group(
-    packages: &mut crate::asset_packages::AssetPackages,
-    audio: Option<&crate::item::custom_runtime::audio::ImportedAudio>,
-    animation: Option<&crate::item::custom_runtime::animation::ImportedAnimation>,
-    equipment: Option<&crate::item::custom_runtime::animation::equipment::EquipmentAnimation>,
-) -> AuthoringResult<Option<(usize, usize)>> {
-    let clip_growth = match (audio, animation) {
-        (Some(audio), Some(animation)) => {
-            crate::item::custom_runtime::audio::clip_event_growth(audio, animation)?
-        }
-        _ => 0,
-    };
-    let bounds = animation
-        .iter()
-        .flat_map(|animation| animation.asset_bounds())
-        .map(|size| size.saturating_add(clip_growth))
-        .chain(audio.iter().flat_map(|audio| audio.asset_bounds()))
-        .chain(
-            equipment
-                .iter()
-                .flat_map(|animation| animation.asset_bounds()),
-        )
-        .collect::<Vec<_>>();
-    Ok(if bounds.is_empty() {
-        None
-    } else {
-        let index = packages.reserve_group(bounds)?;
-        Some((index, packages.packages[index].tags.len()))
-    })
 }
 
 #[cfg(test)]

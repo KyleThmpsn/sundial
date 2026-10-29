@@ -1,5 +1,7 @@
 //! Complete source subclass choices, separate from readiness to emit native behavior.
 use super::*;
+mod definition;
+pub use definition::AbilityCatalog;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SubclassCatalog {
@@ -11,7 +13,11 @@ pub struct SubclassCatalog {
     pub pattern: u32,
     pub graph: u32,
     pub controller: u32,
+    #[serde(default)]
+    pub controller_class: u32,
     pub bank: u32,
+    #[serde(default)]
+    pub abilities: Vec<AbilityCatalog>,
     pub nodes: Vec<SubclassNode>,
     pub source_inputs: Value,
 }
@@ -39,15 +45,26 @@ pub struct SubclassStep {
     pub source: Value,
 }
 
-struct SourceAbility {
-    pattern: u32,
-    graph: u32,
-    radiance: Option<(u32, u32)>,
-    inputs: BTreeMap<u32, Payload>,
-}
-
 impl Source {
-    /// Preserve the whole source grid for subclasses with a recognized controller family.
+    /// Read every ability definition and its declared execution records, including unsupported families.
+    /// This source census does not certify native graph or transitive resource conversion.
+    pub fn ability_catalog(&self) -> Result<Vec<AbilityCatalog>> {
+        ensure!(
+            self.report
+                .selected
+                .iter()
+                .all(|package| package.platform == 8),
+            "Ability discovery currently supports Xbox One Rise of Iron packages"
+        );
+        let abilities = definition::read(self, &mut BTreeMap::new())?;
+        self.unchanged()?;
+        Ok(abilities
+            .into_values()
+            .map(|ability| ability.catalog)
+            .collect())
+    }
+
+    /// Preserve every source subclass grid and all of its referenced ability families.
     /// A catalog is an intake record and does not certify native materialization.
     pub fn subclass_choices(&self) -> Result<Vec<SubclassCatalog>> {
         ensure!(
@@ -58,7 +75,7 @@ impl Source {
             "Subclass discovery currently supports Xbox One Rise of Iron packages"
         );
         let mut common = BTreeMap::new();
-        let abilities = ability_graphs(self, &mut common)?;
+        let abilities = definition::read(self, &mut common)?;
         let (definitions_tag, definitions) = self.table(0x80801933)?;
         let (strings_tag, strings) = self.table(0x808034C7)?;
         let definition_rows = definitions.array(8, 24, Some(0x808016BD))?;
@@ -100,6 +117,7 @@ impl Source {
                 .context("Source subclass nodes")?;
             ensure!(!source_nodes.is_empty(), "Source subclass grid is empty");
             let mut selected_rows = BTreeSet::new();
+            let mut equipped_supers = BTreeSet::new();
             for node in source_nodes {
                 for step in node["steps"].as_array().context("Source subclass steps")? {
                     for variant in step["variants"]
@@ -107,6 +125,9 @@ impl Source {
                         .context("Source subclass variants")?
                     {
                         for grant in grants(variant)? {
+                            if grant.u8(11)? != u8::MAX && grant.u8(12)? == 1 {
+                                equipped_supers.insert(grant.u8(11)?);
+                            }
                             for row in [grant.u8(4)?, grant.u8(11)?] {
                                 if row != u8::MAX {
                                     ensure!(
@@ -120,20 +141,14 @@ impl Source {
                     }
                 }
             }
-            let radiance = selected_rows
-                .iter()
-                .filter_map(|row| {
-                    let ability = &abilities[row];
-                    ability.radiance.map(|pair| (*row, ability, pair))
-                })
-                .collect::<Vec<_>>();
-            let [(ability_row, ability, (controller, bank))] = radiance.as_slice() else {
-                ensure!(
-                    radiance.is_empty(),
-                    "Source subclass has ambiguous controller families"
-                );
-                continue;
+            let equipped_supers = equipped_supers.into_iter().collect::<Vec<_>>();
+            let [ability_row] = equipped_supers.as_slice() else {
+                anyhow::bail!("Source subclass {item:08X} has no unique equipped Super grant");
             };
+            let ability = &abilities[ability_row];
+            let primary = &ability.catalog;
+            let controller = primary.controller;
+            let bank = primary.bank;
             for selected in &selected_rows {
                 inputs.extend(abilities[selected].inputs.clone());
             }
@@ -199,24 +214,32 @@ impl Source {
             let connections = super::super::connections::Graph::read(
                 ability
                     .inputs
-                    .get(&ability.graph)
+                    .get(&primary.graph)
                     .context("Source ability graph payload")?,
             )?;
             connections.validate_owners(&ability.inputs)?;
             let controller_occurrence = connections
                 .components
                 .iter()
-                .position(|tag| tag == controller)
-                .context("Source Radiance controller occurrence")?;
-            let sequence_inputs = super::controller::Sequences::read(
-                self,
-                ability
-                    .inputs
-                    .get(controller)
-                    .context("Source Radiance controller payload")?,
-                &connections,
-                controller_occurrence,
-            )?;
+                .position(|tag| *tag == controller)
+                .context("Source subclass controller occurrence")?;
+            let sequence_inputs = if primary.controller_class == 0x808025B8
+                && primary.controller_definition == 0x80802A4A
+                && primary.bank_class == 0x80802343
+                && primary.bank_definition == 0x80802B06
+            {
+                Some(super::controller::Sequences::read(
+                    self,
+                    ability
+                        .inputs
+                        .get(&controller)
+                        .context("Source Radiance controller payload")?,
+                    &connections,
+                    controller_occurrence,
+                )?)
+            } else {
+                None
+            };
             let lifecycle = connections
                 .components
                 .iter()
@@ -230,7 +253,10 @@ impl Source {
                     "lifecycle":super::lifecycle::Lifecycle::read(owner)?}))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let actions = sequence_inputs.actions();
+            let actions = sequence_inputs
+                .as_ref()
+                .map(|inputs| inputs.actions())
+                .unwrap_or_default();
             let character_actions = actions
                 .iter()
                 .filter(|(_, owner_mode, _)| !owner_mode)
@@ -253,10 +279,12 @@ impl Source {
                 description,
                 grid: u16::try_from(number(&talents, "ordinal")?)?,
                 ability_row: *ability_row,
-                pattern: ability.pattern,
-                graph: ability.graph,
-                controller: *controller,
-                bank: *bank,
+                pattern: primary.pattern,
+                graph: primary.graph,
+                controller,
+                controller_class: primary.controller_class,
+                bank,
+                abilities: selected_rows.iter().map(|row| abilities[row].catalog.clone()).collect(),
                 nodes,
                 source_inputs: json!({
                     "source":"d1_roi","builds":self.report.builds,"stamp":self.report.stamp,
@@ -267,7 +295,7 @@ impl Source {
                     "animation_actions":actions,
                     "character_animation_bank":animation_bank,
                     "foundation_scope":"fully_unlocked_prerequisite_closure",
-                    "limits":["Controller family identification and complete source grid intake only.",
+                    "limits":["Every source subclass identity, node and referenced ability is retained. This is source intake, not native materialization.",
                         "Foundation roles describe qualified automatic and singleton prerequisite contributions in a fully unlocked build. Unqualified structures remain unset.",
                         "Declared ability graph owners and finished perk inputs are retained. Transitive script, effect and resource closure requires separate translation.",
                         "Native graph, stat and perk translations must cover every selected contribution before materialization."]
@@ -337,103 +365,6 @@ fn foundations(shared: &Payload, nodes: &[Value]) -> Result<BTreeMap<u32, bool>>
         };
         result.insert(index, foundation);
     }
-    Ok(result)
-}
-
-fn ability_graphs(
-    source: &Source,
-    common: &mut BTreeMap<u32, Payload>,
-) -> Result<BTreeMap<u8, SourceAbility>> {
-    let (table_tag, table) = source.table(0x80803432)?;
-    let rows = table.array(8, 40, Some(0x8080343C))?;
-    ensure!(
-        !rows.is_empty() && rows.len() < 255,
-        "Source ability table is empty or too large"
-    );
-    let assignments = source.runtime_assignments(common)?;
-    let mut patterns = BTreeSet::new();
-    let mut result = BTreeMap::new();
-    for (ordinal, row) in rows.into_iter().enumerate() {
-        let pattern = table.u32(row)?;
-        ensure!(
-            patterns.insert(pattern),
-            "Duplicate source ability identity"
-        );
-        let graph_tag = *assignments
-            .get(&pattern)
-            .context("Source ability has no runtime assignment")?;
-        ensure!(
-            source.reference(graph_tag)? == 0x80800734,
-            "Source ability graph type differs"
-        );
-        let graph = source.read(graph_tag)?;
-        let mut inputs = BTreeMap::new();
-        let mut controller = None;
-        let mut bank = None;
-        for owner in graph.array(32, 12, Some(0x80800715))? {
-            let tag = graph.u32(owner)?;
-            ensure!(
-                source.reference(tag)? == 0x80800861,
-                "Source ability owner type differs"
-            );
-            let data = source.read(tag)?;
-            let runtime = data.pointer(16)?;
-            let settings = data.pointer(24)?;
-            let runtime_class = data.u32(
-                runtime
-                    .checked_sub(4)
-                    .context("Source ability runtime marker")?,
-            )?;
-            let settings_class = data.u32(
-                settings
-                    .checked_sub(4)
-                    .context("Source ability settings marker")?,
-            )?;
-            if matches!(
-                (runtime_class, settings_class),
-                (0x808025B8, 0x80802A4A) | (0x80802343, 0x80802B06)
-            ) {
-                ensure!(
-                    data.u32(runtime)? == tag
-                        && data.u64(runtime + 8)? == settings as u64
-                        && data.u32(runtime + 16)? == settings_class
-                        && data.u32(settings)? == tag
-                        && data.u64(settings + 8)? == runtime as u64
-                        && data.u32(settings + 16)? == runtime_class,
-                    "Source subclass controller or bank is not reciprocal"
-                );
-                let destination = if runtime_class == 0x808025B8 {
-                    &mut controller
-                } else {
-                    &mut bank
-                };
-                ensure!(
-                    destination.replace(tag).is_none(),
-                    "Source ability has ambiguous controller components"
-                );
-            }
-            inputs.insert(tag, data);
-        }
-        let radiance = if let Some(controller) = controller {
-            Some((
-                controller,
-                bank.context("Source Radiance controller has no paired property bank")?,
-            ))
-        } else {
-            None
-        };
-        inputs.insert(graph_tag, graph);
-        result.insert(
-            u8::try_from(ordinal)?,
-            SourceAbility {
-                pattern,
-                graph: graph_tag,
-                radiance,
-                inputs,
-            },
-        );
-    }
-    common.insert(table_tag, table);
     Ok(result)
 }
 

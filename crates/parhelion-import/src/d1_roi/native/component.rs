@@ -218,15 +218,6 @@ impl Assembly<'_> {
         let mut components = Vec::new();
         let mut source_owners = BTreeMap::new();
         let mut bank = None;
-        // Materials index the body's channel bank by ordinal, so its names are read before
-        // any model component converts.
-        self.object_channels.clear();
-        for row in source_entity.array(0x20, 12, Some(0x80800715))? {
-            let source = self.source.read(source_entity.u32(row)?)?;
-            if source.u32(source.pointer(24)? - 4)? == 0x808008F6 {
-                self.object_channels = channel::channel_names(&source)?;
-            }
-        }
         // Connection rows name a component by tag and by its ordinal in this list, which
         // distinguishes repeated instances of one component.
         let rows = source_entity.array(0x20, 12, Some(0x80800715))?;
@@ -245,6 +236,13 @@ impl Assembly<'_> {
                     ensure!(!meshes.is_empty(), "Source model has no meshes");
                     ensure!(!cloth || meshes.len() == 1, "Multi-mesh source cloth requires an explicit buffer binding");
                     let equipment = self.equipment(&source, dyes)?;
+                    // A material's object inputs index its drawing component's own inputs, which
+                    // connect to the body's channel bank by name.
+                    self.object_channels = source
+                        .array(sr + 0x288, 48, Some(0x80800927))?
+                        .into_iter()
+                        .map(|definition| source.u32(definition + 40))
+                        .collect::<Result<_>>()?;
                     // Native character setup has a fixed array of render components.
                     // Keep meshes with the same model transform in one component,
                     // including their separate layouts, buffers and draw stages.

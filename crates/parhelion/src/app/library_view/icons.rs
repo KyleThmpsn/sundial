@@ -140,6 +140,25 @@ impl Icons {
             .iter()
             .filter(|entry| wanted.contains(&entry.path))
             .filter_map(|entry| {
+                // A mod with an image of its own shows that image, read from its file.
+                if let Some(perk) = entry.perk_icon {
+                    self.unavailable.remove(&entry.path);
+                    let key = IconKey {
+                        corner_icon: None,
+                        item_hash: entry.icon_hash,
+                        container_tag: 0,
+                        rarity: crate::AuthoredWeaponRarity::Legendary,
+                        edit: entry.icon_edit.clone(),
+                        plain: true,
+                        art: None,
+                        perk: Some(perk),
+                    };
+                    let cached = self.previews.get(&entry.path).map(|preview| match preview {
+                        AuthoredIconPreview::Ready { key, .. }
+                        | AuthoredIconPreview::Failed { key, .. } => key,
+                    });
+                    return (cached != Some(&key)).then(|| (entry.path.clone(), key));
+                }
                 let Some(container_tag) = catalog.weapon_icon_container(entry.icon_hash) else {
                     self.unavailable.insert(entry.path.clone());
                     return None;
@@ -163,6 +182,7 @@ impl Icons {
                     edit: entry.icon_edit.clone(),
                     plain: entry.kind == crate::ItemKind::Subclass,
                     art: entry.art.as_ref().map(|art| art.request(subclasses)),
+                    perk: None,
                 };
                 let cached = self.previews.get(&entry.path).map(|preview| match preview {
                     AuthoredIconPreview::Ready { key, .. }
@@ -184,6 +204,17 @@ impl Icons {
             let manager = open_shadowkeep_package_manager(&packages);
             let branding = crate::branding::Branding::for_packages(&packages);
             for (path, key) in missing {
+                if key.perk.is_some() {
+                    let result = crate::recipe_library::load_perk_icon(&path).map(|image| {
+                        let rgba = image.fit_to(96, 96);
+                        egui::ColorImage::from_rgba_unmultiplied([96, 96], rgba.as_raw())
+                    });
+                    if sender.send((path, key, result)).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                    continue;
+                }
                 let corner = match key.corner_icon {
                     Some(_) => crate::recipe_library::load_corner_icon(&path),
                     None => Ok(None),

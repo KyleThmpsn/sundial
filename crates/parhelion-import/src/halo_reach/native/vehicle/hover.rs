@@ -90,6 +90,6 @@ pub(super) fn build(
                 "reason":"Native hover drag and force programs stay in use."}
         },
         "gameplay_verified":false,
-        "limits":["Source forward and reverse speeds replace the carrier's constant speed targets, and source acceleration and deceleration replace its acceleration limits, at 3.048 metres per source unit. The native unit and the braking role of the inactive limit are inferred. Boost, steering, slides, drag and hover contact stay native. Live driving needs gameplay acceptance."]
+        "limits":["Source forward and reverse speeds replace the carrier's constant speed targets, and source acceleration and deceleration replace its acceleration limits, at 3.048 metres per source unit. The native unit and the braking role of the inactive limit are inferred. Boost, steering, slides, drag and hover contact stay native."]
     }))
 }

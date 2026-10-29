@@ -256,9 +256,16 @@ impl PackageAuthoringApp {
         ) else {
             return;
         };
+        // The perk's plug is its source item, so its conversions sit with every other import's.
+        let source_plug = self.importer.perks.source.plug();
         let output = data_root().and_then(|root| {
-            service::reserve_assets(&root.join("modern-perks"), "perk")
-                .map_err(|error| error.to_string())
+            service::item_directory(
+                &root.join(service::IMPORTS),
+                super::Source::D2Modern.folder(),
+                source_plug,
+            )
+            .and_then(|item| service::reserve_assets(&item, "perk"))
+            .map_err(|error| error.to_string())
         });
         let output = match output {
             Ok(output) => output,
@@ -270,7 +277,6 @@ impl PackageAuthoringApp {
         };
         let recipe = self.recipe.clone();
         let packages = self.packages.clone();
-        let source_plug = self.importer.perks.source.plug();
         let profile_key = sundial::package_authoring::fnv1_name_hash(&format!(
             "{}.modern-perk.{source_plug:08X}.{socket}.{choice}",
             recipe.namespace,

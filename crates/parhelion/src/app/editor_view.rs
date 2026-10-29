@@ -834,7 +834,7 @@ impl PackageAuthoringApp {
                 collection_requirement_hash.to_string(),
             ),
         ];
-        let package_fields = package_identity_fields(self.recipe.kind, build);
+        let package_fields = package_identity_fields(self.recipe.has_collections(), build);
         let mut presentation_fields = Vec::new();
         if self.recipe.overrides.lore.is_some() {
             presentation_fields.extend([
@@ -1230,6 +1230,13 @@ impl PackageAuthoringApp {
                      sockets. Saved copies keep their choices.",
                 );
                 self.draw_socket_options(ui, has_authored_columns);
+                if self.recipe.kind.is_weapon() {
+                    super::socket_editor::draw_socket_view_toggle(
+                        ui,
+                        &mut self.socket_view,
+                        &self.recipe,
+                    );
+                }
             });
             if self.show_plug_safety_warnings {
                 draw_plug_safety_warning(ui, self.plug_selection_mode);
@@ -1243,10 +1250,17 @@ impl PackageAuthoringApp {
                 plug_selection_mode,
                 show_plug_safety_warnings,
                 show_technical_socket_rows,
+                socket_view,
                 perk_request,
                 log,
                 ..
             } = self;
+            // Only a weapon socket can roll from its own choices.
+            let view = if recipe.kind.is_weapon() {
+                *socket_view
+            } else {
+                SocketView::Reusable
+            };
             if let Some(catalog) = catalog.as_ref() {
                 draw_socket_pickers(
                     ui,
@@ -1260,6 +1274,7 @@ impl PackageAuthoringApp {
                         show_plug_safety_warnings: *show_plug_safety_warnings,
                         show_experimental_options,
                         show_technical_rows: show_technical_socket_rows,
+                        view,
                         perk_request,
                         donor,
                         log,
@@ -1383,8 +1398,8 @@ fn text_label_width(ui: &egui::Ui, kind: crate::ItemKind) -> f32 {
     (width + 6.0).max(90.0)
 }
 
-/// The game identities a recipe carries. A subclass or mod has no Collections entry, so it has no
-/// collectible or unlock.
+/// The game identities a recipe carries. A subclass, or a mod other than an imported ornament,
+/// has no Collections entry, so it has no collectible or unlock.
 fn game_identity_fields(
     recipe: &WeaponRecipe,
     pattern_global_id_hash: &HexHash,
@@ -1393,7 +1408,7 @@ fn game_identity_fields(
         "Item",
         recipe.identity.item_hash.to_string(),
     )];
-    if recipe.kind.has_collections() {
+    if recipe.has_collections() {
         fields.extend([
             IdentityField::new("Collectible", recipe.identity.collectible_hash.to_string()),
             IdentityField::new("Unlock", recipe.identity.unlock_hash.to_string()),
@@ -1408,7 +1423,7 @@ fn game_identity_fields(
 
 /// The package rows the latest build assigned to the recipe's item, or placeholders before one.
 fn package_identity_fields(
-    kind: ItemKind,
+    collected: bool,
     build: Option<&crate::workflow::WeaponBuildReport>,
 ) -> Vec<IdentityField> {
     let Some(build) = build else {
@@ -1424,7 +1439,7 @@ fn package_identity_fields(
             "Item Table Index",
         ]
         .into_iter()
-        .chain(collection.into_iter().filter(|_| kind.has_collections()))
+        .chain(collection.into_iter().filter(|_| collected))
         .map(IdentityField::assigned_during_build)
         .collect();
     };

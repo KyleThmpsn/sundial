@@ -11,6 +11,10 @@ pub enum Family {
     Sparrow,
     Shader,
     Emblem,
+    /// A universal armor ornament, which any armor piece of its class and slot takes.
+    Ornament,
+    /// A weapon ornament of a stock weapon's ornament category, which that weapon takes.
+    WeaponOrnament,
 }
 
 impl Family {
@@ -20,7 +24,15 @@ impl Family {
         item: &crate::d2_mot::payload::Payload,
         strings: &crate::d2_mot::payload::Payload,
     ) -> Result<Option<(Self, u32, Option<u8>)>> {
+        // A universal ornament is a plug. Its category names the armor class and slot it serves.
+        // Current armor carries the same plug block, which lets it apply as an ornament, so an
+        // item in an armor bucket stays armor.
         let inventory = item.u8(0x98)?;
+        if !(3..=7).contains(&inventory)
+            && let Some((_, slot)) = crate::tiger::universal_ornament::modern_slot(item)?
+        {
+            return Ok(Some((Self::Ornament, slot.bucket, Some(slot.class))));
+        }
         let bucket = match inventory {
             0 => 1498876634,
             1 => 2465295065,
@@ -91,6 +103,8 @@ impl Family {
             Self::Sparrow => "sparrow",
             Self::Shader => "shader",
             Self::Emblem => "emblem",
+            Self::Ornament => "ornament",
+            Self::WeaponOrnament => "weapon_ornament",
         }
     }
 
@@ -103,6 +117,8 @@ impl Family {
             Self::Sparrow => "Sparrow",
             Self::Shader => "Shader",
             Self::Emblem => "Emblem",
+            Self::Ornament => "Universal Ornament",
+            Self::WeaponOrnament => "Weapon Ornament",
         }
     }
 
@@ -141,6 +157,15 @@ fn shader(item: &crate::d2_mot::payload::Payload) -> Result<bool> {
 
 impl Weapon {
     pub fn family(&self) -> Family {
+        // Only ornament rows carry a plug category. A universal ornament keeps the armor bucket it
+        // applies to, for the slot filters, and a weapon ornament has none.
+        if let Some(category) = self.plug_category {
+            return if crate::tiger::universal_ornament::slot(category).is_some() {
+                Family::Ornament
+            } else {
+                Family::WeaponOrnament
+            };
+        }
         self.bucket_hash
             .and_then(Family::from_bucket)
             .unwrap_or_else(|| {

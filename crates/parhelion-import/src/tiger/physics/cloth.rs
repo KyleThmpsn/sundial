@@ -7,6 +7,7 @@ mod lower;
 mod native;
 mod pack;
 mod schema;
+mod scratch;
 mod source;
 mod validate;
 
@@ -65,8 +66,16 @@ pub(crate) fn used_bones(bytes: &[u8]) -> Result<BTreeSet<usize>> {
     validate::graph(&objects)?;
     let mut bones = BTreeSet::new();
     for object in objects.values() {
+        // Bone planes hold their particles against their bones, so those bones are anchors too.
+        if object.name == "hclBonePlanesConstraintSet" {
+            for plane in array(&object.value["bonePlanes"])? {
+                bones.insert(integer(&plane["transformIndex"])?);
+            }
+        }
         let values = match object.name.as_str() {
-            "hclObjectSpaceSkinPNTOperator" => Some(&object.value["transformSubset"]),
+            "hclObjectSpaceSkinPNTOperator" | "hclObjectSpaceSkinPNOperator" => {
+                Some(&object.value["transformSubset"])
+            }
             "hclSimClothData" => Some(&object.value["collidableTransformMap"]["transformIndices"]),
             _ => None,
         };

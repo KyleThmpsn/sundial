@@ -415,7 +415,8 @@ pub fn browse_cached(
 ) -> Result<Vec<Entry>> {
     let maps = maps.canonicalize().context("Reach maps folder")?;
     let stamp = stamp(&maps)?;
-    let path = cache_dir.join("reach-listing.json");
+    let path = cache_dir.join("halo_reach.json");
+    crate::cache::take_over(&cache_dir.join("reach-listing.json"), &path);
     if !refresh
         && let Some(stored) = fs::read(&path)
             .ok()

@@ -1252,6 +1252,7 @@ impl FilteredPackageView {
         })?;
 
         let ignored = ignored.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let mut links = Vec::new();
         for entry in fs::read_dir(source)
             .map_err(|error| format!("Could not list {}: {error}", source.display()))?
         {
@@ -1270,12 +1271,38 @@ impl FilteredPackageView {
                 continue;
             }
             let target = package_directory.join(&name);
-            fs::hard_link(&path, &target).map_err(|error| {
-                format!(
-                    "Could not hard-link {} into the temporary stock view: {error}",
-                    path.display()
-                )
-            })?;
+            links.push((path, target));
+        }
+        // A Shadowkeep install holds about 2,200 packages. Linked one at a time they took five
+        // seconds, and eight threads link them in about two thirds of that.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failures = std::thread::scope(|scope| {
+            let workers = (0..hash_worker_count().min(links.len()))
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut failures = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((path, target)) = links.get(index) else {
+                                return failures;
+                            };
+                            if let Err(error) = fs::hard_link(path, target) {
+                                failures.push((index, error));
+                            }
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().expect("a package link worker panicked"))
+                .collect::<Vec<_>>()
+        });
+        if let Some((index, error)) = failures.into_iter().min_by_key(|(index, _)| *index) {
+            return Err(format!(
+                "Could not hard-link {} into the temporary stock view: {error}",
+                links[index].0.display()
+            ));
         }
         copy_oodle_runtime(install_root, package_directory.parent().unwrap())?;
         Ok(())
@@ -1501,22 +1528,27 @@ fn source_artifact_reports_with_progress(
             ));
         }
     }
-    // The stock packages are large and hashing them is pure file reading, so a batch runs on
-    // its own threads. Batching keeps the reports and the progress callback in source order.
-    let mut reports = Vec::with_capacity(sources.len());
-    for batch in sources.chunks(hash_worker_count()) {
-        for ((file_name, path), digest) in batch.iter().zip(digest_files(batch)) {
-            progress(file_name, reports.len(), sources.len());
-            let digest =
-                digest.map_err(|error| format!("Could not hash {}: {error}", path.display()))?;
-            reports.push(ArtifactMetadata {
-                file_name: file_name.clone(),
-                byte_length: digest.byte_length,
-                sha256: digest.sha256,
-            });
-            progress(file_name, reports.len(), sources.len());
-        }
-    }
+    // The stock packages are large and hashing them is pure file reading, so they hash on their
+    // own threads. Reports and progress keep source order.
+    let total = sources.len();
+    let paths = sources
+        .iter()
+        .map(|(_, path)| path.as_path())
+        .collect::<Vec<_>>();
+    let mut reports = Vec::with_capacity(total);
+    crate::artifact::digest_files(&paths, |index, digest| {
+        let (file_name, path) = &sources[index];
+        progress(file_name, index, total);
+        let digest =
+            digest.map_err(|error| format!("Could not hash {}: {error}", path.display()))?;
+        reports.push(ArtifactMetadata {
+            file_name: file_name.clone(),
+            byte_length: digest.byte_length,
+            sha256: digest.sha256,
+        });
+        progress(file_name, reports.len(), total);
+        Ok(())
+    })?;
     Ok(reports)
 }
 
@@ -1525,19 +1557,6 @@ fn hash_worker_count() -> usize {
     std::thread::available_parallelism()
         .map_or(4, std::num::NonZeroUsize::get)
         .clamp(1, 8)
-}
-
-/// Hashes a batch on scoped threads and returns the results in the order given.
-fn digest_files(batch: &[(String, PathBuf)]) -> Vec<std::io::Result<crate::artifact::FileDigest>> {
-    std::thread::scope(|scope| {
-        batch
-            .iter()
-            .map(|(_, path)| scope.spawn(move || digest_file(path)))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|worker| worker.join().expect("a file hash worker panicked"))
-            .collect()
-    })
 }
 
 fn validate_source_artifacts_unchanged(

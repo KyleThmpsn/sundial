@@ -1,19 +1,23 @@
 use super::*;
 use entity::projectile::parameters::{self, Parameter};
 
+/// Whether `loaded` fires `tag`: a projectile slot's effective graph, or the one entity opened
+/// on its own.
+pub(in crate::app::custom_perks) fn fires(loaded: &PrivatePerkRuntimeGraph, tag: u32) -> bool {
+    (loaded.action_tag == 0 && loaded.action_payload.is_empty() && loaded.graphs.len() == 1)
+        || loaded
+            .projectile_slots
+            .iter()
+            .any(|(_, effective)| *effective == tag)
+}
+
 pub(in crate::app::custom_perks) fn mapped(
     loaded: &PrivatePerkRuntimeGraph,
 ) -> Vec<(u32, Parameter)> {
     loaded
         .graphs
         .iter()
-        .filter(|(tag, _)| {
-            (loaded.action_tag == 0 && loaded.action_payload.is_empty() && loaded.graphs.len() == 1)
-                || loaded
-                    .projectile_slots
-                    .iter()
-                    .any(|(_, effective)| effective == tag)
-        })
+        .filter(|(tag, _)| fires(loaded, *tag))
         .flat_map(|(tag, graph)| {
             parameters::discover(graph)
                 .into_iter()
@@ -26,12 +30,21 @@ impl PerkEditor {
     /// Draws every mapped projectile property.
     pub(super) fn draw_movement(&mut self, ui: &mut egui::Ui, loaded: &PrivatePerkRuntimeGraph) {
         let parameters = mapped(loaded);
-        if parameters.is_empty() {
+        let tracking = tracking::mapped(loaded)
+            .into_iter()
+            .map(|(tag, _)| *tag)
+            .collect::<BTreeSet<_>>();
+        if parameters.is_empty() && tracking.is_empty() {
             return;
         }
         ui.add_space(8.0);
         ui.strong("Projectile Properties");
         self.draw_parameter_rows(ui, loaded, parameters);
+        for tag in tracking {
+            if let Some(result) = tracking::draw(ui, loaded, tag, &mut self.draft) {
+                self.parameter_error = result.err();
+            }
+        }
     }
 
     fn draw_parameter_rows(

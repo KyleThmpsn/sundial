@@ -13,12 +13,10 @@ pub(super) fn read(
         (0.0..=1.0).contains(&p.f32(at)?)
             && p.u8(at + 4)? == 0xFF
             && p.u8(at + 6)? == 0
-            && p.u32(at + 0x2C)? == 0
+            && p.u32(at + 0x2C)? <= 1
             && cap > 0.0
             && cap <= 16_777_216.0
-            && cap.fract() == 0.0
-            && p.f32(at + 0x20)? >= 0.0
-            && p.f32(at + 0x20)? <= 16_777_216.0,
+            && p.f32(at + 0x20)?.abs() <= 16_777_216.0,
         "Source accumulator has unsupported state or count bounds"
     );
     let _ = p.f32(at + 0x24)?;
@@ -26,8 +24,8 @@ pub(super) fn read(
     // the action value used by retained effects, including reset on trigger release.
     let rows = p.array(at + 8, 32, Some(0x8080316C))?;
     ensure!(
-        (1..=3).contains(&rows.len()),
-        "Source accumulator requires one to three literal contributions"
+        (1..=16).contains(&rows.len()),
+        "Source accumulator requires one to sixteen literal contributions"
     );
     let mut bytes = vec![0; 56];
     bytes[..8].copy_from_slice(&p.bytes::<8>(at)?);
@@ -37,6 +35,10 @@ pub(super) fn read(
     // negative action values. Keep the full finite range below the source cap.
     put(&mut bytes, 0x28, &f32::MIN.to_le_bytes())?;
     put(&mut bytes, 0x2C, &cap.to_le_bytes())?;
+    // The admission/reset consumer can seed this counter from the owning weapon's
+    // magazine capacity. Both builds use the same bounded draw and negative initial
+    // value. Native's extra lower bound moves that Boolean from +2C to +30.
+    bytes[0x30..0x34].copy_from_slice(&p.bytes::<4>(at + 0x2C)?);
     let mut graph = Graph {
         blocks: vec![
             Block {
@@ -62,11 +64,14 @@ pub(super) fn read(
             seconds >= 0.0 && p.u32(row + 28)? == 0,
             "Source accumulator has a negative hold or reserved fields"
         );
-        if seconds > 0.0 {
-            let ticks = seconds * 60.0;
+        let hold = if seconds > 0.0 {
+            // Source 6F5010 uses 474BF0's nearest, ties-to-even clock conversion,
+            // then enforces one tick. Native EC3250 stores seconds with a small
+            // positive minimum. Preserve the source interval in its 60 Hz domain.
+            let ticks = (seconds * 60.0).round_ties_even().max(1.0);
             ensure!(
-                (1.0..=32767.0).contains(&ticks) && ticks.fract() == 0.0,
-                "Source counter hold needs an exact bounded 60 Hz duration"
+                (1.0..=32767.0).contains(&ticks),
+                "Source counter hold exceeds the signed 60 Hz timer domain"
             );
             held += 1;
             // D1 visits every positive row during allocation. Shadowkeep stops
@@ -75,22 +80,23 @@ pub(super) fn read(
                 held == 1,
                 "Source counter has multiple independently allocated holds"
             );
-        }
+            ticks / 60.0
+        } else {
+            seconds
+        };
         for lane in [8, 20] {
             let value = p.f32(row + lane + 4)?;
             ensure!(
                 p.u8(row + lane)? <= 1
                     && p.bytes::<3>(row + lane + 1)? == [0; 3]
-                    && value >= 0.0
-                    && value <= cap
-                    && value.fract() == 0.0,
-                "Source accumulator needs literal nonnegative Add or Replace counts"
+                    && value.abs() <= 16_777_216.0,
+                "Source accumulator needs bounded literal Add or Replace values"
             );
         }
         let child = p.pointer(row)?;
         let kind = p.u8(child + 5)?;
         ensure!(
-            matches!(kind, 2 | 4 | 8 | 14..=19 | 22 | 27) && p.u8(child + 6)? == 0,
+            matches!(kind, 2..=5 | 7..=12 | 14..=19 | 22 | 23 | 27 | 33) && p.u8(child + 6)? == 0,
             "Source accumulator child requires a qualified leaf event"
         );
         let node = super::read(source, p, child, native.as_deref_mut())?
@@ -104,6 +110,11 @@ pub(super) fn read(
         let target = graph.append(&child).map_err(anyhow::Error::msg)?;
         graph.blocks[1].bytes[index * 32 + 8..index * 32 + 32]
             .copy_from_slice(&p.bytes::<24>(row + 8)?);
+        put(
+            &mut graph.blocks[1].bytes,
+            index * 32 + 16,
+            &hold.to_le_bytes(),
+        )?;
         graph.blocks[1].links.insert(index * 32, target);
     }
     ensure!(

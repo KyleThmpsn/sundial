@@ -37,7 +37,9 @@ pub(super) fn texture(c: &mut Effect, binding: &Value) -> Result<String> {
         "invalid effect texture dimensions"
     );
     let (block, tile) = match format {
-        28 | 29 | 35 => (4usize, 1usize),
+        // R8_UNORM, such as a single-channel effect mask.
+        61 => (1usize, 1usize),
+        28 | 29 | 35 => (4, 1),
         71 | 72 | 80 | 81 => (8, 4),
         74 | 75 | 77 | 78 | 83 | 84 | 95 | 96 | 98 | 99 => (16, 4),
         _ => anyhow::bail!("uninspected effect texture format {format}"),

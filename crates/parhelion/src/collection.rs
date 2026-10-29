@@ -111,6 +111,32 @@ impl Family {
         };
         Destination { ammo, family: self }
     }
+    /// An audited stock ornament on this weapon type's page under Weapons and Weapon Ornaments,
+    /// where an ordinary weapon's ornaments go. Shadowkeep has no such page for Glaives, Linear
+    /// Fusion Rifles or Trace Rifles.
+    pub(crate) const fn ornament_exemplar(self) -> Option<u32> {
+        Some(match self {
+            Self::AutoRifles => 0xAA24_0B24,       // Loaded Dice
+            Self::Bows => 0x8595_6406,             // Wrath Majestic
+            Self::FusionRifles => 0x3E58_6327,     // Subatomic Ivory
+            Self::GrenadeLaunchers => 0xFFD4_DF4E, // End of Days
+            Self::HandCannons => 0xE808_A555,      // Credence
+            Self::MachineGuns => 0x430F_F775,      // 87% Ennui
+            Self::PulseRifles => 0x9604_9A07,      // Glory and Grandeur
+            Self::RocketLaunchers => 0x1AED_8197,  // Foretelling
+            Self::ScoutRifles => 0x747B_2DAD,      // Next of Kin
+            Self::Shotguns => 0xE997_EB44,         // Meteor Shower
+            Self::Sidearms => 0x21BA_39C1,         // Yes, Queen
+            Self::SniperRifles => 0xA1CF_1CC8,     // Dirty Work
+            Self::SubmachineGuns => 0x9371_21B5,   // Plunderer
+            Self::Swords => 0xA6F8_9ED2,           // Riptide
+            Self::Glaives | Self::LinearFusionRifles | Self::TraceRifles => return None,
+        })
+    }
+    /// The identity of the Weapon Ornaments page the build adds for this weapon type.
+    pub(crate) fn ornament_page_hash(self, field: &str) -> u32 {
+        crate::presentation::text_hash(&format!("collection/ornaments/{self:?}"), field)
+    }
 }
 
 /// Where an authored entry sits among the stock entries of a Collections node it joins.
@@ -242,7 +268,9 @@ impl CollectionPages {
     }
 }
 
-/// A runtime-branded gear page, armor category or numbered armor set.
+/// A runtime-branded gear page, armor category, numbered armor set or numbered set of universal
+/// ornaments. Armor sets sit in the class's branded category. Ornament sets sit beside the stock
+/// sets of the class's Universal Ornaments, as a mod's `class` and `set`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct GearPage {
     kind: crate::ItemKind,
@@ -279,10 +307,26 @@ impl GearPage {
             set: Some(set),
         }
     }
+    pub(crate) const fn ornament_set(class: u8, set: usize) -> Self {
+        Self {
+            kind: crate::ItemKind::Mod,
+            class: Some(class),
+            set: Some(set),
+        }
+    }
     pub(crate) const fn set(self) -> Option<usize> {
         self.set
     }
+    /// Whether the page is a set of universal ornaments.
+    pub(crate) const fn is_ornament_set(self) -> bool {
+        matches!(self.kind, crate::ItemKind::Mod)
+    }
     pub(crate) fn set_name(self, brand: &str) -> Option<String> {
+        let noun = if self.is_ornament_set() {
+            "Ornament"
+        } else {
+            "Armor"
+        };
         self.set.map(|set| {
             let mut number = set + 1;
             let mut roman = String::new();
@@ -306,7 +350,7 @@ impl GearPage {
                     number -= value;
                 }
             }
-            format!("{brand} Armor Set {roman}")
+            format!("{brand} {noun} Set {roman}")
         })
     }
     #[must_use]
@@ -318,7 +362,7 @@ impl GearPage {
     }
     pub(crate) fn hash(self, field: &str) -> u32 {
         let key = if let Some(class) = self.class {
-            format!("collection/gear/Armor/{class}")
+            format!("collection/gear/{:?}/{class}", self.kind)
         } else {
             format!("collection/gear/{:?}", self.kind)
         };
@@ -331,7 +375,7 @@ impl GearPage {
     }
 }
 
-/// Each native armor-set row holds at most five collectible tiles.
+/// Each native armor-set or ornament-set row holds at most five collectible tiles.
 pub(crate) const ARMOR_SET_SIZE: usize = 5;
 
 /// Node identities of the gear pages a build adds.

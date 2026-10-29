@@ -24,28 +24,35 @@ pub(super) fn catalog(reader: &Reader) -> Result<Arc<Resources>> {
     {
         return Ok(Arc::clone(resources));
     }
-    let mut discovery = Reader::discovery(packages, &reader.output.join("event-resources"), false)?;
-    let clips = discovery.classes(0x80808F49);
+    // Scanning every native clip takes seconds, so the resources are kept on disk for the package
+    // set as well, one row per class and path.
+    let rows = crate::cache::by_packages(("tiger", "event-resources", 1), packages, || {
+        let mut discovery =
+            Reader::discovery(packages, &reader.output.join("event-resources"), false)?;
+        let clips = discovery.classes(0x80808F49);
+        ensure!(
+            !clips.is_empty(),
+            "Native animation resource corpus is empty"
+        );
+        let mut library = Library::default();
+        for tag in clips {
+            crate::cancellation::check()?;
+            // Unsupported event layouts supply no binding evidence. Unreadable
+            // required package input still fails instead of caching a partial scan.
+            library.add_native(discovery.tag(tag, Some(0x80808F49))?.as_ref());
+        }
+        ensure!(
+            package_stamp(packages)? == stamp,
+            "Native packages changed during event discovery"
+        );
+        Ok(library.resources.into_iter().collect::<Vec<_>>())
+    })?;
+    let resources = rows.into_iter().collect::<Resources>();
     ensure!(
-        !clips.is_empty(),
-        "Native animation resource corpus is empty"
-    );
-    let mut library = Library::default();
-    for tag in clips {
-        crate::cancellation::check()?;
-        // Unsupported event layouts supply no binding evidence. Unreadable
-        // required package input still fails instead of caching a partial scan.
-        library.add_native(discovery.tag(tag, Some(0x80808F49))?.as_ref());
-    }
-    ensure!(
-        package_stamp(packages)? == stamp,
-        "Native packages changed during event discovery"
-    );
-    ensure!(
-        !library.resources.is_empty(),
+        !resources.is_empty(),
         "Native clips contain no supported resource events"
     );
-    let resources = Arc::new(library.resources);
+    let resources = Arc::new(resources);
     catalogs.insert(packages.to_owned(), (stamp, Arc::clone(&resources)));
     Ok(resources)
 }

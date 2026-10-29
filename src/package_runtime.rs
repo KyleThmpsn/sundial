@@ -137,7 +137,20 @@ impl RuntimeSnapshot {
         if brand != self.brand.name() {
             return Err("The runtime brand differs from its recorded identity".into());
         }
-        Ok(self.brand == RuntimeBrand::Sunrise && runtime_version_at_least(&version, &[0, 6]))
+        Ok(loads_mods(self.brand, &version))
+    }
+}
+
+/// Sunrise loads mods from 0.6. Dawn never does.
+fn loads_mods(brand: RuntimeBrand, version: &str) -> bool {
+    brand == RuntimeBrand::Sunrise && runtime_version_at_least(version, &[0, 6])
+}
+
+fn brand_named(name: &str) -> RuntimeBrand {
+    if name == "Dawn" {
+        RuntimeBrand::Dawn
+    } else {
+        RuntimeBrand::Sunrise
     }
 }
 
@@ -182,12 +195,21 @@ pub(crate) fn installed_runtime(install: &Path) -> Result<RuntimeSnapshot, Strin
             module_path.display()
         )
     })?;
-    let brand = if name == "Dawn" {
-        RuntimeBrand::Dawn
-    } else {
-        RuntimeBrand::Sunrise
-    };
-    Ok(RuntimeSnapshot::from_bytes(brand, module_path, &bytes))
+    Ok(RuntimeSnapshot::from_bytes(
+        brand_named(name),
+        module_path,
+        &bytes,
+    ))
+}
+
+/// The active runtime's brand and whether it loads mods, from one read of its DLL and without the
+/// hash a snapshot takes. The DLL is tens of megabytes. An installation takes a snapshot of its
+/// own and checks it again.
+pub(crate) fn installed_runtime_kind(install: &Path) -> Option<(RuntimeBrand, bool)> {
+    let bytes = fs::read(sunrise_module_path(install)).ok()?;
+    let (name, version) = runtime_version(&bytes)?;
+    let brand = brand_named(name);
+    Some((brand, loads_mods(brand, &version)))
 }
 
 pub(crate) fn verify_installed_runtime(
@@ -349,12 +371,16 @@ pub(crate) fn open_shadowkeep_packages(install: &Path) -> Result<PackageManager,
     // Like Sunrise's loader, a reader leaves out a mod whose configured values don't fit what
     // they bind, and reads again without it. Each pass leaves out one more mod.
     for _ in 0..=mods::FOLDER_LIMIT {
-        let view = mods::View::open(install)?;
+        let view = {
+            let _stage = crate::model_preview::timing::stage("mod view");
+            mods::View::open(install)?
+        };
         let source = view.as_ref().map_or(install, |view| view.install());
         let mut manager = open_stock_shadowkeep_packages(source)?;
         let Some(view) = view else {
             return Ok(manager);
         };
+        let _stage = crate::model_preview::timing::stage("mod view");
         manager.retain_view(std::sync::Arc::clone(&view))?;
         match view.configured(&manager) {
             Ok(values) => {

@@ -31,6 +31,43 @@ fn input(entity: &Payload, refs: &[Value], at: usize) -> Result<bool> {
             .any(|p| p["offset"].as_u64() == Some((at + 8) as u64) && p["symbol"] == "owner"))
 }
 
+/// Removes the donor entity's own native cloth. It simulates and draws the donor's cloth model
+/// beside the import, and its channel links follow the donor's model. The game crashed binding
+/// those links once the entity carried the import's model.
+pub(super) fn remove_native(c: &mut Effect, prepared: &Path) -> Result<()> {
+    let native_reads = crate::d2_mot::profile::native(prepared)?;
+    let manifest = native_reads.join("source-manifest.json");
+    if c.graph.node("entity").is_err() || !manifest.exists() {
+        return Ok(());
+    }
+    let manifest = load(&manifest)?;
+    let mut entity = c.graph.read("entity")?;
+    let mut entity_patches = patches(&c.graph, "entity")?;
+    let mut owners = Vec::new();
+    for at in entity.array(16, 12, Some(0x80809C04))? {
+        let tag = entity.u32(at)?;
+        if tag == u32::MAX
+            || manifest["tags"][format!("{tag:08X}")]["reference"].as_u64() != Some(0x80809C36)
+        {
+            continue;
+        }
+        let owner = Payload(fs::read(native_reads.join(format!("raw/{tag:08X}.bin")))?);
+        let instance = owner.pointer(16)?;
+        if instance >= 4 && owner.u32(instance - 4)? == 0x80807273 {
+            owners.push(tag);
+        }
+    }
+    if owners.is_empty() {
+        return Ok(());
+    }
+    for &owner in &owners {
+        bindings::graft::remove(&mut entity, &mut entity_patches, owner)?;
+    }
+    c.graph.write("entity", &entity.0)?;
+    c.graph.node_mut("entity")?["patches"] = json!(entity_patches);
+    Ok(())
+}
+
 pub(super) fn build(
     c: &mut Effect,
     reader: &mut Reader,

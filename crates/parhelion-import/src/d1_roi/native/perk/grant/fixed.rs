@@ -36,7 +36,7 @@ pub(super) fn lower(
             "Sprint-speed property requires corresponding movement banks"
         );
     }
-    let selection = if matches!(class, 0x808042A5 | 0x80804125) {
+    let selection = if matches!(class, 0x808042A5 | 0x80804125 | 0x80804520) {
         let required_key = if p.u64(row + 24)? == 0 {
             0
         } else {
@@ -56,9 +56,22 @@ pub(super) fn lower(
     } else {
         None
     };
-    let matches = native
-        .array(native.pointer(24)? + 0x88, 56, Some(0x8080453B))?
-        .into_iter()
+    let rows = native.array(native.pointer(24)? + 0x88, 56, Some(0x8080453B))?;
+    let compatible = |r: usize| {
+        native
+            .pointer(r + 48)
+            .ok()
+            .and_then(|m| native.u32(m + 4).ok())
+            == Some(class)
+            && selection.is_none_or(|s| {
+                (class == 0x80804520 || native.u32(r + 20).ok() == Some(s.name))
+                    && native.u32(r + 24).ok() == Some(u32::from(s.priority))
+                    && native_gate(native, r).ok() == Some(s.required_key)
+            })
+    };
+    let mut matches = rows
+        .iter()
+        .copied()
         .filter(|&r| {
             (if class == 0x80804127 {
                 // The movement property key changed between builds. A unique same-value
@@ -70,18 +83,19 @@ pub(super) fn lower(
                     == p.u32(at).ok()
             } else {
                 native.u32(r + 16).ok() == Some(key)
-            }) && native
-                .pointer(r + 48)
-                .ok()
-                .and_then(|m| native.u32(m + 4).ok())
-                == Some(class)
-                && selection.is_none_or(|s| {
-                    native.u32(r + 20).ok() == Some(s.name)
-                        && native.u32(r + 24).ok() == Some(u32::from(s.priority))
-                        && native_gate(native, r).ok() == Some(s.required_key)
-                })
+            }) && compatible(r)
         })
         .collect::<Vec<_>>();
+    if matches.is_empty() && class == 0x80804520 {
+        // A property's key selects a row, not the typed protection callback. A
+        // unique same-class row in this corresponding bank supplies its local
+        // priority slot even when the original property key changed. The writer
+        // replaces the duration, program and filter on a new private modifier.
+        matches = rows
+            .into_iter()
+            .filter(|&r| compatible(r) && native.u32(r + 32).ok() == p.u32(row + 16).ok())
+            .collect();
+    }
     ensure!(
         matches.len() == 1,
         "Source literal property has no unique native handler witness"
@@ -90,10 +104,8 @@ pub(super) fn lower(
     let template_key = native.u32(n + 16)?;
     if class == 0x80804520 {
         ensure!(
-            p.u32(row + 4)? == 0x811C9DC5
-                && native.u32(n + 20)? == 0x811C9DC5
-                && p.u32(at)? == (-1.0f32).to_bits(),
-            "Ability protection requires an unnamed source factor for the full activation"
+            p.u32(row + 8)? == 255 && p.u64(row + 24)? == 0 && p.u32(at)? == (-1.0f32).to_bits(),
+            "Ability protection requires an ungated source factor for the full activation"
         );
     }
     ensure!(
@@ -105,8 +117,8 @@ pub(super) fn lower(
         "Source literal property has another native mode, gate or class"
     );
     let mut words = [0; 8];
-    // Handler indices are local to each bank. The qualified native row supplies
-    // the handler when this private row is appended.
+    // Priority indices are local to each bank. The qualified native row supplies
+    // the priority slot when this private row is appended.
     for (i, word) in words[..size / 4].iter_mut().enumerate() {
         *word = p.u32(at + i * 4)?;
     }

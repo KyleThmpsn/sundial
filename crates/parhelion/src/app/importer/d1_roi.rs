@@ -6,7 +6,6 @@ pub(super) struct Inspected {
     pub artifact: PathBuf,
     pub armor: Vec<d1_roi::Armor>,
     pub weapons: Vec<d1_roi::Weapon>,
-    pub exported: Option<PathBuf>,
 }
 
 impl PackageAuthoringApp {
@@ -50,16 +49,12 @@ impl PackageAuthoringApp {
                 } else {
                     Vec::new()
                 };
-                let root = root.join("importer/d1-roi");
-                // Reserve a parent, then let the exporter create its fresh evidence directory.
-                let parent = service::reserve_assets(&root, "inspection")?;
-                let artifact = source.write_inspection(&parent.join("source"))?;
+                let artifact = write_inspection(&root.join("importer"), source.report())?;
                 Ok(Inspected {
                     report: source.report().clone(),
                     artifact,
                     armor,
                     weapons,
-                    exported: None,
                 })
             })()
             .map_err(|error| format!("{error:#}"));
@@ -69,16 +64,9 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn draw_roi_details(&mut self, ui: &mut egui::Ui) {
-        let ready = self.importer.tools_ready();
         let Some(inspected) = &self.importer.roi else {
             return;
         };
-        let mut export = false;
-        let selected = inspected
-            .armor
-            .iter()
-            .filter(|item| self.importer.selected.contains(&item.hash))
-            .count();
         ui.menu_button("Source Details", |ui| {
             ui.weak(format!(
                 "{} packages · {} entries · {} models",
@@ -101,29 +89,14 @@ impl PackageAuthoringApp {
             {
                 self.importer.notice = error;
             }
-            export = ui
-                .add_enabled(
-                    ready && selected > 0,
-                    egui::Button::new(format!("Export Armor Source ({selected})")),
-                )
-                .clicked();
-            if let Some(path) = &inspected.exported
-                && ui.button("Open Export Folder").clicked()
-                && let Err(error) = open_directory(path)
-            {
-                self.importer.notice = error;
-            }
         });
-        if export {
-            self.export_roi_armor(ui.ctx());
-        }
     }
 
     /// `reimport` names the saved namespace of each source item a library reimport updates.
     pub(super) fn import_roi_selected(
         &mut self,
         ctx: &egui::Context,
-        reimport: &BTreeMap<u32, String>,
+        reimport: &BTreeMap<u32, Saved>,
     ) {
         let Some(folder) = self.importer.folder().cloned() else {
             return;
@@ -156,20 +129,38 @@ impl PackageAuthoringApp {
         }
         let Ok(root) = data_root() else { return };
         let xg_library = self.importer.settings.d1_xg_library.clone();
+        let ornaments = self.importer.settings.d1_roi_ornaments;
         let reimport = reimport.clone();
+        let namespaces: BTreeMap<u32, String> = items
+            .iter()
+            .filter_map(|(hash, ..)| {
+                Some((*hash, self.saved_namespace(Source::D1RiseOfIron, *hash)?))
+            })
+            .collect();
         let gear = self.gear_donors_for(ItemKind::Armor).iter().filter(|donor| self.catalog.as_ref().and_then(|catalog|catalog.item_definition_tag(donor.hash)).is_none_or(crate::package_profile::is_stock_item_definition))
             .map(|donor| serde_json::json!({"hash":donor.hash,"name":donor.name,"bucket_hash":donor.bucket_hash,
                 "class_type":self.catalog.as_ref().and_then(|catalog|catalog.item_class_type(donor.hash)),"collection_backed":donor.collection_backed})).collect::<Vec<_>>();
         let donors = serde_json::json!({"gear":gear});
         let names = items.iter().map(|(_, name, _)| name.clone()).collect();
         self.run_import(ctx, names, move |index, native, progress| {
-            let (hash, name, bases) = &items[index];
-            let model = service::model_directory(&root.join("models"), name, *hash)?;
-            let output = service::reserve_assets(&model, "d1-roi")?.join("import");
+            let (hash, _, bases) = &items[index];
+            let item = service::item_directory(
+                &root.join(service::IMPORTS),
+                Source::D1RiseOfIron.folder(),
+                *hash,
+            )?;
+            let kind = if bases.is_some() { "weapon" } else { "armor" };
+            let output = service::reserve_assets(&item, kind)?;
             let source = d1_roi::Source::open(&folder, |_, _| {})?;
+            // A reimported item brings ornaments as its recipe did, and any other as the
+            // importer's Ornaments choice says.
+            let saved = reimport.get(hash);
             let options = d1_roi::NativeOptions {
                 xg_library: xg_library.clone(),
-                namespace: reimport.get(hash).cloned(),
+                namespace: saved
+                    .map(|saved| saved.namespace.clone())
+                    .or_else(|| namespaces.get(hash).cloned()),
+                ornaments: saved.map_or(ornaments, |saved| saved.ornaments),
             };
             match bases {
                 Some(bases) => {
@@ -207,47 +198,36 @@ impl PackageAuthoringApp {
         });
         bases.into_iter().map(|donor| donor.hash).collect()
     }
+}
 
-    fn export_roi_armor(&mut self, ctx: &egui::Context) {
-        let Some(folder) = self.importer.folder().cloned() else {
-            return;
-        };
-        let Some(inspected) = &self.importer.roi else {
-            return;
-        };
-        let selected: Vec<_> = inspected
-            .armor
-            .iter()
-            .filter(|item| self.importer.selected.contains(&item.hash))
-            .map(|item| item.hash)
-            .collect();
-        let Ok(root) = data_root() else { return };
-        let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
-        self.importer.scan_started = Some(Instant::now());
-        self.importer.scan_progress = Some(ScanProgress::CheckingCache);
-        let ctx = ctx.clone();
-        thread::spawn(move || {
-            let result = (|| -> anyhow::Result<PathBuf> {
-                let source = d1_roi::Source::open(&folder, |_, _| {})?;
-                let output = service::reserve_assets(&root.join("importer/d1-roi"), "armor")?;
-                source.write_inspection(&output.join("source"))?;
-                for (index, item) in selected.iter().enumerate() {
-                    let _ = sender.send(Event::ScanProgress(ScanProgress::ReadingItems {
-                        completed: index,
-                        total: selected.len(),
-                        weapons: 0,
-                    }));
-                    ctx.request_repaint();
-                    source.export_armor(*item, &output.join(format!("{item:08X}")))?;
-                }
-                Ok(output)
-            })()
-            .map_err(|error| format!("{error:#}"));
-            let _ = sender.send(Event::RoiExported(result));
-            ctx.request_repaint();
-        });
+/// Writes a source read's report to the importer's `catalog`, named for its importer as the other
+/// sources' files there are, replacing the previous read's whole. It removes the
+/// `d1-roi/inspection-<n>` folders that earlier reads kept one report each in.
+fn write_inspection(importer: &Path, report: &d1_roi::Inspection) -> anyhow::Result<PathBuf> {
+    let catalog = importer.join("catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let path = catalog.join("d1_roi.json");
+    let mut file = tempfile::NamedTempFile::new_in(&catalog)?;
+    serde_json::to_writer_pretty(&mut file, report)?;
+    file.persist(&path)?;
+    let former = importer.join("d1-roi");
+    if let Ok(entries) = std::fs::read_dir(&former) {
+        for entry in entries.flatten() {
+            let inspection = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix("inspection-"))
+                .is_some_and(|index| {
+                    !index.is_empty() && index.bytes().all(|c| c.is_ascii_digit())
+                });
+            if inspection && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+        // Armor source exports made there earlier keep the folder.
+        let _ = std::fs::remove_dir(&former);
     }
+    Ok(path)
 }
 
 impl Inspected {

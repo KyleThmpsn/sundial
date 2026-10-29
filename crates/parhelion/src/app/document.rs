@@ -122,11 +122,18 @@ impl PackageAuthoringApp {
                     path: entry.path.clone(),
                 })
                 .collect(),
+            // Items a Parhelion build or another mod installed aren't in the tables builds read.
             stock_weapons: self
                 .donor_summaries
                 .iter()
                 .map(|donor| donor.hash)
+                .filter(|&hash| {
+                    self.catalog
+                        .as_ref()
+                        .is_none_or(|catalog| self.item_sources.is_stock(catalog, hash))
+                })
                 .collect(),
+            item_sources: self.item_sources.clone(),
             package_directory: self.packages.clone(),
             staging_root: PathBuf::from(self.staging.trim()),
             ignore_installed: self.ignore_installed,
@@ -165,6 +172,7 @@ pub(super) struct BuildInputs {
     library: Option<RecipeLibrary>,
     library_items: Vec<LibraryItem>,
     stock_weapons: BTreeSet<u32>,
+    item_sources: item_sources::ItemSources,
     package_directory: PathBuf,
     staging_root: PathBuf,
     ignore_installed: bool,
@@ -472,6 +480,18 @@ impl BuildInputs {
                 .iter()
                 .find(|entry| entry.hash == donor && entry.hash != 0)
             else {
+                // Another mod's item is in the catalog but not in the tables a build reads.
+                if let Some(catalog) = &self.catalog
+                    && let item_sources::ItemSource::Added(source) =
+                        self.item_sources.of(catalog, donor)
+                {
+                    return Err(item_sources::added_base_problem(
+                        &current.name,
+                        &item_sources::base_name(catalog, &current.donor),
+                        &source.name,
+                        current.kind,
+                    ));
+                }
                 return Ok(current);
             };
             if seen.contains(&donor)

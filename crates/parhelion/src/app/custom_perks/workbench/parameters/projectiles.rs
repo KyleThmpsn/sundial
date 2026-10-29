@@ -8,9 +8,22 @@ struct ChoiceKey {
     entries: usize,
     perk_names: usize,
     item_names: usize,
+    /// The labels the rows took, so rows built while they were worked out are built again.
+    labels: usize,
     filter: u8,
     unidentified: bool,
     query: String,
+}
+
+/// The catalog's display names, or the worker working them out with the empty names that
+/// stand in meanwhile.
+#[derive(Clone)]
+enum Names {
+    Ready(Arc<BTreeMap<u32, String>>),
+    Pending(
+        Arc<std::sync::Mutex<Receiver<BTreeMap<u32, String>>>>,
+        Arc<BTreeMap<u32, String>>,
+    ),
 }
 
 /// The picker's rows as catalog indexes and labels, in list order, with the families of variants
@@ -23,6 +36,9 @@ type Choices = Arc<(
 impl PerkEditor {
     /// Display names for every catalog asset, numbered as variants where names repeat. The
     /// picker and the property headings share them, so both name an asset the same way.
+    ///
+    /// Naming every asset holds a frame long enough to freeze the window, so a worker does it.
+    /// Until it finishes the names are empty and each caller shows its fallback.
     pub(super) fn projectile_labels_for(
         &self,
         ctx: &egui::Context,
@@ -34,15 +50,47 @@ impl PerkEditor {
             self.projectile_labels.len(),
             self.item_names.len(),
         ));
-        ctx.data_mut(|data| {
-            data.get_temp_mut_or_insert_with(id, || {
-                Arc::new(catalog.discovery_labels_with(
-                    |index| self.projectile_labels.get(&index).cloned(),
-                    |item| self.item_names.get(&item).cloned(),
-                ))
-            })
-            .clone()
-        })
+        match ctx.data(|data| data.get_temp::<Names>(id)) {
+            Some(Names::Ready(labels)) => labels,
+            Some(Names::Pending(receiver, empty)) => {
+                let received = match receiver.lock().map(|receiver| receiver.try_recv()) {
+                    Ok(Ok(labels)) => Some(Arc::new(labels)),
+                    Ok(Err(TryRecvError::Empty)) => None,
+                    // A worker that stopped leaves the empty names, rather than starting again
+                    // every frame.
+                    Ok(Err(TryRecvError::Disconnected)) | Err(_) => Some(empty.clone()),
+                };
+                let Some(labels) = received else {
+                    return empty;
+                };
+                ctx.data_mut(|data| data.insert_temp(id, Names::Ready(labels.clone())));
+                labels
+            }
+            None => {
+                let catalog = Arc::clone(catalog);
+                let perk_names = self.projectile_labels.clone();
+                let item_names = self.item_names.clone();
+                let repaint = ctx.clone();
+                let (sender, receiver) = mpsc::channel();
+                thread::spawn(move || {
+                    let labels = catalog.discovery_labels_with(
+                        |index| perk_names.get(&index).cloned(),
+                        |item| item_names.get(&item).cloned(),
+                    );
+                    if sender.send(labels).is_ok() {
+                        repaint.request_repaint();
+                    }
+                });
+                let empty = Arc::<BTreeMap<u32, String>>::default();
+                ctx.data_mut(|data| {
+                    data.insert_temp(
+                        id,
+                        Names::Pending(Arc::new(std::sync::Mutex::new(receiver)), empty.clone()),
+                    )
+                });
+                empty
+            }
+        }
     }
 
     /// Carry mapped properties by meaning. Native field offsets are asset-specific.
@@ -281,6 +329,7 @@ impl PerkEditor {
                         entries: loaded.projectile_catalog.entries.len(),
                         perk_names: self.projectile_labels.len(),
                         item_names: self.item_names.len(),
+                        labels: Arc::as_ptr(&labels) as usize,
                         filter,
                         unidentified: visibility.0,
                         query: query.replace("0x", ""),

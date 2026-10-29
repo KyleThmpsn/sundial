@@ -39,7 +39,7 @@ To start another item type, use the **New Item** menu beside **New Weapon**. To 
 
 ### Choosing Items for a Build
 
-Each install replaces the previously installed Parhelion package set, including its standalone asset packages. Select every recipe you want to keep, not just those you've changed. If a selected item uses an authored Shader saved in your library, Parhelion includes that Shader automatically.
+Each install replaces the previously installed Parhelion package set, including its standalone sandbox packages. Select every recipe you want to keep, not just those you've changed. If a selected item uses an authored Shader saved in your library, Parhelion includes that Shader automatically.
 
 Check the build selection before each build. Opening a recipe doesn't automatically select it. Recipes whose items are installed are marked **Installed**. When a build would remove an installed item, **Build & Stage** lists it first, and **Add to Build** keeps it.
 
@@ -562,13 +562,13 @@ Each runtime keeps its own account, so items added on one aren't in the other.
 
 ## Generated Packages
 
-Parhelion installs each build's packages together. On Dawn and on Project Sunrise before 0.6, they go in your game's `packages` folder. On Sunrise 0.6 or later, they go in the [Sunrise mod folder](#sunrise-mod-folder), and their IDs skip any that other mods use, so the numbers can differ from those below. Every build includes asset and investment packages. Other files depend on your selected recipes. The build result and manifest list the exact files.
+Parhelion installs each build's packages together. On Dawn and on Project Sunrise before 0.6, they go in your game's `packages` folder. On Sunrise 0.6 or later, they go in the [Sunrise mod folder](#sunrise-mod-folder), and their IDs skip any that other mods use, so the numbers can differ from those below. Every build includes sandbox and investment packages. Other files depend on your selected recipes. The build result and manifest list the exact files.
 
 ### Required Packages
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa0_0.pkg` | Holds authored artwork, models, materials, and other private assets, including badges and watermarks. On Sunrise 0.6 or later, the first asset package is `w64_parhelion_assets_0cfe_0.pkg`. |
+| `w64_parhelion_sandbox_0aa0_0.pkg` | Holds authored artwork, models, materials, and other private assets, including badges and watermarks. Imported items that carry the same texture share one copy. On Sunrise 0.6 or later, the first sandbox package is `w64_parhelion_sandbox_0cfe_0.pkg`. |
 | `w64_parhelion_investment_0cff_0.pkg` | Sunrise 0.6 or later only. Holds the authored item records that other runtimes add to `w64_investment_globals_client_0914_4.pkg`. |
 | `w64_investment_0361_7.pkg` | Connects authored items and perks to their in-game behavior. |
 | `w64_investment_globals_client_058c_4.pkg` | Adds Collections entries, unlocks, and Sunrise or Dawn badge progression. |
@@ -583,7 +583,7 @@ Generated only when your recipes need them. Ability property banks gain entries 
 
 | Package File | Purpose |
 | --- | --- |
-| `w64_parhelion_assets_0aa1_0.pkg` through `w64_parhelion_assets_0cff_0.pkg` | Holds authored assets, custom perks, and abilities that no longer fit in the packages above. Only the needed files are generated. On Sunrise 0.6 or later they count down from `w64_parhelion_assets_0cfd_0.pkg`, skipping ids other mods use. |
+| `w64_parhelion_sandbox_0aa1_0.pkg` through `w64_parhelion_sandbox_0cff_0.pkg` | Holds authored assets, custom perks, and abilities that no longer fit in the packages above. Only the needed files are generated. On Sunrise 0.6 or later they count down from `w64_parhelion_sandbox_0cfd_0.pkg`, skipping ids other mods use. |
 | `w64_sandbox_01bb_7.pkg` | Adds the custom perk behavior that selected items use. |
 | `w64_sandbox_01c0_6.pkg` | Extends an ability property bank. |
 | `w64_sandbox_01d5_7.pkg` | Extends an ability property bank. |

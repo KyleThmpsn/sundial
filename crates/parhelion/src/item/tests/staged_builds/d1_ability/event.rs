@@ -1,10 +1,11 @@
-//! Persisted animation and completion events retain dispatch and runtime binding contracts.
+//! Persisted animation, completion and HUD events retain dispatch and resource contracts.
 use super::*;
 
 #[allow(clippy::cognitive_complexity)]
 pub(super) fn readback(
     source: &Source,
     graph: &Payload,
+    stock: &PackageManager,
     staged: &PackageManager,
 ) -> Vec<serde_json::Value> {
     let original = source.read(0x80A6A073).unwrap();
@@ -12,6 +13,7 @@ pub(super) fn readback(
     let native_components = graph.array(16, 12, Some(0x80809C04)).unwrap();
     assert_eq!(source_components.len(), native_components.len());
     let mut evidence = Vec::new();
+    let mut hud_count = 0;
     for (occurrence, (from, to)) in source_components
         .into_iter()
         .zip(native_components)
@@ -28,7 +30,12 @@ pub(super) fn readback(
             .unwrap()
             .into_iter()
             .map(|row| source_owner.pointer(row).unwrap())
-            .filter(|&at| matches!(source_owner.u32(at - 4).unwrap(), 0x808025C1 | 0x808027EA))
+            .filter(|&at| {
+                matches!(
+                    source_owner.u32(at - 4).unwrap(),
+                    0x808025C1 | 0x808027EA | 0x80802573
+                )
+            })
             .collect::<Vec<_>>();
         let tag = graph.u32(to).unwrap();
         let native = Payload(staged.read_tag(TagHash(tag)).unwrap());
@@ -38,7 +45,12 @@ pub(super) fn readback(
             .unwrap()
             .into_iter()
             .map(|row| native.pointer(row + 16).unwrap())
-            .filter(|&at| matches!(native.u32(at - 4).unwrap(), 0x80803FE9 | 0x80804595))
+            .filter(|&at| {
+                matches!(
+                    native.u32(at - 4).unwrap(),
+                    0x80803FE9 | 0x80804595 | 0x80803F24
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(source_events.len(), events.len());
         for source_event in source_events {
@@ -55,6 +67,22 @@ pub(super) fn readback(
             );
             let event = candidates[0];
             let live = usize::try_from(native.u64(event + 8).unwrap()).unwrap();
+            if source_owner.u32(source_event - 4).unwrap() == 0x80802573 {
+                let resource = hud::readback(
+                    source,
+                    &source_owner,
+                    source_event,
+                    &native,
+                    event,
+                    stock,
+                    staged,
+                );
+                evidence.push(json!({"occurrence":occurrence,"source_owner":source_tag,
+                    "native_owner":tag,"source_event":source_event,"event":event,
+                    "kind":"hud_override","resource":resource,"native_owner_sha256":sha(&native.0)}));
+                hud_count += 1;
+                continue;
+            }
             if source_owner.u32(source_event - 4).unwrap() == 0x808027EA {
                 assert_eq!(source_owner.u32(source_event + 0x1C).unwrap(), 14);
                 assert_eq!(native.u32(event - 4).unwrap(), 0x80804595);
@@ -135,5 +163,6 @@ pub(super) fn readback(
         !evidence.is_empty(),
         "required source animation corpus is empty"
     );
+    assert!(hud_count > 0, "required HUD override corpus is empty");
     evidence
 }

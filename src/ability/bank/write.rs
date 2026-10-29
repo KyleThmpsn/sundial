@@ -16,7 +16,7 @@ const SCRIPT_DEFINITION_SIZE: usize = 40;
 /// shorter block puts the appended record's marker there and the client faults on it.
 const ATTACK_DEFINITION_SIZE: usize = 0x38;
 /// The name of a row with no name, FNV-1's offset basis, as the Dodge charge row is named.
-const NO_NAME: u32 = 0x811C_9DC5;
+pub(super) const NO_NAME: u32 = 0x811C_9DC5;
 
 /// Opens a block at the next 16 byte boundary, with its marker in the four bytes before it.
 pub(super) fn open_block(out: &mut Vec<u8>, marker: u32) -> usize {
@@ -124,7 +124,7 @@ pub(super) fn open_definition_region(
     layout: &Layout,
     rows: usize,
     markers: &[u32],
-) -> Region {
+) -> Result<Region, String> {
     let instance = layout.instance;
     let marker = instance - 4;
     let mut out = payload[..marker].to_vec();
@@ -140,18 +140,30 @@ pub(super) fn open_definition_region(
             at
         })
         .collect();
+    let priority_count = if markers.contains(&fixed::rate::CLASS) {
+        fixed::rate::extend_priorities(payload, layout, &mut out)?
+    } else {
+        None
+    };
     while (out.len() + 4) % 16 != instance % 16 {
         out.push(0);
     }
     let delta = out.len() + 4 - instance;
     out.extend_from_slice(&payload[marker..]);
-    Region {
+    if let Some(count) = priority_count {
+        put_u64(
+            &mut out,
+            instance + delta + fixed::rate::PRIORITY_COUNT,
+            count as u64,
+        );
+    }
+    Ok(Region {
         out,
         instance_header,
         instance_first: instance_header + 16,
         modifier_instances,
         delta,
-    }
+    })
 }
 
 /// Every twin offset follows its block, every header pointer and header table entry that
@@ -328,7 +340,7 @@ pub(super) const WINDOW_CLASSES: ModifierClasses = ModifierClasses {
 /// A window no reading lies in, so a melee press always strikes.
 pub(super) const CLOSED_WINDOW: (f32, f32) = (f32::INFINITY, f32::NEG_INFINITY);
 
-/// The handler slot the bank's own window rows use, or `None` for a bank without them.
+/// The priority-storage index the bank's own window rows use, or `None` without such rows.
 pub(super) fn window_handler(rows: &[PropertyRow]) -> Result<Option<HandlerIndex>, String> {
     let slots: BTreeSet<HandlerIndex> = rows
         .iter()

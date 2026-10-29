@@ -440,9 +440,8 @@ impl Capture {
             if let Some(target) = self.state.target.take() {
                 target.delete(gl)
             }
-            if let Some((program, _)) = self.state.program.take() {
-                gl.delete_program(program)
-            }
+            // The programs stay with the context's shared programs for the next capture.
+            self.state.programs = None;
             self.objects.delete(gl);
         }
     }

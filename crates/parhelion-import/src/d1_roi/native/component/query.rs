@@ -5,7 +5,11 @@ use crate::tiger::sequence::{object, relative};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const TEMPLATES: [(u32, u32); 2] = [(0x81522CBA, 0x80BB890A), (0x8152C721, 0x80BB893B)];
+const TEMPLATES: [(u32, u32); 3] = [
+    (0x81522CBA, 0x80BB890A),
+    (0x8152C721, 0x80BB893B),
+    (0x81524A0F, 0x815248AF),
+];
 /// Range scalar classes paired by query package structure, with a stock query holding the native
 /// class. Each class measures its own quantity, so other providers reject.
 const SCALARS: [(u32, u32, u32); 2] = [
@@ -342,6 +346,58 @@ fn search(source: &Payload, target: &mut Payload) -> Result<Value> {
     Ok(json!({"values":values,"flags":flags}))
 }
 
+/// Query output expressions have the same row layout in both builds. The bounded
+/// adapter keeps a native row only when its selectors, program, constants and scalar
+/// descriptor all match. Matching predicates alone does not establish these outputs.
+fn parameters(p: &Payload, source: bool) -> Result<Value> {
+    let r = p.pointer(24)?;
+    ensure!(
+        p.u32(r - 4)? == if source { 0x80803136 } else { 0x80803820 },
+        "Query resource class differs"
+    );
+    let at = r + if source { 0xA8 } else { 0x90 };
+    let mut outputs = Vec::new();
+    let rows = p.array(at, 72, Some(if source { 0x8080302A } else { 0x80803830 }))?;
+    ensure!(
+        !rows.is_empty() || p.u64(at + 8)? == 0,
+        "Empty query output array retains a pointer"
+    );
+    for row in rows {
+        let code = p
+            .array(row + 16, 1, Some(0x80800009))?
+            .into_iter()
+            .map(|a| p.u8(a))
+            .collect::<Result<Vec<_>>>()?;
+        let constants = p
+            .array(row + 32, 16, Some(0x80800090))?
+            .into_iter()
+            .map(|a| p.bytes::<16>(a))
+            .collect::<Result<Vec<_>>>()?;
+        // The checked native carrier publishes output zero from a constant-one
+        // expression. Other selectors, scalar providers and programs need a consumer pair.
+        ensure!(
+            p.bytes::<16>(row)? == [0; 16]
+                && code == [0x34, 0, 0x3E, 0]
+                && constants.len() == 1
+                && constants[0]
+                    .chunks_exact(4)
+                    .all(|value| value == 1f32.to_le_bytes())
+                && p.u64(row + 48)? == 1
+                && p.u32(row + 56)? == 1
+                && p.u32(row + 60)? == 0
+                && p.u64(row + 64)? == 0,
+            "Query output expression needs another native adapter"
+        );
+        outputs.push(json!({"selectors":p.bytes::<16>(row)?,"code":code,
+            "constants":constants,"dimensions":p.bytes::<16>(row+48)?,
+            "scalar":p.bytes::<8>(row+64)?}));
+    }
+    Ok(
+        json!({"values":p.bytes::<8>(r+if source {0x90} else {0x78})?,
+        "outputs":outputs,"flags":p.bytes::<8>(at+16)?}),
+    )
+}
+
 impl Assembly<'_> {
     pub(super) fn query(
         &mut self,
@@ -356,32 +412,32 @@ impl Assembly<'_> {
         };
         let queries = predicates(source, Some(&labels))?;
         let omitted = omitted(source, &labels)?;
+        let parameters = parameters(source, true)?;
         let mut selected = None;
+        let mut exact = false;
         for (owner, entity) in TEMPLATES {
             let native = self.native.tag(owner, Some(0x80809C36))?;
+            if parameters != self::parameters(&native, false)? {
+                continue;
+            }
+            selected.get_or_insert((owner, entity));
             if queries == predicates(&native, None)? {
                 selected = Some((owner, entity));
+                exact = true;
                 break;
             }
         }
-        let (owner, entity) = selected.unwrap_or(TEMPLATES[0]);
+        let (owner, entity) =
+            selected.context("Source query parameters need another native adapter")?;
         let mut component = self.component(owner, entity, name, index)?;
         let native = &component.template;
-        let (s, n) = (source.pointer(24)?, native.pointer(24)?);
         ensure!(
-            source.u32(s - 4)? == 0x80803136 && native.u32(n - 4)? == 0x80803820,
-            "Query resource class differs"
-        );
-        ensure!(
-            source.bytes::<8>(s + 0x90)? == native.bytes::<8>(n + 0x78)?
-                && source.bytes::<24>(s + 0xA8)? == [0; 24]
-                && native.bytes::<24>(n + 0x90)? == [0; 24]
-                && source.bytes::<24>(s + 0x168)? == [0; 24],
-            "Source query parameters need another native adapter"
+            source.bytes::<24>(source.pointer(24)? + 0x168)? == [0; 24],
+            "Source query trailing outputs need another native adapter"
         );
         let search = search(source, &mut component.payload)?;
         let outputs = self.query_outputs(source, native)?;
-        if selected.is_none() {
+        if !exact {
             let mut scalars = BTreeMap::new();
             for (_, class, tag) in SCALARS {
                 scalars.insert(class, self.native.tag(tag, Some(0x80809C36))?);
@@ -396,7 +452,7 @@ impl Assembly<'_> {
         component.seal()?;
         self.evidence.push(json!({"source_component":source.u32(source.pointer(16)?)?,
             "resource_class":0x80803136u32,"native_resource_class":0x80803820u32,
-            "query_adapter":{"predicates":queries,"omitted_filters":omitted,"output_names":outputs,"target_search":search,"parameters":"equal to checked native adapter"},
+            "query_adapter":{"predicates":queries,"omitted_filters":omitted,"output_names":outputs,"target_search":search,"parameters":parameters},
             "gameplay_verified":false}));
         Ok(component)
     }

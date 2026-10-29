@@ -164,6 +164,7 @@ impl Role {
 }
 
 /// One handle of a donor object, as the map's copy keeps it.
+#[derive(Clone)]
 enum Handle {
     Kept(u32),
     /// A point the copy places at the map spawn `spawn`, from the donor's handle, redirect and
@@ -220,6 +221,116 @@ struct Object {
     tag: TagHash,
     payload: Vec<u8>,
     bubbles: Option<Vec<Vec<Handle>>>,
+}
+
+/// A donor object, its payload and its handles per bubble.
+type DonorObject = (TagHash, Vec<u8>, Vec<Vec<Handle>>);
+
+/// What a donor registry gives every map area that copies it: its objects with their handles
+/// resolved, and its encounter templates and neutral trigger pair once an area needs them. A
+/// campaign map's connected areas all copy one donor registry, and reading its objects and walking
+/// their residency again took about 20 seconds for each of Nightfall's six later areas.
+#[derive(Default)]
+pub(super) struct Donor {
+    registry: Option<TagHash>,
+    /// Each array's objects, their payloads and their handles per bubble.
+    objects: [Vec<DonorObject>; 3],
+    templates: Option<Option<Templates>>,
+    triggers: Option<Option<super::triggers::Triggers>>,
+}
+
+impl Donor {
+    /// Resolves the objects of the registry `tag`, unless they already are.
+    fn resolve(
+        &mut self,
+        manager: &PackageManager,
+        tag: TagHash,
+        owner: &[u8],
+    ) -> AuthoringResult<()> {
+        if self.registry == Some(tag) {
+            return Ok(());
+        }
+        *self = Self::default();
+        for (list, &descriptor) in self.objects.iter_mut().zip(&REGISTRY_OBJECTS) {
+            for object in words(owner, descriptor)? {
+                if class(manager, object) != Some(OBJECT_CLASS) {
+                    return Err(invalid(format!(
+                        "Registry {tag} lists {object:08X}, which is not an object"
+                    )));
+                }
+                let payload = read_tag(manager, TagHash(object), "registry object")?;
+                let key = read_u32(&payload, OBJECT_KEY)?;
+                let mut bubbles = Vec::new();
+                if read_u64(&payload, OBJECT_BUBBLES)? != 0 {
+                    let (count, _, rows, _) = array_at(&payload, OBJECT_BUBBLES)?;
+                    for bubble in 0..count {
+                        let handles =
+                            words(&payload, rows + bubble * BUBBLE_SIZE + BUBBLE_HANDLES)?
+                                .into_iter()
+                                .map(|tag| handle(manager, tag, key))
+                                .collect::<AuthoringResult<Vec<_>>>()?;
+                        bubbles.push(handles);
+                    }
+                }
+                // An object that places no point is not a Crucible object, whose lists hold
+                // logical nodes the map's spawns take, but the donor activity's own: its lists
+                // place the donor's scripted scenery, which the copy leaves out ([`empty_list`]).
+                // The Other Side's place the Leviathan's doors and pots at its trophy hall, 91
+                // rows of whose entities hold no render, body or effect component, and moved onto
+                // the level's spawns they stood in Lone Wolf and Tip of the Spear.
+                if !bubbles
+                    .iter()
+                    .flatten()
+                    .any(|handle| matches!(handle, Handle::Moved { .. }))
+                {
+                    for handle in bubbles.iter_mut().flatten() {
+                        empty_list(manager, handle)?;
+                    }
+                }
+                list.push((TagHash(object), payload, bubbles));
+            }
+        }
+        self.registry = Some(tag);
+        Ok(())
+    }
+
+    /// The templates of the donor's encounter objects, with the additional encounters' squads.
+    fn templates(&mut self, manager: &PackageManager) -> AuthoringResult<Option<&Templates>> {
+        if self.templates.is_none() {
+            let mut templates: Option<Templates> = None;
+            for (object, payload, _) in self.objects.iter().flatten() {
+                if let Some(found) = Templates::find(manager, object.0, payload)? {
+                    match &mut templates {
+                        Some(templates) => templates.merge(found),
+                        None => templates = Some(found),
+                    }
+                }
+            }
+            if let Some(templates) = &mut templates {
+                templates.supplement(manager)?;
+            }
+            self.templates = Some(templates);
+        }
+        Ok(self.templates.as_ref().and_then(Option::as_ref))
+    }
+
+    /// The first neutral trigger pair among the donor's objects.
+    fn triggers(
+        &mut self,
+        manager: &PackageManager,
+    ) -> AuthoringResult<Option<&super::triggers::Triggers>> {
+        if self.triggers.is_none() {
+            let mut triggers = None;
+            for (object, payload, _) in self.objects.iter().flatten() {
+                triggers = super::triggers::Triggers::find(manager, *object, payload)?;
+                if triggers.is_some() {
+                    break;
+                }
+            }
+            self.triggers = Some(triggers);
+        }
+        Ok(self.triggers.as_ref().and_then(Option::as_ref))
+    }
 }
 
 pub(super) struct Registry {
@@ -555,12 +666,14 @@ impl Registry {
     /// The registry the donor slice set `slice_set` names at `field`, with its points placed on
     /// `spawns`, its objectives on the level's labelled `objectives`, its kill volumes refilled
     /// with `volumes`, or left out when there are none, the map's name for its `bubble`, and an
-    /// encounter of the level's `squads` named after the area `area`.
+    /// encounter of the level's `squads` named after the area `area`. `donor` keeps the donor's
+    /// share for the map's other areas.
     #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     pub(super) fn load(
         directory: &Path,
         manager: &PackageManager,
         companions: &mut Companions,
+        donor: &mut Donor,
         slice_set: &[u8],
         field: usize,
         spawns: &[Spawn],
@@ -580,71 +693,19 @@ impl Registry {
             REGISTRY_CLASS,
             "object registry",
         )?;
+        donor.resolve(manager, tag, &owner.payload)?;
         let mut objects: [Vec<Object>; 3] = Default::default();
-        let mut templates: Option<Templates> = None;
-        let mut triggers = None;
-        for (list, &descriptor) in objects.iter_mut().zip(&REGISTRY_OBJECTS) {
-            for object in words(&owner.payload, descriptor)? {
-                if class(manager, object) != Some(OBJECT_CLASS) {
-                    return Err(invalid(format!(
-                        "Registry {tag} lists {object:08X}, which is not an object"
-                    )));
-                }
-                let payload = read_tag(manager, TagHash(object), "registry object")?;
-                if triggers.is_none() && !trigger_volumes.is_empty() {
-                    triggers = super::triggers::Triggers::find(
-                        manager,
-                        TagHash(object),
-                        &payload,
-                        trigger_volumes,
-                        area,
-                    )?;
-                }
-                if !squads.is_empty()
-                    && let Some(found) = Templates::find(manager, object, &payload)?
-                {
-                    match &mut templates {
-                        Some(templates) => templates.merge(found),
-                        None => templates = Some(found),
-                    }
-                }
-                let key = read_u32(&payload, OBJECT_KEY)?;
-                let mut bubbles = Vec::new();
-                let mut changed = bubble.named(&payload);
-                if read_u64(&payload, OBJECT_BUBBLES)? != 0 {
-                    let (count, _, rows, _) = array_at(&payload, OBJECT_BUBBLES)?;
-                    for bubble in 0..count {
-                        let handles =
-                            words(&payload, rows + bubble * BUBBLE_SIZE + BUBBLE_HANDLES)?
-                                .into_iter()
-                                .map(|tag| handle(manager, tag, key))
-                                .collect::<AuthoringResult<Vec<_>>>()?;
-                        bubbles.push(handles);
-                    }
-                }
-                // An object that places no point is not a Crucible object, whose lists hold
-                // logical nodes the map's spawns take, but the donor activity's own: its lists
-                // place the donor's scripted scenery, which the copy leaves out ([`empty_list`]).
-                // The Other Side's place the Leviathan's doors and pots at its trophy hall, 91
-                // rows of whose entities hold no render, body or effect component, and moved onto
-                // the level's spawns they stood in Lone Wolf and Tip of the Spear.
-                if !bubbles
-                    .iter()
-                    .flatten()
-                    .any(|handle| matches!(handle, Handle::Moved { .. }))
-                {
-                    for handle in bubbles.iter_mut().flatten() {
-                        empty_list(manager, handle)?;
-                    }
-                }
-                changed |= bubbles
-                    .iter()
-                    .flatten()
-                    .any(|handle| !matches!(handle, Handle::Kept(_)));
+        for (list, resolved) in objects.iter_mut().zip(&donor.objects) {
+            for (object, payload, bubbles) in resolved {
+                let changed = bubble.named(payload)
+                    || bubbles
+                        .iter()
+                        .flatten()
+                        .any(|handle| !matches!(handle, Handle::Kept(_)));
                 list.push(Object {
-                    tag: TagHash(object),
-                    payload,
-                    bubbles: changed.then_some(bubbles),
+                    tag: *object,
+                    payload: payload.clone(),
+                    bubbles: changed.then(|| bubbles.clone()),
                 });
             }
         }
@@ -762,20 +823,26 @@ impl Registry {
                 }
             }
         }
-        if !squads.is_empty()
-            && let Some(templates) = &mut templates
-        {
-            templates.supplement(manager)?;
-        }
-        let encounter = match &templates {
-            Some(templates) => Encounter::new(templates, squads, area)?,
-            None => None,
+        let encounter = if squads.is_empty() {
+            None
+        } else {
+            match donor.templates(manager)? {
+                Some(templates) => Encounter::new(templates, squads, area)?,
+                None => None,
+            }
         };
-        if !trigger_volumes.is_empty() && triggers.is_none() {
-            return Err(invalid(
-                "Mission donor has no paired neutral volume and player sensor",
-            ));
-        }
+        let triggers = if trigger_volumes.is_empty() {
+            None
+        } else {
+            Some(
+                donor
+                    .triggers(manager)?
+                    .ok_or_else(|| {
+                        invalid("Mission donor has no paired neutral volume and player sensor")
+                    })?
+                    .placed(trigger_volumes, area),
+            )
+        };
         Ok(Self {
             owner,
             objects,

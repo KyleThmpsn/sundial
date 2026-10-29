@@ -310,7 +310,7 @@ pub const EFFECTS: [NodeKind; 55] = [
         occurrences: 3,
         name: "Weapon Reference Count",
         summary: "Adds a reference count on the weapon, and removes it on removal.",
-        evidence: "Byte +2 increments or decrements weapon byte +AC0 through CC9350. Crossing zero updates other weapon state. Cleanup applies the inverse operation, with retained state used to gate removal.",
+        evidence: "Byte +2 increments or decrements weapon byte +AC0 through CC9350. Crossing zero updates other weapon state. Cleanup applies the inverse operation, with retained state used to gate removal. All seven stock perks that hold it describe tracking: Tracking Module, Precision Frame, Häkke Precision Frame, Prototype Trueseeker and Twintails while aiming, Revolution and Charge Shot from equip. While the count is positive, CCB550 runs the Weapon Controller's lock-on update, timed by its definition's target_tracking at +A20, and falling to zero clears the lock slots at +B10 through E94330.",
         support: Support::Authorable,
     },
     NodeKind {
@@ -358,9 +358,9 @@ pub const EFFECTS: [NodeKind; 55] = [
         class: 0x80803E1C,
         struct_size: 12,
         occurrences: 5,
-        name: "Override Host Key",
-        summary: "Replaces a named key on a host property and restores it on removal.",
-        evidence: "Target selector +2 and interface selector +3 choose a host property. Key +4 replaces its stored key through F67620 selectors 3 or 14. Cleanup restores the retained key. Flag +8 can apply the same operation to the controller player.",
+        name: "Override Animation Input",
+        summary: "Overrides a named animation input and restores its previous selection on removal.",
+        evidence: "108D910 selects the target's animation context. 108C740 saves builtin 3 or 14's name before F67620 and 10688B0 write key +4 and its dictionary mask, including a linked context. 108F990 reapplies the saved name on removal. Builtin 3 replaces empty 811C9DC5 with default 42F51AF9. Flag +8 adds the controller player unless it is already the selected target. This write alone does not establish trigger or firing behavior.",
         support: Support::Authorable,
     },
     NodeKind {

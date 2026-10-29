@@ -188,6 +188,9 @@ pub struct Level {
     pub lighting_averages: [f32; 3],
     /// What each BSP's decorators placed, in BSP order.
     pub decorators: Vec<serde_json::Value>,
+    /// The decorators as instances of their types, when they draw as Destiny's instanced
+    /// decorators ([`read_decorated_areas`]) rather than copies among `primitives`.
+    instanced: Option<decorators::Instanced>,
 }
 
 /// One structure BSP's meshes, by index in its render geometry.
@@ -571,14 +574,36 @@ pub fn read_areas(
     tags: &[Tag],
     areas: &[Vec<usize>],
 ) -> Result<Level> {
+    read_decorated_areas(cache, pages, tags, areas, false)
+}
+
+/// [`read_areas`], with `instanced` keeping the decorators as instances of their types for
+/// Destiny's instanced decorators (`decorators::instanced`) in place of copies among the level's
+/// primitives. Each type then keeps its most detailed model, and the decorators take no share of
+/// the areas' triangle budget, which forced coarser models on the copies.
+pub fn read_decorated_areas(
+    cache: &Cache,
+    pages: &mut Pages,
+    tags: &[Tag],
+    areas: &[Vec<usize>],
+    instanced: bool,
+) -> Result<Level> {
     let lut = lightmap::direction_lut(cache, pages)?;
     let mut parts = Vec::with_capacity(tags.len());
     for (bsp, tag) in tags.iter().enumerate() {
         parts.push(read_bsp(cache, pages, tag, bsp, lut.as_deref())?);
     }
-    decorators::place(cache, pages, &mut parts, areas)?;
-    for (part, tag) in parts.iter_mut().zip(tags) {
-        let bsps = bsp_mask(cache, std::slice::from_ref(tag))?;
+    let masks = tags
+        .iter()
+        .map(|tag| bsp_mask(cache, std::slice::from_ref(tag)))
+        .collect::<Result<Vec<_>>>()?;
+    let instanced = if instanced {
+        Some(decorators::instanced(cache, pages, &mut parts, &masks)?)
+    } else {
+        decorators::place(cache, pages, &mut parts, areas)?;
+        None
+    };
+    for (part, &bsps) in parts.iter_mut().zip(&masks) {
         for primitive in &mut part.primitives {
             primitive.bsps = bsps;
         }
@@ -608,6 +633,7 @@ pub fn read_areas(
         lightmap: None,
         lighting_averages: levels.map(|(sum, count)| (sum / count.max(1) as f64) as f32),
         decorators: Vec::with_capacity(tags.len()),
+        instanced,
     };
     for ((part, placement), probe_coordinates) in
         parts.into_iter().zip(placements).zip(probe_coordinates)
@@ -1487,14 +1513,8 @@ pub fn export_primitive_lighting(
             let x = ((u * atlas.width as f32) as usize).min(atlas.width - 1);
             let y = ((v * atlas.height as f32) as usize).min(atlas.height - 1);
             atlas_rows.insert(y);
-            let at = (y * atlas.width + x) * 4;
-            let decode = |texels: &[u8]| -> [f32; 3] {
-                std::array::from_fn(|k| (f32::from(texels[at + k]) / 255.).powi(2))
-            };
-            levels.push(
-                (0.5 * luminance(decode(&atlas.lobe)) + luminance(decode(&atlas.ambient)))
-                    * atlas.scale,
-            );
+            let texel = atlas.texel_at(x, y);
+            levels.push(0.5 * luminance(texel.lobe) + luminance(texel.ambient));
         }
         let count = primitive.vertices.len().max(1) as f64;
         levels.sort_by(f32::total_cmp);

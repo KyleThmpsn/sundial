@@ -17,6 +17,31 @@ The projection retains function names, external global names and value-type
 metadata. It does not include Assembly's compiler or decompiler implementation.
 The GNU General Public License version 3 is included in the application's LICENSE.
 
+## AMD AddrLib
+
+Source: https://github.com/GPUOpen-Drivers/pal/tree/7ce51b199c72021b8d027c50b55da515fd9b2e0b/src/core/imported/addrlib
+AMD AddrLib
+
+Copyright (c) 2007-2018 Advanced Micro Devices, Inc. All Rights Reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 
 ## accesskit 0.24.1
 
@@ -5818,7 +5843,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## clipboard-win 5.4.1
+## clipboard-win 5.4.3
 
 - SPDX: `BSL-1.0`
 - Repository: https://github.com/DoumanAsh/clipboard-win
@@ -27458,7 +27483,7 @@ DEALINGS IN THE SOFTWARE.
 
 _No separate license text was packaged with this crate; see the SPDX expression and repository above._
 
-## pulldown-cmark 0.13.4
+## pulldown-cmark 0.13.5
 
 - SPDX: `MIT`
 - Repository: https://github.com/raphlinus/pulldown-cmark

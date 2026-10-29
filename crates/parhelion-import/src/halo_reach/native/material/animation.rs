@@ -198,7 +198,7 @@ pub(super) fn periodic(
         "Material curve lookup exceeds texture register capacity"
     );
     let symbol = "reach-material-periodic";
-    if !graph.nodes.iter().any(|node| node["symbol"] == symbol) {
+    if !graph.contains(symbol) {
         let rgba = Property::periodic_tables()
             .iter()
             .chain(Property::transition_tables())

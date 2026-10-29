@@ -1,4 +1,4 @@
-//! Resolve ability-event operands through stable ability identities in both builds.
+//! Resolve ability-roster additions and removals through stable ability identities.
 use super::*;
 
 pub(super) fn read(
@@ -7,9 +7,9 @@ pub(super) fn read(
     p: &Payload,
     at: usize,
 ) -> Result<NativeNode> {
+    let kind = p.u8(at + 5)?;
     ensure!(
-        p.u32(at - 4)? == 0x808031BF
-            && p.u8(at + 5)? == 10
+        matches!((p.u32(at - 4)?, kind), (0x808031BF, 10) | (0x8080308E, 11))
             && (0.0..=1.0).contains(&p.f32(at)?)
             && p.u8(at + 4)? == 255
             && p.u8(at + 6)? == 0
@@ -24,6 +24,19 @@ pub(super) fn read(
         );
     }
     let pattern = p.u32(at + 16)?;
+    let target = resolve(source, native, pattern)?;
+
+    // Source 76AC40/76AC70 and native 107C4B0 compare event word zero with +10.
+    // Roster replacement in source 58A0B0 and native EC4AE0 publishes removal (11)
+    // before addition (10). Preserve the kind and resolve both operands identically.
+    // Their lifecycle callbacks allocate no state. The path is authoring metadata.
+    let mut bytes = vec![0; 24];
+    bytes[..8].copy_from_slice(&p.bytes::<8>(at)?);
+    bytes[16..20].copy_from_slice(&target.to_le_bytes());
+    Ok(NativeNode { kind, bytes })
+}
+
+pub(super) fn resolve(source: &Source, native: &mut Reader, pattern: u32) -> Result<u32> {
     ensure!(
         source.reference(pattern)? == 0x80800734,
         "Source ability-reference condition does not select a pattern"
@@ -51,7 +64,7 @@ pub(super) fn read(
             );
         }
     }
-    let identity = matched.context("Source event pattern has no ability identity")?;
+    let identity = matched.context("Source pattern has no ability identity")?;
     let tags = native.classes(0x80805CA4);
     ensure!(
         tags.len() == 1,
@@ -67,7 +80,7 @@ pub(super) fn read(
     }
     ensure!(
         identities.contains(&identity),
-        "Source event ability {identity:08X} has no native definition"
+        "Source ability {identity:08X} has no native definition"
     );
     let roots = native
         .manager
@@ -88,17 +101,11 @@ pub(super) fn read(
         if assignments.u32(row)? == identity {
             ensure!(
                 target.replace(assignments.u32(row + 4)?).is_none(),
-                "Native event ability has multiple runtime assignments"
+                "Native ability has multiple runtime assignments"
             );
         }
     }
-    let target = target.context("Native event ability has no runtime assignment")?;
+    let target = target.context("Native ability has no runtime assignment")?;
     native.tag(target, Some(0x80809C0F))?;
-
-    // Original 76AC40 and native 107C4B0 compare event word zero with the pattern
-    // reference at +10. The path is authoring metadata and native stock leaves it null.
-    let mut bytes = vec![0; 24];
-    bytes[..8].copy_from_slice(&p.bytes::<8>(at)?);
-    bytes[16..20].copy_from_slice(&target.to_le_bytes());
-    Ok(NativeNode { kind: 10, bytes })
+    Ok(target)
 }

@@ -477,8 +477,7 @@ pub(super) fn reticle_mask(code: &[u8], slot: u32) -> Result<Vec<u8>> {
 
 /// The initial-vector row a sight vertex program subtracts from the quad's z before the
 /// reticle projection (`add r0.z, r0.z, -cb0[row].x`). Stock sight programs do the same with
-/// a per-weapon constant (`81532F60` row 11), and the game builds reticle matrix six for
-/// that plane, so the D1 row must carry the native constant.
+/// their own per-weapon constant (`81532F60` row 11).
 pub(super) fn sight_depth_row(code: &[u8]) -> Result<u8> {
     let words = tokens(code)?;
     let mut rows = Vec::new();

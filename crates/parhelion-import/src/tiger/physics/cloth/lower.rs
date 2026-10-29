@@ -36,6 +36,7 @@ pub(super) fn translate(
         "contract":"Native simulation extension","detail":"Native velocity summaries and unstuck overrides remain disabled."})],
     };
     lower.object(1, 0)?;
+    scratch::fold(&mut lower.objects, &mut lower.limits)?;
     Ok((lower.objects, lower.limits))
 }
 
@@ -278,6 +279,12 @@ impl Lower<'_> {
                 self.limits.push(json!({"object":index,"contract":"Bend stiffness","source_max_rest_pose_height_sq":height,
                     "detail":"Native bending consumes the stored signed link coefficients. Modern clamp equivalence is not established."}));
             }
+            // The source stores only full planes. The native compressed form stays empty.
+            "hclBonePlanesConstraintSet" => {
+                raw.insert("bonePlanesCompressed".into(), json!([]));
+                self.limits.push(json!({"object":index,"contract":"Bone planes",
+                    "detail":"Planes stay in their source bone's space, which assumes the native bone shares that frame."}));
+            }
             "hclTransitionConstraintSet" => {
                 let rows = self.expand(raw["perParticleData"].clone(), depth + 1)?;
                 let mut vertices = Vec::new();
@@ -465,24 +472,40 @@ pub(super) fn remap(objects: &mut BTreeMap<usize, Object>, mapping: &[u16]) -> R
                 object.value["numTransforms"] = json!(count);
                 None
             }
-            "hclObjectSpaceSkinPNTOperator" => Some(&mut object.value["transformSubset"]),
+            "hclObjectSpaceSkinPNTOperator" | "hclObjectSpaceSkinPNOperator" => {
+                Some(&mut object.value["transformSubset"])
+            }
             "hclSimClothData" => {
                 Some(&mut object.value["collidableTransformMap"]["transformIndices"])
+            }
+            "hclBonePlanesConstraintSet" => {
+                for plane in object.value["bonePlanes"]
+                    .as_array_mut()
+                    .context("Cloth bone planes")?
+                {
+                    remap_index(&mut plane["transformIndex"], mapping)?;
+                }
+                None
             }
             _ => None,
         };
         if let Some(values) = target {
             for index in values.as_array_mut().context("Cloth transform indexes")? {
-                let mapped = *mapping
-                    .get(integer(index)?)
-                    .context("Cloth transform is outside the bone map")?;
-                ensure!(
-                    mapped != u16::MAX,
-                    "Cloth transform has no compatible native bone"
-                );
-                *index = json!(mapped);
+                remap_index(index, mapping)?;
             }
         }
     }
+    Ok(())
+}
+
+fn remap_index(index: &mut Value, mapping: &[u16]) -> Result<()> {
+    let mapped = *mapping
+        .get(integer(index)?)
+        .context("Cloth transform is outside the bone map")?;
+    ensure!(
+        mapped != u16::MAX,
+        "Cloth transform has no compatible native bone"
+    );
+    *index = json!(mapped);
     Ok(())
 }

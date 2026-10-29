@@ -245,7 +245,8 @@ fn apply_with_progress(
             .as_u64()
             .context("native owner")?,
     )?;
-    let objects = program::native_channels(&prepared.join("native"), Some(owner))?;
+    let objects =
+        program::native_channels(&crate::d2_mot::profile::native(prepared)?, Some(owner))?;
     let modern = load(&refs.join("tfx-modern/context.json"))?;
     let native = load(&refs.join("tfx-native/context.json"))?;
     let globals = globals(&modern, &native)?;
@@ -253,7 +254,7 @@ fn apply_with_progress(
     if family == "source-optics" {
         merge_parts(&graph, &mut draws)?;
     }
-    let source = Source::read(&prepared.join("source"))?;
+    let source = Source::read(&crate::d2_mot::profile::source(prepared)?)?;
     let mut context = Effect {
         graph,
         draws,
@@ -329,7 +330,7 @@ pub(super) fn refresh_optics(
 
 /// Partition source art regions in a copied graph without recompiling materials.
 pub fn restore_art_regions(prepared: &Path, directory: &Path) -> Result<Value> {
-    let report = load(&prepared.join("source/report.json"))?;
+    let report = load(&crate::d2_mot::profile::source(prepared)?.join("report.json"))?;
     let mut graph = Graph {
         root: directory.to_owned(),
         manifest: load(&directory.join("asset-graph.json"))?,

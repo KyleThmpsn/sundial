@@ -3,20 +3,6 @@ use super::*;
 use crate::tag_payload::{read_i64, relative_target};
 use sundial::investment::MAX_WEAPON_SOCKETS;
 
-#[cfg(test)]
-pub(in crate::install) fn generation_socket_defaults(
-    target: &Path,
-    authored_directory: &Path,
-    hashes: &BTreeSet<u32>,
-) -> Result<BTreeMap<u32, Vec<Option<u32>>>, String> {
-    if hashes.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    with_generation(target, authored_directory, |generation| {
-        socket_defaults(generation, hashes)
-    })
-}
-
 pub(in crate::install) fn socket_defaults(
     generation: &Generation,
     hashes: &BTreeSet<u32>,

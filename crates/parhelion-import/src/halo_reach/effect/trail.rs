@@ -468,7 +468,7 @@ pub(in crate::halo_reach) fn emit(
             "geometry":"Stationary CPU particles born at successive marker positions, with linear within-frame placement and overlapping camera-facing quads.",
             "appearance":"Source lifetime, width, color, alpha, tiling, scrolling and flagged origin fading. Each texture uses its source address and filter modes without mip bias.",
             "composition":profile.material.options["blend_mode"],"gameplay_verified":false,
-            "limits":["Billboards approximate the source connected ribbon. Emission and longitudinal UV distance use reference speed. Source lightmap tint and atmospheric fog, randomized UV origin, edge fading and opacity from effect scale are not translated. Spline2 uses the GPU cubic basis without CPU input-bias behavior. Moving-host placement, visibility and lifecycle require gameplay acceptance."]
+            "limits":["Billboards approximate the source connected ribbon. Emission and longitudinal UV distance use reference speed. Source lightmap tint and atmospheric fog, randomized UV origin, edge fading and opacity from effect scale are not translated. Spline2 uses the GPU cubic basis without CPU input-bias behavior."]
         }),
     ))
 }

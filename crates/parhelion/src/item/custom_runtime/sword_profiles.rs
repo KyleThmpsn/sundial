@@ -11,11 +11,225 @@ const KEY_CLASS: u32 = 0x8080_43D5;
 const KEY_DESCRIPTOR: usize = 0x1F0;
 const KEY_ACTIVE_COUNT: usize = 0x228;
 
+#[cfg(feature = "d2-model-importer")]
+fn powered_row(owner: &[u8], row: usize) -> AuthoringResult<bool> {
+    if read_u64(owner, row + 0x18)? == 0 {
+        return Ok(false);
+    }
+    let (count, gates) = checked_array(owner, row + 0x18, 0x8080_2D6E, 8)?;
+    let mut ammo = false;
+    for index in 0..count {
+        let gate = relative_target(owner, gates + index * 8)?;
+        match read_u32(owner, gate.saturating_sub(4))? {
+            0x8080_2D70 => {
+                let minimum = f32::from_bits(read_u32(owner, gate)?);
+                let spend = f32::from_bits(read_u32(owner, gate + 4)?);
+                if minimum <= 0. || !minimum.is_finite() || spend >= 0. || !spend.is_finite() {
+                    return Err(invalid("Sword ammo gate has unsupported limits"));
+                }
+                ammo = true;
+            }
+            0x8080_2D6F => (),
+            _ => {
+                return Err(invalid(
+                    "Sword attack has an unsupported eligibility condition",
+                ));
+            }
+        }
+    }
+    if !ammo {
+        return Err(invalid("Sword attack has no qualified ammo condition"));
+    }
+    Ok(true)
+}
+
+#[cfg(feature = "d2-model-importer")]
+pub(super) struct Imported {
+    owner: u32,
+    digest: String,
+    powered: String,
+    depleted: String,
+    effect: String,
+}
+
+#[cfg(feature = "d2-model-importer")]
+impl Imported {
+    pub(super) fn load(graph: &serde_json::Value) -> AuthoringResult<Option<Self>> {
+        let Some(value) = graph.get("sword") else {
+            return Ok(None);
+        };
+        if value["schema"] != 1 || value["installable"] != true {
+            return Err(invalid("Reimport this sword's mechanics"));
+        }
+        let text = |key: &str| {
+            value[key]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| invalid(format!("Imported sword lacks {key}")))
+        };
+        Ok(Some(Self {
+            owner: value["source_owner"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| invalid("Imported sword lacks its source owner"))?,
+            digest: text("source_sha256")?,
+            powered: text("powered_contact")?,
+            depleted: text("depleted_contact")?,
+            effect: text("root")?,
+        }))
+    }
+
+    pub(super) fn root(&self) -> &str {
+        &self.effect
+    }
+
+    pub(super) fn validate<M>(&self, nodes: &[super::assets::Node<M>]) -> AuthoringResult<()> {
+        let node = |symbol: &str| {
+            nodes
+                .iter()
+                .find(|node| node.symbol == symbol)
+                .filter(|node| {
+                    node.reference.is_none()
+                        && node.storage == crate::NewTagStorageMode::InheritTemplate
+                })
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "Imported sword asset {symbol} is absent or changes its class"
+                    ))
+                })
+        };
+        if self.powered == self.depleted
+            || self.digest.len() != 64
+            || !self.digest.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(invalid("Imported sword identity is invalid"));
+        }
+        for symbol in [&self.powered, &self.depleted] {
+            let payload = &node(symbol)?.payload;
+            let definition = relative_target(payload, 24)?;
+            if read_u32(payload, definition.saturating_sub(4))? != 0x8080_4B02
+                || payload.get(definition + 0x10) != Some(&0)
+            {
+                return Err(invalid(
+                    "Imported sword contact is not an absolute damage profile",
+                ));
+            }
+        }
+        let root = node(&self.effect)?;
+        if crate::tag_payload::read_u16(&root.payload, 0x96)? != 17 {
+            return Err(invalid(
+                "Imported sword blast is not a native effect entity",
+            ));
+        }
+        super::assets::replication::validate(nodes, root)
+    }
+
+    /// Patch only the cloned weapon owner. Eligibility, timing, cancellation and
+    /// ammo consumption remain on the native controller's selected attack row.
+    pub(super) fn patches(
+        &self,
+        manager: &PackageManager,
+        entity: &[u8],
+        symbols: &BTreeMap<String, TagHash>,
+    ) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+        use sha2::{Digest, Sha256};
+        let bindings = weapon_component_bindings(entity, BINDING).map_err(invalid)?;
+        let [binding] = bindings.as_slice() else {
+            return Err(invalid("Imported sword requires one sword controller"));
+        };
+        if binding.owner_tag != self.owner || binding.concrete_class != SWORD_CLASS {
+            return Err(invalid(
+                "Imported sword mechanics do not match the selected gameplay donor",
+            ));
+        }
+        let owner = read_tag(manager, TagHash(self.owner), "imported sword donor")?;
+        if hex::encode(Sha256::digest(&owner)) != self.digest {
+            return Err(invalid(
+                "Sword donor changed since import. Reimport this weapon",
+            ));
+        }
+        let resolve = |name: &str| {
+            symbols
+                .get(name)
+                .copied()
+                .ok_or_else(|| invalid(format!("Imported sword asset {name} was not allocated")))
+        };
+        let powered = resolve(&self.powered)?;
+        let depleted = resolve(&self.depleted)?;
+        let effect = resolve(&self.effect)?;
+        let resource = usize::try_from(binding.resource_offset)
+            .map_err(|_| invalid("Sword resource offset overflows"))?;
+        if resource < 4
+            || read_u32(&owner, resource - 4)? != SWORD_CLASS
+            || read_u32(&owner, resource)? != self.owner
+        {
+            return Err(invalid(
+                "Imported sword resource does not match its binding",
+            ));
+        }
+        let mut values = BTreeMap::new();
+        let mut counts = [0usize; 2];
+        for bank in profile_banks(&owner, resource)? {
+            for index in 0..bank.count {
+                let row = bank.rows + index * PROFILE_SIZE;
+                let powered_row = powered_row(&owner, row)?;
+                let strike = f32::from_bits(read_u32(&owner, row + 0x1A0)?);
+                if powered_row && (!strike.is_finite() || strike < 0.) {
+                    return Err(invalid("Powered sword attack has no timed strike"));
+                }
+                counts[usize::from(powered_row)] += 1;
+                let contact = relative_target(&owner, row + 0x1A8)?;
+                if read_u32(&owner, contact.saturating_sub(4))? != 0x8080_4455 {
+                    return Err(invalid("Imported sword requires a native contact attack"));
+                }
+                for (at, value) in [
+                    (row + 0x198, if powered_row { effect.0 } else { u32::MAX }),
+                    (
+                        contact + 0x28,
+                        if powered_row { powered.0 } else { depleted.0 },
+                    ),
+                ] {
+                    if values.insert(at, value).is_some_and(|old| old != value) {
+                        return Err(invalid(
+                            "Powered and depleted sword attacks share mutable contact data",
+                        ));
+                    }
+                }
+            }
+        }
+        if counts.contains(&0) {
+            return Err(invalid(
+                "Imported sword requires powered and depleted attacks",
+            ));
+        }
+        values
+            .into_iter()
+            .map(|(at, value)| {
+                let offset = at
+                    .checked_sub(resource)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| invalid("Sword mechanics patch lies outside its resource"))?;
+                Ok(WeaponRuntimeResourcePatch {
+                    binding_hash: BINDING,
+                    resource_index: u16::try_from(binding.resource_index)
+                        .map_err(|_| invalid("Sword resource index overflows"))?,
+                    offset,
+                    bytes: value.to_le_bytes().to_vec(),
+                    graph_values: Vec::new(),
+                    graph_removals: Vec::new(),
+                    graph_trajectories: None,
+                })
+            })
+            .collect()
+    }
+}
+
 // These are the checked relative fields of a native 80802D7B profile. Each
 // array field has its count in the preceding eight bytes. The typed object at
 // 1A8 is a direct relative reference. 110 is an optional typed reference.
 const ARRAY_FIELDS: &[(usize, u32, usize)] = &[
-    (0x20, 0x8080_2D6E, 0x18),
+    (0x20, 0x8080_2D6E, 8),
     (0x78, 0x8080_0009, 1),
     (0x88, 0x8080_0090, 0x10),
     (0xB0, 0x8080_0009, 1),

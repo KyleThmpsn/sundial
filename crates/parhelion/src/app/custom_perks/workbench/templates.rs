@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct AuthoredTemplate {
     pub(super) weapon: String,
@@ -17,7 +17,7 @@ impl Workbench {
         self.initialize();
         let (mut templates, mut warnings) = load_saved(library);
         if let Some(perks) = &self.library {
-            let recipes = templates.iter().filter_map(|entry| {
+            let recipes = templates.list.iter().filter_map(|entry| {
                 let hash = entry.variant.source_plug_hash.parse_u32().unwrap_or_default();
                 if !entry.variant.replace_effects && catalog.item_definition_tag(hash).is_none() {
                     warnings.push(format!("Could not import a custom perk from {} because its stock template {hash:08X} is unavailable. The recipe is unchanged.", entry.weapon));
@@ -41,8 +41,8 @@ impl Workbench {
             }
             warnings.extend(self.scan_library());
         }
-        append_templates(&mut templates, draft.clone());
-        self.authored_templates = Some(templates);
+        templates.append_draft(draft);
+        self.authored_templates = Some(templates.list);
         if !warnings.is_empty() {
             self.error = Some(warnings.join("\n"));
         }
@@ -626,40 +626,137 @@ pub(super) fn load(
     draft: &WeaponRecipe,
 ) -> (Vec<AuthoredTemplate>, Vec<String>) {
     let (mut templates, warnings) = load_saved(library);
-    append_templates(&mut templates, draft.clone());
-    (templates, warnings)
+    templates.append_draft(draft);
+    (templates.list, warnings)
 }
 
-fn load_saved(library: Option<&RecipeLibrary>) -> (Vec<AuthoredTemplate>, Vec<String>) {
+/// How many saved recipes are held at once while their templates are collected.
+const RECIPES_AT_ONCE: usize = 64;
+
+fn load_saved(library: Option<&RecipeLibrary>) -> (Templates, Vec<String>) {
     let mut warnings = Vec::new();
-    let mut recipes = Vec::new();
+    let mut templates = Templates::default();
     if let Some(library) = library {
         match library.scan() {
             Ok(scan) => {
                 warnings.extend(scan.errors);
-                for entry in scan.entries {
-                    match WeaponRecipe::load_listing(&entry.path) {
-                        Ok(recipe) => recipes.push(recipe),
-                        Err(error) => warnings.push(error.to_string()),
+                let paths: Vec<_> = scan.entries.into_iter().map(|entry| entry.path).collect();
+                for chunk in paths.chunks(RECIPES_AT_ONCE) {
+                    let recipes = crate::recipe_library::load_listings(chunk)
+                        .into_iter()
+                        .filter_map(|recipe| {
+                            recipe
+                                .map_err(|error| warnings.push(error.to_string()))
+                                .ok()
+                        })
+                        .collect::<Vec<_>>();
+                    let linked = LinkedIcons::read(&recipes);
+                    for recipe in recipes {
+                        templates.append(recipe, &linked);
                     }
                 }
             }
             Err(error) => warnings.push(error),
         }
     }
-    let mut templates: Vec<AuthoredTemplate> = Vec::new();
-    for recipe in recipes {
-        append_templates(&mut templates, recipe);
-    }
     (templates, warnings)
 }
 
-fn append_templates(templates: &mut Vec<AuthoredTemplate>, recipe: WeaponRecipe) {
-    for mut variant in recipe.overrides.socket_plug_variants {
-        variant.socket_index = 0;
-        variant.choice_index = 0;
-        if !templates.iter().any(|template| template.variant == variant) {
-            templates.push(AuthoredTemplate {
+/// The authored templates, each variant once, in the order they were first found.
+#[derive(Default)]
+struct Templates {
+    list: Vec<AuthoredTemplate>,
+    /// Each template's index by its stock plug and name. A library of imported weapons holds
+    /// tens of thousands of variants, too many to compare each with every one before it.
+    by_plug: BTreeMap<(crate::recipe::HexHash, Option<String>), Vec<usize>>,
+}
+
+/// The icons of some recipes' linked ornaments, which the importer keeps in each ornament's
+/// conversion rather than in the weapon's variant, by the item hash of each private plug.
+#[derive(Default)]
+struct LinkedIcons(
+    #[cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
+    BTreeMap<u32, crate::icon_edit::ImportedIcon>,
+);
+
+impl LinkedIcons {
+    #[cfg(feature = "d2-model-importer")]
+    fn read(recipes: &[WeaponRecipe]) -> Self {
+        Self(crate::imported::ornament_icons(
+            recipes
+                .iter()
+                .filter_map(|recipe| recipe.overrides.imported_graph.as_ref())
+                .flat_map(|graph| &graph.attachments),
+        ))
+    }
+
+    #[cfg(not(feature = "d2-model-importer"))]
+    fn read(_: &[WeaponRecipe]) -> Self {
+        Self::default()
+    }
+
+    /// The icon of the linked ornament whose private plug is a recipe's choice at `socket`.
+    #[cfg(feature = "d2-model-importer")]
+    fn get(
+        &self,
+        namespace: &str,
+        socket: u16,
+        choice: u16,
+    ) -> Option<crate::icon_edit::ImportedIcon> {
+        use parhelion_import::tiger::ornament::{fnv, roles};
+        let roles = roles(namespace, usize::from(socket), usize::from(choice));
+        self.0.get(&fnv(&format!("{roles}/private-plug"))).cloned()
+    }
+
+    #[cfg(not(feature = "d2-model-importer"))]
+    fn get(&self, _: &str, _: u16, _: u16) -> Option<crate::icon_edit::ImportedIcon> {
+        None
+    }
+}
+
+impl Templates {
+    fn append_draft(&mut self, draft: &WeaponRecipe) {
+        let linked = LinkedIcons::read(std::slice::from_ref(draft));
+        self.append(draft.clone(), &linked);
+    }
+
+    fn append(&mut self, recipe: WeaponRecipe, linked: &LinkedIcons) {
+        // A mod's plug is the item, so it shows the item's own image.
+        let item_image = (recipe.kind == crate::ItemKind::Mod)
+            .then(|| recipe.overrides.icon_edit.imported_image.clone())
+            .flatten();
+        for mut variant in recipe.overrides.socket_plug_variants {
+            // An ornament's plug shows an image its variant does not hold: a mod's item image, or
+            // the icon of a weapon's linked ornament conversion.
+            if variant.icon.is_none() {
+                variant.icon = item_image
+                    .clone()
+                    .or_else(|| {
+                        linked.get(
+                            &recipe.namespace,
+                            variant.socket_index,
+                            variant.choice_index,
+                        )
+                    })
+                    .map(|image| crate::perk::Icon::Image {
+                        name: variant.name.clone().unwrap_or_else(|| recipe.name.clone()),
+                        image,
+                    });
+            }
+            variant.socket_index = 0;
+            variant.choice_index = 0;
+            let same = self
+                .by_plug
+                .entry((variant.source_plug_hash.clone(), variant.name.clone()))
+                .or_default();
+            if same
+                .iter()
+                .any(|&index| self.list[index].variant == variant)
+            {
+                continue;
+            }
+            same.push(self.list.len());
+            self.list.push(AuthoredTemplate {
                 weapon: recipe.name.clone(),
                 kind: recipe.kind,
                 variant,
@@ -697,7 +794,7 @@ mod tests {
         let (embedded, warnings) = load_saved(Some(&weapons));
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(
-            !embedded.is_empty(),
+            !embedded.list.is_empty(),
             "no embedded saved perks were configured"
         );
         let perks = Library::open(temp.path().join("perks")).unwrap();

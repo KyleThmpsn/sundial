@@ -115,19 +115,36 @@ fn class_template(native: &Reader, class: u32) -> Result<u32> {
         .context("native audio class absent")
 }
 
-fn save(
-    folder: &Path,
+fn node(
     nodes: &mut Vec<Value>,
+    files: &mut Vec<(String, Vec<u8>)>,
     symbol: String,
     template: u32,
     bytes: &[u8],
     patches: Vec<Value>,
-) -> Result<usize> {
+) -> usize {
     let file = format!("{symbol}.bin");
-    fs::write(folder.join(&file), bytes)?;
+    files.push((file.clone(), bytes.to_vec()));
     let index = nodes.len();
     nodes.push(json!({"symbol":symbol,"file":file,"template":template,"patches":patches}));
-    Ok(index)
+    index
+}
+
+/// A complete, validated source closure. Candidate talent choices can prepare their shared
+/// namespace without publishing files or changing the graph's accepted audio section.
+pub(super) struct Prepared {
+    graph: Value,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+impl Prepared {
+    pub(super) fn emit(self, folder: &Path) -> Result<Value> {
+        fs::create_dir_all(folder)?;
+        for (file, payload) in self.files {
+            fs::write(folder.join(file), payload)?;
+        }
+        Ok(self.graph)
+    }
 }
 
 fn symbol(kind: &str, tag: u32) -> String {
@@ -304,7 +321,12 @@ pub(super) fn prepare(
     prepare_route(source, native, folder, tags, Route::Graph)
 }
 
-/// Graph routes emit cues with an identical native acoustic profile. Named routes emit only
+/// Validate the complete graph namespace and retain its payloads without publishing files.
+pub(super) fn plan(source: &Source, native: &mut Reader, tags: &BTreeSet<u32>) -> Result<Prepared> {
+    plan_route(source, native, tags, Route::Graph)
+}
+
+/// Graph routes emit private profiles with a checked native witness. Named routes emit only
 /// banks and media, because install clones each selected native cue with its own profile.
 fn prepare_route(
     source: &Source,
@@ -313,6 +335,15 @@ fn prepare_route(
     tags: &BTreeSet<u32>,
     route: Route,
 ) -> Result<Value> {
+    plan_route(source, native, tags, route)?.emit(folder)
+}
+
+fn plan_route(
+    source: &Source,
+    native: &mut Reader,
+    tags: &BTreeSet<u32>,
+    route: Route,
+) -> Result<Prepared> {
     ensure!(!tags.is_empty(), "source audio cue set is empty");
     let cues = tags
         .iter()
@@ -343,40 +374,60 @@ fn prepare_route(
                 p.0.len() == 24 && p.u64(0)? == 24,
                 "source cue settings envelope differs"
             );
-            let (tag, profile) = profiles
+            let (tag, _) = profiles
                 .iter()
                 .find(|(_, native)| native.0 == p.0)
-                .context("source acoustic settings have no identical native profile")?;
-            settings.insert(cue.settings, (*tag, profile.clone()));
+                .or_else(|| {
+                    // Original 7E5F80 and 10E6B30 expose +0C to the spatial-limit
+                    // consumers. Every other field still needs a byte-identical witness.
+                    // Exact profiles retain their existing acceptance, including any
+                    // nonfinite native values. Only new finite limits use this route.
+                    p.f32(12)
+                        .ok()
+                        .filter(|limit| limit.is_finite())
+                        .and_then(|_| {
+                            profiles.iter().find(|(_, native)| {
+                                native.0.len() == 24
+                                    && native.0[..12] == p.0[..12]
+                                    && native.0[16..] == p.0[16..]
+                                    && native.f32(12).is_ok_and(|limit| limit.is_finite())
+                            })
+                        })
+                })
+                .context(
+                    "source acoustic settings have no native witness outside the spatial limit",
+                )?;
+            // The stock record supplies the native class and unchanged-field witness.
+            // The emitted private payload preserves the source limit without clamping.
+            settings.insert(cue.settings, (*tag, Arc::new(p)));
         }
     }
-    // All data conversion is complete before nodes become visible to the graph assembler.
-    fs::create_dir_all(folder)?;
     let mut nodes = Vec::new();
+    let mut files = Vec::new();
     let media_template = template(native, 26, 6)?;
     let bank_template = template(native, 26, 5)?;
     for (&id, (tag, bytes)) in &converted_media {
-        let index = save(
-            folder,
+        let index = node(
             &mut nodes,
+            &mut files,
             symbol("media", *tag),
             media_template,
             bytes,
             Vec::new(),
-        )?;
+        );
         nodes[index]["storage"] = json!("audio_media");
         nodes[index]["source_media_id"] = json!(id);
         nodes[index]["source_media_tag"] = json!(tag);
     }
     for (&tag, bank) in &banks {
-        let index = save(
-            folder,
+        let index = node(
             &mut nodes,
+            &mut files,
             symbol("bank", tag),
             bank_template,
             &bank.bytes,
             Vec::new(),
-        )?;
+        );
         nodes[index]["storage"] = json!("audio_bank");
         nodes[index]["source_bank_tag"] = json!(tag);
         nodes[index]["audio_bank"] = serde_json::to_value(bank)?;
@@ -391,28 +442,29 @@ fn prepare_route(
         );
     }
     if route == Route::Graph {
-        emit_cues(
+        plan_cues(
             source,
             native,
-            folder,
             &mut nodes,
+            &mut files,
             &cues,
             &settings,
             &converted_media,
         )?;
     }
-    Ok(
-        json!({"nodes":nodes,"cues":tags,"banks":banks.len(),"media":converted_media.len(),
+    Ok(Prepared {
+        graph: json!({"nodes":nodes,"cues":tags,"banks":banks.len(),"media":converted_media.len(),
         "source_builds":source.report.builds,"source_stamp":source.report.stamp,"gameplay_verified":false}),
-    )
+        files,
+    })
 }
 
 /// Graph cues reference their emitted settings, bank, auxiliary record and media by symbol.
-fn emit_cues(
+fn plan_cues(
     source: &Source,
     native: &mut Reader,
-    folder: &Path,
     nodes: &mut Vec<Value>,
+    files: &mut Vec<(String, Vec<u8>)>,
     cues: &BTreeMap<u32, Cue>,
     settings: &BTreeMap<u32, (u32, Arc<Payload>)>,
     converted_media: &Media,
@@ -421,23 +473,23 @@ fn emit_cues(
     let auxiliary_template = class_template(native, 0x80808E69)?;
     let mut auxiliary = vec![0; 40];
     auxiliary[..8].copy_from_slice(&40u64.to_le_bytes());
-    save(
-        folder,
+    node(
         nodes,
+        files,
         "audio-auxiliary".into(),
         auxiliary_template,
         &auxiliary,
         Vec::new(),
-    )?;
+    );
     for (&tag, (template, p)) in settings {
-        save(
-            folder,
+        node(
             nodes,
+            files,
             symbol("settings", tag),
             *template,
             &p.0,
             Vec::new(),
-        )?;
+        );
     }
     for (&tag, cue) in cues {
         let mut bytes = vec![0u8; 0x50 + cue.media.len() * 4];
@@ -472,14 +524,7 @@ fn emit_cues(
                 bytes[0x50 + i * 4..0x54 + i * 4].fill(255);
             }
         }
-        let index = save(
-            folder,
-            nodes,
-            cue_symbol(tag),
-            cue_template,
-            &bytes,
-            patches,
-        )?;
+        let index = node(nodes, files, cue_symbol(tag), cue_template, &bytes, patches);
         nodes[index]["source_cue_tag"] = json!(tag);
         nodes[index]["audio_events"] = json!(
             cue.events

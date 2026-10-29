@@ -39,6 +39,7 @@ use std::{
 
 mod atmosphere;
 mod cubemaps;
+mod decorators;
 mod fog;
 mod junctions;
 pub mod lights;
@@ -47,6 +48,7 @@ mod props;
 pub mod sky;
 mod statics;
 pub use cubemaps::CubemapVolume;
+pub use decorators::Templates as DecoratorTemplates;
 pub use props::{Prop, Templates as PropTemplates};
 pub use statics::Templates as StaticTemplates;
 
@@ -97,8 +99,9 @@ const PLAY_MARGIN: [f32; 3] = [256., 256., 512.];
 /// An entity model's bounding radius, and the two further floats a stock prop sets to it.
 const MODEL_RADIUS: usize = 0x8C;
 const MODEL_EXTENTS: [usize; 2] = [0x28, 0x2C];
-/// The attribute stream's stride, and its half-float detail coordinates, which carry lightmap
-/// coordinates for the level's materials.
+/// The attribute stream's stride, and its two half-float detail lanes, whose bits carry lightmap
+/// coordinates for the level's materials as fixed point
+/// ([`native::material::vertex_data::coordinate_bits`]) or name a vertex data record.
 const ATTRIBUTE_STRIDE: usize = 24;
 const DETAIL_COORDINATES: usize = 20;
 
@@ -136,6 +139,10 @@ pub struct Templates {
     pub cubemaps: bool,
     /// The donor's static instance group records, which the level's statics copy.
     pub statics: statics::Templates,
+    /// The stock records Destiny's instanced decorators copy, when the level's decorators draw
+    /// as those. Without them they draw as copies among the pieces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decorators: Option<DecoratorTemplates>,
 }
 
 /// A user data of a world collision instance whose shape is the packfile at that index of its
@@ -179,18 +186,98 @@ pub struct Area {
     pub spawns: Vec<Spawn>,
     /// The sound point table that places the ambience of its structure BSPs, when they have any.
     pub ambience: Option<String>,
-    /// Its static group's instances in group order, which its tome's Umbra objects and its
-    /// visibility record list.
+    /// Its static group's instances in group order, then the clusters of its decorator records,
+    /// which its tome's Umbra objects and its visibility record list.
     pub visibility: Vec<Visible>,
+    /// The decorator records it places, by symbol, when its decorators draw as Destiny's
+    /// instanced decorators.
+    #[serde(default)]
+    pub decorators: Vec<String>,
+    /// The interiors of the structure BSPs it loads ([`Interior`]).
+    #[serde(default)]
+    pub interiors: Vec<Interior>,
 }
 
-/// One static instance as the area's precomputed visibility sees it: the identifier its bounds
-/// row carries and its world box in the map's coordinates.
+/// An interior region of the level, a box in the map's coordinates: merged structure clusters
+/// whose probes see open sky in fewer than 5% of their rays and whose floors hold less than a
+/// quarter of the open probes' floor light (`occlusion`). Reach lit an object from the floor
+/// below it, so its interiors' objects took the interior's light alone. An area lists at most 64.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Interior {
+    pub minimum: [f32; 3],
+    pub maximum: [f32; 3],
+}
+
+/// The structure cluster that holds `point`, as an index in `clusters`: the smallest box, by
+/// volume, that holds it, the first of equal ones. Reach's cluster boxes overlap where its
+/// clusters' shapes do, and the smallest box holding a point is the likeliest to be the cluster
+/// whose space holds it. This stands in for Reach's own cluster lookup through its BSP tree, which
+/// the converter does not read. `None` when no box holds it.
+pub fn cluster_at(clusters: &[super::streaming::Bounds], point: [f32; 3]) -> Option<usize> {
+    clusters
+        .iter()
+        .enumerate()
+        .filter(|(_, cluster)| {
+            (0..3).all(|k| cluster.minimum[k] <= point[k] && point[k] <= cluster.maximum[k])
+        })
+        .map(|(index, cluster)| {
+            let volume = (0..3)
+                .map(|k| cluster.maximum[k] - cluster.minimum[k])
+                .product::<f32>();
+            (volume, index)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+        .map(|(_, index)| index)
+}
+
+/// One static instance or decorator cluster as the area's precomputed visibility sees it: the
+/// identifier its bounds row carries and its world box in the map's coordinates.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Visible {
     pub id: u32,
     pub minimum: [f32; 3],
     pub maximum: [f32; 3],
+    /// Whether the visibility record keys it in the upper half of its 64-bit key. A bounds row
+    /// holds a 64-bit key at `+0x20`: a static instance's identifier sits in its lower half and
+    /// a decorator cluster's at `+0x24`, its upper half, as Distant Shore's record keys them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upper: bool,
+}
+
+/// The native sun a converted level asks Destiny for: global channel 8's intensity and channel 9's
+/// color, whose product `GlobalLighting+0x10` holds. A dynamic object under the native sun takes
+/// `albedo * 0.25 * S * x / pi`, and the level's baked light reaches the screen as
+/// `albedo * irradiance / (pi * level) * radiance * 0.25 * x`, so the two agree for
+/// `S = lum(I) * radiance / level`, with `I` the level's analytical sun. Left at its default of 10,
+/// Nightfall's moon of luminance 0.0025 lit weapons and players about 7,000 times too strongly
+/// against its baked world.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct NativeSun {
+    pub intensity: f32,
+    /// The sun's color at unit luminance.
+    pub color: [f32; 3],
+}
+
+impl NativeSun {
+    /// Rec. 709 luminance weights, as the native lighting rows splat luminance.
+    const LUMINANCE: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+    /// The native sun matching analytical light `intensity` over a level whose baked light has the
+    /// average lit level `level` and converts at `radiance`. A level without a present analytical
+    /// sun asks for none.
+    pub(crate) fn matching(intensity: [f32; 3], radiance: f32, level: f32) -> Self {
+        let luminance = dot(intensity, Self::LUMINANCE);
+        if !(luminance.is_finite() && luminance > 0. && level > 0.) {
+            return Self {
+                intensity: 0.,
+                color: [1.; 3],
+            };
+        }
+        Self {
+            intensity: luminance * radiance / level,
+            color: intensity.map(|channel| channel / luminance),
+        }
+    }
 }
 
 /// The pieces' graph, written under the output folder.
@@ -209,13 +296,21 @@ pub struct Converted {
     pub sky: Vec<sky::Object>,
     /// The selected analytical sun direction, toward the light with z up.
     pub light: Option<[f32; 3]>,
+    /// The native sun that matches the level's analytical sun against its baked light, when the
+    /// level has baked light ([`NativeSun`]).
+    #[serde(default)]
+    pub native_sun: Option<NativeSun>,
     /// The symbol of the sound point table that places the level's ambience, the first area's
     /// when the level has connected areas, when it has any.
     pub ambience: Option<String>,
-    /// The first area's static instances, which its tome's Umbra objects and its visibility
-    /// record list.
+    /// The first area's static instances and decorator clusters, which its tome's Umbra objects
+    /// and its visibility record list.
     #[serde(default)]
     pub visibility: Vec<Visible>,
+    /// The first area's decorator records, by symbol, when the decorators draw as Destiny's
+    /// instanced decorators.
+    #[serde(default)]
+    pub decorators: Vec<String>,
     /// The symbol of the atmosphere volume the map's atmosphere names in place of the donor's,
     /// when the donor names one and the level has baked light.
     pub atmosphere: Option<String>,
@@ -228,6 +323,15 @@ pub struct Converted {
     /// The level's occlusion probes, each a position in the map's coordinates and a sky
     /// visibility, as many as `Templates::occlusion_probes` asks for, or none.
     pub occlusion: Vec<[f32; 4]>,
+    /// The boxes of the level's structure clusters in the map's coordinates, leaving out each
+    /// structure BSP's outside cluster, whose box holds all its others. A probe stands in the
+    /// smallest box that holds it ([`cluster_at`]).
+    #[serde(default)]
+    pub clusters: Vec<super::streaming::Bounds>,
+    /// The first area's interiors, the whole level's when it has no connected areas
+    /// ([`Interior`]).
+    #[serde(default)]
+    pub interiors: Vec<Interior>,
     /// The level's cubemap volumes, when the donor places volumes and the level has baked light.
     pub cubemaps: Vec<CubemapVolume>,
     /// The level's lights, each a position in the map's coordinates, a range in meters and a color
@@ -299,11 +403,12 @@ struct Triangle {
 }
 
 /// Splits `items` at the median of the longest axis of their `center`s until every part
-/// satisfies `fits`.
-fn split<T>(
+/// satisfies `fits`. Halves of at least `PARALLEL_SPLIT` items split on their own threads, and
+/// the lower half's parts still come first.
+fn split<T: Send>(
     items: Vec<T>,
-    center: &dyn Fn(&T) -> [f32; 3],
-    fits: &dyn Fn(&[T]) -> bool,
+    center: &(dyn Fn(&T) -> [f32; 3] + Sync),
+    fits: &(dyn Fn(&[T]) -> bool + Sync),
     out: &mut Vec<Vec<T>>,
 ) {
     if items.len() <= 1 || fits(&items) {
@@ -325,9 +430,22 @@ fn split<T>(
     keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut items = keyed.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
     let upper = items.split_off(items.len() / 2);
-    split(items, center, fits, out);
-    split(upper, center, fits, out);
+    if upper.len() < PARALLEL_SPLIT {
+        split(items, center, fits, out);
+        split(upper, center, fits, out);
+        return;
+    }
+    let mut upper_parts = Vec::new();
+    std::thread::scope(|scope| {
+        scope.spawn(|| split(upper, center, fits, &mut upper_parts));
+        split(items, center, fits, out);
+    });
+    out.append(&mut upper_parts);
 }
+
+/// The least half [`split`] gives its own thread. Nightfall's largest render band holds 3.7
+/// million triangles, which serial median sorts left splitting alone after every other band.
+const PARALLEL_SPLIT: usize = 250_000;
 
 /// The texture coordinate shift, per axis, that leaves every map of `material` sampling the same
 /// texels: the smallest whole number of units, up to 1,024, that is a whole number of repeats of
@@ -540,8 +658,8 @@ const GROUND_FACING: f32 = 0.3;
 /// How far below a primitive's middle, in meters, its ground may lie.
 const GROUND_DEPTH: f32 = 64.;
 /// The least first lightmap coordinate a placed object's vertex keeps, so its negation stays below
-/// zero: the least normal half float, a quarter of a texel of an atlas 4,096 texels wide.
-const PLACED_LEAST: f32 = 1. / 16_384.;
+/// zero once the vertex program decodes it: one step of the stored fixed point.
+const PLACED_LEAST: f32 = 1. / native::material::vertex_data::COORDINATE_STEPS;
 
 /// The lightmap coordinates each primitive without lightmap coordinates of its own takes: those of
 /// the lightmapped ground straight below its middle, where a downward ray from there first meets an
@@ -714,10 +832,11 @@ fn lightmap_coordinates(
 }
 
 /// One piece's mesh, from triangles that together use at most `MAX_VERTICES` vertices, and each
-/// vertex's lightmap coordinates: its own, else its primitive's `ground` coordinates
-/// ([`ground_light`]), else `neutral`. A placed object's primitives, those from `placed` on, take
-/// their coordinates with the first negated, which marks them for the surfaces' lighting
-/// (`native::material::hybrid_lighting`) and keeps the half float's precision. Each
+/// vertex's detail lane bits: its vertex data record's, else its lightmap coordinates in fixed point
+/// ([`native::material::vertex_data::coordinate_bits`]), its own, else its primitive's `ground`
+/// coordinates ([`ground_light`]), else `neutral`. A placed object's primitives, those from `placed`
+/// on, take their coordinates with the first negated, which marks them for the surfaces' lighting
+/// (`native::material::hybrid_lighting`) and keeps the fixed point's precision. Each
 /// triangle's texture coordinates move by whole periods of its maps ([`triangle`]) toward zero, so
 /// the model's 16-bit coordinates keep their precision.
 fn mesh(
@@ -728,7 +847,7 @@ fn mesh(
     neutral: [f32; 2],
     placed: u32,
     vertex_data: Option<&native::material::vertex_data::Table>,
-) -> Result<(Mesh, Vec<[f32; 2]>)> {
+) -> Result<(Mesh, Vec<[u16; 2]>)> {
     let mut mesh = Mesh {
         positions: Vec::new(),
         attributes: Vec::new(),
@@ -776,11 +895,12 @@ fn mesh(
                     // The rigid vertex and shadow programs use the entity transform directly.
                     // Native layout 139 needs no bone bytes and supports 16-bit indices.
                     let mut coordinates =
-                        lightmap_coordinates(vertex, triangle.primitive, ground, neutral, placed);
-                    if let Some(value) = vertex_data
+                        lightmap_coordinates(vertex, triangle.primitive, ground, neutral, placed)
+                            .map(native::material::vertex_data::coordinate_bits);
+                    if let Some(bits) = vertex_data
                         .and_then(|table| table.coordinates.get(&(triangle.primitive, corner)))
                     {
-                        coordinates = *value;
+                        coordinates = *bits;
                     }
                     lightmap.push(coordinates);
                     index.insert((triangle.primitive, corner, shift_key), at);
@@ -962,7 +1082,15 @@ pub fn convert_areas(
         "Reading Geometry and Lightmaps / {} BSPs",
         tags.len()
     ));
-    let mut level = super::read_areas(&cache, &mut pages, &tags, &groups)?;
+    // With the stock decorator templates, decorators stay instances for Destiny's instanced
+    // decorators and take no share of the areas' triangle budget.
+    let mut level = super::read_decorated_areas(
+        &cache,
+        &mut pages,
+        &tags,
+        &groups,
+        templates.decorators.is_some(),
+    )?;
     time("geometry_and_lightmaps");
     // A surface whose alpha test discards every pixel draws nothing and casts no shadow. The
     // structure's own collision still holds any such surface's wall.
@@ -1133,21 +1261,29 @@ pub fn convert_areas(
                 );
                 return None;
             }
-            Some((opaque, distance, primitive, colors))
+            let layer = sky::sort_layer(
+                &cache,
+                primitive
+                    .material
+                    .and_then(|material| level.materials.get(material)),
+            );
+            Some((opaque, distance, layer, primitive, colors))
         })
         .collect::<Vec<_>>();
+    // Blended layers follow Reach's sort for a sky ([`sky::sort_layer`]): by their shaders' sort
+    // layer, then in mesh and part order, which the stable sort keeps.
     keyed.sort_by(|a, b| {
         b.0.cmp(&a.0).then_with(|| {
             if a.0 {
                 b.1.total_cmp(&a.1)
             } else {
-                std::cmp::Ordering::Equal
+                a.2.cmp(&b.2)
             }
         })
     });
     let sky_order = keyed
         .iter()
-        .map(|(opaque, distance, primitive, _)| {
+        .map(|(opaque, distance, layer, primitive, _)| {
             json!({
                 "material": primitive
                     .material
@@ -1156,12 +1292,15 @@ pub fn convert_areas(
                     .map(|tag| tag.path.as_str()),
                 "opaque": opaque,
                 "mean_distance": distance,
+                "sort_layer": layer,
+                "section": primitive.section,
+                "part": primitive.part,
             })
         })
         .collect::<Vec<_>>();
     let sky_primitives = keyed
         .into_iter()
-        .map(|(_, _, primitive, colors)| (primitive, colors))
+        .map(|(_, _, _, primitive, colors)| (primitive, colors))
         .collect::<Vec<_>>();
     let area_spawns = areas
         .iter()
@@ -1177,7 +1316,14 @@ pub fn convert_areas(
         .collect::<Result<Vec<_>>>()?;
     let spawns = area_spawns[0].clone();
     let mut native = Reader::new(packages, &output.join("native"), false)?;
-    let analytical = super::lighting::materials(&cache, &mut level)?;
+    let mut analytical = super::lighting::materials(&cache, &mut level)?;
+    // Surfaces with a dynamic environment map split by the cube of the cluster they stand in.
+    let dynamic_cubes = cubemaps::dynamic(
+        &cache,
+        &mut level,
+        super::loaded_bsps(&cache, zone_sets)?,
+        &mut analytical,
+    )?;
     let sun =
         Some(super::lighting::read(&cache, super::lighting::SKY)?).filter(|light| light.present());
     let template = native
@@ -1277,6 +1423,7 @@ pub fn convert_areas(
             })
         })
         .collect::<Vec<_>>();
+    time("texture_coordinate_report");
     let mut band_report = Vec::new();
     let mut faces = Vec::<Face>::new();
     let mut face_areas = Vec::new();
@@ -1360,6 +1507,7 @@ pub fn convert_areas(
         let center = triangle_center(t);
         in_play(std::array::from_fn(|k| center[k] + offset[k]))
     });
+    time("collision_faces_and_play_partition");
     // Triangles also group by how often their base maps repeat ([`tiling_class`]). A piece's range
     // counts as its most repeated base map gives, so a surface repeating once in 200 units beside
     // one repeating every unit would hold the other to its own range and split pieces they shared.
@@ -1383,33 +1531,41 @@ pub fn convert_areas(
             .into_iter()
             .map(|(key, group)| (key, std::sync::Mutex::new(group)))
             .collect::<Vec<_>>();
+        time(if in_play {
+            "render_bands_play"
+        } else {
+            "render_bands_scenery"
+        });
         let split_bands = crate::cancellation::parallel_map(&bands, |(key, group)| {
             let (_, band, period, _) = *key;
             let group = std::mem::take(&mut *group.lock().unwrap_or_else(|e| e.into_inner()));
             let limit = period_range(period, band);
             // Why groups failed to fit, for the report: too many vertices, too wide a texture
             // coordinate range, or too wide a play-area piece.
-            let refused = std::cell::Cell::new([0usize; 3]);
+            let refused: [std::sync::atomic::AtomicUsize; 3] = Default::default();
             let fits = |group: &[Triangle]| {
                 let model = fits_model(group, limit);
                 let near = !in_play || compact(group);
                 if !(model && near) {
-                    let mut counts = refused.get();
-                    if !model && uv_range(group) > limit {
-                        counts[1] += 1;
+                    let reason = if !model && uv_range(group) > limit {
+                        1
                     } else if !model {
-                        counts[0] += 1;
+                        0
                     } else {
-                        counts[2] += 1;
-                    }
-                    refused.set(counts);
+                        2
+                    };
+                    refused[reason].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 model && near
             };
             let triangles = group.len();
             let mut pieces = Vec::new();
             split(group, &triangle_center, &fits, &mut pieces);
-            (pieces, triangles, refused.get())
+            (
+                pieces,
+                triangles,
+                refused.map(std::sync::atomic::AtomicUsize::into_inner),
+            )
         })?;
         for (((areas, band, period, class), _), (pieces, triangles, refused)) in
             bands.into_iter().zip(split_bands)
@@ -1427,8 +1583,12 @@ pub fn convert_areas(
             renders.extend(pieces);
             render_areas.resize(renders.len(), areas);
         }
+        time(if in_play {
+            "render_split_play"
+        } else {
+            "render_split_scenery"
+        });
     }
-    time("render_split");
     let face_center =
         |f: &Face| -> [f32; 3] { std::array::from_fn(|k| (f[0][k] + f[1][k] + f[2][k]) / 3.) };
     let mut shapes = Vec::new();
@@ -1485,10 +1645,9 @@ pub fn convert_areas(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let mut graph = Graph {
-        root: output.to_path_buf(),
-        nodes: Vec::new(),
-    };
+    let mut graph = Graph::new(output.to_path_buf(), Vec::new());
+    // Nodes are only appended here, so their symbols can be indexed ([`Graph::index_symbols`]).
+    graph.index_symbols();
     let neutral = level
         .lightmap
         .as_ref()
@@ -1519,10 +1678,19 @@ pub fn convert_areas(
             )
         })
         .transpose()?;
+    // A level with baked light asks for the native sun that matches its own, and a level without
+    // an analytical sun asks for none.
+    let native_sun = level.lightmap.as_ref().map(|atlas| match sun {
+        Some(sun) => NativeSun::matching(sun.intensity, radiance, atlas.level),
+        None => NativeSun::matching([0.; 3], radiance, atlas.level),
+    });
     let lightmap = lightmap.map(|mut lightmap| {
         lightmap.analytical = analytical;
         lightmap.origin = offset;
         lightmap.radiance = radiance;
+        if let Some(native_sun) = native_sun {
+            lightmap.native_sun = native_sun.intensity;
+        }
         lightmap
     });
     time("lightmap_textures");
@@ -1575,6 +1743,7 @@ pub fn convert_areas(
     let mut placed_faces = 0usize;
     let solid = statics::solid(&used);
     let clipped = statics::clipped(&used);
+    let casters = statics::casters(&used);
     // A piece too wide for POSITION_STEP stores its positions on a coarser power-of-two step, so
     // a corner it shares with a finer piece rounded to two points. Paradiso's play area holds
     // 1/128 m and 1/64 m pieces beside 1/256 m ones, and thin lines of sky showed along its
@@ -1656,14 +1825,14 @@ pub fn convert_areas(
                 streams.attributes.len(),
                 coordinates.len()
             );
-            for (record, uv) in streams
+            for (record, lanes) in streams
                 .attributes
                 .chunks_exact_mut(ATTRIBUTE_STRIDE)
                 .zip(&coordinates)
             {
-                for (k, value) in uv.iter().enumerate() {
+                for (k, bits) in lanes.iter().enumerate() {
                     let at = DETAIL_COORDINATES + k * 2;
-                    record[at..at + 2].copy_from_slice(&half::f16::from_f32(*value).to_le_bytes());
+                    record[at..at + 2].copy_from_slice(&bits.to_le_bytes());
                 }
             }
             let draws = mesh
@@ -1674,6 +1843,7 @@ pub fn convert_areas(
                     stage: stages.get(key).copied().unwrap_or(0),
                     solid: solid.contains(key),
                     clipped: clipped.contains(key),
+                    casts: casters.contains(key),
                 })
                 .collect::<Vec<_>>();
             Ok((
@@ -1769,6 +1939,21 @@ pub fn convert_areas(
             &sky_primitives,
             offset,
             level.lightmap.as_ref().map(|atlas| atlas.level),
+            // The sky takes the level's fog where the level's surfaces draw it in Destiny's place.
+            fog.filter(|_| level.lightmap.is_some()),
+            super::loaded_bsps(&cache, zone_sets)?,
+            // So do the patchy fog's sheets, over the level's pieces.
+            fog_report["tag"]
+                .as_str()
+                .filter(|_| level.lightmap.is_some()),
+            (!level.primitives.is_empty()).then(|| {
+                bounds(
+                    level
+                        .primitives
+                        .iter()
+                        .flat_map(|primitive| primitive.vertices.iter().map(|v| v.position)),
+                )
+            }),
         )?,
         None => (
             Vec::new(),
@@ -1824,7 +2009,26 @@ pub fn convert_areas(
     };
     time("mission_audio_and_atmosphere_lookup");
     report("Preparing Lighting and Occlusion Probes");
-    let (occlusion, open_light, occlusion_report) = match templates.occlusion_probes {
+    // Each structure cluster's box, leaving out each BSP's outside cluster, with its BSP's index
+    // in `tags`.
+    let cluster_boxes = tags
+        .iter()
+        .enumerate()
+        .map(|(bsp, tag)| {
+            Ok(super::interior_boxes(&cache, std::slice::from_ref(tag))?
+                .into_iter()
+                .map(move |cluster| (bsp, cluster)))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let occlusion::Probes {
+        probes: occlusion,
+        open_light,
+        interior,
+        report: occlusion_report,
+    } = match templates.occlusion_probes {
         Some(count) => occlusion::probes(
             &level,
             &area_spawns
@@ -1837,16 +2041,35 @@ pub fn convert_areas(
                 .flat_map(|squad| squad.points)
                 .map(|point| point.spawn.position)
                 .collect::<Vec<_>>(),
-            &super::interior_boxes(&cache, &tags)?,
+            &cluster_boxes
+                .iter()
+                .map(|&(_, cluster)| cluster)
+                .collect::<Vec<_>>(),
             count,
             offset,
         )?,
-        None => (
-            Vec::new(),
-            None,
-            json!({"reason": "The donor places no occlusion probes"}),
-        ),
+        None => occlusion::Probes::none(json!({"reason": "The donor places no occlusion probes"})),
     };
+    // Each area's interiors, from the clusters of the BSPs it loads.
+    let area_interiors = groups
+        .iter()
+        .map(|group| {
+            let interiors = cluster_boxes
+                .iter()
+                .zip(&interior)
+                .filter(|((bsp, _), _)| group.contains(bsp))
+                .filter_map(|(&(_, cluster), &probes)| Some((cluster, probes?)))
+                .collect::<Vec<_>>();
+            occlusion::interiors(&interiors, offset)
+        })
+        .collect::<Vec<_>>();
+    let clusters = cluster_boxes
+        .iter()
+        .map(|&(_, (low, high))| super::streaming::Bounds {
+            minimum: std::array::from_fn(|k| low[k] + offset[k]),
+            maximum: std::array::from_fn(|k| high[k] + offset[k]),
+        })
+        .collect::<Vec<_>>();
     // The atmosphere takes the sun's color where Destiny's sun lights the surfaces in its place,
     // and the open probes' light as the sky's brightness.
     let light_color = sun.map(|sun| {
@@ -1917,11 +2140,34 @@ pub fn convert_areas(
         &mut graph,
         templates,
         &prop_primitives,
-        &level.materials,
+        &level,
+        lightmap.as_ref(),
+        super::loaded_bsps(&cache, zone_sets)?,
         offset,
         report,
     )?;
     time("props");
+    let decorated = match (&templates.decorators, level.instanced.take()) {
+        (Some(decorator_templates), Some(instanced)) => {
+            report("Converting Instanced Decorators");
+            decorators::add(
+                &cache,
+                &mut pages,
+                &mut native,
+                &mut graph,
+                decorator_templates,
+                instanced,
+                &membership,
+                offset,
+                areas.len(),
+            )?
+        }
+        _ => decorators::Added {
+            areas: vec![(Vec::new(), Vec::new()); areas.len()],
+            report: json!({"mode": "static"}),
+        },
+    };
+    time("decorators");
     report("Binding Native Shaders");
     let document = json!({"nodes": graph.nodes});
     for (symbol, bytes) in crate::tiger::material::bind(&document, output)? {
@@ -2008,6 +2254,7 @@ pub fn convert_areas(
             format!("statics-{area}")
         };
         let statics = statics::group(&mut native, &mut graph, &templates.statics, &placed, &group)?;
+        let (decorator_records, decorator_clusters) = &decorated.areas[area];
         let visibility = statics::identifiers(&group, placed.len())
             .into_iter()
             .zip(&placed)
@@ -2015,7 +2262,9 @@ pub fn convert_areas(
                 id,
                 minimum: instance.minimum,
                 maximum: instance.maximum,
+                upper: false,
             })
+            .chain(decorator_clusters.iter().cloned())
             .collect();
         area_report.push(json!({
             "zone_sets": zone_sets,
@@ -2024,6 +2273,9 @@ pub fn convert_areas(
             "collision_meshes": shapes.len(),
             "spawns": area_spawns[area].len(),
             "open_seams": open_seams[area],
+            "interiors": area_interiors[area].len(),
+            "decorator_records": decorator_records.len(),
+            "decorator_clusters": decorator_clusters.len(),
         }));
         area_rows.push(Area {
             zone_sets: zone_sets.clone(),
@@ -2044,6 +2296,8 @@ pub fn convert_areas(
             spawns: area_spawns[area].clone(),
             ambience: ambience[area].clone(),
             visibility,
+            decorators: decorator_records.clone(),
+            interiors: area_interiors[area].clone(),
         });
     }
     let world = area_rows[0].world.clone();
@@ -2153,10 +2407,13 @@ pub fn convert_areas(
         "analytical_light_color": light_color,
         "analytical_sun": sun,
         "analytical_materials": lightmap.as_ref().map(|map| &map.analytical),
+        "dynamic_environment_variants": dynamic_cubes,
     });
     report["open_seams"] = json!(open_seams[0]);
+    report["interiors"] = json!(area_rows[0].interiors);
     report["open_seam_surfaces"] = json!(open_seam_surfaces);
     report["sky_areas"] = json!(sky_areas);
+    report["decorators_instanced"] = decorated.report;
     if split_areas {
         report["areas"] = json!(area_report);
     }
@@ -2173,12 +2430,16 @@ pub fn convert_areas(
         statics,
         sky,
         light,
+        native_sun,
         ambience: area_rows[0].ambience.clone(),
         visibility: area_rows[0].visibility.clone(),
+        decorators: area_rows[0].decorators.clone(),
         atmosphere,
         atmosphere_lookup,
         atmosphere_image,
         occlusion,
+        clusters,
+        interiors: area_rows[0].interiors.clone(),
         cubemaps,
         lights,
         areas: if split_areas { area_rows } else { Vec::new() },

@@ -22,6 +22,11 @@
 //! instance of its type in one of the set's models ([`place`]), from the set's texture, alpha
 //! tested, lit by a probe of the instance's light, and from both sides. A type without an instance
 //! in that model draws nothing.
+//!
+//! Destiny's own instanced decorators take the instances as they are instead ([`instanced`]):
+//! each type keeps its primitives once, at the set's first three models, and each instance only
+//! its place, turn and scale (`native::decorators`). They copy no geometry into the level and take
+//! no share of its triangle budget.
 use super::{
     super::{
         cache::{Cache, Tag},
@@ -52,6 +57,13 @@ const SET_MODELS: usize = 0x00;
 const SET_MODEL_SIZE: usize = 0x10;
 const SET_TYPES: usize = 0x40;
 const SET_TEXTURE: usize = 0x50;
+/// A set's fade distances, one 16-byte row for each of its four models: where it starts to fade
+/// and where it is gone, in world units, then the fade's slope and offset.
+const SET_FADES: usize = 0xB4;
+const FADE_SIZE: usize = 0x10;
+/// The models Destiny's instanced decorators draw a type with, most detailed first: the native
+/// decorator models stock grass uses hold three meshes, one for each distance band.
+const INSTANCED_DETAILS: usize = 3;
 /// The most detailed model a set draws with, when it has it, and otherwise its first. A set fades
 /// its first model out within 2 to 8 world units and its second within 4 to 15, so most decorators
 /// in view draw with the second or a later one. Hang 'Em High's first models made its 3,795
@@ -65,7 +77,8 @@ const DETAILS: usize = 4;
 /// Destiny's GPU memory as the structure does. Boardwalk's 4,155,834 triangles and Asylum's
 /// 4,020,988, 2,682,046 of them decorators, load. Tip of the Spear's stretches from `set_hill` to
 /// `set_twin`, 8,267,324 triangles with 6,266,043 of decorators' second models, exhausted it on
-/// load ("Cortex GPU OOM").
+/// load ("Cortex GPU OOM"). Instanced decorators ([`instanced`]) keep one copy of each type and
+/// take no share of it.
 const LEVEL_TRIANGLES: usize = 4_200_000;
 /// A render model's instances, each naming itself first.
 const MODEL_INSTANCES: usize = 0x20;
@@ -243,6 +256,22 @@ fn types_at(
     tag: &Tag,
     detail: usize,
 ) -> Result<Option<(Types, String)>> {
+    Ok(paired(cache, pages, tag, detail)?.map(|(types, path)| {
+        let types = types
+            .into_iter()
+            .map(|primitives| primitives.into_iter().map(two_sided).collect())
+            .collect();
+        (types, path)
+    }))
+}
+
+/// [`types_at`] with each type's primitives one sided, as the set's model holds them.
+fn paired(
+    cache: &Cache,
+    pages: &mut Pages,
+    tag: &Tag,
+    detail: usize,
+) -> Result<Option<(Types, String)>> {
     let at = tag.address()?;
     let first = cache
         .reference(at + SET_MODELS, Some("mode"))?
@@ -274,7 +303,7 @@ fn types_at(
                 .primitives
                 .iter()
                 .filter(|primitive| primitive.instance.as_deref() == Some(drawn.as_str()))
-                .map(|primitive| two_sided(primitive.clone()))
+                .cloned()
                 .collect::<Vec<_>>())
         })
         .collect::<Result<Vec<_>>>()?;
@@ -502,4 +531,182 @@ pub(super) fn place(
         });
     }
     Ok(())
+}
+
+/// One of a set's types as Destiny's instanced decorators draw it ([`instanced`]).
+pub(super) struct Kind {
+    pub set: Tag,
+    /// The set's texture (`+0x50`).
+    pub texture: Tag,
+    /// The type's index among its set's types.
+    pub index: usize,
+    /// The type's primitives in its own space, one sided, with the set's first three models, most
+    /// detailed first. A model that cannot be paired with the types, or lacks the type, repeats
+    /// the model before it.
+    pub details: [Vec<Primitive>; INSTANCED_DETAILS],
+    /// Where each of the set's four models starts to fade and where it is gone, in meters
+    /// (`+0xB4`).
+    pub fades: [[f32; 2]; 4],
+}
+
+/// One decorator instance for Destiny's instanced decorators: its type in [`Instanced::kinds`],
+/// where it stands in meters, its unit rotation (x, y, z, w), its scale and the scenario BSPs whose
+/// loading draws it.
+pub(super) struct Placement {
+    pub kind: usize,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: f32,
+    pub bsps: u32,
+}
+
+/// A level's decorators as instances of their types, which `native::decorators` writes as
+/// Destiny's instanced decorators.
+#[derive(Default)]
+pub(super) struct Instanced {
+    pub kinds: Vec<Kind>,
+    pub placements: Vec<Placement>,
+}
+
+/// A set's types at its first three models, those models' paths, its texture and its fades.
+type SetDetails = (
+    [Types; INSTANCED_DETAILS],
+    [String; INSTANCED_DETAILS],
+    Tag,
+    [[f32; 2]; 4],
+);
+
+/// Set `tag`'s types at its first three models, its texture and its fade distances. The first
+/// model always pairs with the types, which name its instances.
+fn instanced_types(cache: &Cache, pages: &mut Pages, tag: &Tag) -> Result<SetDetails> {
+    let (first, first_path) = paired(cache, pages, tag, 0)?
+        .with_context(|| format!("Decorator set {} has no model to draw", tag.path))?;
+    let mut types = vec![first];
+    let mut paths = vec![first_path];
+    for detail in 1..INSTANCED_DETAILS {
+        let previous = types[detail - 1].clone();
+        let (drawn, path) = match paired(cache, pages, tag, detail)? {
+            Some((drawn, path)) => (
+                // A type the coarser model lacks keeps the finer model's primitives.
+                previous
+                    .iter()
+                    .enumerate()
+                    .map(|(kind, finer)| match drawn.get(kind) {
+                        Some(coarser) if !coarser.is_empty() => coarser.clone(),
+                        _ => finer.clone(),
+                    })
+                    .collect(),
+                path,
+            ),
+            None => (previous, paths[detail - 1].clone()),
+        };
+        types.push(drawn);
+        paths.push(path);
+    }
+    let at = tag.address()?;
+    let texture = cache
+        .reference(at + SET_TEXTURE, Some("bitm"))?
+        .with_context(|| format!("Decorator set {} names no texture", tag.path))?;
+    let mut fades = [[0.; 2]; 4];
+    for (model, fade) in fades.iter_mut().enumerate() {
+        let row = cache.floats::<2>(at + SET_FADES + model * FADE_SIZE)?;
+        *fade = row.map(|value| value * METRES_PER_UNIT);
+    }
+    let types: [Types; INSTANCED_DETAILS] = types
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Decorator set {} detail count", tag.path))?;
+    let paths: [String; INSTANCED_DETAILS] = paths
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Decorator set {} detail count", tag.path))?;
+    Ok((types, paths, texture, fades))
+}
+
+/// The decorators of every BSP in `parts`, whose scenario BSP masks are `masks`, as instances of
+/// their types for Destiny's instanced decorators, and each BSP's report. Each type keeps its
+/// primitives once ([`Kind`]) and each instance its place, rotation and scale, so no geometry is
+/// copied and no model gives way to a coarser one. An instance of a type without primitives in
+/// the set's first model draws nothing, as in [`place`].
+pub(super) fn instanced(
+    cache: &Cache,
+    pages: &mut Pages,
+    parts: &mut [super::Part],
+    masks: &[u32],
+) -> Result<Instanced> {
+    ensure!(parts.len() == masks.len(), "Decorator BSP masks differ");
+    let mut out = Instanced::default();
+    // Each set's types, model paths, texture and fades, and the kind each of its types became.
+    type Set = (
+        [Types; INSTANCED_DETAILS],
+        [String; INSTANCED_DETAILS],
+        Tag,
+        [[f32; 2]; 4],
+        Vec<Option<usize>>,
+    );
+    let mut sets = BTreeMap::<String, Set>::new();
+    for (part, &bsps) in parts.iter_mut().zip(masks) {
+        let decorated = std::mem::take(&mut part.decorated);
+        if decorated.sets.is_empty() {
+            part.decorators = json!({"sets": 0, "mode": "native"});
+            continue;
+        }
+        for (tag, _) in &decorated.sets {
+            if !sets.contains_key(&tag.path) {
+                let (types, paths, texture, fades) = instanced_types(cache, pages, tag)?;
+                let kinds = vec![None; types[0].len()];
+                sets.insert(tag.path.clone(), (types, paths, texture, fades, kinds));
+            }
+        }
+        let mut placed = vec![0usize; decorated.sets.len()];
+        let mut untyped = vec![0usize; decorated.sets.len()];
+        for (set, instance, _) in decorated.instances {
+            let tag = &decorated.sets[set].0;
+            let (types, _, texture, fades, kinds) = sets
+                .get_mut(&tag.path)
+                .context("Decorator set read before its instances")?;
+            if types[0].get(instance.kind).is_none_or(Vec::is_empty) {
+                untyped[set] += 1;
+                continue;
+            }
+            let kind = match kinds[instance.kind] {
+                Some(kind) => kind,
+                None => {
+                    out.kinds.push(Kind {
+                        set: tag.clone(),
+                        texture: texture.clone(),
+                        index: instance.kind,
+                        details: std::array::from_fn(|detail| types[detail][instance.kind].clone()),
+                        fades: *fades,
+                    });
+                    kinds[instance.kind] = Some(out.kinds.len() - 1);
+                    out.kinds.len() - 1
+                }
+            };
+            placed[set] += 1;
+            out.placements.push(Placement {
+                kind,
+                position: instance.position,
+                rotation: instance.rotation,
+                scale: instance.scale,
+                bsps,
+            });
+        }
+        part.decorators = json!({
+            "mode": "native",
+            "sets": decorated.sets.iter().zip(placed.iter().zip(&untyped)).map(|((tag, _), (placed, untyped))| {
+                let (types, paths, _, fades, _) = &sets[&tag.path];
+                json!({
+                    "set": tag.path,
+                    "models": paths,
+                    "types": types[0].iter().map(Vec::len).collect::<Vec<_>>(),
+                    "fades": fades,
+                    "placed": placed,
+                    "untyped": untyped,
+                })
+            }).collect::<Vec<_>>(),
+            "grids": decorated.grids,
+            "placed": placed.iter().sum::<usize>(),
+            "untyped": untyped.iter().sum::<usize>(),
+        });
+    }
+    Ok(out)
 }

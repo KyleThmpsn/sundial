@@ -13,6 +13,7 @@ pub mod io;
 pub mod marathon;
 pub mod preview;
 mod stat_group;
+pub mod store;
 pub mod tiger;
 pub mod tools;
 pub mod weapon_type;
@@ -21,5 +22,8 @@ pub use graph::GraphReference;
 pub use graph::forget_opened;
 pub use graph::manifest_converter_revision;
 pub use graph::model_symbols;
+pub use graph::settle as settle_graphs;
+pub use graph::{GRAPH, ORNAMENTS, conversion_folder};
+pub use graph::{in_place as graphs_in_place, place as place_graphs, unplace as unplace_graphs};
 
 mod presentation;

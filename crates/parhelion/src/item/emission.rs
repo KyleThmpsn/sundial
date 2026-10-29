@@ -24,12 +24,7 @@ fn definition_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<
     };
     let tag = TagHash(read_u32(&emission.item_table, row + 16)?);
     let host = crate::package_profile::host();
-    if tag.pkg_id() != host.id {
-        return Err(invalid("Authored item must be a private definition"));
-    }
-    let ordinal = (tag.entry_index() as usize)
-        .checked_sub(host.first)
-        .ok_or_else(|| invalid("Authored item is a stock definition"))?;
+    let ordinal = AppendedTagAllocator::records(host.first).ordinal(tag)?;
     if ordinal >= emission.host_new_tags.len() {
         return Err(invalid("Authored definition is outside authored tags"));
     }
@@ -51,11 +46,10 @@ fn strings_ordinal(emission: &PackageEmission, item: u32) -> AuthoringResult<usi
     };
     let tag = TagHash(read_u32(&emission.item_strings, row + 16)?);
     let host = crate::package_profile::host();
-    let ordinal = (tag.pkg_id() == host.id)
-        .then(|| (tag.entry_index() as usize).checked_sub(host.first))
-        .flatten()
-        .filter(|ordinal| *ordinal < emission.host_new_tags.len())
-        .ok_or_else(|| invalid("Authored item strings must be a private record"))?;
+    let ordinal = AppendedTagAllocator::records(host.first).ordinal(tag)?;
+    if ordinal >= emission.host_new_tags.len() {
+        return Err(invalid("Authored item strings must be a private record"));
+    }
     Ok(ordinal)
 }
 
@@ -108,6 +102,10 @@ pub(super) struct PackageEmission {
     pub(super) record_strings: Vec<u8>,
     pub(super) objectives: Vec<u8>,
     pub(super) pools: Vec<u8>,
+    /// Where each ordinary weapon's linked ornaments go in Collections, by the weapon's item hash.
+    /// An Exotic's go beside the native ornament they copy.
+    #[cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
+    pub(super) ornament_targets: BTreeMap<u32, super::placements::OrnamentTarget>,
     pub(super) item_icons: Vec<u8>,
     pub(super) runtime_dependencies: Option<Vec<u8>>,
     pub(super) host_new_tags: Vec<NewTagSpec>,
@@ -143,12 +141,67 @@ fn media_references(
         })
 }
 
+/// Split a dense logical record vector, translating entry references to their actual packages.
+fn record_packages(
+    tags: Vec<NewTagSpec>,
+    references: Vec<crate::NewTagReferenceOverride>,
+) -> AuthoringResult<Vec<crate::asset_packages::AssetPackage>> {
+    let host = crate::package_profile::host();
+    let allocator = AppendedTagAllocator::records(host.first);
+    let count = tags.len();
+    let (first, overflow) = allocator.split(tags)?;
+    let mut packages = std::iter::once((host.id, first))
+        .chain(overflow)
+        .map(|(id, tags)| crate::asset_packages::AssetPackage {
+            id,
+            tags,
+            references: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    for reference in references {
+        if reference.new_tag_ordinal >= count {
+            return Err(invalid(
+                "Record reference owner is outside authored records",
+            ));
+        }
+        let owner =
+            allocator.assigned_tag(reference.new_tag_ordinal, "Record reference", "owner")?;
+        let target = match reference.reference {
+            crate::NewTagReference::Appended(ordinal) => {
+                if ordinal >= count {
+                    return Err(invalid(
+                        "Record reference target is outside authored records",
+                    ));
+                }
+                crate::NewTagReference::Tag(allocator.assigned_tag(
+                    ordinal,
+                    "Record reference",
+                    "target",
+                )?)
+            }
+            other => other,
+        };
+        let package = packages
+            .iter_mut()
+            .find(|package| package.id == owner.pkg_id())
+            .ok_or_else(|| invalid("Record reference package is missing"))?;
+        package.references.push(crate::NewTagReferenceOverride {
+            new_tag_ordinal: usize::from(owner.entry_index())
+                - if package.id == host.id { host.first } else { 0 },
+            reference: target,
+        });
+    }
+    Ok(packages)
+}
+
 #[allow(unused_mut)]
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn emit_packages(
     package_directory: &Path,
     manager: PackageManager,
     mut emission: PackageEmission,
     weapons: &[WeaponCloneSpec],
+    branding: crate::branding::Branding,
     progress: &mut build::Progress<'_>,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     // These passes run before the package count is known, so their labels don't advance it.
@@ -158,25 +211,32 @@ pub(super) fn emit_packages(
     };
     #[cfg(feature = "d2-model-importer")]
     let mut replacements = {
-        progress.start("Checking Imported Models");
+        // Each pass names every recipe's model, or every graph it links, as it goes.
         let started = std::time::Instant::now();
-        imported::validate_graphs(weapons)?;
+        imported::validate_graphs(weapons, progress, "Checking")?;
         timed("model check", started);
-        progress.start("Linking Imported Models");
         let started = std::time::Instant::now();
-        let (replacements, stages) =
-            imported::apply(package_directory, &manager, &mut emission, weapons)?;
+        let (replacements, stages) = imported::apply(
+            package_directory,
+            &manager,
+            &mut emission,
+            weapons,
+            branding,
+            progress,
+        )?;
         timed("model linking", started);
         progress.diagnostic(format!("Model linking timings: {stages}."));
         // The files must still be the ones selected now that linking has read them.
-        progress.start("Rechecking Imported Models");
         let started = std::time::Instant::now();
-        imported::validate_graphs(weapons)?;
+        imported::validate_graphs(weapons, progress, "Rechecking")?;
         timed("model recheck", started);
         replacements
     };
     #[cfg(not(feature = "d2-model-importer"))]
     let mut replacements: Vec<ReplacementSpec> = Vec::new();
+    // Only imported models draw watermarks during emission.
+    #[cfg(not(feature = "d2-model-importer"))]
+    let _ = branding;
     progress.start("Applying Ornaments");
     let started = std::time::Instant::now();
     ornament::apply(&manager, &mut emission, weapons)?;
@@ -283,6 +343,7 @@ pub(super) fn emit_packages(
         record_strings,
         objectives,
         pools,
+        ornament_targets: _,
         item_icons,
         mut runtime_dependencies,
         host_new_tags,
@@ -319,9 +380,16 @@ pub(super) fn emit_packages(
             .push(replacement);
     }
     let host = crate::package_profile::host();
+    let mut host_reference_overrides = watermark_reference_overrides;
+    host_reference_overrides.extend(media_references(&host_new_tags));
+    let record_packages = record_packages(host_new_tags, host_reference_overrides)?;
+    let standalone_records = record_packages
+        .iter()
+        .filter(|package| package.id != HOST_PACKAGE_ID)
+        .count();
     // One dependency check, six required overlays, and all optional packages in this plan.
     progress.payloads(
-        7 + usize::from(host.is_standalone())
+        7 + standalone_records
             + asset_packages.packages.len()
             + maps.package_count()
             + private_runtime_overflow.len()
@@ -329,7 +397,7 @@ pub(super) fn emit_packages(
             + ui_packages.len()
             + usize::from(!private_perk_runtime_new_tags.is_empty())
             + usize::from(
-                runtime_dependencies.is_some() || !maps.is_empty() || host.is_standalone(),
+                runtime_dependencies.is_some() || !maps.is_empty() || standalone_records != 0,
             ),
     );
     progress.start("Checking Asset Dependencies");
@@ -360,37 +428,47 @@ pub(super) fn emit_packages(
     validate_sandbox_perk_runtime_map(&entity_assignments).map_err(validation)?;
     progress.finish("Checking Asset Dependencies");
     let mut packages = packages::Packages::new(package_directory);
-    let mut host_reference_overrides = watermark_reference_overrides;
-    host_reference_overrides.extend(media_references(&host_new_tags));
-    // A standalone host takes the build's investment records, and the stock host keeps its
-    // entry count. The client registers a package once a loading index names one of its
-    // entries, so the investment loading root names every record, as it does a map's.
-    let mut host_records = None;
-    let (host_new_tags, host_reference_overrides) = if host.is_standalone() {
-        let records = (0..host_new_tags.len())
-            .map(|index| {
-                u16::try_from(index)
-                    .map(|index| TagHash::new(host.id, index))
-                    .map_err(|_| invalid("The investment records do not fit one package"))
-            })
-            .collect::<AuthoringResult<Vec<_>>>()?;
+    // Every standalone record is enrolled, including legacy overflow. Loader builds leave the
+    // stock host's entry count intact. Legacy builds retain only the fitting appended prefix.
+    let mut host_records = Vec::new();
+    let mut host_new_tags = Vec::new();
+    let mut host_reference_overrides = Vec::new();
+    let mut loading_records = Vec::new();
+    for package in record_packages {
+        if package.id == HOST_PACKAGE_ID {
+            host_new_tags = package.tags;
+            host_reference_overrides = package.references;
+            continue;
+        }
+        crate::package_profile::name_standalone_package(
+            package.id,
+            if host.is_standalone() {
+                crate::package_profile::RECORDS_FAMILY
+            } else {
+                crate::package_profile::LEGACY_RECORDS_FAMILY
+            },
+        )
+        .map_err(invalid)?;
+        let allocator = AppendedTagAllocator::new(package.id, 0);
+        for ordinal in 0..package.tags.len() {
+            loading_records.push(allocator.assigned_tag(
+                ordinal,
+                "Investment loading",
+                "record",
+            )?);
+        }
+        host_records.push(packages.standalone(package)?);
+    }
+    if !loading_records.is_empty() {
         runtime_dependencies = Some(crate::shared_tag_dependency_index::enroll_dependencies(
             runtime_dependencies
                 .as_deref()
                 .unwrap_or(loading.as_slice()),
             RUNTIME_DEPENDENCY_COMPANION,
             RUNTIME_DEPENDENCY_ROOT,
-            &records,
+            &loading_records,
         )?);
-        host_records = Some(packages.standalone(crate::asset_packages::AssetPackage {
-            id: host.id,
-            tags: host_new_tags,
-            references: host_reference_overrides,
-        })?);
-        (Vec::new(), Vec::new())
-    } else {
-        (host_new_tags, host_reference_overrides)
-    };
+    }
     let expected_host_count = HOST_EXPECTED_ENTRY_COUNT + host_new_tags.len();
     let host_overlay = packages.overlay(
         HOST_PACKAGE_ID,

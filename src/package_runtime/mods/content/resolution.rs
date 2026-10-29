@@ -90,6 +90,11 @@ impl Mod {
         item
     }
 
+    /// The name Sunrise's Mods page shows.
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The ids of the mods this one needs.
     pub(super) fn needs(&self) -> impl Iterator<Item = &str> {
         self.dependencies

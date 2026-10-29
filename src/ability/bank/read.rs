@@ -267,10 +267,8 @@ pub fn parameters(payload: &[u8]) -> Result<Vec<Parameter>, String> {
     table_parameters(payload, layout.parameters.as_ref())
 }
 
-/// The handler slot the bank hands `modifier` to, read from its own rows with the same
-/// modifier class: for a parameter, the rows reading that parameter first, then any script
-/// row. None when no stock row shows the slot, in which case no row can be added, since a
-/// modifier handed to the wrong slot faults the client at world load.
+/// The priority slot for `modifier`, read from rows with the same modifier class. Parameters
+/// prefer rows reading that name. New classes need a qualified typed callback and storage route.
 pub fn handler_slot(payload: &[u8], modifier: Modifier) -> Result<Option<HandlerIndex>, String> {
     handler_slot_in(&property_rows(payload)?, bank_class(payload)?, modifier)
 }
@@ -296,6 +294,12 @@ pub(super) fn handler_slot_in(
     bank_class: u32,
     modifier: Modifier,
 ) -> Result<Option<HandlerIndex>, String> {
+    if let Modifier::Fixed(body) = modifier
+        && body.class == fixed::rate::CLASS
+    {
+        body.validate()?;
+        return fixed::rate::slot(rows, bank_class).map(Some);
+    }
     // Every one of the 49 readable stock root banks numbers its handlers in the order their
     // modifier classes first appear in its rows. A bank of a class that takes charges, but with
     // no charge row of its own, therefore numbers a new charge handler after its others: the
@@ -441,6 +445,20 @@ pub fn row_modifiers(payload: &[u8]) -> Result<Vec<(usize, bool)>, String> {
             ))
         })
         .collect()
+}
+
+/// Keys used as membership predicates can be reserved without defining a property of their own.
+/// A new property under such a key would also activate the existing conditional rows.
+pub fn membership_keys(payload: &[u8]) -> Result<BTreeSet<u32>, String> {
+    let layout = layout(payload)?;
+    let mut keys = BTreeSet::new();
+    for index in 0..layout.definition_rows.count {
+        let row = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
+        if i64_at(payload, row + ROW_GATE)? != 0 {
+            keys.insert(u32_at(payload, pointer(payload, row + ROW_GATE)?)?);
+        }
+    }
+    Ok(keys)
 }
 
 /// Every typed block by offset, with its twin: the owner tag, a class and a twin offset whose

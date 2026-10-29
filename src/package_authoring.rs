@@ -67,6 +67,26 @@ pub fn declared_payload_references(
     crate::package_runtime::references::payload_fields(manager, template, payload)
 }
 
+/// Checked typed object views as (offset, class), using the same traversal as dependency
+/// discovery. Raw pointers and object-reference targets are not additional typed roots.
+pub fn declared_payload_objects(
+    manager: &PackageManager,
+    template: u32,
+    payload: &[u8],
+) -> Result<Vec<(usize, u32)>, String> {
+    crate::package_runtime::references::payload_objects(manager, template, payload)
+}
+
+/// Checked sixteen-byte object references as (field offset, owner tag). Native and generated
+/// declarations share this traversal. Four-byte resource references are excluded.
+pub fn declared_payload_object_references(
+    manager: &PackageManager,
+    template: u32,
+    payload: &[u8],
+) -> Result<Vec<(usize, u32)>, String> {
+    crate::package_runtime::references::payload_object_references(manager, template, payload)
+}
+
 pub use crate::dyes::{
     DYE_TEXTURE_EDGE, DyeFinish, DyeMaterial, DyeSource, DyeSurfaceMaterial, DyeTexture,
     DyeTextureSource, IridescenceRow, WeaponDyeColors, decode_source_material, dye_surfaces,
@@ -258,7 +278,9 @@ pub mod ability_spawns {
 }
 pub mod ability_damage {
     pub use crate::ability::damage::{
-        ARC, KINETIC, Profile, SOLAR, VOID, profile, references, retype, set_fixed_amount,
+        ARC, KINETIC, Profile, SOLAR, VOID, healing_labels, healing_profile, neutral_profile,
+        profile, read_healing_profile, read_neutral_profile, references, retype, set_fixed_amount,
+        set_health_response,
     };
 }
 
@@ -267,16 +289,18 @@ pub mod ability_bank {
     pub use crate::ability::bank::{
         AbilityTarget, CHARGE_DEFINITION_CLASS, CHARGE_INSTANCE_CLASS, CHARGE_ROWS,
         CLASS_ABILITY_CHARGE_KEY, CLASS_ABILITY_SLOT, ChargeRow, DEFINITION_ROW_CLASS,
-        FixedModifier, FixedSelection, GRENADE_SLOT, GroupEntry, GroupModifier, HandlerIndex,
-        INSTANCE_ROW_CLASS, JUMP_SLOT, MELEE_CHARGE_KEY, MELEE_DAMAGE_PROFILE, MELEE_SLOT,
-        MOVEMENT_SLOT, Modifier, PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind,
-        ParameterName, PropertyRow, SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS,
-        SLOT_PARAMETERS, SUPER_SLOT, StockParameter, UNPLACED_BANKS, bank_name, bank_names,
-        bank_owner, block_count, constant_protection_definition, handler_slot, instance_shift,
-        parameter_abilities, parameter_kind, parameter_label, parameter_meaning, parameter_name,
-        parameters, property_rows, register_bank_names, retarget_references, row_modifiers,
-        slot_banks, slot_name, slot_parameters, tuning_key, validate, validate_native_owner,
-        with_charge_row, with_property_row, with_property_row_mode,
+        FixedModifier, FixedRow, FixedSelection, FixedWitness, GRENADE_SLOT, GroupEntry,
+        GroupModifier, HandlerIndex, INSTANCE_ROW_CLASS, JUMP_SLOT, MELEE_CHARGE_KEY,
+        MELEE_DAMAGE_PROFILE, MELEE_SLOT, MOVEMENT_SLOT, Modifier, PARAMETER_NAMES,
+        PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
+        SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS, SLOT_PARAMETERS, SUPER_SLOT,
+        StockParameter, UNPLACED_BANKS, bank_name, bank_names, bank_owner, block_count,
+        constant_protection_definition, handler_slot, instance_shift, membership_keys,
+        ordered_rows_match, parameter_abilities, parameter_kind, parameter_label,
+        parameter_meaning, parameter_name, parameters, property_rows, register_bank_names,
+        retarget_references, row_modifiers, slot_banks, slot_name, slot_parameters, tuning_key,
+        validate, validate_native_owner, with_charge_row, with_ordered_rows, with_property_row,
+        with_property_row_mode,
     };
 }
 
@@ -351,8 +375,9 @@ pub mod runtime {
         load_weapon_runtime_entity_for_item_with_manager, load_weapon_runtime_entity_with_manager,
         load_weapon_runtime_graph, load_weapon_runtime_graph_for_entity,
         load_weapon_runtime_graph_with_manager, load_weapon_runtime_resource_shape, native_holders,
-        native_member_names, native_members, native_pointer_layout, native_type_inherits,
-        native_type_name, resolve_weapon_runtime_field, runtime_fields_share_semantics,
+        native_member_names, native_members, native_pointer_layout, native_relocation_layout,
+        native_type_inherits, native_type_name, native_type_parent, resolve_weapon_runtime_field,
+        runtime_fields_share_semantics,
     };
     pub use crate::runtime::{modifiers, presentation};
 }
@@ -544,6 +569,12 @@ pub fn validate_shadowkeep_packages_directory(packages: &Path) -> Result<PathBuf
 /// Identifies and snapshots the active runtime from its installed DLL.
 pub fn installed_runtime(install: &Path) -> Result<RuntimeSnapshot, String> {
     crate::package_runtime::installed_runtime(install)
+}
+
+/// The active runtime's brand and whether it loads Sunrise mods, from one read of its DLL. None
+/// when the DLL is missing or carries no Sunrise or Dawn version.
+pub fn installed_runtime_kind(install: &Path) -> Option<(RuntimeBrand, bool)> {
+    crate::package_runtime::installed_runtime_kind(install)
 }
 
 /// Confirms that runtime precedence, location, and DLL bytes still match a prior snapshot.

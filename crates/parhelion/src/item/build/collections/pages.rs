@@ -1,4 +1,5 @@
-//! Add shared weapon-type leaves, branded gear pages and their own acquired-count objectives.
+//! Add shared weapon-type leaves, branded gear pages, weapon types' Weapon Ornaments pages and
+//! their own acquired-count objectives.
 use super::*;
 use crate::{badge::SunriseBadgeGraph, progression::presentation::*, progression::*};
 
@@ -15,8 +16,16 @@ struct NewPage {
     /// Named, described and drawn like the runtime's badge instead of its template page.
     branded: bool,
     children: Vec<u16>,
+    /// A set's members in tile order. Other pages list theirs in build order.
     members: Vec<u32>,
+    /// Whether the page joins its parent's children as it is added. An armor set is already its
+    /// category's.
     attach: bool,
+    /// An ornament set, which joins its class's stock Universal Ornaments once every set exists.
+    ornament_set: bool,
+    /// A weapon type's Weapon Ornaments page, which its weapons' linked ornaments join during
+    /// emission, so the page starts without members.
+    ornaments: bool,
 }
 use sundial::package_authoring::investment_schema::{
     OBJECTIVE_STRING_ROW_CLASS, OBJECTIVE_STRING_ROW_SIZE,
@@ -38,7 +47,8 @@ pub(super) fn append(
         .zip(rows)
         .map(|(weapon, row)| (weapon.identity.item_hash, row))
         .collect::<BTreeMap<_, _>>();
-    // Indices were allocated weapon pages first, then gear pages, each in key order.
+    // Indices were allocated weapon pages first, then gear pages, then the Weapon Ornaments pages
+    // of weapon types without a stock one, each in key order.
     let weapon_pages = plan
         .pages
         .values()
@@ -56,6 +66,8 @@ pub(super) fn append(
             children: Vec::new(),
             members: Vec::new(),
             attach: true,
+            ornament_set: false,
+            ornaments: false,
         });
     let gear_pages = plan.gear_pages.values().map(|page| NewPage {
         index: page.index,
@@ -70,14 +82,37 @@ pub(super) fn append(
         children: page.children.clone(),
         members: page.members.clone(),
         attach: page.page.set().is_none(),
+        ornament_set: page.page.is_ornament_set(),
+        ornaments: false,
     });
-    for page in weapon_pages.chain(gear_pages) {
+    let ornament_pages = plan
+        .ornament_pages
+        .values()
+        .filter(|page| page.added)
+        .map(|page| NewPage {
+            index: page.index,
+            template: page.template,
+            parent: page.parent,
+            sibling: page.sibling,
+            donor: page.donor,
+            node_hash: page.family.ornament_page_hash("node"),
+            objective_hash: page.family.ornament_page_hash("objective"),
+            name_hash: Some(page.family.ornament_page_hash("name")),
+            branded: false,
+            children: Vec::new(),
+            members: Vec::new(),
+            attach: true,
+            ornament_set: false,
+            ornaments: true,
+        });
+    let mut ornament_sets = Vec::new();
+    for page in weapon_pages.chain(gear_pages).chain(ornament_pages) {
         let members = page_members(&page, rows, &rows_by_hash)?;
-        if members.is_empty() && page.children.is_empty() {
+        if members.is_empty() && page.children.is_empty() && !page.ornaments {
             return Err(invalid("Added Collections page has no members or sets"));
         }
-        if !page.attach && members.len() > crate::collection::ARMOR_SET_SIZE {
-            return Err(invalid("Armor set exceeds five items"));
+        if !page.members.is_empty() && members.len() > crate::collection::ARMOR_SET_SIZE {
+            return Err(invalid("Collections set exceeds five items"));
         }
         let (count, _, node_rows, _) = array_at(&graph.nodes, 8)?;
         if count != usize::from(page.index) {
@@ -172,7 +207,9 @@ pub(super) fn append(
                 template,
             )?;
         }
-        if page.attach {
+        if page.ornament_set {
+            ornament_sets.push((page.parent, page.sibling, count));
+        } else if page.attach {
             append_presentation_node_child(
                 &mut graph.nodes,
                 usize::from(page.parent),
@@ -227,6 +264,28 @@ pub(super) fn append(
             )?;
         }
     }
+    attach_ornament_sets(&mut graph.nodes, ornament_sets)
+}
+
+/// Adds each ornament set to its class's stock Universal Ornaments in set order. A set joins
+/// before the stock sets or after them, so leading sets go in last to first.
+fn attach_ornament_sets(
+    nodes: &mut Vec<u8>,
+    mut sets: Vec<(u16, u16, usize)>,
+) -> AuthoringResult<()> {
+    let first = crate::collection::first(None);
+    if first {
+        sets.reverse();
+    }
+    for (parent, sibling, index) in sets {
+        append_presentation_node_child(
+            nodes,
+            usize::from(parent),
+            usize::from(sibling),
+            index,
+            first,
+        )?;
+    }
     Ok(())
 }
 
@@ -239,13 +298,13 @@ fn page_members<'a>(
         .iter()
         .filter(|row| row.pages.contains(page.index))
         .collect::<Vec<_>>();
-    if page.attach {
+    if page.members.is_empty() {
         return Ok(members);
     }
     if page.members.len() != members.len()
         || page.members.iter().collect::<BTreeSet<_>>().len() != members.len()
     {
-        return Err(invalid("Armor set membership changed during build"));
+        return Err(invalid("Collections set membership changed during build"));
     }
     page.members
         .iter()
@@ -254,7 +313,7 @@ fn page_members<'a>(
                 .get(hash)
                 .copied()
                 .filter(|row| row.pages.contains(page.index))
-                .ok_or_else(|| invalid("Armor set member is missing from its planned page"))
+                .ok_or_else(|| invalid("Collections set member is missing from its planned page"))
         })
         .collect()
 }
@@ -401,76 +460,4 @@ fn append_objective(
         )?;
     }
     u16::try_from(count).map_err(|_| invalid("Collections objective index exceeds capacity"))
-}
-
-/// Resolved placement adds flags to the destination objectives directly, keeping every
-/// stock donor pool intact even when the authored ammo type selects another branch.
-pub(super) fn add_counts(
-    objectives: &mut Vec<u8>,
-    nodes: &[u8],
-    rows: &[ProjectAuthoredRow],
-    pools: &[u8],
-) -> AuthoringResult<()> {
-    let (pool_rows, _) = validate_shared_expression_table(pools, true)?;
-    let flag =
-        shared_numeric_instruction_template(pools, pool_rows, NUMERIC_FLAG_INSTRUCTION, None)?;
-    let add = shared_numeric_instruction_template(
-        pools,
-        pool_rows,
-        NUMERIC_ADD_INSTRUCTION,
-        Some(u16::MAX),
-    )?;
-    let (_, _, node_rows, _) = array_at(nodes, 8)?;
-    let (objective_count, _, objective_rows, _) = array_at(objectives, 8)?;
-    let mut additions = BTreeMap::<u16, BTreeSet<u16>>::new();
-    for row in rows.iter().filter(|row| row.count_selection.is_direct()) {
-        for node in presentation_ancestor_nodes(nodes, &row.pages.iter().collect::<Vec<_>>())? {
-            let objective = read_u16(
-                nodes,
-                node_rows
-                    + node * PRESENTATION_NODE_ROW_SIZE
-                    + PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
-            )?;
-            if objective != u16::MAX {
-                additions
-                    .entry(objective)
-                    .or_default()
-                    .insert(row.authored_unlock_index);
-            }
-        }
-    }
-    for (objective, flags) in additions {
-        if usize::from(objective) >= objective_count {
-            return Err(invalid("Collections objective is out of range"));
-        }
-        let row = objective_rows + usize::from(objective) * OBJECTIVE_ROW_SIZE;
-        // +08 counts acquisitions. +38 counts hidden, unacquired entries which the
-        // client subtracts from the completion target. Authored entries are always
-        // visible, so acquiring one must never reduce the displayed denominator.
-        let field = 0x08;
-        if read_u64(objectives, row + field)? == 0 {
-            return Err(invalid(
-                "Collections objective has no acquired-count program",
-            ));
-        }
-        let mut instructions = numeric_program_layout(objectives, row + field)?
-            .instructions
-            .into_iter()
-            .map(|i| i.serialized)
-            .collect::<Vec<_>>();
-        for &index in &flags {
-            instructions.push(
-                flag.with_semantics(NUMERIC_FLAG_INSTRUCTION, index)
-                    .serialized,
-            );
-            instructions.push(add.serialized);
-        }
-        append_numeric_program(
-            objectives,
-            row + field,
-            &instructions,
-            "Collections acquired count",
-        )?;
-    }
-    Ok(())
 }

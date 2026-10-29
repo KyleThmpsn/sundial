@@ -296,7 +296,7 @@ pub(super) fn separate(
     let Some(source_parts) = source["art_parts"].as_array() else {
         return Ok(());
     };
-    let native = load(&prepared.join("native/template-report.json"))?;
+    let native = load(&crate::d2_mot::profile::native(prepared)?.join("template-report.json"))?;
     let parents = native["parents"].as_array().context("native art parents")?;
     let host = g.manifest["native_assignment"]
         .as_u64()

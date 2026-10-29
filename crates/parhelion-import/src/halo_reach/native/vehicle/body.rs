@@ -271,7 +271,7 @@ pub(super) fn build(payload: &mut Payload, scene: &Scene, bones: &Value) -> Resu
             "native_tensor_assembly":"sum_enabled_parts",
             "native_inertia_kg_metres_squared":native_tensor,
             "previous_mass":old_mass,"gameplay_verified":false,
-            "limits":["Enabled source convex shapes supply their mass, centre and additive tensor during native body construction. Flight authority uses that assembled tensor. The native sum does not add parallel-axis terms between independently conditioned parts. Source authoring scales are not applied twice. Integration and damaged handling require gameplay acceptance."]
+            "limits":["Enabled source convex shapes supply their mass, centre and additive tensor during native body construction. Flight authority uses that assembled tensor. The native sum does not add parallel-axis terms between independently conditioned parts. Source authoring scales are not applied twice."]
         }),
     })
 }

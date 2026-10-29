@@ -17,7 +17,6 @@ pub(super) fn read(
             && p.u64(at + 24)? == 0
             && p.u64(at + 64)? == 1
             && p.u64(at + 72)? == 1
-            && matches!(p.u8(at + 80)?, 0..=2 | 6)
             && p.u8(at + 81)? <= 1
             && p.bytes::<6>(at + 82)? == [0; 6],
         "Source dynamic attachment needs target, input or lifecycle translation"
@@ -32,7 +31,16 @@ pub(super) fn read(
         .into_iter()
         .map(|at| p.bytes::<16>(at))
         .collect::<Result<Vec<_>>>()?;
-    let (minimum, mut maximum) = validate(&code, &constants)?;
+    let (minimum, mut maximum, reads_input) = validate(&code, &constants)?;
+    let input = match p.u8(at + 80)? {
+        input @ (0..=2 | 6) => input,
+        // Source 777E00 selector 9 only reads a signed player byte. Its result
+        // reaches the expression without changing update or cleanup behavior.
+        // A complete program with no input instruction can use native input zero,
+        // retaining the program without claiming correspondence of that player byte.
+        9 if !reads_input => 0,
+        _ => anyhow::bail!("Source dynamic input requires translation"),
+    };
     let mut rows = modifiers(source, p.u32(at + 16)?)?;
     if minimum < 0.0 {
         ensure!(
@@ -97,7 +105,7 @@ pub(super) fn read(
             reciprocal(&code, &constants, -f32::from_bits(key), maximum)?
         };
         let (tag, patches) = modifier_patch(native, &rows[start..end])?;
-        result.push(emit(p, at, tag, patches, code, constants)?);
+        result.push(emit(p, at, tag, patches, code, constants, input)?);
         start = end;
     }
     Ok(result)
@@ -155,6 +163,7 @@ fn emit(
     patches: Vec<NativeAssetResourcePatch>,
     code: Vec<u8>,
     constants: Vec<[u8; 16]>,
+    input: u8,
 ) -> Result<(Action, NativeAssetPatch)> {
     let mut bytes = vec![0; 88];
     bytes[..3].copy_from_slice(&[2, 1, 0]);
@@ -162,6 +171,7 @@ fn emit(
     put(&mut bytes, 32, &(code.len() as u64).to_le_bytes())?;
     put(&mut bytes, 48, &(constants.len() as u64).to_le_bytes())?;
     bytes[64..88].copy_from_slice(&p.bytes::<24>(at + 64)?);
+    bytes[80] = input;
     let graph = Graph {
         blocks: vec![
             Block {
@@ -200,12 +210,13 @@ fn emit(
             patches,
             appends: Vec::new(),
             remove_owners: Vec::new(),
+            components: Vec::new(),
             programs: Vec::new(),
         },
     ))
 }
 
-fn validate(code: &[u8], constants: &[[u8; 16]]) -> Result<(f32, f32)> {
+fn validate(code: &[u8], constants: &[[u8; 16]]) -> Result<(f32, f32, bool)> {
     let constants = constants
         .iter()
         .map(|row| {
@@ -436,5 +447,10 @@ fn validate(code: &[u8], constants: &[[u8; 16]]) -> Result<(f32, f32)> {
         stack.push(value);
         uniform.push(instruction.opcode == 0x37 || same);
     }
-    bounds.context("Source dynamic program has no bounded output")
+    let (minimum, maximum) = bounds.context("Source dynamic program has no bounded output")?;
+    Ok((
+        minimum,
+        maximum,
+        program.instructions.iter().any(|i| i.opcode == 0x3C),
+    ))
 }

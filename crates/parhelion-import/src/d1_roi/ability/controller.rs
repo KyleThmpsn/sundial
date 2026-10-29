@@ -6,10 +6,15 @@
 mod bank;
 mod defaults;
 mod lifecycle;
+pub mod native;
 mod owner;
 mod sequence;
 
-pub use bank::{Built as PreparedBank, build as prepare_bank, resources as required_resources};
+pub(super) use bank::revival_keys;
+pub use bank::{
+    Built as PreparedBank, build as prepare_bank, resources as required_resources,
+    selected as prepare_selected_bank,
+};
 pub use lifecycle::initialize;
 pub use sequence::{Sequences, Written as WrittenSequenceInputs};
 

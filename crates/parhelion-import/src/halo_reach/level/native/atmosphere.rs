@@ -9,9 +9,10 @@
 //! object's diffuse sky light, from its 2 by 2 mip, is about a slice's mean times `cb0[23]`.
 //!
 //! The copy's texels come from [`CLEAR_VOLUME`] when it has the donor's shape, else from the
-//! donor's. Each keeps its alpha and takes the hue of the scenario sky's analytical light, and
-//! every color is scaled so that the mean luminance is [`sky_luminance`] of the level's open
-//! probes. Kept at Distant Shore's daytime mean of about 1.5, a night level's players drew lit as
+//! donor's. Each takes the hue of the scenario sky's analytical light, and every color is scaled
+//! so that the mean luminance is [`sky_luminance`] of the level's open probes. Each alpha, which
+//! scales the sun halo (`min(HG(-0.975) * alpha * 0.000627, 128)` in the generator), takes the same
+//! scale, clamped to one. Kept at Distant Shore's daytime mean of about 1.5, a night level's players drew lit as
 //! if by daylight. Its distance lookup at `+0x98` takes a black copy, since the level's surfaces
 //! draw the level's own fog ([`clear_lookup`]).
 use super::occlusion;
@@ -118,8 +119,8 @@ pub(super) fn sky_luminance(open: f32, radiance: f32) -> f32 {
 
 /// Adds a copy of the donor's atmosphere volume `volume` whose texels, [`CLEAR_VOLUME`]'s where it
 /// has the donor's shape, take `color`'s hue, at their own luminance scaled so that their mean
-/// luminance is `sky` when it is given. Returns the copy's symbol and a report of the source's and
-/// the copy's mean colors and alphas.
+/// luminance is `sky` when it is given, with their alphas scaled alike. Returns the copy's symbol
+/// and a report of the source's and the copy's mean colors and alphas.
 pub(super) fn add(
     native: &mut Reader,
     graph: &mut Graph,
@@ -176,7 +177,11 @@ pub(super) fn add(
             .map(|(c, w)| c * w)
             .sum::<f32>();
         let [r, g, b] = hue.map(|c| c * luminance * scale / hue_luminance);
-        for (k, value) in [r, g, b, rgba[3]].into_iter().enumerate() {
+        // The sun halo scales by the texel's alpha, so the alpha follows the color's scale and
+        // the halo keeps its ratio to the sky. Kept at Distant Shore's 0.0275, the halo stayed at
+        // its daytime size of up to 0.27 beside Nightfall's sky of 0.27.
+        let alpha = (rgba[3] * scale).clamp(0., 1.);
+        for (k, value) in [r, g, b, alpha].into_iter().enumerate() {
             texel[k * 2..k * 2 + 2].copy_from_slice(&half::f16::from_f32(value).to_le_bytes());
             before[k] += f64::from(rgba[k]);
             after[k] += f64::from(value);

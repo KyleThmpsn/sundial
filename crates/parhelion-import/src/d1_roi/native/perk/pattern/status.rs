@@ -1,7 +1,8 @@
 //! A constant status host, its HUD packet and its separately timed Duration component.
 use super::*;
 mod conditional;
-mod hud;
+mod display;
+mod lifecycle;
 
 pub(super) fn pair(
     p: &Payload,
@@ -39,10 +40,19 @@ fn constant(p: &Payload, at: usize, indefinite: bool) -> Result<[u8; 16]> {
             && values.len() == 1
             && p.u64(at + 56)? == 1
             && p.u64(at + 64)? == 1
-            && p.bytes::<24>(at + 72)? == [0; 24]
-            && [0, 0x811C9DC5].contains(&p.u64(at + 96)?),
+            && p.bytes::<16>(at + 72)? == [0; 16],
         "Source status needs expression translation"
     );
+    // Only the lifetime expression has the trailing flags and name. The count
+    // expression ends at +58, where the enclosing HUD's display-enable field starts.
+    match p.u32(at + 16)? {
+        0x8080084D => {}
+        0x808008AC => ensure!(
+            p.u64(at + 88)? == 0 && [0, 0x811C9DC5].contains(&p.u64(at + 96)?),
+            "Source status lifetime has additional flags or a named input"
+        ),
+        _ => anyhow::bail!("Source status has another constant expression class"),
+    }
     let bits = p.u32(values[0])?;
     ensure!(
         f32::from_bits(bits).is_finite()
@@ -60,14 +70,19 @@ struct Status {
     timer: [u8; 8],
     count: [u8; 16],
     seconds: [u8; 16],
+    display: bool,
+    reset_owned: bool,
 }
 
+#[allow(clippy::cognitive_complexity)]
 fn validate(
     graph: &Payload,
     p: &Payload,
     owner: u32,
     companion: Option<&conditional::Companion>,
     bank: Option<(u32, usize)>,
+    network: Option<u32>,
+    audio: Option<&sequence::audio::Companion>,
 ) -> Result<Status> {
     let live = p.pointer(16)?;
     let settings = p.pointer(24)?;
@@ -111,8 +126,8 @@ fn validate(
     ] {
         pair(p, owner, i, d, ic, dc)?;
     }
-    // The host's only output is an empty state program. No external receiver or
-    // dynamic parameter driver may disappear while replacing this component.
+    // The only connected receiver admitted here is the separately checked audio
+    // companion. Its complete sequence and resource obligations remain in the graph.
     ensure!(
         p.u64(settings + 0xD0)? == 2
             && p.u64(settings + 0xD8)? == 0x808003E3
@@ -150,12 +165,17 @@ fn validate(
             && graph.u32(at + 28)? == 0
             && graph.u64(at + 32)? == 0
             && graph.u64(at + 40)? == 0x811C9DC5
-            && graph.u64(at + 48)? == u32::MAX as u64
-            && graph.u64(at + 56)? == 0
-            && graph.u64(at + 64)? == u32::MAX as u64
-            && graph.u64(at + 72)? == 65535
+            && graph.u64(at + 48)? == audio.map_or(u32::MAX as u64, |a| a.owner as u64)
+            && graph.u64(at + 56)? == audio.map_or(0, |a| (a.definition + 0xA8) as u64)
+            && graph.u64(at + 64)?
+                == if audio.is_some() {
+                    0x80800988
+                } else {
+                    u32::MAX as u64
+                }
+            && graph.u64(at + 72)? == if audio.is_some() { 1 } else { 65535 }
             && graph.u64(at + 80)? == 0,
-        "Source status has a live output receiver"
+        "Source status has an unqualified output receiver"
     );
 
     // Each allowed parameter is a declaration, followed by its literal selector.
@@ -212,11 +232,21 @@ fn validate(
             == declarations.len() - 1
                 + if companion.is_some() { 4 } else { 0 }
                 + bank.map_or(0, |(_, count)| count * 2 + 2)
+                + if network.is_some() { 7 } else { 0 }
+                + if audio.is_some() { 12 } else { 0 }
             && refs.len() == exports.len(),
         "Source status export count differs"
     );
     let mut seen = BTreeSet::new();
     for (&at, &reference) in exports.iter().zip(&refs) {
+        if audio.is_some_and(|audio| graph.u32(at + 16).ok() == Some(audio.owner)) {
+            // The audio reader checks the complete ordinal-one provider partition.
+            continue;
+        }
+        if network.is_some_and(|owner| graph.u32(at + 16).ok() == Some(owner)) {
+            // The network reader checks its complete provider and lifecycle contract.
+            continue;
+        }
         if bank.is_some_and(|(owner, _)| graph.u32(at + 16).ok() == Some(owner)) {
             // The modifier reader checks every reciprocal row and export separately.
             continue;
@@ -251,32 +281,64 @@ fn validate(
             "Source status export targets another parameter"
         );
     }
+    let reset_owned = companion.is_none()
+        && bank.is_none()
+        && network.is_none()
+        && p.u32(duration + 0xA0)? == 9
+        && p.u64(duration + 0xB0)? == 1
+        && p.u64(controller + 0x78)? == 0;
     ensure!(
         p.u32(hud + 0x30)? == 0x80800955
             && p.u32(hud + 0x50)? == 0x80800652
             && p.u64(hud + 0x98)? == 0
-            && p.u8(hud + 0xF8)? == 0
             && p.u64(duration + 0x30)? == 0x8080299F
             && p.u64(duration + 0x50)? == 0x80802B20
-            && p.u32(duration + 0xA0)? == 5
+            && (p.u32(duration + 0xA0)? == 5
+                || (companion.is_none() && p.u32(duration + 0xA0)? == 9)
+                || (network.is_some() && p.u32(duration + 0xA0)? == 11)
+                || (companion.is_none() && network.is_none() && p.u32(duration + 0xA0)? == 0x17))
             && i32::from_le_bytes(p.bytes(duration + 0xA8)?) > 0
-            && p.u64(duration + 0xB0)? == u64::from(companion.is_some())
-            && p.u64(controller + 0x78)? == u64::from(companion.is_none()),
+            && (p.u64(duration + 0xB0)? == u64::from(companion.is_some())
+                || (network.is_some() && p.u64(duration + 0xB0)? == 1)
+                || reset_owned)
+            && (p.u64(controller + 0x78)? == u64::from(companion.is_none()) || reset_owned),
         "Source status has additional presentation or duration policy"
     );
     let count = match companion {
         Some(companion) => companion.threshold,
         None => constant(p, hud + 0xA0, false)?,
     };
-    let seconds = constant(p, duration + 0x138, bank.is_some())?;
+    // The connected audio envelope is qualified for the retained timed status.
+    // Other reset policies need their own sequence activation and cleanup evidence.
     ensure!(
-        p.u64(hud + 0x120)? == 5
-            && p.u64(hud + 0x130)? == 0
-            && p.u64(hud + 0x140)? == 1
-            && p.u64(hud + 0x148)? == 1
-            && p.bytes::<16>(hud + 0x150)? == [0; 16],
-        "Source HUD has a time transform"
+        audio.is_none()
+            || (p.u32(duration + 0xA0)? == 9
+                && p.u64(duration + 0xB0)? == 0
+                && p.u64(controller + 0x78)? == 1),
+        "Connected status audio needs the qualified duration policy"
     );
+    let seconds = constant(p, duration + 0x138, bank.is_some())?;
+    if reset_owned {
+        // Duration construction deactivates this Timer before scalar initialization.
+        // A matched message reactivates it without changing its retained zero, then
+        // requests retirement. Zero alone does not mean an indefinite lifetime.
+        ensure!(
+            seconds == [0; 16],
+            "Source reset-owned status needs a zero constant lifetime"
+        );
+        lifecycle::source(p, live)?;
+    }
+    if p.u32(duration + 0xA0)? == 0x17 {
+        // Both refresh callbacks restore a fixed positive lifetime during countdown.
+        // Native preserves a longer current timer, while D1 replaces it. Dynamic and
+        // connected lifetime writers cannot use this route. Their absence is checked
+        // through the complete owner, driver and connection validation above.
+        ensure!(
+            f32::from_le_bytes(seconds[..4].try_into()?) > 0.0,
+            "Source refreshing status needs a positive constant lifetime"
+        );
+    }
+    let display = display::read(p, hud)?;
 
     Ok(Status {
         competition,
@@ -285,14 +347,14 @@ fn validate(
         timer: p.bytes(controller + 0x78)?,
         count,
         seconds,
+        display,
+        reset_owned,
     })
 }
 
-/// The status host's private tag, its patches and appended resources, and its private HUD entry.
+/// The complete private graph edit and its private HUD entry.
 pub(super) type Hosted = (
-    u32,
-    Vec<NativeAssetResourcePatch>,
-    Vec<NativeAssetResourceAppend>,
+    NativeAssetPatch,
     Option<sundial::package_authoring::sandbox_perk::program::HudStatus>,
 );
 
@@ -301,10 +363,10 @@ pub(super) fn modifier_bank(
     graph: &Payload,
 ) -> Result<Option<(u32, Vec<Modifier>)>> {
     let owners = graph.array(32, 12, Some(0x80800715))?;
-    if owners.len() != 2 {
+    if !matches!(owners.len(), 2 | 3) {
         return Ok(None);
     }
-    let tag = graph.u32(owners[1])?;
+    let tag = graph.u32(owners[owners.len() - 1])?;
     let p = source.read(tag)?;
     if p.u32(p.pointer(24)? - 4)? != 0x808020DE {
         return Ok(None);
@@ -312,6 +374,7 @@ pub(super) fn modifier_bank(
     Ok(Some((tag, modifier_owner(source, graph, tag)?)))
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn read(
     source: &Source,
     native: &mut Reader,
@@ -319,8 +382,21 @@ pub(super) fn read(
     p: &Payload,
     owner: u32,
 ) -> Result<Hosted> {
+    let audio = sequence::audio::read(source, native, graph)?;
     let bank = modifier_bank(source, graph)?;
-    let companion = if graph.u64(32)? == 2 && bank.is_none() {
+    let combined = graph.u64(32)? == 3 && audio.is_none();
+    let network = if audio.is_some() {
+        Some(network::sound(source, native, graph)?)
+    } else if bank.is_none() || combined {
+        network::read(source, native, graph)?
+    } else {
+        None
+    };
+    ensure!(
+        !combined || (bank.is_some() && network.is_some()),
+        "Source three-owner status requires a qualified network and modifier bank"
+    );
+    let companion = if graph.u64(32)? == 2 && bank.is_none() && network.is_none() {
         Some(conditional::read(source, graph, p, owner)?)
     } else {
         None
@@ -331,10 +407,16 @@ pub(super) fn read(
         owner,
         companion.as_ref(),
         bank.as_ref().map(|(tag, rows)| (*tag, rows.len())),
+        network,
+        audio.as_ref(),
     )?;
     let name = u32::from_le_bytes(status.hud[..4].try_into()?);
     let hud_status = hud::read(source, native, name)?;
-    let tag = if let Some((_, rows)) = &bank {
+    let tag = if audio.is_some() {
+        sequence::audio::GRAPH
+    } else if combined {
+        network::BANK_GRAPH
+    } else if let Some((_, rows)) = &bank {
         match rows.len() {
             1 => 0x80FF05F0,
             2 => 0x8161E50E,
@@ -345,6 +427,8 @@ pub(super) fn read(
         }
     } else if companion.is_some() {
         0x80BC5880
+    } else if network.is_some() {
+        network::GRAPH
     } else {
         0x80BC31BC
     };
@@ -352,7 +436,9 @@ pub(super) fn read(
     let owners = graph.array(16, 12, Some(0x80809C04))?;
     ensure!(
         owners.len()
-            == if companion.is_some() || bank.is_some() {
+            == if combined || audio.is_some() {
+                3
+            } else if companion.is_some() || bank.is_some() || network.is_some() {
                 2
             } else {
                 1
@@ -362,8 +448,15 @@ pub(super) fn read(
     let target_owner = graph.u32(owners[0])?;
     let target = native.tag(target_owner, Some(0x80809C36))?;
     let root = target.pointer(24)?;
+    ensure!(
+        !(combined || audio.is_some()) || target.u64(root + 0x440)? == 0,
+        "Native replicated status contains an additional embedded bank"
+    );
     let h = root + 0xE0;
     let d = h + 0x148;
+    if status.reset_owned {
+        lifecycle::native(native, &graph, &target, target_owner, d)?;
+    }
     let sequence = root + 0x48;
     let sequence_live = usize::try_from(target.u64(sequence + 8)?)?;
     ensure!(
@@ -378,7 +471,7 @@ pub(super) fn read(
         target.u32(root - 4)? == 0x80804205
             && target.u32(h + 4)? == 0x80804211
             && target.u32(d + 4)? == 0x80803B32
-            && target.u64(root + 0x58)? == 0
+            && target.u64(root + 0x58)? == if audio.is_some() { 4 } else { 0 }
             && target.u64(root + 0x70)? == 2
             && target.u64(root + 0xC0)? == 0x3C18FBCE
             && target.u64(root + 0x408)? == 0
@@ -395,6 +488,11 @@ pub(super) fn read(
         "Native status envelope outputs differ"
     );
     for at in outputs {
+        if audio.is_some() {
+            // Both complete rows, including the unbound requester, were checked
+            // against the source connection by the retained audio-envelope reader.
+            continue;
+        }
         if companion.is_some() && graph.u32(at + 40)? != u32::MAX {
             // The conditional patcher validates the one channel connection.
             continue;
@@ -459,6 +557,12 @@ pub(super) fn read(
         );
         replace(values[0], bytes.to_vec())?;
     }
+    if status.display {
+        display::patch(&target, h, &mut replace)?;
+    }
+    if let Some(audio) = audio {
+        patches.push(audio.patch);
+    }
     let mut appends = Vec::new();
     if let Some(companion) = companion {
         let (extra, append) =
@@ -466,13 +570,44 @@ pub(super) fn read(
         patches.extend(extra);
         appends.push(append);
     }
+    let mut components = Vec::new();
+    let mut remove_owners = Vec::new();
     if let Some((_, rows)) = bank {
-        patches.extend(modifier_patches(
-            native,
-            &graph,
-            graph.u32(owners[1])?,
-            &rows,
-        )?);
+        if combined {
+            // The trailing owner is replaced as a complete allocation. Its replica
+            // row comes from a checked native graph with that exact storage shape.
+            let replication = match rows.len() {
+                1 => 0x80C3DDE2,
+                2 => 0x80C0020A,
+                _ => anyhow::bail!("Status modifier count needs a native replication witness"),
+            };
+            let (source_graph, patches) = modifier_patch(native, &rows)?;
+            connected::allocation(native, source_graph, rows.len())?;
+            components.push(NativeAssetComponent {
+                source_graph,
+                patches,
+                replication: Some(replication),
+            });
+            remove_owners.push(graph.u32(owners[2])?);
+        } else {
+            patches.extend(modifier_patches(
+                native,
+                &graph,
+                graph.u32(owners[1])?,
+                &rows,
+            )?);
+        }
     }
-    Ok((tag, patches, appends, hud_status))
+    Ok((
+        NativeAssetPatch {
+            action_index: 0,
+            source_graph: tag,
+            patches,
+            appends,
+            remove_owners,
+            components,
+            programs: Vec::new(),
+        },
+        hud_status,
+    ))
 }

@@ -356,6 +356,8 @@ pub struct WeaponCloneOverrides {
     pub remove_lore: bool,
     #[cfg(feature = "d2-model-importer")]
     pub imported_graph: Option<parhelion_import::GraphReference>,
+    /// The stock weapon an imported weapon ornament mod applies to.
+    pub ornament_weapon: Option<u32>,
     /// Optional Collections override. `None` derives the ammo and weapon-type destination.
     pub collection_destination: Option<crate::collection::Destination>,
     /// Where the item sits among a stock Collections page's entries, `None` for automatic.
@@ -412,6 +414,9 @@ pub struct WeaponCloneOverrides {
     /// Another weapon whose type markers the weapon's runtime block carries in place of the base
     /// weapon's own. Its block has to sit in the same content owner.
     pub type_marker_donor: Option<u32>,
+    /// Another weapon whose behavior the weapon's runtime block carries in place of the base
+    /// weapon's own: all of it from the same content owner, its records and labels from another.
+    pub behavior_donor: Option<u32>,
     /// Gear-art markers moved by name, each by an offset in metres along the model's forward,
     /// side and up axes.
     pub marker_offsets: Vec<(u32, [f32; 3])>,
@@ -627,7 +632,7 @@ pub struct WeaponSocketColumnOverride {
 
 impl WeaponSocketColumnOverride {
     /// Puts `plug` first, as the column's default, and returns each earlier choice's new index.
-    /// The choices that were swappable stay swappable beside it.
+    /// The choices that were reusable stay reusable beside it.
     pub(crate) fn lead_with(&mut self, plug: u32) -> Vec<Option<usize>> {
         let first = self.choices.iter().position(|choice| *choice == plug);
         let order = std::iter::once((plug, first))
@@ -672,13 +677,13 @@ impl WeaponSocketColumnOverride {
     }
 }
 
-/// Carries a column's per-choice weights, conditions and swappable lead onto rebuilt choices.
+/// Carries a column's per-choice weights, conditions and reusable lead onto rebuilt choices.
 ///
 /// `origins` gives each new choice the index it had before, or `None` for a plug new to the
 /// column. Choices are followed by where they came from rather than by their plug, since two
 /// custom perks can share one template plug. A new plug weighs 1.0, has no condition and is
-/// swappable, as a plug placed in a column leads it. The lead stays a prefix that ends at the
-/// last swappable choice.
+/// reusable, as a plug placed in a column leads it. The lead stays a prefix that ends at the
+/// last reusable choice.
 pub(crate) fn follow_choices<C: Clone>(
     origins: &[Option<usize>],
     weight_bits: &mut Vec<u32>,
@@ -916,6 +921,28 @@ impl WeaponCloneSpec {
         context: impl Into<String>,
     ) -> AuthoringError {
         error.in_recipe(self.namespace.clone(), context)
+    }
+
+    /// Whether the item has a Collections entry and an unlock, as [`crate::WeaponRecipe`] decides.
+    pub(crate) fn has_collections(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        if self.kind == ItemKind::Mod && self.overrides.imported_graph.is_some() {
+            return true;
+        }
+        self.kind.has_collections()
+    }
+
+    /// Whether the item is a universal ornament an importer converted. An imported weapon
+    /// ornament names its weapon instead.
+    pub(crate) fn is_imported_ornament(&self) -> bool {
+        #[cfg(feature = "d2-model-importer")]
+        if self.kind == ItemKind::Mod
+            && self.overrides.imported_graph.is_some()
+            && self.overrides.ornament_weapon.is_none()
+        {
+            return true;
+        }
+        false
     }
 
     /// The badge includes authored items unless the recipe explicitly excludes them.

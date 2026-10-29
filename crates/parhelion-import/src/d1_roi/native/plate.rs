@@ -126,6 +126,12 @@ impl Assembly<'_> {
         let mut plates = [String::new(), String::new(), String::new()];
         if let Some(row) = rows.first() {
             let set = self.source.read(owner.u32(row + 48)?)?;
+            // Source 008F30B0 sizes the render dye palette as min(4, set +18). Channels below
+            // it take the absent-slot path that material translation reproduces.
+            ensure!(
+                set.u32(0x18)? == 4,
+                "Source plate set declares an unvalidated dye palette size"
+            );
             for (index, output) in plates.iter_mut().enumerate() {
                 let tag = set.u32(0x24 + index * 4)?;
                 if !matches!(tag, 0 | u32::MAX) {

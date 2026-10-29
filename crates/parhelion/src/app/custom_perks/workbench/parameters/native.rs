@@ -725,6 +725,12 @@ fn changes(
                 .filter(|length| length.graph == *tag)
                 .collect(),
             flags: &flags,
+            tracking: loaded
+                .tracking
+                .iter()
+                .filter(|(each, _)| each == tag)
+                .map(|(_, setting)| setting)
+                .collect(),
         };
         guided.changes(loaded, draft, &mut lines)?;
         // An Unlimited length reads its flag's byte, so the byte needs no line of its own.
@@ -743,6 +749,22 @@ fn changes(
                     .insert(flag.at);
             }
         }
+        // A tracking setting kept in an opaque field reads its own lane, so those bytes need no
+        // line of their own.
+        for setting in &guided.tracking {
+            let Some(lane) = setting.lane else {
+                continue;
+            };
+            for edit in draft
+                .iter()
+                .filter(|edit| guided::equivalent(loaded, &setting.field.locator, &edit.locator))
+            {
+                covered
+                    .entry(edit.locator.clone())
+                    .or_default()
+                    .extend(lane.at..lane.at + lane.codec.width());
+            }
+        }
         field_changes(
             loaded,
             draft,
@@ -757,13 +779,14 @@ fn changes(
     Ok(lines)
 }
 
-/// The guided readings of one graph's edits: projectile parameters, attachment lengths and
-/// retirement-delay flags, each in its own words.
+/// The guided readings of one graph's edits: projectile parameters, attachment lengths,
+/// retirement-delay flags and tracking settings, each in its own words.
 struct Guided<'a> {
     tag: u32,
     parameters: Vec<entity::projectile::parameters::Parameter>,
     lengths: Vec<&'a super::effect_length::Length>,
     flags: &'a [super::flags::Flag<'a>],
+    tracking: Vec<&'a sundial::package_authoring::ability_settings::Setting>,
 }
 
 impl Guided<'_> {
@@ -803,6 +826,15 @@ impl Guided<'_> {
                 ));
             }
         }
+        for setting in &self.tracking {
+            if setting.is_modified(draft) {
+                lines.push(format!(
+                    "{}: {}",
+                    setting.kind.label(),
+                    super::tracking::text(setting.kind, setting.value(draft))
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -825,6 +857,11 @@ impl Guided<'_> {
                 .flags
                 .iter()
                 .any(|flag| flag.targets_field(owner, field) && flag.covers(loaded, draft))
+            || self.tracking.iter().any(|setting| {
+                std::iter::once(&setting.field)
+                    .chain(&setting.linked)
+                    .any(|each| each.locator == field.locator)
+            })
     }
 }
 

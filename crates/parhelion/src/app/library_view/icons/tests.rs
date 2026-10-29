@@ -64,6 +64,7 @@ fn viewport_navigation_requests_visible_rows_and_bounds_retained_icons() {
                 edit: entry.icon_edit.clone(),
                 plain: false,
                 art: None,
+                perk: None,
             };
             icons.pending.insert(entry.path.clone(), key.clone());
             sender

@@ -251,7 +251,7 @@ fn assert_mod_readback(fixture: &Fixture) -> serde_json::Value {
         assert_eq!(fs::read(&path).unwrap(), *expected);
         let package = PackageD2PreBL::open(path.to_str().unwrap()).unwrap();
         let payload = package.read_entry(0).unwrap();
-        if !name.starts_with("w64_parhelion_assets_") {
+        if !name.starts_with("w64_parhelion_sandbox_") {
             assert_eq!(payload, b"authored payload");
         } else if name != crate::package_profile::PARHELION_ASSET_FILE_NAME {
             assert_eq!(payload, b"spill payload");

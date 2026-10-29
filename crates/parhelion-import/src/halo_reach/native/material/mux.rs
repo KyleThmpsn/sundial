@@ -148,7 +148,7 @@ fn bind(
         let mut cases = String::new();
         for (layer, bytes) in array.layers.iter().enumerate() {
             let symbol = format!("reach-array-{:08x}-{frame}-{layer}-{format}", tag.datum);
-            if !graph.nodes.iter().any(|node| node["symbol"] == symbol) {
+            if !graph.contains(&symbol) {
                 texture_data(
                     native,
                     graph,

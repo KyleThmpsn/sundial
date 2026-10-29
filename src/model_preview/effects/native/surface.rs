@@ -89,7 +89,7 @@ fn supported(code: &Code, decal: bool) -> bool {
             // Frame and exposure inputs are already bounded and supplied by
             // load_program. Animated deferred materials use them too.
             .all(|&(slot, _)| matches!(slot, 0 | 5..=7 | 12 | 13))
-        && code.resources.len() <= 9
+        && code.resources.len() <= super::TEXTURES
         && code
             .resources
             .iter()
@@ -173,7 +173,7 @@ fn rigid_vertex(manager: &PackageManager, bytes: &[u8]) -> Result<bool, String> 
     };
     Ok(code.buffers.contains(&(11, 11))
         && code.buffers.iter().all(|&(slot, count)| match slot {
-            0 => count <= 128,
+            0 => count <= crate::model_preview::effects::ROWS,
             11 => count == 11,
             12 => count <= 14,
             _ => false,
@@ -191,6 +191,7 @@ pub(in crate::model_preview) fn load(
     if matches!(tag, 0 | u32::MAX) {
         return Ok(None);
     }
+    let _stage = crate::model_preview::timing::stage("materials");
     let bytes = checked(manager, tag, 0x8080_71E8)?;
     let pixel = u32_at(&bytes, 0x2C8)?;
     if matches!(pixel, 0 | u32::MAX) {

@@ -30,6 +30,25 @@ fn references<'a>(
         })
         .collect()
 }
+/// A cloth's buffer definitions, plain or scratch. A scratch buffer holds an operator's result
+/// for the next operator and is never drawn. Shadowkeep's cloth step gives it no storage, so it
+/// may stay defined but nothing may use it.
+fn buffers<'a>(objects: &'a BTreeMap<usize, Object>, value: &Value) -> Result<Vec<&'a Object>> {
+    array(value)?
+        .iter()
+        .map(|r| {
+            let o = object(objects, r)?;
+            ensure!(
+                matches!(
+                    o.name.as_str(),
+                    "hclBufferDefinition" | "hclScratchBufferDefinition"
+                ),
+                "Cloth buffer has an unexpected type"
+            );
+            Ok(o)
+        })
+        .collect()
+}
 fn indices(value: &Value, count: usize) -> Result<()> {
     for i in array(value)? {
         ensure!(integer(i)? < count, "Cloth index exceeds its target");
@@ -39,10 +58,16 @@ fn indices(value: &Value, count: usize) -> Result<()> {
 
 impl Graph<'_> {
     fn buffer(&self, index: &Value) -> Result<&Value> {
-        self.buffers
+        let buffer = self
+            .buffers
             .get(integer(index)?)
             .copied()
-            .context("Cloth buffer index is outside its definitions")
+            .context("Cloth buffer index is outside its definitions")?;
+        ensure!(
+            buffer["type"] != 6,
+            "Cloth scratch buffers have no storage in Shadowkeep's cloth step"
+        );
+        Ok(buffer)
     }
     fn vertices(&self, index: &Value) -> Result<usize> {
         integer(&self.buffer(index)?["numVertices"])
@@ -101,7 +126,13 @@ impl Graph<'_> {
     fn operator(&self, op: &Object) -> Result<()> {
         let v = &op.value;
         match op.name.as_str() {
-            "hclObjectSpaceSkinPNTOperator" => {
+            "hclObjectSpaceSkinPNTOperator" | "hclObjectSpaceSkinPNOperator" => {
+                // The position/normal operator stores the same blocks without tangents.
+                let (local, unpacked) = if op.name == "hclObjectSpaceSkinPNOperator" {
+                    ("localPNs", "localUnpackedPNs")
+                } else {
+                    ("localPNTs", "localUnpackedPNTs")
+                };
                 let count = self.vertices(&v["outputBufferIndex"])?;
                 let subset = array(&v["transformSubset"])?;
                 indices(
@@ -111,10 +142,10 @@ impl Graph<'_> {
                 ensure!(
                     !subset.is_empty()
                         && subset.len() == array(&v["boneFromSkinMeshTransforms"])?.len()
-                        && array(&v["localUnpackedPNTs"])?.is_empty(),
+                        && array(&v[unpacked])?.is_empty(),
                     "Cloth skin transform or local data differs"
                 );
-                self.deformer(v, count, subset.len(), &v["localPNTs"])?;
+                self.deformer(v, count, subset.len(), &v[local])?;
             }
             "hclMoveParticlesOperator" => {
                 let particles =
@@ -406,9 +437,10 @@ pub(super) fn graph(objects: &BTreeMap<usize, Object>) -> Result<Value> {
         array(&cloth["actions"])?.is_empty() && cloth["targetPlatform"] == 2,
         "Cloth action or platform differs"
     );
+    let definitions = buffers(objects, &cloth["bufferDefinitions"])?;
     let graph = Graph {
         objects,
-        buffers: references(objects, &cloth["bufferDefinitions"], "hclBufferDefinition")?,
+        buffers: definitions.iter().map(|o| &o.value).collect(),
         transforms: references(
             objects,
             &cloth["transformSetDefinitions"],
@@ -422,13 +454,20 @@ pub(super) fn graph(objects: &BTreeMap<usize, Object>) -> Result<Value> {
             "Unsupported cloth transform set"
         );
     }
-    for buffer in &graph.buffers {
+    for definition in &definitions {
+        let buffer = &definition.value;
         let vertices = integer(&buffer["numVertices"])?;
         ensure!(
             (1..=65535).contains(&vertices),
             "Invalid cloth buffer length"
         );
-        match integer(&buffer["type"])? {
+        let kind = integer(&buffer["type"])?;
+        // Shadowkeep's reflected hclBufferType numbers scratch buffers 6, as the source does.
+        ensure!(
+            (definition.name == "hclScratchBufferDefinition") == (kind == 6),
+            "Cloth scratch buffer type differs from its definition"
+        );
+        match kind {
             1 | 2 => {
                 let sim = graph.simulation(&buffer["subType"])?;
                 ensure!(
@@ -442,6 +481,15 @@ pub(super) fn graph(objects: &BTreeMap<usize, Object>) -> Result<Value> {
                 buffer["subType"] == 0,
                 "Unsupported cloth display buffer subtype"
             ),
+            6 => {
+                let triangles = array(&buffer["triangleIndices"])?;
+                ensure!(
+                    buffer["subType"] == 0
+                        && triangles.len() == integer(&buffer["numTriangles"])? * 3,
+                    "Cloth scratch buffer topology differs"
+                );
+                indices(&buffer["triangleIndices"], vertices)?;
+            }
             _ => anyhow::bail!("Unsupported cloth buffer type"),
         }
     }

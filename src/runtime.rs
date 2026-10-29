@@ -20,7 +20,7 @@ pub use item::load as load_weapon_runtime_entity_for_item_with_manager;
 mod invisibility;
 pub use identity::{
     NativeMember, native_holders, native_member_names, native_members, native_pointer_layout,
-    native_type_name,
+    native_relocation_layout, native_type_name, native_type_parent,
 };
 pub mod modifiers;
 

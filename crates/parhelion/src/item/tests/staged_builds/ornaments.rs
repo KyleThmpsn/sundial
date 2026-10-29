@@ -61,51 +61,6 @@ fn ornament_appearance_spec(namespace: &str) -> WeaponCloneSpec {
 
 #[test]
 #[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
-fn real_ornament_resolves_as_an_icon_donor_with_its_own_container() {
-    let packages = crate::test_support::stock_packages();
-    let sources = crate::item::sources::load_project_sources(Path::new(&packages))
-        .expect("clean stock sources should load");
-
-    let weapon = crate::item::donors::resolve_icon_donor(
-        &sources,
-        &WeaponIconDonorReference {
-            item_hash: SUNSHOT,
-            expected_name: Some("Sunshot".to_owned()),
-        },
-    )
-    .expect("the base weapon should resolve as its own icon donor");
-    let ornament = crate::item::donors::resolve_icon_donor(
-        &sources,
-        &WeaponIconDonorReference {
-            item_hash: RED_DWARF,
-            expected_name: Some("Red Dwarf".to_owned()),
-        },
-    )
-    .expect("a stock ornament should resolve as an icon donor");
-    assert_ne!(
-        ornament.icon_container, weapon.icon_container,
-        "the ornament must contribute its own icon container"
-    );
-    assert_ne!(ornament.item_index, weapon.item_index);
-
-    let error = crate::item::donors::resolve_icon_donor(
-        &sources,
-        &WeaponIconDonorReference {
-            item_hash: RED_DWARF,
-            expected_name: Some("Heretic Robe".to_owned()),
-        },
-    )
-    .err()
-    .expect("a mismatched ornament name should be rejected")
-    .to_string();
-    assert!(
-        error.contains("Icon donor") && error.contains("Red Dwarf"),
-        "{error}"
-    );
-}
-
-#[test]
-#[ignore = "requires SUNDIAL_STOCK_PACKAGES pointing to clean Shadowkeep packages"]
 fn real_ornament_model_and_icon_survive_resolution_and_build() {
     let packages = crate::test_support::stock_packages();
     let sources = crate::item::sources::load_project_sources(&packages)

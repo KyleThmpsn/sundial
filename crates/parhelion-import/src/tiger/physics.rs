@@ -541,7 +541,9 @@ const LIST_PRISMS: usize = 3;
 
 /// A volume packfile: a shape array whose entries each hold one volume's convex prisms, in
 /// a list shape for up to three and a static compound of them beyond, as stock Crucible volume
-/// packfiles do. The stock template must cover the shape classes actually emitted.
+/// packfiles do. A template without a list shape, such as a stock environment volume packfile
+/// (Distant Shore's `80B8C78B` holds only convex shapes and static compounds), takes a static
+/// compound for every volume. The stock template must cover the shape classes actually emitted.
 pub(crate) fn volume_shapes(template: &[u8], volumes: &[Vec<Hull>]) -> Result<Vec<u8>> {
     ensure!(
         !volumes.is_empty()
@@ -552,7 +554,11 @@ pub(crate) fn volume_shapes(template: &[u8], volumes: &[Vec<Hull>]) -> Result<Ve
     let template = Template::read(template, "s_hkpShape_array_data")?;
     let root = template.object("s_hkpShape_array_data", 16)?;
     let convex_template = template.object("hkpConvexVerticesShape", 128)?;
-    let list_shape = template.object("hkpListShape", 144)?;
+    let list_shape = template
+        .objects
+        .contains_key("hkpListShape")
+        .then(|| template.object("hkpListShape", 144))
+        .transpose()?;
     let mut w = Writer {
         data: Vec::new(),
         local: Vec::new(),
@@ -572,11 +578,15 @@ pub(crate) fn volume_shapes(template: &[u8], volumes: &[Vec<Hull>]) -> Result<Ve
             ));
             shapes.push(convex(&mut w, &convex_template, hull, minimum, maximum)?);
         }
-        let shape = if hulls.len() <= LIST_PRISMS {
-            list(&mut w, &list_shape, &shapes, &bounds)?
-        } else {
-            let compound_shape = template.object("hkpStaticCompoundShape", compound::SHAPE_SIZE)?;
-            compound::convex_compound(&mut w, &compound_shape, &shapes, &bounds)?
+        let shape = match &list_shape {
+            Some(list_shape) if hulls.len() <= LIST_PRISMS => {
+                list(&mut w, list_shape, &shapes, &bounds)?
+            }
+            _ => {
+                let compound_shape =
+                    template.object("hkpStaticCompoundShape", compound::SHAPE_SIZE)?;
+                compound::convex_compound(&mut w, &compound_shape, &shapes, &bounds)?
+            }
         };
         w.references
             .push((u32::try_from(slots + index * 8)?, u32::try_from(shape)?));

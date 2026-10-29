@@ -445,7 +445,7 @@ impl Bitmap {
     }
 
     pub(super) fn decode(&self, c: &Cache, pages: &mut Pages) -> Result<Image> {
-        let raw = pages.bytes(c, &self.resource, 0, self.top_bytes)?;
+        let rgba = self.stored(c, pages)?.decode()?;
         Ok(Image {
             tag: self.tag.clone(),
             image: self.image,
@@ -455,7 +455,18 @@ impl Bitmap {
             curve: self.curve,
             source_mips: self.source_mips,
             normal: self.normal,
-            rgba: decode(&raw, self.width, self.height, self.format, self.normal)?,
+            rgba,
+        })
+    }
+
+    /// The top level as stored, read through the page cache and decoded apart from it.
+    pub(super) fn stored(&self, c: &Cache, pages: &mut Pages) -> Result<Stored> {
+        Ok(Stored {
+            raw: pages.bytes(c, &self.resource, 0, self.top_bytes)?,
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            normal: self.normal,
         })
     }
 
@@ -546,6 +557,22 @@ impl Bitmap {
             levels,
             data,
         }))
+    }
+}
+
+/// A bitmap's top level as stored ([`Bitmap::stored`]).
+pub(super) struct Stored {
+    raw: Vec<u8>,
+    width: usize,
+    height: usize,
+    format: i16,
+    normal: bool,
+}
+
+impl Stored {
+    /// Its RGBA8 texels.
+    pub(super) fn decode(&self) -> Result<Vec<u8>> {
+        decode(&self.raw, self.width, self.height, self.format, self.normal)
     }
 }
 

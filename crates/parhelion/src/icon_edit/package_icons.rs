@@ -206,13 +206,11 @@ pub(crate) fn author(
     manager: &PackageManager,
     icon: &crate::perk::Icon,
     template: TagHash,
+    (package, first): (u16, usize),
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<crate::NewTagReferenceOverride>,
 ) -> AuthoringResult<TagHash> {
-    let allocator = crate::appended_tags::AppendedTagAllocator::new(
-        crate::package_profile::window().first(),
-        0,
-    );
+    let allocator = crate::appended_tags::AppendedTagAllocator::new(package, first);
     let pixels = match icon {
         crate::perk::Icon::Texture { tag } => {
             let texture = TagHash(
@@ -236,15 +234,9 @@ pub(crate) fn author(
     // A Trait glyph has separate 96x96 and 40x40 lanes. Replacing all lane references
     // with one 96x96 native texture loses the small version. The shared planner authors
     // an independent texture/header pair for every donor size, for either icon source.
-    let plan = super::build_weapon_icon_edit_plan(
-        manager,
-        crate::package_profile::window().first(),
-        0,
-        nodes.len(),
-        template,
-        &edit,
-    )?
-    .ok_or_else(|| invalid("Perk icon produced no artwork"))?;
+    let plan =
+        super::build_weapon_icon_edit_plan(manager, package, first, nodes.len(), template, &edit)?
+            .ok_or_else(|| invalid("Perk icon produced no artwork"))?;
     let private_layer = plan.layer_tag;
     // Fingerprint the emitted pixels as well as the references. Padding or resampling
     // fixes must invalidate a cached icon even when the recipe and tag positions match.

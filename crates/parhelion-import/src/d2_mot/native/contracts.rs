@@ -401,11 +401,8 @@ pub(super) fn export(
     progress: &mut dyn FnMut(String),
 ) -> Result<()> {
     let stamp = crate::d2_mot::service::package_stamp(packages)?;
-    let generation = std::env::var_os("LOCALAPPDATA").and_then(|root| {
-        crate::cache::Generation::file(
-            &PathBuf::from(root).join("Sundial/parhelion/importer/cache/native-contracts"),
-            &format!("{}-{stamp}", Catalog::SCHEMA),
-        )
+    let generation = crate::cache::importer_cache("d2_mot", "native-contracts").and_then(|root| {
+        crate::cache::Generation::file(&root, &format!("{}-{stamp}", Catalog::SCHEMA))
     });
     let lock = generation
         .as_ref()

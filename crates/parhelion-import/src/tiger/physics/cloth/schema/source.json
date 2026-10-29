@@ -19,10 +19,13 @@
     "478": 2845,
     "482": 2840,
     "486": 2860,
+    "490": 9007,
     "494": 2833,
     "498": 2877,
     "499": 2871,
-    "501": 2873
+    "501": 2873,
+    "516": 9006,
+    "591": 9001
   },
   "types": {
     "2821": {
@@ -6221,6 +6224,183 @@
           "flags": 34
         }
       ]
+    },
+    "9001": {
+      "name": "hclObjectSpaceSkinPNOperator",
+      "parent": 2750,
+      "format": 7,
+      "subtype": 0,
+      "size": 296,
+      "members": [
+        {
+          "name": "localPNs",
+          "type": 9002,
+          "offset": 264,
+          "flags": 32
+        },
+        {
+          "name": "localUnpackedPNs",
+          "type": 9003,
+          "offset": 280,
+          "flags": 32
+        }
+      ],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9002": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 9004,
+      "size": 16,
+      "members": [],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9003": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 9005,
+      "size": 16,
+      "members": [],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9004": {
+      "name": "hclObjectSpaceDeformer::LocalBlockPN",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 256,
+      "members": [
+        {
+          "name": "localPosition",
+          "type": 2571,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "localNormal",
+          "type": 2571,
+          "offset": 128,
+          "flags": 32
+        }
+      ],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9005": {
+      "name": "hclObjectSpaceDeformer::LocalBlockUnpackedPN",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 512,
+      "members": [
+        {
+          "name": "localPosition",
+          "type": 2595,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "localNormal",
+          "type": 2595,
+          "offset": 256,
+          "flags": 32
+        }
+      ],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9006": {
+      "name": "hclScratchBufferDefinition",
+      "parent": 2887,
+      "format": 7,
+      "subtype": 0,
+      "size": 104,
+      "members": [
+        {
+          "name": "triangleIndices",
+          "type": 2988,
+          "offset": 80,
+          "flags": 32
+        },
+        {
+          "name": "storeNormals",
+          "type": 1675,
+          "offset": 96,
+          "flags": 32
+        },
+        {
+          "name": "storeTangentsAndBiTangents",
+          "type": 1675,
+          "offset": 97,
+          "flags": 32
+        }
+      ],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9007": {
+      "name": "hclBonePlanesConstraintSet",
+      "parent": 2823,
+      "format": 7,
+      "subtype": 0,
+      "size": 64,
+      "members": [
+        {
+          "name": "bonePlanes",
+          "type": 9008,
+          "offset": 40,
+          "flags": 32
+        },
+        {
+          "name": "transformSetIndex",
+          "type": 1682,
+          "offset": 56,
+          "flags": 32
+        }
+      ],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9008": {
+      "name": "hkArray",
+      "parent": 0,
+      "format": 8,
+      "subtype": 9009,
+      "size": 16,
+      "members": [],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
+    },
+    "9009": {
+      "name": "hclBonePlanesConstraintSet::BonePlane",
+      "parent": 0,
+      "format": 7,
+      "subtype": 0,
+      "size": 32,
+      "members": [
+        {
+          "name": "planeEquationBone",
+          "type": 2026,
+          "offset": 0,
+          "flags": 32
+        },
+        {
+          "name": "particleIndex",
+          "type": 1683,
+          "offset": 16,
+          "flags": 32
+        },
+        {
+          "name": "transformIndex",
+          "type": 1683,
+          "offset": 18,
+          "flags": 32
+        },
+        {
+          "name": "stiffness",
+          "type": 2023,
+          "offset": 20,
+          "flags": 32
+        }
+      ],
+      "origin": "Reconstructed from serialized SDKV 20180100 cloth files and Shadowkeep reflection, not HKLib"
     }
   }
 }

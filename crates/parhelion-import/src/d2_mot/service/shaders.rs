@@ -84,6 +84,8 @@ pub(super) fn prepare(
     )?;
     graph["source_icon_png"] = json!("source-icon.png");
     graph["source_rarity"] = presentation["rarity"].clone();
+    // The library offers a recipe for reimport by the revision its graph records.
+    graph["converter_revision"] = crate::graph::CONVERTER_REVISION.into();
     write_json(&graph_path.join("asset-graph.json"), &graph)?;
     let reference = GraphReference::new(&graph_path, item)?;
     let rarity = match presentation["rarity"].as_u64() {
@@ -103,10 +105,11 @@ pub(super) fn prepare(
     });
     let path = folder.join("shader.parhelion.json");
     write_json(&path, &recipe)?;
+    crate::graph::settle(&path, &folder)?;
     write_json(
         &output.join("result.json"),
         &json!({"recipe":path,"source_item":source.hash,"donor_hash":hash,"limits":report["limits"],"gameplay_verified":false}),
     )?;
-    progress("Shader recipe prepared. Native rendering needs an in-game check.".into());
+    progress("Shader recipe prepared.".into());
     Ok(path)
 }

@@ -92,6 +92,10 @@ pub(in crate::item) fn author(
     } else {
         Some(responses(manager, audio, key, &template, allocator, tags)?)
     };
+    // The profile names itself, so its address is needed before it is appended. A streamed
+    // asset only has an address once its payload is reserved, and `append` reserves the same
+    // ordinal again at the same size.
+    allocator.reserve_payload(tags.len(), payload.len())?;
     let private = allocator
         .assigned_tag(tags.len(), "Imported audio", "melee contact profile")?
         .0;

@@ -47,6 +47,23 @@ impl Pose {
         ])
     }
 
+    /// The row-major 3x4 matrix of this transform, with its uniform scale in the rotation rows.
+    pub fn matrix(self) -> [f32; 12] {
+        let mut matrix = [0.; 12];
+        for axis in 0..3 {
+            let mut unit = [0.; 3];
+            unit[axis] = self.0[7];
+            let column = self.rotate(unit);
+            for row in 0..3 {
+                matrix[row * 4 + axis] = column[row];
+            }
+        }
+        for row in 0..3 {
+            matrix[row * 4 + 3] = self.0[4 + row];
+        }
+        matrix
+    }
+
     pub fn inverse(self) -> Self {
         let mut inverse = self;
         for v in &mut inverse.0[..3] {

@@ -149,8 +149,11 @@ impl Source {
                     "icon":client.u32(text+32)?,"variants":variants}),
                 );
             }
+            // Client kind `+0x44` is 1 on an infusion node, 7 on an ornament node and FF on an
+            // ordinary talent node in the examined weapon grids.
             nodes.push(json!({"index":index,"offset":node,"hash":shared.u32(node)?,
-                "row":client.i16(display+64)?,"column":client.i16(display+66)?,"steps":steps}));
+                "row":client.i16(display+64)?,"column":client.i16(display+66)?,
+                "client_kind":client.u8(display+0x44)?,"steps":steps}));
         }
         for (tag, payload) in [
             (definition_tag, definition),

@@ -1,6 +1,6 @@
 use super::*;
 
-const SPILL_NAME: &str = "w64_parhelion_assets_0aa1_0.pkg";
+const SPILL_NAME: &str = "w64_parhelion_sandbox_0aa1_0.pkg";
 
 fn fixture_with_spill() -> Fixture {
     let mut fixture = Fixture::new();

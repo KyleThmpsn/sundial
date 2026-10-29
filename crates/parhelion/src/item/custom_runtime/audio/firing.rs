@@ -222,6 +222,7 @@ pub(super) fn author(
                 return Err(invalid("Presentation root link changed"));
             }
             put(&mut parent, 16, private_root)?;
+            allocator.reserve(tags.len(), 2)?;
             let private_parent = append(
                 manager,
                 allocator,

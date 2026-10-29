@@ -4,7 +4,7 @@ use super::super::{
     remove_last_added_socket, restore_socket_column, set_recipe_socket_column, set_socket_role,
     shift_socket_choice_queries_after_removal,
 };
-use super::{RowChoices, RowCommand, RowContinuation, SocketRowContext};
+use super::{RowChoices, RowCommand, RowContinuation, SocketRowContext, SocketView};
 
 pub(super) fn apply(
     context: &mut SocketRowContext<'_>,
@@ -72,6 +72,38 @@ pub(super) fn apply(
             }
             RowContinuation::Finished
         }
+        Some(RowCommand::SetReusable { index, reusable }) => {
+            match super::super::set_choice_reusable(
+                context.recipe,
+                context.donor.sockets.len(),
+                context.socket_index,
+                &choices.inherited,
+                index,
+                reusable,
+            ) {
+                Ok(()) => {
+                    context.queries.clear();
+                    *context.page = 0;
+                }
+                Err(error) => context.log.push(LogEntry::error(error)),
+            }
+            RowContinuation::Finished
+        }
+        Some(RowCommand::RollFromBase) => {
+            if let Some(roll) = &choices.stock_roll {
+                match super::super::roll_from_base(
+                    context.recipe,
+                    context.donor.sockets.len(),
+                    context.socket_index,
+                    &choices.inherited,
+                    &roll.randomized,
+                ) {
+                    Ok(()) => context.queries.clear(),
+                    Err(error) => context.log.push(LogEntry::error(error)),
+                }
+            }
+            RowContinuation::Finished
+        }
         Some(RowCommand::MakeDefault(index)) => {
             match super::super::make_choice_default(
                 context.recipe,
@@ -129,6 +161,7 @@ fn edit_choice(
     choice_index: usize,
     hash: Option<u32>,
 ) -> RowContinuation {
+    let view = context.view;
     let recipe = &mut *context.recipe;
     let donor = context.donor;
     let socket = &donor.sockets[context.socket_index];
@@ -228,6 +261,20 @@ fn edit_choice(
             choice_index,
             private,
         );
+    }
+    // A plug added at the end of the column is reusable in Reusable, and in Randomized it rolls
+    // alone.
+    if choice_index >= current.len()
+        && let Err(error) = super::super::set_choice_reusable(
+            recipe,
+            donor.sockets.len(),
+            socket.index,
+            inherited,
+            current.len(),
+            view == SocketView::Reusable,
+        )
+    {
+        log.push(LogEntry::error(error));
     }
     RowContinuation::TechnicalFields {
         scroll_to_header: false,
