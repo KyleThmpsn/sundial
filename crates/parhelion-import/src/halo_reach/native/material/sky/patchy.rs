@@ -1,18 +1,19 @@
-//! Reach's patchy fog, translated as soft horizontal sheets drawn in the sky's transparent stage.
+//! Reach's patchy fog, translated as camera-facing sheets in the sky's transparent stage.
 //!
 //! Reach draws patchy fog as a screen pass (`explicit\patchy_fog.hlsl`): an `albedo` pass writes
 //! eight noise layers on screen-aligned sheets, each faded by world height as
 //! `saturate(scale * z + offset)^2` and by a per-sheet fade, to two private targets, and the apply
 //! pass reads them with the scene depth, fades each layer by view depth, and writes the fog's two
 //! tints `T * tint + (1 - T) * inner tint` with alpha `T`, where `T = exp2(optical depth * scale)` is
-//! the share of the scene left. `c_patchy_fog::evaluate_shader_constants` (`825E6F00` in the Xbox
-//! `halo3_tag_play` build) derives the layers' coordinates and fades on the CPU in VMX128 code,
-//! which was not decoded, and moves the sheets with the camera from frame to frame. A converted
-//! surface cannot add a full-screen pass with private targets. The sheets here are horizontal
-//! planes on the world heights a multiple of Reach's sheet spacing apart, the [`SHEETS`] levels
-//! around the camera's height, each faded by its height above the camera so a level fades out
-//! before the stack moves past it. They fade against the scene depth (`t10`), as the level's
-//! refracting water reads it, and within the distance Reach's eight sheets reach. A sheet's blend
+//! the share of the scene left. The HREK PC constant producer at `892D60` derives the layers'
+//! coordinates and fades from retained camera history. Its height and density calculations are
+//! preserved by [`attenuation`]. A converted surface cannot add a full-screen pass with private
+//! targets. The sheets here span the view at
+//! fixed view depths, drawn far to near. World height is reconstructed per pixel, so a sheet
+//! never turns edge-on when the camera crosses its height. They fade against the scene depth,
+//! which their material binds itself ([`SceneDepth`]). Their fixed half-spacing phase uses the
+//! source's half-weight first and last sheets. Retained phase, noise coordinates and view warp
+//! remain approximations. A sheet's blend
 //! leaves `T` of the scene and adds `(1 - T)` of the tints' mix, the reading of Reach's color and
 //! alpha this takes, since Reach's blend state was not read.
 //!
@@ -22,6 +23,8 @@
 //! atmosphere globals (`atgf`) hold the noise bitmap, its texture repeat rate, the distance
 //! between sheets and a depth fade factor.
 use super::*;
+
+mod attenuation;
 
 /// A level's patchy fog. Heights are in Reach world units above the reference plane, the wind in
 /// world units per second, and `origin` the map position of Reach's world origin, in meters.
@@ -49,22 +52,20 @@ pub(in crate::halo_reach) const SHEETS: usize = 8;
 /// of 1. Reach's screen-aligned sheets map the noise across the screen, which at the middle sheet's
 /// distance spans a few spacings, an approximation.
 const TILE_SPACINGS: f32 = 8.;
-/// The steepest a view ray's path through one sheet's slab grows, as one over the sine of its
-/// angle to the sheet.
-const GRAZING: f32 = 0.08;
+/// The pixel texture register the sheets bind the scene depth to ([`SceneDepth`]), after the
+/// noise map's.
+const DEPTH_REGISTER: usize = 1;
 
 impl Patchy {
-    /// The height fade's scale and offset, per world unit above the reference plane: full at the
-    /// full intensity height and a half at the half intensity height, squared after the clamp as
-    /// Reach's albedo pass squares it. Reach's own heights may be absolute, an untested reading.
+    /// The original PC height coefficient, per world unit above the reference plane. The
+    /// constant producer adds the reference to both authored heights. Bounds use heights
+    /// relative to that reference, while the generated shader uses absolute Reach world height.
     pub fn fade(&self) -> (f32, f32) {
-        let span = self.half_height - self.full_height;
-        let scale = if span.abs() > 1e-4 {
-            (std::f32::consts::FRAC_1_SQRT_2 - 1.) / span
-        } else {
-            0.
-        };
-        (scale, 1. - scale * self.full_height)
+        let (scale, offset) = attenuation::height(
+            self.full_height + self.reference,
+            self.half_height + self.reference,
+        );
+        (scale, offset + scale * self.reference)
     }
 
     /// The heights above the reference plane, in world units, between which the fade is above
@@ -84,9 +85,10 @@ impl Patchy {
     }
 }
 
-/// The sheets' vertex program: each sheet's corners keep their place across the level, and its
-/// height is the level of its order in the stack (`normal.w` times [`SHEETS`]) around the
-/// camera's level, `spacing` meters apart. `TEXCOORD0.x` carries the level's number.
+/// Reconstruct a view-filling quad at each sheet's view depth. Projection columns provide the
+/// camera basis, including pitch and roll. Remove forward-axis jitter before normalizing the
+/// horizontal and vertical axes, then compensate that jitter when placing the corners.
+/// Mesh positions retain conservative world bounds but UVs place the rendered corners.
 fn vertex(spacing: f32) -> String {
     format!(
         r#"
@@ -94,14 +96,22 @@ cbuffer Object : register(b11) {{float4 objectData[8];}};
 cbuffer View : register(b12) {{float4 viewData[14];}};
 void main(float4 position:POSITION0,float2 uv:TEXCOORD0,float4 normal:NORMAL0,float4 tangent:TANGENT0,float2 detail:TEXCOORD2,
 out float4 o0:TEXCOORD0,out float4 o1:TEXCOORD1,out float4 o2:TEXCOORD2,out float4 o3:TEXCOORD3,out float3 o4:TEXCOORD4,out float4 projected:SV_POSITION0) {{
-float3 local=position.xyz*objectData[4].xyz+objectData[5].xyz;
-float level=floor(viewData[7].z/{spacing:.6})-{below}+round(normal.w*{SHEETS});
-float3 relative=float3(local.xy+objectData[3].xy-viewData[7].xy,level*{spacing:.6}-viewData[7].z);
+float level={SHEETS}-round(normal.w*{SHEETS})-0.5;
+float depth=level*{spacing:.6};
+float2 corner=(uv*objectData[6].xy+objectData[6].zw)*2-1;
+float3 forward=normalize(float3(viewData[0].w,viewData[1].w,viewData[2].w));
+float3 horizontal=float3(viewData[0].x,viewData[1].x,viewData[2].x);
+float3 vertical=float3(viewData[0].y,viewData[1].y,viewData[2].y);
+float3 right=normalize(horizontal-forward*dot(horizontal,forward));
+float3 up=normalize(vertical-forward*dot(vertical,forward));
+float3 ahead=forward*depth;
+float clipW=depth+viewData[13].w;
+float3 relative=ahead+right*((corner.x*clipW-dot(horizontal,ahead)-viewData[13].x)/dot(horizontal,right))
+    +up*((corner.y*clipW-dot(vertical,ahead)-viewData[13].y)/dot(vertical,up));
 projected=viewData[0]*relative.x+viewData[1]*relative.y+viewData[2]*relative.z+viewData[13];
-o0=float4(level,0,0,0);o1=float4(0,0,0,0);o2=float4(relative,relative.z+viewData[7].z);o3=float4(0,0,0,0);o4=float3(0,0,0);
+o0=float4(level,depth,0,0);o1=float4(0,0,0,0);o2=float4(relative,relative.z+viewData[7].z);o3=float4(0,0,0,0);o4=float3(0,0,0);
 }}
 "#,
-        below = SHEETS / 2 - 1,
     )
 }
 
@@ -123,6 +133,7 @@ pub(in crate::halo_reach) fn surface(
     let symbol = texture(c, pages, native, g, &patchy.noise, false, false)?;
     let modes = vec![sampler_modes(&patchy.noise)?];
     let samplers = samplers(native, g, clamped, &modes)?;
+    let depth = SceneDepth::new(native, DEPTH_REGISTER)?;
     let (fade_scale, fade_offset) = patchy.fade();
     let tile = TILE_SPACINGS * patchy.spacing.max(0.01) / patchy.repeat.max(0.01);
     let wind = [patchy.wind[0] / tile, patchy.wind[1] / tile];
@@ -134,30 +145,34 @@ pub(in crate::halo_reach) fn surface(
 Texture2D<float4> Map0:register(t0);
 {samplers}
 {scene}
+{attenuation}
 cbuffer Frame : register(b13) {{float4 frameData[2];}};
 void main(float4 v0:TEXCOORD0,float4 v1:TEXCOORD1,float4 v2:TEXCOORD2,float4 v3:TEXCOORD3,float3 v4:TEXCOORD4,float4 position:SV_POSITION0,uint front:SV_isFrontFace0,
 out float4 o0:SV_TARGET0) {{
+{control}
 float time=frameData[0].x;
-float distance=max(length(v2.xyz),0.001);
 float3 world=(v2.xyz+viewData[7].xyz-float3({ox:.6},{oy:.6},{oz:.6}))/3.048;
 float2 drift=frac(float2(0.37,0.61)*v0.x);
 float2 uv=world.xy*{inverse:.9}+drift+float2({wx:.9},{wy:.9})*time;
 float noise=0.5*(Map0.Sample({sampler},uv).r+Map0.Sample({sampler},uv*1.618+drift.yx-float2({wx:.9},{wy:.9})*0.5*time).r);
-float fade=saturate({fade_scale:.9}*(world.z-({reference:.6}))+{fade_offset:.9});fade*=fade;
-float stack=saturate(1-abs(v2.z)/{half_reach:.4});
 float sceneDepth=reachSceneDepthAt(position.xy*viewData[12].zw);
 float soft=saturate((sceneDepth-reachSceneDepth(position.z))*{depth_fade:.9});
-float nearby=saturate(({reach:.4}-distance)/{half_reach:.4});
-float slant=1/max(abs(v2.z)/distance,{GRAZING});
-float density={density:.9}*noise*fade;
-float transmit=exp2(-density*density*slant*soft*nearby*stack*{intensity:.9});
+float sheetFade=(v0.x<1||v0.x>{last_sheet})?0.5:1;
+float transmit=reachPatchyTransmission(noise,world.z,soft,sheetFade);
 float3 fog=transmit*{tint}+(1-transmit)*{inner};
-float3 color=clamp(fog*(1-transmit),0,{white:.9})*{radiance:.9};
-o0=float4(color*{REFERENCE_ILLUMINATION:.9}*frameData[1].z,1-transmit);
+float3 color=clamp(fog*(1-transmit),0,{white})*{radiance:.9};
+o0=float4(color*{finish},1-transmit);
 }}
 "#,
         samplers = samplers.declarations,
-        scene = super::super::water::SCENE_DECLARATIONS,
+        scene = depth.declarations_with(overlay::DECLARATION),
+        control = overlay::DISCARD,
+        attenuation = attenuation::function(
+            patchy.density,
+            patchy.full_height,
+            patchy.half_height,
+            patchy.reference,
+        ),
         ox = patchy.origin[0],
         oy = patchy.origin[1],
         oz = patchy.origin[2],
@@ -165,14 +180,12 @@ o0=float4(color*{REFERENCE_ILLUMINATION:.9}*frameData[1].z,1-transmit);
         wx = wind[0],
         wy = wind[1],
         sampler = sampler_name(0),
-        reference = patchy.reference,
         depth_fade = patchy.depth_fade / 3.048,
-        half_reach = reach * 0.5,
-        density = patchy.density,
-        intensity = patchy.intensity,
+        last_sheet = SHEETS - 1,
         tint = rgb(patchy.tint),
         inner = rgb(patchy.inner),
-        white = scale.white,
+        white = scale.white(),
+        finish = scale.finish(),
         radiance = scale.radiance,
     );
     let vertex_symbol = format!("sky-patchy-vertex-{key:08X}");
@@ -196,6 +209,8 @@ o0=float4(color*{REFERENCE_ILLUMINATION:.9}*frameData[1].z,1-transmit);
         &samplers,
         sampler_class,
         true,
+        Some(depth),
+        Some(overlay::Kind::PatchyFog),
     )?;
     Ok(json!({
         "key": format!("{key:08X}"),
@@ -216,6 +231,8 @@ o0=float4(color*{REFERENCE_ILLUMINATION:.9}*frameData[1].z,1-transmit);
         "tile_world_units": tile,
         "reach_metres": reach,
         "sheets": SHEETS,
+        "scene_depth_register": DEPTH_REGISTER,
+        "orientation": "camera_facing",
         "stage": 7,
     }))
 }

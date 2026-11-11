@@ -27,7 +27,8 @@ pub(crate) enum Art {
     Glyph(u32),
     /// A primary layer an icon container holds, class `80804A69` as a glyph's layers are.
     Layer(u32),
-    /// The primary layer of the entry's own icon container, known once the build has made it.
+    /// The primary layer of the entry's own HUD artwork container, or else its own icon
+    /// container, known once the build has made it.
     OwnIcon,
 }
 

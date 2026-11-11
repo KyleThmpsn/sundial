@@ -34,6 +34,47 @@ const SKY_ENABLED: u16 = 1;
 const GROUND_ENABLED: u16 = 2;
 const LIGHT_ENABLED: u16 = 4;
 
+/// A map's changes to its level's fog. The default leaves the source fog as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Adjustment {
+    /// Percent of each band's extinction rate. At 0 neither band fogs.
+    pub density: u16,
+    /// Meters farther away every ray's fog begins, taken from the tag's distance bias.
+    pub distance: i32,
+    /// Percent of both bands' colors and the fog light's.
+    pub brightness: u16,
+}
+
+impl Default for Adjustment {
+    fn default() -> Self {
+        Self {
+            density: 100,
+            distance: 0,
+            brightness: 100,
+        }
+    }
+}
+
+impl Adjustment {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn apply(&self, fog: &mut native::material::Fog) {
+        let density = f32::from(self.density) / 100.;
+        let brightness = f32::from(self.brightness) / 100.;
+        for band in [&mut fog.sky, &mut fog.ground] {
+            band.rate *= density;
+            band.color = band.color.map(|c| c * brightness);
+        }
+        // A negative bias shortens every ray, which pushes the fog away.
+        fog.bias -= self.distance as f32 / native::material::METRES_PER_UNIT;
+        if let Some(light) = &mut fog.light {
+            light.color = light.color.map(|c| c * brightness);
+        }
+    }
+}
+
 /// The level's fog and a report of its tag's values, or none when the palette names no fog tag.
 /// The fog is the palette entry the most clusters of `bsps` select, the lowest on a tie, or the
 /// palette's first fog tag when none selects one. A level draws one fog, so where its clusters
@@ -42,10 +83,12 @@ const LIGHT_ENABLED: u16 = 4;
 /// glow lies 7 degrees of azimuth from its analytical light and Nightfall's 3 degrees of
 /// elevation (19 of azimuth) from its own, while the degrees the tag build's field names state
 /// would put every sampled glow within 2 degrees of +x on the horizon.
+/// The map's `adjustment` changes the drawn fog, not the report's tag values.
 pub(super) fn read(
     cache: &Cache,
     bsps: &[Tag],
     lift: f32,
+    adjustment: Adjustment,
 ) -> Result<(Option<native::material::Fog>, Value)> {
     let scenario = cache.only("scnr")?.address()?;
     let rows = cache.block(scenario + PALETTE.0, PALETTE.1)?;
@@ -189,15 +232,15 @@ pub(super) fn read(
             "drawn": light.is_some(),
         },
         "lift": lift,
+        "adjustment": adjustment,
     });
-    Ok((
-        Some(native::material::Fog {
-            sky,
-            ground,
-            bias,
-            lift,
-            light,
-        }),
-        report,
-    ))
+    let mut fog = native::material::Fog {
+        sky,
+        ground,
+        bias,
+        lift,
+        light,
+    };
+    adjustment.apply(&mut fog);
+    Ok((Some(fog), report))
 }

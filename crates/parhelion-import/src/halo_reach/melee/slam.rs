@@ -3,6 +3,7 @@ mod audio;
 mod damage;
 mod effect;
 mod source;
+mod surface;
 use crate::{
     halo_reach::{Scene, rig},
     tiger::{projectile::Assets, reader::Reader},
@@ -14,6 +15,9 @@ use sha2::{Digest, Sha256};
 use source::Source;
 use std::path::Path;
 use sundial::package_authoring::entity::weapon_component_bindings;
+
+const AIR_LUNGE: u32 = 0x054A_16BE;
+const AIR_SLAM: u32 = 0x7843_564F;
 
 /// The source shape, rather than a weapon hash, qualifies this translation.
 pub(in crate::halo_reach) fn prepare(
@@ -87,7 +91,7 @@ pub(in crate::halo_reach) fn prepare(
         "sword-recipient-push",
         0x81a69860,
         0.,
-        Response::Push(source.push.acceleration * metres),
+        Response::Push(rig::push_strength(source.push.acceleration, metres)),
     )?;
     let mut sounds = crate::presentation::Graph::new(root.to_owned(), Vec::new());
     let (root_id, sound) = effect::build(
@@ -99,14 +103,25 @@ pub(in crate::halo_reach) fn prepare(
         push_id,
         &mut sounds,
     )?;
+    // The blast plays the source hit on every strike. Contact hits also take it on every surface.
+    let surface = if source.sound.is_some() {
+        Some(surface::build(
+            native,
+            &sword_owner,
+            &mut sounds,
+            "sword-impact-cue",
+        )?)
+    } else {
+        None
+    };
     let report = json!({"source_contact":source.powered,"source_depleted":source.depleted,"source_effect":source.effect["tag"],
         "source_damage":source.blast.source,"source_push":source.push.source,"length_scale":metres,
-        "source_units_to_metres":rig::METRES_PER_UNIT,"native_push_strength":source.push.acceleration * metres,
-        "impact_audio":sound,
+        "source_units_to_metres":rig::METRES_PER_UNIT,"native_push_strength":rig::push_strength(source.push.acceleration, metres),
+        "impact_audio":sound,"surface_audio":surface.as_ref().map(|(_, report)| report.clone()),
         "activation":"Native ammo-gated sword profiles at their accepted strike phase, including misses",
         "falloff":"One inside the source inner radius, linear to zero at the outer radius",
         "retained_native_behavior":["Attack selection, timing, cancellation and ammo costs", "Warmind recipient filters and visual presentation", "Target resistance and difficulty scaling"],
-        "limits":["Push strength uses source instantaneous acceleration times the import length scale as a provisional native velocity-delta magnitude. Physical equivalence requires gameplay calibration.",
+        "limits":["Push strength scales source instantaneous acceleration by the gameplay calibration that gives the Concussion Rifle the strength of Chosen of the Warmind's stronger push. Physical equivalence is not established.",
             "The source exponent falloff, energy percentage, clashes, grenade detonation and source impact particles are not translated. The audio route records its own playback limits."],
         "gameplay_verified":false});
     let mut result = assets.write_in(root, "sword", root_id, report)?;
@@ -119,5 +134,16 @@ pub(in crate::halo_reach) fn prepare(
     result["source_sha256"] = json!(digest);
     result["powered_contact"] = json!("sword-powered-contact");
     result["depleted_contact"] = json!("sword-depleted-contact");
+    if let Some((table, _)) = surface {
+        result["surface"] = json!("sword-surface");
+        result["source_surface"] = json!(table);
+    }
+    // The hammer strikes where the player stands. Every trajectory block and the `+204` distance
+    // move zero metres, as the stock relic slam rows store them. Its airborne strike is a downward
+    // smash, which a stock sword's powered aerial row selects with action 7843564F in place of
+    // the air lunge 054A16BE. That row keeps no forward lane at `+1B4`. The fall itself comes
+    // from the action, since its human clip has no root motion.
+    result["lunge"] = json!(false);
+    result["aerial_action"] = json!({"replaces":AIR_LUNGE,"action":AIR_SLAM});
     Ok(Some(result))
 }

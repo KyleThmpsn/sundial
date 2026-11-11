@@ -53,7 +53,10 @@ mod attack;
 mod census;
 pub use attack::AttackModifier;
 mod fixed;
-pub use fixed::{FixedModifier, FixedSelection, constant_protection_definition};
+pub use fixed::{
+    EVADE_PROFILE, FIXED_WORDS, FixedModifier, FixedSelection, constant_protection_definition,
+    widened,
+};
 mod group;
 pub use group::{GroupEntry, GroupModifier};
 mod handler;
@@ -105,6 +108,11 @@ pub const ATTACK_DEFINITION_CLASS: u32 = 0x8080_4427;
 const ATTACK_INSTANCE_CLASS: u32 = 0x8080_4428;
 /// The gate block a gated row's +0x28 pointer lands on: the key that must apply with the row's.
 const GATE_CLASS: u32 = 0x8080_454A;
+/// The base of every row gate class. Besides the key gate, stock movement bank `80BC3571` gates
+/// two rows on `8080454E`, whose four-byte body holds a float. The key walk `FC8360` casts a gate
+/// to `8080454A` through `FBF6E0`, and another gate class casts to null there, so the row is not
+/// held back by a key.
+const GATE_BASE: u32 = 0x8080_4550;
 /// The ranged melee window: two floats at definition +0x10 and +0x14. A melee press launches the
 /// ability's ranged attack (Celestial Fire, Ball Lightning, a thrown knife or hammer) instead of
 /// striking while the ability's reading at +0xAC8 lies in the window and no lunge target is
@@ -320,7 +328,7 @@ pub struct PropertyRow {
 }
 
 /// What a new row does.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Modifier {
     /// A private copy of a movement attack pair with separately allocated damage profiles.
     Attack(AttackModifier),
@@ -331,16 +339,24 @@ pub enum Modifier {
     /// Adds to the ability's charge count.
     Charges(i64),
     /// Sets a script parameter the bank already lists to `applied`, added to the running value
-    /// or written over it. The reset value stays the bank's own.
-    Parameter { name: u32, applied: f32, add: bool },
+    /// or written over it. The reset value stays the bank's own. A gate makes the row take
+    /// effect only while that key also applies.
+    Parameter {
+        name: u32,
+        applied: f32,
+        add: bool,
+        gate: Option<u32>,
+    },
     /// A direct native melee attack with a privately authored contact profile and, when set,
     /// its own per-surface impact response table.
     Melee { damage: u32, responses: Option<u32> },
-    /// A base ability input, added to its value or multiplied while the property is active.
+    /// A base ability input, added to its value or multiplied while the property is active. A
+    /// selection gives the row its own name, priority and gate.
     Scalar {
         input: u8,
         value: f32,
         multiply: bool,
+        selection: Option<FixedSelection>,
     },
 }
 
@@ -425,9 +441,10 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
         input,
         value,
         multiply,
+        selection,
     } = modifier
     {
-        return scalar::with_row(payload, key, input, value, multiply);
+        return scalar::with_row(payload, key, input, value, multiply, selection);
     }
     let before = property_rows(payload)?;
     if before.iter().any(|row| row.key == key) {
@@ -466,11 +483,12 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
         }
     } else {
         let gate = match modifier {
-            Modifier::Attack(body) => Some(body.selection.required_key),
+            Modifier::Attack(body) => Some(body.selection.required_key).filter(|&key| key != 0),
             Modifier::Fixed(body) => body
                 .selection
                 .map(|s| s.required_key)
                 .filter(|&key| key != 0),
+            Modifier::Parameter { gate, .. } => gate,
             _ => None,
         };
         new_rows.push((key, count, gate, false));
@@ -526,6 +544,11 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
             (Modifier::Charges(charges), _) => Body::Charges(charges),
             (Modifier::Parameter { .. }, _) => Body::Parameter(table.len()),
             (Modifier::Fixed(body), _) => Body::Fixed(body),
+            (Modifier::Attack(body), _) if body.melee => Body::Container(
+                body.append(payload, out)?,
+                body.prefix(payload)?,
+                body.selection,
+            ),
             (Modifier::Attack(body), _) => {
                 Body::Movement(body.append(payload, out)?, body.selection)
             }
@@ -584,7 +607,7 @@ pub fn with_property_row(payload: &[u8], key: u32, modifier: Modifier) -> Result
     if let Modifier::Melee { .. } = modifier
         && scalar::has_handler(&region.out)?
     {
-        return scalar::with_row_under(&region.out, key, ACTIVATION_COST_INPUT, 0.0, true);
+        return scalar::with_row_under(&region.out, key, ACTIVATION_COST_INPUT, 0.0, true, None);
     }
     Ok(region.out)
 }
@@ -649,6 +672,9 @@ struct Added {
 #[derive(Clone, Copy)]
 enum Body {
     Movement([usize; 2], FixedSelection),
+    /// A melee attack container's kept Float32 pair and its two copied attack records, named at
+    /// +0x18 and +0x20, under its own selection.
+    Container([usize; 2], [u32; 2], FixedSelection),
     Fixed(FixedModifier),
     Charges(i64),
     /// The index of the row's parameter in the bank's parameter table.
@@ -657,6 +683,6 @@ enum Body {
     Attack(usize, usize),
     /// The low and high ends of the ranged melee window.
     Window((f32, f32)),
-    /// A modifier its writer fills in itself.
-    Own,
+    /// A modifier its writer fills in itself, with the row's own selection when it has one.
+    Own(Option<FixedSelection>),
 }

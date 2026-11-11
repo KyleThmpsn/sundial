@@ -85,3 +85,52 @@ pub fn read(r: &mut Reader, modern: bool) -> Result<Value> {
         json!({"globals":format!("{globals_tag:08X}"),"channels":channels,"lookup_textures":textures,"scopes":scopes}),
     )
 }
+
+/// The expression program of each scope named `scope` in the render globals of the modern build
+/// (`render_globals`) or Shadowkeep (`client_bootstrap_patchable`), one per globals tag.
+pub fn scope_programs(r: &mut Reader, modern: bool, scope: &str) -> Result<Vec<Vec<u8>>> {
+    let name = if modern {
+        "render_globals"
+    } else {
+        "client_bootstrap_patchable"
+    };
+    let tags = r
+        .manager
+        .lookup
+        .named_tags
+        .iter()
+        .filter(|n| n.name == name)
+        .map(|n| n.hash.0)
+        .collect::<std::collections::BTreeSet<_>>();
+    anyhow::ensure!(!tags.is_empty(), "missing named tag {name}");
+    let mut programs = Vec::new();
+    for tag in tags {
+        let bootstrap = r.tag(tag, None)?;
+        let globals = r.tag(bootstrap.u32(if modern { 0x48 } else { 0x4C })?, None)?;
+        for at in globals.array(0x10, 16, None)? {
+            let start = globals.pointer(at)?;
+            let tail = globals.0.get(start..).context("scope name pointer")?;
+            let end = tail
+                .iter()
+                .position(|b| *b == 0)
+                .context("unterminated scope name")?;
+            anyhow::ensure!(end <= 128, "scope name too long");
+            if &tail[..end] != scope.as_bytes() {
+                continue;
+            }
+            let payload = r.tag(globals.u32(at + 12)?, None)?;
+            anyhow::ensure!(
+                payload.u64(0)? as usize == payload.0.len(),
+                "scope {scope} extent differs"
+            );
+            programs.push(
+                payload
+                    .array(if modern { 0x60 } else { 0x58 }, 1, Some(0x80800009))?
+                    .into_iter()
+                    .map(|at| payload.u8(at))
+                    .collect::<Result<Vec<_>>>()?,
+            );
+        }
+    }
+    Ok(programs)
+}

@@ -34,19 +34,31 @@ impl ResetPlan {
         let transaction = candidate.transaction().map_err(|error| {
             SqliteAccountError::sqlite("start default initialization for", error)
         })?;
+        // Sunrise's order for a new save: the schema, the tables it creates in code, the starter
+        // tables, then the rows, since schema 5's default characters copy the starter unlocks.
+        transaction
+            .execute_batch(&defaults.schema)
+            .map_err(|error| {
+                SqliteAccountError::sqlite("initialize installed defaults for", error)
+            })?;
+        let schema = super::Schema::read(&transaction)?;
+        transaction
+            .execute_batch(schema.code_tables())
+            .map_err(|error| {
+                SqliteAccountError::sqlite("initialize installed defaults for", error)
+            })?;
+        if let Some(starter) = &defaults.starter {
+            transaction.execute_batch(starter).map_err(|error| {
+                SqliteAccountError::sqlite("initialize character starters for", error)
+            })?;
+        }
         for sql in [
-            &defaults.schema,
             &defaults.rows,
             &defaults.settings_schema,
             &defaults.settings_rows,
         ] {
             transaction.execute_batch(sql).map_err(|error| {
                 SqliteAccountError::sqlite("initialize installed defaults for", error)
-            })?;
-        }
-        if let Some(starter) = &defaults.starter {
-            transaction.execute_batch(starter).map_err(|error| {
-                SqliteAccountError::sqlite("initialize character starters for", error)
             })?;
         }
         super::validation::connection(&transaction).map_err(SqliteAccountError::Backup)?;
@@ -70,7 +82,7 @@ impl ResetPlan {
             .map_err(|error| {
                 SqliteAccountError::sqlite("read installed defaults version from", error)
             })?;
-        if !matches!(version, 2 | 3) || version != target_version {
+        if !matches!(version, 2 | 3 | 5) || version != target_version {
             return Err(SqliteAccountError::InvalidSchema(format!(
                 "Account reset requires matching schemas. The account is schema {version} and installed defaults are schema {target_version}"
             )));

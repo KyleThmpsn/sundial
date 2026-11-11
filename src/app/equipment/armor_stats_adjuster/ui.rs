@@ -148,8 +148,7 @@ pub(in crate::app) fn draw_window(
         if requested_mode == PlugSelectionMode::AnyPlug
             && !app.preferences.really_unsafe_warning_acknowledged
         {
-            app.remember_plug_selection_mode_after_confirmation = false;
-            app.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
+            app.confirmation = Some(ConfirmationDialog::ReallyUnsafe { remember: false });
         } else {
             app.plug_selection_mode = requested_mode;
             state.source_key = None;

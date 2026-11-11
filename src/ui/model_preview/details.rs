@@ -201,19 +201,21 @@ impl Preview {
         self.poll_saving(ui.ctx());
         self.poll_audio(ui.ctx());
         ui.horizontal(|ui| {
-            if !self.navigation.is_empty() && ui.button("Back").clicked() {
-                self.navigation.pop();
+            if !self.window.source.navigation.is_empty() && ui.button("Back").clicked() {
+                self.window.source.navigation.pop();
                 ui.ctx().request_repaint_of(window::viewport_id());
             }
             ui.add(egui::Label::new(egui::RichText::new(name).heading()).truncate());
         });
         ui.add_space(4.0);
-        let Some(model) = self.model.clone() else {
-            ui.weak(if self.request.is_none() || self.error.is_some() {
-                "No Model"
-            } else {
-                "Loading"
-            });
+        let Some(model) = self.shown.model.clone() else {
+            ui.weak(
+                if self.window.request.is_none() || self.shown.error.is_some() {
+                    "No Model"
+                } else {
+                    "Loading"
+                },
+            );
             return;
         };
         self.draw_model_details(ui, &model);
@@ -234,7 +236,7 @@ impl Preview {
             format!("{} Meshes", model.tags.len()),
             format!("{} Textures", model.textures.len()),
         ];
-        if let Some(elapsed) = self.load_time {
+        if let Some(elapsed) = self.shown.load_time {
             counts.push(format!("Loaded in {:.2} s", elapsed.as_secs_f32()));
         }
         ui.label(counts.join(" · "));
@@ -279,8 +281,8 @@ impl Preview {
             return;
         };
         let listed = |entry: Entry| sections.iter().any(|(_, entries)| entries.contains(&entry));
-        if !self.asset_entry.is_some_and(listed) {
-            self.asset_entry = Some(first);
+        if !self.shown.asset_entry.is_some_and(listed) {
+            self.shown.asset_entry = Some(first);
         }
         let id = ui.id().with("asset-browser");
         let width = ui.available_width();
@@ -300,7 +302,7 @@ impl Preview {
             .id_salt(id.with("card"))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                if let Some(entry) = self.asset_entry {
+                if let Some(entry) = self.shown.asset_entry {
                     self.draw_asset_card(ui, model, entry);
                 }
             });
@@ -384,12 +386,12 @@ impl Preview {
                                 );
                             }
                             Row::Entry(entry, label) => {
-                                let selected = self.asset_entry == Some(*entry);
+                                let selected = self.shown.asset_entry == Some(*entry);
                                 let response = ui
                                     .add(egui::Button::selectable(selected, label))
                                     .on_hover_text(label);
                                 if response.clicked() {
-                                    self.asset_entry = Some(*entry);
+                                    self.shown.asset_entry = Some(*entry);
                                 }
                                 if response.double_clicked() {
                                     opened = Some(*entry);
@@ -617,21 +619,20 @@ impl Preview {
             ui.horizontal_wrapped(|ui| {
                 ui.label(clip.name.clone().unwrap_or_else(|| hex(clip.tag)));
                 ui.weak(format!("{} · {} bytes", clip.format(), clip.size));
-                if self.audio_tag == Some(clip.tag)
-                    && (self.playback.is_some() || self.audio_pending.is_some())
+                if self.audio.tag == Some(clip.tag)
+                    && (self.audio.playback.is_some() || self.audio.pending.is_some())
                 {
-                    let label = if self.audio_pending.is_some() {
+                    let label = if self.audio.pending.is_some() {
                         "Cancel"
                     } else {
                         "Stop"
                     };
                     if ui.button(label).clicked() {
-                        self.stop_audio();
-                        self.audio_status = None;
+                        self.audio.reset();
                     }
                 } else if ui
                     .add_enabled(
-                        cfg!(windows) && self.audio_pending.is_none(),
+                        cfg!(windows) && self.audio.pending.is_none(),
                         egui::Button::new("Play"),
                     )
                     .clicked()
@@ -658,7 +659,7 @@ impl Preview {
         if self.saving.is_some() {
             ui.weak("Saving…");
         }
-        for status in self.status.iter().chain(&self.audio_status) {
+        for status in self.shown.status.iter().chain(&self.audio.status) {
             ui.label(status);
         }
     }

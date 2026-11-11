@@ -276,6 +276,13 @@ impl<'a> Bindings<'a> {
             .map_or([0.0; 4], |t| self.sample(t, uv, 1, None).map(|v| v / 255.0))
     }
     pub fn new(model: &'a Model, triangle: usize, dyes: &'a [Option<Dye>; 6]) -> Self {
+        let dyes = model
+            .triangle_dye_banks
+            .get(triangle)
+            .copied()
+            .flatten()
+            .and_then(|i| model.dye_banks.get(i))
+            .unwrap_or(dyes);
         let dye = model
             .triangle_dyes
             .get(triangle)

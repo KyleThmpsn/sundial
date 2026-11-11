@@ -112,24 +112,87 @@ fn locale(source: &Payload, values: &BTreeMap<usize, String>, count: usize) -> R
     Ok(output)
 }
 
+/// The driver seat's enter prompt, `verb` and the vehicle's name, and the body's flip prompt. A
+/// stationary turret's driver uses it rather than driving it.
 pub(super) fn build(
     native: &mut Reader,
     graph: &mut Graph,
     assembly: &mut Assembly,
     name: &str,
+    verb: &str,
+) -> Result<Value> {
+    let driver = assembly.owner(0x808042ad)?;
+    let physical = assembly.owner(0x80803d4c)?;
+    let scope = assembly.prefix().to_owned();
+    write(
+        native,
+        graph,
+        assembly,
+        name,
+        &scope,
+        &[
+            (driver, 0x80803d7d, 0x100, &[0xf0][..], verb),
+            (physical, 0x80803d65, 0x170, &[0x160, 0x178][..], "Flip"),
+        ],
+    )
+}
+
+/// The private enter prompt of the one seat of a carried child entity, `verb` and the vehicle's
+/// name, through the seat's own string table.
+pub(super) fn seat(
+    native: &mut Reader,
+    graph: &mut Graph,
+    assembly: &mut Assembly,
+    name: &str,
+    verb: &str,
+) -> Result<Value> {
+    let seat = assembly.owner(0x808042ad)?;
+    let scope = assembly.prefix().to_owned();
+    write(
+        native,
+        graph,
+        assembly,
+        name,
+        &scope,
+        &[(seat, 0x80803d7d, 0x100, &[0xf0][..], verb)],
+    )
+}
+
+/// The enter prompt of each added seat in `owners`, `verb` and the vehicle's name, through one
+/// private string table apart from the driver's, whose same prompt hash names the driver's verb.
+pub(super) fn added(
+    native: &mut Reader,
+    graph: &mut Graph,
+    assembly: &mut Assembly,
+    owners: &[u32],
+    name: &str,
+    verb: &str,
+) -> Result<Value> {
+    let scope = format!("{}-{}", assembly.prefix(), verb.to_lowercase());
+    let fields = owners
+        .iter()
+        .map(|&owner| (owner, 0x80803d7d, 0x100, &[0xf0][..], verb))
+        .collect::<Vec<_>>();
+    write(native, graph, assembly, name, &scope, &fields)
+}
+
+type Field<'a> = (u32, u32, usize, &'a [usize], &'a str);
+
+fn write(
+    native: &mut Reader,
+    graph: &mut Graph,
+    assembly: &mut Assembly,
+    name: &str,
+    scope: &str,
+    sources: &[Field<'_>],
 ) -> Result<Value> {
     ensure!(
         !name.trim().is_empty() && !name.contains(['\r', '\n', '\0']),
         "Invalid vehicle name"
     );
-    let driver = assembly.owner(0x808042ad)?;
-    let physical = assembly.owner(0x80803d4c)?;
     let mut tables = BTreeMap::<u32, BTreeMap<u32, String>>::new();
     let mut fields = Vec::new();
-    for (owner, class, header, hashes, verb) in [
-        (driver, 0x80803d7d, 0x100, &[0xf0][..], "Drive"),
-        (physical, 0x80803d65, 0x170, &[0x160, 0x178][..], "Flip"),
-    ] {
+    for &(owner, class, header, hashes, verb) in sources {
         let payload = &assembly.payloads[&owner];
         let definition = usize::try_from(payload.u64(payload.pointer(16)? + 8)?)?;
         ensure!(
@@ -165,7 +228,7 @@ pub(super) fn build(
             );
             selected.insert(found[0], value.clone());
         }
-        let symbol = format!("vehicle-prompts-{table:08X}");
+        let symbol = format!("{scope}-prompts-{table:08X}");
         let mut patches = Vec::new();
         for language in 0..13 {
             let field = 24 + language * 4;

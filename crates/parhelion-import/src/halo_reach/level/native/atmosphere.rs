@@ -5,12 +5,18 @@
 //! azimuth plus `cb0[22]`, `0.5 - 0.5 * z` and the time of day slice `cb0[26]`, blends a second
 //! volume by global channel 43, multiplies the color by `cb0[23]` (`Atmosphere+0x148`) and adds a
 //! sun halo scaled by the texel's alpha. That reflection becomes the diffuse and reflected sky light
-//! every deferred surface takes, players and weapons included. Its layout is equal area, so an
-//! object's diffuse sky light, from its 2 by 2 mip, is about a slice's mean times `cb0[23]`.
+//! every deferred surface takes, players and weapons included. The copy pass replaces the lower
+//! sky with a separate color before filtering. Calibration uses that filtered reference
+//! ([`reflection`]), not the unfiltered volume mean.
 //!
 //! The copy's texels come from [`CLEAR_VOLUME`] when it has the donor's shape, else from the
-//! donor's. Each takes the hue of the scenario sky's analytical light, and every color is scaled
-//! so that the mean luminance is [`sky_luminance`] of the level's open probes. Each alpha, which
+//! donor's. Each takes the hue of the light Reach lit an object on open ground with, the mean
+//! lightmap light of the open probes' floors ([`super::occlusion::Probes::open_hue`]), or the
+//! scenario sky's analytical light where no probe stands on a lightmapped floor. Every color is
+//! scaled so that its diffuse reference is [`diffuse_luminance`] of the level's open probes. A level
+//! with interiors adds a second copy at the same scale in the hue of its interiors' floors, which
+//! the generator blends toward by global channel 43 (`sky = lerp(t0, t1, cb0[43].x)`), and which
+//! the map's interior environment volumes select. Each alpha, which
 //! scales the sun halo (`min(HG(-0.975) * alpha * 0.000627, 128)` in the generator), takes the same
 //! scale, clamped to one. Kept at Distant Shore's daytime mean of about 1.5, a night level's players drew lit as
 //! if by daylight. Its distance lookup at `+0x98` takes a black copy, since the level's surfaces
@@ -19,6 +25,8 @@ use super::occlusion;
 use crate::{presentation::Graph, tiger::reader::Reader};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
+
+mod reflection;
 
 /// A native texture header's byte count at `+0x00`, format at `+0x04`, its `CAFE` marker at
 /// `+0x0C`, and width, height and depth as 16-bit values from `+0x0E`.
@@ -51,6 +59,7 @@ struct Volume {
     source: u32,
     data: Vec<u8>,
     texels: usize,
+    dimensions: [usize; 3],
 }
 
 impl Volume {
@@ -80,7 +89,12 @@ impl Volume {
             header.len() == HEADER_SIZE && half(MARKER)? == 0xCAFE && word(FORMAT)? == RGBA16_FLOAT,
             "The atmosphere volume {volume:08X} is not a four half float texture"
         );
-        let texels = half(DIMENSIONS)? * half(DIMENSIONS + 2)? * half(DIMENSIONS + 4)?;
+        let dimensions = [
+            half(DIMENSIONS)?,
+            half(DIMENSIONS + 2)?,
+            half(DIMENSIONS + 4)?,
+        ];
+        let texels = dimensions.iter().product();
         let source = native.reference(volume)?;
         let data = native
             .tag(source, None)
@@ -99,6 +113,7 @@ impl Volume {
             source,
             data,
             texels,
+            dimensions,
         })
     }
 
@@ -109,24 +124,24 @@ impl Volume {
     }
 }
 
-/// The mean luminance a volume slice takes so that open ground lights an object as the level's open
-/// probes' light `open` does at `radiance`: the generated sky's diffuse light is the slice's mean
-/// times [`SKY_INTENSITY`], and an open probe's visibility of [`occlusion::OPEN_VISIBILITY`] passes
-/// its square of that.
-pub(super) fn sky_luminance(open: f32, radiance: f32) -> f32 {
-    open * radiance / (occlusion::OPEN_VISIBILITY * occlusion::OPEN_VISIBILITY * SKY_INTENSITY)
+/// The filtered diffuse reference that recovers the open probes' light `open` at `radiance`.
+/// An open probe's visibility of [`occlusion::OPEN_VISIBILITY`] passes its square of this light.
+/// Normal-dependent object visibility, halo and runtime sky overrides remain separate inputs.
+pub(super) fn diffuse_luminance(open: f32, radiance: f32) -> f32 {
+    occlusion::diffuse_reference(open, radiance) / SKY_INTENSITY
 }
 
-/// Adds a copy of the donor's atmosphere volume `volume` whose texels, [`CLEAR_VOLUME`]'s where it
-/// has the donor's shape, take `color`'s hue, at their own luminance scaled so that their mean
-/// luminance is `sky` when it is given, with their alphas scaled alike. Returns the copy's symbol
-/// and a report of the source's and the copy's mean colors and alphas.
+/// Adds a copy named `symbol` of the donor's atmosphere volume `volume` whose texels,
+/// [`CLEAR_VOLUME`]'s where it has the donor's shape, take `color`'s hue, at their own luminance
+/// scaled so that their filtered diffuse reference is `sky` when given, with alphas scaled alike.
+/// Returns the copy's symbol and a report of the source's and the copy's mean colors and alphas.
 pub(super) fn add(
     native: &mut Reader,
     graph: &mut Graph,
     volume: u32,
     color: [f32; 3],
     sky: Option<f32>,
+    symbol: &str,
 ) -> Result<(String, Value)> {
     let donor = Volume::read(native, volume)?;
     let clear = Volume::read(native, CLEAR_VOLUME)
@@ -155,13 +170,14 @@ pub(super) fn add(
         .map(|texel| f64::from(luminance_of(texel)))
         .sum::<f64>()
         / (data.len() / TEXEL_BYTES).max(1) as f64;
+    let source_diffuse = reflection::luminance(&data, donor.dimensions)?;
     let scale = match sky {
         Some(sky) => {
             ensure!(
-                sky.is_finite() && sky > 0. && source_luminance > 0.,
+                sky.is_finite() && sky > 0. && source_diffuse > 0.,
                 "The level's sky brightness is not a brightness"
             );
-            sky / source_luminance as f32
+            sky / source_diffuse
         }
         None => 1.,
     };
@@ -182,12 +198,17 @@ pub(super) fn add(
         // its daytime size of up to 0.27 beside Nightfall's sky of 0.27.
         let alpha = (rgba[3] * scale).clamp(0., 1.);
         for (k, value) in [r, g, b, alpha].into_iter().enumerate() {
-            texel[k * 2..k * 2 + 2].copy_from_slice(&half::f16::from_f32(value).to_le_bytes());
+            let stored = half::f16::from_f32(value);
+            ensure!(
+                stored.is_finite(),
+                "Scaled atmosphere radiance exceeds half-float storage"
+            );
+            texel[k * 2..k * 2 + 2].copy_from_slice(&stored.to_le_bytes());
             before[k] += f64::from(rgba[k]);
-            after[k] += f64::from(value);
+            after[k] += f64::from(stored.to_f32());
         }
     }
-    let symbol = "atmosphere-volume".to_owned();
+    let symbol = symbol.to_owned();
     let data_symbol = format!("{symbol}-data");
     graph.add(
         &symbol,
@@ -205,8 +226,10 @@ pub(super) fn add(
             "texel_source": format!("{texel_source:08X}"),
             "texels": donor.texels,
             "color": hue,
-            "sky_luminance": sky,
+            "target_diffuse_luminance": sky,
             "source_luminance": source_luminance,
+            "source_diffuse_luminance": source_diffuse,
+            "diffuse_reference": "Native sky generation and black-ground copy, before halo and sky geometry",
             "scale": scale,
             "source_mean": mean(before),
             "mean": mean(after),

@@ -16,12 +16,21 @@ const ICON_EDGE: u32 = ICON_PREVIEW_SIZE as u32;
 #[derive(Clone, Eq, PartialEq)]
 pub struct ImportedIcon(Arc<ImportedIconData>);
 
-#[derive(Eq, PartialEq)]
 struct ImportedIconData {
     rgba: RgbaImage,
     // Recipe fingerprints are computed during UI updates; never re-encode PNG on that hot path.
     png_base64: String,
 }
+
+/// Icons are equal when their pixels are. A loaded icon keeps the PNG it was stored as, which
+/// another encoder may have written differently for the same pixels.
+impl PartialEq for ImportedIconData {
+    fn eq(&self, other: &Self) -> bool {
+        self.rgba == other.rgba
+    }
+}
+
+impl Eq for ImportedIconData {}
 
 impl fmt::Debug for ImportedIcon {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -109,7 +118,7 @@ impl<'de> Deserialize<'de> for ImportedIcon {
             ));
         }
         let bytes = STANDARD
-            .decode(encoded.png_base64)
+            .decode(&encoded.png_base64)
             .map_err(serde::de::Error::custom)?;
         let image =
             decode(&bytes, ImageFormat::Png, ICON_EDGE).map_err(serde::de::Error::custom)?;
@@ -118,7 +127,12 @@ impl<'de> Deserialize<'de> for ImportedIcon {
                 "Embedded icons must be normalized to 96×96",
             ));
         }
-        Self::from_normalized(image).map_err(serde::de::Error::custom)
+        // The stored PNG holds exactly these pixels, so it is kept. Encoding every icon again
+        // made up much of a recipe's read, and a library of imports holds tens of thousands.
+        Ok(Self(Arc::new(ImportedIconData {
+            rgba: image,
+            png_base64: encoded.png_base64,
+        })))
     }
 }
 

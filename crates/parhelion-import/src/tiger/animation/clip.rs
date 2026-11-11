@@ -4,6 +4,7 @@ use crate::{
     tiger::payload::Payload,
 };
 use anyhow::{Result, ensure};
+mod curve;
 mod envelope;
 mod local;
 pub mod lowering;
@@ -324,6 +325,40 @@ fn write_quantized(
     Ok(())
 }
 
+/// Write the animated span as codec 1 curves when `curves` allows them, every track meets the
+/// curve budgets, the tables decode back to the tracks and they are smaller than codec 2 samples,
+/// and as codec 2 otherwise.
+fn write_animated(
+    out: &mut Vec<u8>,
+    frames: usize,
+    channels: &[Channel; 3],
+    curves: bool,
+) -> Result<()> {
+    let mut quantized = out.clone();
+    write_quantized(&mut quantized, 0x18, 0xD8, frames, channels)?;
+    if curves
+        && channels.iter().any(|channel| !channel.slots.is_empty())
+        && let Some(curve) = curve::Curve::encode(frames, channels)
+    {
+        let mut candidate = out.clone();
+        for (kind, channel) in channels.iter().enumerate() {
+            let map = channel
+                .slots
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>();
+            append(&mut candidate, 0xD8 + kind * 16, 0x8080000A, &map, 2)?;
+        }
+        curve.write(&mut candidate)?;
+        if candidate.len() < quantized.len() && curve::decodes(&candidate, frames, channels) {
+            *out = candidate;
+            return Ok(());
+        }
+    }
+    *out = quantized;
+    Ok(())
+}
+
 /// Order a channel's controls by slot, as every stock map is ordered.
 fn sort_channel(channel: &mut Channel, width: usize) {
     let samples = if channel.slots.is_empty() {
@@ -348,12 +383,14 @@ fn sort_channel(channel: &mut Channel, width: usize) {
 }
 
 /// Write both pose spans the way stock clips store them: every dynamic track that never moves
-/// joins the static span as one float sample, and the moving tracks are quantized.
+/// joins the static span as one float sample, and the moving tracks are curves, where `curves`
+/// allows them, or quantized.
 fn write_spans(
     out: &mut Vec<u8>,
     mut fixed: [Channel; 3],
     dynamic: [Channel; 3],
     frames: usize,
+    curves: bool,
 ) -> Result<()> {
     let mut moving: [Channel; 3] = Default::default();
     for (kind, channel) in dynamic.into_iter().enumerate() {
@@ -393,7 +430,7 @@ fn write_spans(
         );
     }
     write(out, 0x10, 0xA8, 1, &fixed)?;
-    write_quantized(out, 0x18, 0xD8, frames, &moving)
+    write_animated(out, frames, &moving, curves)
 }
 
 /// Drop the bytes earlier spans and maps left unreachable, then restate each pose and
@@ -427,14 +464,33 @@ fn finish(mut out: Vec<u8>) -> Result<Payload> {
     Ok(payload)
 }
 
-/// Re-encode a clip whose animated span stores 32-bit floats, the form earlier converters
-/// wrote, as `write_spans` does. Other clips return unchanged.
+/// Re-encode a clip whose animated span stores 32-bit floats or 16-bit codec 2 samples, the forms
+/// earlier converters wrote, as `write_spans` does. Other clips return unchanged.
 pub fn compact(original: &Payload) -> Result<Payload> {
-    if original.u64(0x18)? == 0 {
-        return Ok(original.clone());
+    compact_as(original, true)
+}
+
+/// The class of a clip's animated span, or `None` for a clip with only a static span.
+pub fn animated_codec(clip: &Payload) -> Result<Option<u32>> {
+    if clip.u64(0x18)? == 0 {
+        return Ok(None);
     }
-    let base = original.pointer(0x18)?;
-    if base < 4 || original.u32(base - 4)? != 0x80808F73 {
+    let base = clip.pointer(0x18)?;
+    ensure!(base >= 4, "Clip animated span lacks its class word");
+    Ok(Some(clip.u32(base - 4)?))
+}
+
+/// `compact`, with codec 1 curves only where `curves` allows them. Without them a codec 1 span is
+/// rewritten as codec 2 samples, so an imported clip can take the codec of the stock clip whose
+/// slot it fills. Stock stores a slot's motion as codec 2 where codec 1 cannot hold it within the
+/// error its encoder accepts, such as the near-rest additive `80BC5F40` and the idle `80BC5F49`.
+pub fn compact_as(original: &Payload, curves: bool) -> Result<Payload> {
+    let rewrite = match animated_codec(original)? {
+        Some(0x80808F73 | 0x80808F71) => true,
+        Some(0x80808F72) => !curves,
+        _ => false,
+    };
+    if !rewrite {
         return Ok(original.clone());
     }
     let frames = usize::from(original.u16(0x13C)?);
@@ -446,7 +502,203 @@ pub fn compact(original: &Payload) -> Result<Payload> {
     let fixed = read(original, 0x10, 0xA8, slots, 1)?;
     let dynamic = read(original, 0x18, 0xD8, slots, frames)?;
     let mut out = original.0.clone();
-    write_spans(&mut out, fixed, dynamic, frames)?;
+    write_spans(&mut out, fixed, dynamic, frames, curves)?;
+    finish(out)
+}
+
+/// Add a local translation, in each control's parent frame, to the listed controls of an absolute
+/// or sparse absolute clip on every frame, for a moved pivot. An additive clip stores deltas, and
+/// a clip that stores none of those controls inherits the moved bind, so both return `None`.
+pub fn shift_positions(
+    original: &Payload,
+    shifts: &std::collections::BTreeMap<usize, [f32; 3]>,
+) -> Result<Option<Payload>> {
+    let mode = original.u8(0x181)?;
+    if mode == 1 || shifts.is_empty() {
+        return Ok(None);
+    }
+    let frames = usize::from(original.u16(0x13C)?);
+    let slots = usize::from(original.u16(0x140)?);
+    ensure!(
+        mode == 2
+            || mode == 0
+                && original.u64(0)? == original.0.len() as u64
+                && (1..=3600).contains(&frames),
+        "Pivot shift requires an absolute clip within its envelope"
+    );
+    let mut fixed = read(original, 0x10, 0xA8, slots, 1)?;
+    let mut dynamic = read(original, 0x18, 0xD8, slots, frames)?;
+    let mut changed = false;
+    for (channel, count) in [(&mut fixed[2], 1), (&mut dynamic[2], frames)] {
+        for (index, slot) in channel.slots.clone().into_iter().enumerate() {
+            let Some(delta) = shifts.get(&usize::from(slot)) else {
+                continue;
+            };
+            for frame in 0..count {
+                for (axis, value) in delta.iter().enumerate() {
+                    channel.values[(index * count + frame) * 3 + axis] += value;
+                }
+            }
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    let mut out = original.0.clone();
+    write_spans(&mut out, fixed, dynamic, frames, true)?;
+    finish(out).map(Some)
+}
+
+/// Least-squares fit of one weight between paired vectors, `reference = weight * clip`.
+#[derive(Default)]
+struct Fit {
+    clip: f64,
+    cross: f64,
+    reference: f64,
+}
+
+impl Fit {
+    fn add(&mut self, clip: [f32; 3], reference: [f32; 3]) {
+        for (a, b) in clip.into_iter().zip(reference) {
+            let (a, b) = (f64::from(a), f64::from(b));
+            self.clip += a * a;
+            self.cross += a * b;
+            self.reference += b * b;
+        }
+    }
+
+    /// The weight and the residual as a fraction of the reference motion.
+    fn solve(&self) -> Option<(f64, f64)> {
+        if self.clip <= 0. || self.reference <= 0. {
+            return None;
+        }
+        let weight = self.cross / self.clip;
+        let residual = (self.reference - self.cross * weight).max(0.).sqrt();
+        Some((weight, residual / self.reference.sqrt()))
+    }
+}
+
+/// A rotation as its axis times its angle in radians, taking the shorter turn.
+fn rotation_vector(q: &[f32]) -> [f32; 3] {
+    let length = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if length <= 0. {
+        return [0.; 3];
+    }
+    let sign = if q[3] < 0. { -length } else { length };
+    let [x, y, z, w] = [q[0], q[1], q[2], q[3]].map(|v| v / sign);
+    let s = (x * x + y * y + z * z).sqrt();
+    if s <= 1e-9 {
+        return [0.; 3];
+    }
+    let angle = 2. * s.atan2(w);
+    [x, y, z].map(|v| v / s * angle)
+}
+
+/// Turn a rotation by `weight` of its angle about the same axis.
+fn weigh_rotation(q: &mut [f32], weight: f32) {
+    let [x, y, z] = rotation_vector(q).map(|v| v * weight);
+    let angle = (x * x + y * y + z * z).sqrt();
+    if angle <= 1e-9 {
+        q.copy_from_slice(&[0., 0., 0., 1.]);
+        return;
+    }
+    let k = (angle / 2.).sin() / angle;
+    q.copy_from_slice(&[x * k, y * k, z * k, (angle / 2.).cos()]);
+}
+
+/// The weight at which an additive `clip` plays the same motion as the stock additive clip whose
+/// slot it takes: one strength relates every rotation (about the same axis) and translation
+/// (along the same direction) of the two, sampled over every control and frame. Shadowkeep reuses
+/// Rise of Iron's first-person clips but plays its `land_soft` landings at a tenth of their Rise of
+/// Iron strength, and the native state machine that triggers the slot is tuned for its own clip.
+/// Played at full strength, a converted landing dips the weapon about ten degrees on every
+/// landing, which aiming shows as shaking.
+///
+/// `None` unless both clips are additive with the same frames and controls, neither stores
+/// additive scale, rotations and translations each fit one weight within a fifth of the stock
+/// motion and agree within 15%, and that weight differs from one by a tenth or more. Clips of
+/// different motion leave 0.3 or more of the stock motion unexplained, the landings at most 0.17.
+pub fn stock_weight(clip: &Payload, stock: &Payload) -> Result<Option<f32>> {
+    if clip.u8(0x181)? != 1 || stock.u8(0x181)? != 1 {
+        return Ok(None);
+    }
+    let frames = usize::from(clip.u16(0x13C)?);
+    let slots = usize::from(clip.u16(0x140)?);
+    if usize::from(stock.u16(0x13C)?) != frames || usize::from(stock.u16(0x140)?) != slots {
+        return Ok(None);
+    }
+    for payload in [clip, stock] {
+        for (pointer, maps, count) in [(0x10, 0xA8, 1), (0x18, 0xD8, frames)] {
+            match read(payload, pointer, maps, slots, count) {
+                Ok(channels) if channels[0].slots.is_empty() => {}
+                _ => return Ok(None),
+            }
+        }
+    }
+    let neutral = vec![[0., 0., 0., 1., 0., 0., 0., 1.]; slots];
+    let (mut rotation, mut translation) = (Fit::default(), Fit::default());
+    for frame in 0..frames {
+        let (Ok(a), Ok(b)) = (
+            sample(clip, &neutral, frame),
+            sample(stock, &neutral, frame),
+        ) else {
+            return Ok(None);
+        };
+        for (a, b) in a.iter().zip(&b) {
+            rotation.add(rotation_vector(&a[..4]), rotation_vector(&b[..4]));
+            translation.add([a[4], a[5], a[6]], [b[4], b[5], b[6]]);
+        }
+    }
+    let Some((weight, residual)) = rotation.solve() else {
+        return Ok(None);
+    };
+    if residual > 0.2 {
+        return Ok(None);
+    }
+    // A clip that barely translates has no translation weight to compare.
+    if translation.clip.sqrt() > 1e-3 {
+        match translation.solve() {
+            Some((moved, rest)) if rest <= 0.2 && (moved / weight - 1.).abs() <= 0.15 => {}
+            _ => return Ok(None),
+        }
+    }
+    if (weight - 1.).abs() < 0.1 {
+        return Ok(None);
+    }
+    Ok(Some(weight as f32))
+}
+
+/// An additive clip at `weight` of its strength: every rotation turned by that share of its angle
+/// about the same axis and every translation scaled, in both pose spans, with codec 1 curves only
+/// where `curves` allows them.
+pub fn scale_additive(original: &Payload, weight: f32, curves: bool) -> Result<Payload> {
+    let frames = usize::from(original.u16(0x13C)?);
+    let slots = usize::from(original.u16(0x140)?);
+    ensure!(
+        original.u8(0x181)? == 1
+            && weight.is_finite()
+            && weight > 0.
+            && original.u64(0)? == original.0.len() as u64
+            && (1..=3600).contains(&frames),
+        "Strength applies to an additive clip within its envelope"
+    );
+    let mut fixed = read(original, 0x10, 0xA8, slots, 1)?;
+    let mut dynamic = read(original, 0x18, 0xD8, slots, frames)?;
+    for channels in [&mut fixed, &mut dynamic] {
+        ensure!(
+            channels[0].slots.is_empty(),
+            "Additive scale has no defined strength"
+        );
+        for q in channels[1].values.chunks_exact_mut(4) {
+            weigh_rotation(q, weight);
+        }
+        for value in &mut channels[2].values {
+            *value *= weight;
+        }
+    }
+    let mut out = original.0.clone();
+    write_spans(&mut out, fixed, dynamic, frames, curves)?;
     finish(out)
 }
 
@@ -785,7 +1037,7 @@ fn replace_selected(
         }
     }
     let mut out = original.0.clone();
-    write_spans(&mut out, Default::default(), dynamic, frames)?;
+    write_spans(&mut out, Default::default(), dynamic, frames, true)?;
     put(&mut out, 0xA4, &u32::try_from(slots - 1)?.to_le_bytes())?;
     let length = out.len() as u64;
     put(&mut out, 0, &length.to_le_bytes())?;
@@ -840,12 +1092,39 @@ pub fn extend(
                 }
             }
         }
-        write_spans(&mut out, fixed, dynamic, frames)?;
+        write_spans(&mut out, fixed, dynamic, frames, true)?;
+        put(&mut out, 0xA4, &((total - 1) as u32).to_le_bytes())?;
+    } else if original.u8(0x181)? != 2 {
+        // A native clip holds every appended control at its rest in its static span, an absolute
+        // clip at the control's default local pose and an additive one at a neutral delta, as
+        // stock clips map each control their groups cover. Its animated span stays as stored. A
+        // mode 2 clip replaces only the channels it maps, so it leaves them unmapped.
+        let local = local::Local::read(original, controls, total)?;
+        let mut fixed = read(original, 0x10, 0xA8, old, 1)?;
+        for slot in old..total {
+            let pose = local.encode(slot, local.rest(slot)?)?;
+            for (kind, channel) in fixed.iter_mut().enumerate() {
+                channel.slots.push(u16::try_from(slot)?);
+                channel.values.extend_from_slice(match kind {
+                    0 => &pose[7..8],
+                    1 => &pose[..4],
+                    _ => &pose[4..7],
+                });
+            }
+        }
+        write(&mut out, 0x10, 0xA8, 1, &fixed)?;
         put(&mut out, 0xA4, &((total - 1) as u32).to_le_bytes())?;
     }
     for at in [0x13E, 0x140] {
         put(&mut out, at, &(total as u16).to_le_bytes())?;
     }
+    // Every clip covers the extended rig's groups and maps the appended controls it covers. With
+    // native clips keeping the carrier's leading groups alone, the Shade's base floated and the
+    // Scorpion's pods sat off its hull. Mapping them in additive clips alone grounded the Shade,
+    // whose one appended control rests at its parent's origin, but left the Scorpion's pods,
+    // which rest at offsets from their parents, off the hull (Dawn 1.7.2, 2026-11-07). How the
+    // mixer fills a control outside a clip's groups, or covered but unmapped, is inferred from
+    // those, not read from its code.
     groups(&mut out, controls, total)?;
     let size = out.len() as u64;
     put(&mut out, 0, &size.to_le_bytes())?;
@@ -857,12 +1136,27 @@ pub fn extend(
 }
 
 /// Emit sparse local poses on an extended rig using the carrier's composition
-/// operation. Selected controls keep their rest position and scale after mixing.
+/// operation. Selected controls keep their rest scale after mixing. A translation
+/// that never moves is stored once in the static span.
 pub fn rotations(
     original: &Payload,
     total: usize,
     controls: &Payload,
     tracks: &std::collections::BTreeMap<usize, Vec<[f32; 8]>>,
+) -> Result<Payload> {
+    mapped(original, total, controls, tracks, &Default::default())
+}
+
+/// As `rotations`, with a control's rotation and translation channels mapped only where `channels`
+/// says, `[rotation, translation]`, and both for a control it does not name. A mode two clip
+/// replaces only the channels it maps, so a translation-only control keeps the rotation another
+/// layer plays on the same control, as a wheel's suspension travel beside its spin.
+pub fn mapped(
+    original: &Payload,
+    total: usize,
+    controls: &Payload,
+    tracks: &std::collections::BTreeMap<usize, Vec<[f32; 8]>>,
+    channels: &std::collections::BTreeMap<usize, [bool; 2]>,
 ) -> Result<Payload> {
     let frames = usize::from(original.u16(0x13C)?);
     ensure!(
@@ -882,26 +1176,37 @@ pub fn rotations(
             slot < total && samples.len() == frames,
             "Overlay control dimensions differ"
         );
+        let [rotation, translation] = channels.get(&slot).copied().unwrap_or([true; 2]);
+        ensure!(rotation || translation, "Overlay control maps no channel");
         let first = local.encode(slot, samples[0])?;
-        dynamic[1].slots.push(u16::try_from(slot)?);
+        if rotation {
+            dynamic[1].slots.push(u16::try_from(slot)?);
+        }
+        if translation {
+            dynamic[2].slots.push(u16::try_from(slot)?);
+        }
         fixed[0].slots.push(u16::try_from(slot)?);
         fixed[0].values.push(first[7]);
-        fixed[2].slots.push(u16::try_from(slot)?);
-        fixed[2].values.extend(&first[4..7]);
         for sample in samples {
             let norm = sample[..4].iter().map(|v| v * v).sum::<f32>();
             ensure!(
                 sample.iter().all(|v| v.is_finite())
                     && (norm - 1.).abs() < 0.001
                     && sample[7] > 0.
-                    && sample[4..] == samples[0][4..],
-                "Rotational pose is invalid or changes its rest translation or scale"
+                    && sample[7] == samples[0][7],
+                "Overlay pose is invalid or changes its rest scale"
             );
-            dynamic[1].values.extend(&local.encode(slot, *sample)?[..4]);
+            let encoded = local.encode(slot, *sample)?;
+            if rotation {
+                dynamic[1].values.extend(&encoded[..4]);
+            }
+            if translation {
+                dynamic[2].values.extend(&encoded[4..7]);
+            }
         }
     }
     let mut out = original.0.clone();
-    write_spans(&mut out, fixed, dynamic, frames)?;
+    write_spans(&mut out, fixed, dynamic, frames, true)?;
     put(&mut out, 0xA4, &u32::try_from(total - 1)?.to_le_bytes())?;
     for field in [0x13E, 0x140] {
         put(&mut out, field, &u16::try_from(total)?.to_le_bytes())?;

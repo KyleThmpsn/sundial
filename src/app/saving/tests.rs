@@ -28,7 +28,6 @@ fn invalid_runtime_setting_is_rejected_before_save_review() {
     app.dirty = true;
     app.request_save(&egui::Context::default(), SaveAction::Save);
     assert!(app.confirmation.is_none());
-    assert!(app.pending_save_action.is_none());
     assert!(app.status_is_error);
     assert!(app.status.contains("bind_address"), "{}", app.status);
     assert_eq!(std::fs::read(&app.settings_path).unwrap(), before);

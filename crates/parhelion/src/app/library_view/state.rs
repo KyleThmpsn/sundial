@@ -33,6 +33,9 @@ pub(crate) struct LibraryState {
     /// `None` shows every kind.
     pub(super) kind: Option<ItemKind>,
     pub(super) activities_only: bool,
+    /// The item pickers' Type, Damage, Ammo and Rarity filters. Like the kind and the order, the
+    /// library and the build selection share them.
+    pub(super) filter: ItemChoiceFilter,
     pub(super) highlighted: BTreeSet<PathBuf>,
     pub(super) reveal: Option<PathBuf>,
     pub(super) export_selection: Option<BTreeSet<PathBuf>>,
@@ -45,6 +48,18 @@ pub(crate) struct LibraryState {
     pub(super) job: Option<thread::JoinHandle<TransferResult>>,
     modified: BTreeMap<PathBuf, SystemTime>,
     donor_indices: BTreeMap<u32, usize>,
+    listing: Option<Listing>,
+}
+
+/// The recipes a query and the filters show, in order, each as its index in the library with its
+/// details line.
+pub(super) struct Listing {
+    query: String,
+    sort: SortOrder,
+    kind: Option<ItemKind>,
+    activities_only: bool,
+    filter: ItemChoiceFilter,
+    pub(super) shown: Vec<(usize, String)>,
 }
 
 impl Drop for LibraryState {
@@ -57,6 +72,7 @@ impl Drop for LibraryState {
 
 impl LibraryState {
     pub(crate) fn refresh_donors(&mut self, donors: &[WeaponDonorSummary]) {
+        self.listing = None;
         self.donor_indices.clear();
         for (index, donor) in donors.iter().enumerate() {
             self.donor_indices.entry(donor.hash).or_insert(index);
@@ -74,19 +90,78 @@ impl LibraryState {
             .filter(|donor| donor.hash == hash)
     }
 
-    pub(super) fn matching_entries<'a>(
-        &self,
-        entries: &'a [RecipeLibraryEntry],
+    /// The recipes `query` and the filters show. A library of imported weapons holds thousands,
+    /// and each needs its details read to match and sort, so the listing is kept until the query,
+    /// a filter, the order or the library changes. [`Self::keep_listing`] gives it back.
+    pub(super) fn take_listing(
+        &mut self,
+        entries: &[RecipeLibraryEntry],
         donors: &[WeaponDonorSummary],
         query: &str,
-    ) -> Vec<(&'a RecipeLibraryEntry, String)> {
+    ) -> Listing {
+        if let Some(listing) = self.listing.take()
+            && listing.query == query
+            && listing.sort == self.sort
+            && listing.kind == self.kind
+            && listing.activities_only == self.activities_only
+            && listing.filter == self.filter
+        {
+            return listing;
+        }
+        let mut shown = self.matching_entries(entries, donors, query);
+        self.sort_entries(entries, &mut shown, donors);
+        Listing {
+            query: query.to_owned(),
+            sort: self.sort,
+            kind: self.kind,
+            activities_only: self.activities_only,
+            filter: self.filter.clone(),
+            shown,
+        }
+    }
+
+    pub(super) fn keep_listing(&mut self, listing: Listing) {
+        self.listing = Some(listing);
+    }
+
+    /// Draws the item filters, offering each weapon type a recipe in `entries` has. Weapon
+    /// choices show while the list can hold weapons. A changed choice changes the listing.
+    pub(super) fn draw_filters(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &str,
+        entries: &[RecipeLibraryEntry],
+        donors: &[WeaponDonorSummary],
+    ) {
+        let mut filter = std::mem::take(&mut self.filter);
+        let weapons = self.kind.is_none_or(|kind| kind == ItemKind::Weapon);
+        let state = &*self;
+        filter.draw(ui, (id, "filters"), weapons, move || {
+            entries.iter().filter_map(move |entry| {
+                library_entry_fields(entry, state.donor(donors, entry.donor_hash)).weapon_type
+            })
+        });
+        self.filter = filter;
+    }
+
+    fn matching_entries(
+        &self,
+        entries: &[RecipeLibraryEntry],
+        donors: &[WeaponDonorSummary],
+        query: &str,
+    ) -> Vec<(usize, String)> {
         entries
             .iter()
+            .enumerate()
             .filter(|_| !self.activities_only)
-            .filter(|entry| self.kind.is_none_or(|kind| entry.kind == kind))
-            .filter_map(|entry| {
-                let details = library_entry_details(entry, self.donor(donors, entry.donor_hash));
-                library_entry_matches(entry, &details, query).then_some((entry, details))
+            .filter(|(_, entry)| self.kind.is_none_or(|kind| entry.kind == kind))
+            .filter_map(|(index, entry)| {
+                let donor = self.donor(donors, entry.donor_hash);
+                if !self.filter.passes(library_entry_fields(entry, donor)) {
+                    return None;
+                }
+                let details = library_entry_details(entry, donor);
+                library_entry_matches(entry, &details, query).then_some((index, details))
             })
             .collect()
     }
@@ -96,6 +171,7 @@ impl LibraryState {
     }
 
     pub(crate) fn refresh_metadata(&mut self, entries: &[RecipeLibraryEntry]) {
+        self.listing = None;
         self.modified = entries
             .iter()
             .filter_map(|entry| {
@@ -110,12 +186,14 @@ impl LibraryState {
         }
     }
 
-    pub(super) fn sort_entries(
+    fn sort_entries(
         &self,
-        entries: &mut [(&RecipeLibraryEntry, String)],
+        entries: &[RecipeLibraryEntry],
+        shown: &mut [(usize, String)],
         donors: &[WeaponDonorSummary],
     ) {
-        entries.sort_by_cached_key(|(entry, _)| {
+        shown.sort_by_cached_key(|(index, _)| {
+            let entry = &entries[*index];
             let group = if self.sort == SortOrder::WeaponType {
                 library_entry_type(entry, self.donor(donors, entry.donor_hash)).to_lowercase()
             } else {
@@ -140,7 +218,9 @@ impl PackageAuthoringApp {
     pub(in crate::app) fn reveal_library_entries(&mut self, paths: Vec<PathBuf>) {
         self.library_state.reveal = paths.first().cloned();
         self.library_state.highlighted = paths.into_iter().collect();
+        // A search or filter could hide the recipes this shows.
         self.library_query.clear();
+        self.library_state.filter = ItemChoiceFilter::default();
         self.library_open = self.build_selection_draft.is_none();
     }
 

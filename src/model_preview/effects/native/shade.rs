@@ -57,6 +57,7 @@ impl Context<'_, '_> {
             Role::SceneColor => self.pixel.depth.color,
             Role::SceneNormal => self.pixel.depth.normal,
             Role::Depth
+            | Role::Scope(_)
             | Role::Mask
             | Role::Scene
             | Role::Irradiance
@@ -132,6 +133,13 @@ impl evaluate::Context for Context<'_, '_> {
         self.input_value(register, &self.pixel.varyings)
     }
     fn constant(&self, buffer: usize, index: usize) -> [u32; 4] {
+        if let Some(scope) = self.native.scopes.get(&buffer) {
+            return scope
+                .get(index)
+                .copied()
+                .unwrap_or([0.0; 4])
+                .map(f32::to_bits);
+        }
         let p = &self.pixel;
         let value = match (buffer, index) {
             (0, i) => self.constants.get(i).copied().unwrap_or([0.0; 4]),
@@ -143,6 +151,7 @@ impl evaluate::Context for Context<'_, '_> {
                 .unwrap_or([0.0; 4]),
             (2, 0) => [0.0, 1.0, 0.0, 0.0],
             (8, 4) => [0.0, 0.0, 0.5, 0.5],
+            (8, 7) => [1.0; 4],
             (11, 0..=3) => {
                 let mut row = [0.0; 4];
                 row[index] = 1.0;
@@ -370,7 +379,11 @@ pub(in crate::model_preview) fn sample_with_ambient(
     let Some(native) = &material.native else {
         return ([0.0; 4], None);
     };
-    let exposure = if native.opaque() { 1.0 } else { pixel.exposure };
+    let exposure = if native.opaque() || native.modulates() {
+        1.0
+    } else {
+        pixel.exposure
+    };
     let Some(outputs) = outputs(model, material, constants, gear, pixel) else {
         return ([0.0; 4], None);
     };

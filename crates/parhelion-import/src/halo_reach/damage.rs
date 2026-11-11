@@ -71,10 +71,43 @@ pub(super) fn expand(
             .selected
             .get(&region.name)
             .context("Initial source region selection")?;
-        let permutations = variant
-            .regions
-            .get(&region.name)
-            .context("Source damage variant region")?;
+        // A transition to a state the region declares no form for draws no change in the
+        // source. The region keeps its previous form there, as the gaps below do.
+        ensure!(
+            transition_states(&scene.object.gameplay, &region.name)?
+                .iter()
+                .all(|state| (0..5).contains(state)),
+            "Source transition state exceeds the native damage states"
+        );
+        // A region the damage variant leaves out keeps its initial form in every state, as the
+        // source draws it.
+        let Some(permutations) = variant.regions.get(&region.name) else {
+            additional.insert(region.name.clone(), BTreeSet::from([initial.clone()]));
+            let region_index = geometry.regions.len();
+            let permutation = region
+                .permutations
+                .iter()
+                .find(|p| &p.name == initial)
+                .context("Source omitted region permutation")?;
+            ensure!(
+                permutation.instance_mask == [0; 4],
+                "Instanced damage permutation requires an explicit translation"
+            );
+            geometry.groups.push(Group {
+                region: region_index,
+                permutation: initial.clone(),
+                states: (0..5).collect(),
+                sections: permutation.sections.iter().copied().collect(),
+            });
+            geometry.regions.push(Region {
+                name: region.name.clone(),
+                source_permutation: 0,
+                source_alternatives: 0,
+                selected_probability: 1.,
+                states: std::array::from_fn(|_| initial.clone()),
+            });
+            continue;
+        };
         let (source_permutation, selected) =
             super::object::select_permutation(permutations, Some(initial)).with_context(|| {
                 format!(
@@ -82,48 +115,30 @@ pub(super) fn expand(
                     region.name
                 )
             })?;
-        for section in scene.object.gameplay["damage"]["sections"]
-            .as_array()
-            .context("Source damage sections")?
-        {
-            for response in section["responses"]
-                .as_array()
-                .context("Source damage responses")?
-            {
-                for transition in response["regions"]
-                    .as_array()
-                    .context("Source region transitions")?
-                {
-                    if transition["region"] == region.name {
-                        let state = transition["state"]
-                            .as_i64()
-                            .context("Source damage state ordinal")?;
-                        ensure!(
-                            state == 0
-                                || selected.states.iter().any(|s| i64::from(s.state) == state),
-                            "Source transition targets an undeclared damage state"
-                        );
-                    }
-                }
-            }
-        }
         let mut states = std::array::from_fn::<_, 5, _>(|_| initial.clone());
         let mut previous = initial.clone();
         for (ordinal, state) in states.iter_mut().enumerate() {
-            let options = selected
+            // Reach picks among several permutations of one state at random by their weight.
+            // Native damage forms are fixed per state, so the most probable one is kept, a drawn
+            // one before a hidden one on a tie, then the first in source order.
+            let option = selected
                 .states
                 .iter()
                 .filter(|s| usize::try_from(s.state).ok() == Some(ordinal))
-                .collect::<Vec<_>>();
-            ensure!(
-                options.len() <= 1,
-                "Random damage permutations require an explicit native selection rule"
-            );
-            if let Some(option) = options.first() {
+                .rev()
+                .max_by(|a, b| {
+                    a.probability
+                        .total_cmp(&b.probability)
+                        .then_with(|| (a.runtime_index >= 0).cmp(&(b.runtime_index >= 0)))
+                });
+            if let Some(option) = option {
                 if option.runtime_index < 0 {
+                    // A hidden state draws nothing. A name it carries belongs to a permutation
+                    // the render model doesn't hold.
                     ensure!(
-                        option.name.is_empty(),
-                        "Hidden source damage state names a permutation"
+                        option.name.is_empty()
+                            || region.permutations.iter().all(|p| p.name != option.name),
+                        "Hidden source damage state names a drawn permutation"
                     );
                     previous.clear();
                 } else {
@@ -192,6 +207,34 @@ pub(super) fn expand(
     scene.models[0].model = expanded;
     scene.damage = Some(geometry);
     Ok(())
+}
+
+/// The damage states the source responses move `region` to.
+fn transition_states(gameplay: &Value, region: &str) -> Result<Vec<i64>> {
+    let mut states = Vec::new();
+    for section in gameplay["damage"]["sections"]
+        .as_array()
+        .context("Source damage sections")?
+    {
+        for response in section["responses"]
+            .as_array()
+            .context("Source damage responses")?
+        {
+            for transition in response["regions"]
+                .as_array()
+                .context("Source region transitions")?
+            {
+                if transition["region"] == region {
+                    states.push(
+                        transition["state"]
+                            .as_i64()
+                            .context("Source damage state ordinal")?,
+                    );
+                }
+            }
+        }
+    }
+    Ok(states)
 }
 
 fn name(cache: &Cache, at: usize) -> Result<String> {

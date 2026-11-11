@@ -2,7 +2,7 @@
 use super::*;
 
 mod progress;
-pub(super) use progress::{Activity, InstallStatus};
+pub(super) use progress::{Activity, BuildFraction, InstallStatus};
 #[cfg(test)]
 mod tests;
 
@@ -18,7 +18,7 @@ fn draw_mods(ui: &mut egui::Ui, mods: &[crate::ModReport]) {
         return;
     }
     ui.strong("Managed Mods");
-    ui.label("Imported resources belong to their importer mods. Parhelion holds the records, native assets and stock patches. Changed folders are backed up together.");
+    ui.label("Each import source has its own mod, which can be removed on its own. Parhelion holds a source's rows of data Sunrise can't merge, and the source keeps everything else and needs Parhelion to load. Changed folders are backed up together.");
     if mods.iter().any(|member| {
         member.id == sundial::package_authoring::mod_content::ID
             && member.status == crate::ModStatus::Updated
@@ -29,14 +29,19 @@ fn draw_mods(ui: &mut egui::Ui, mods: &[crate::ModReport]) {
         ui.label("Imported resources move into the new importer mods listed below. Parhelion and the importer mods change in one transaction.");
     }
     for member in mods {
-        ui.collapsing(
-            format!("{}: {}", member.name, member.status.label()),
-            |ui| {
+        let title = format!("{}: {}", member.name, member.status.label());
+        if member.packages.is_empty() {
+            ui.label(title);
+        } else {
+            ui.collapsing(title, |ui| {
                 for package in &member.packages {
                     ui.monospace(package);
                 }
-            },
-        );
+            });
+        }
+        if let Some(note) = &member.note {
+            ui.weak(note);
+        }
     }
 }
 
@@ -118,7 +123,16 @@ impl PackageAuthoringApp {
                             {
                                 open_staging_requested = true;
                             }
-                            if ui.button("Close").clicked() {
+                            // A build runs to its end once started. It writes only its own staging
+                            // run, so leaving it running is safe, and the window says so.
+                            let close = if building {
+                                ui.button("Hide").on_hover_text(
+                                    "The build keeps running. Reopen this window from Build & Install Status.",
+                                )
+                            } else {
+                                ui.button("Close")
+                            };
+                            if close.clicked() {
                                 close_requested = true;
                             }
                         });
@@ -262,7 +276,7 @@ impl PackageAuthoringApp {
                         .replacement_review
                         .as_ref()
                         .and_then(|r| r.as_ref().ok())
-                        .is_some_and(|r| r.changes_account())
+                        .is_some_and(|r| r.changes_account() || r.grants_items())
                     {
                         "Back Up, Update & Install"
                     } else {
@@ -398,14 +412,28 @@ impl PackageAuthoringApp {
             None => return,
         };
         draw_mods(ui, review.mods());
-        if !review.changes_account() {
+        let grant_error = matches!(review.item_grants(), Some(Err(_)));
+        if !review.changes_account()
+            && !review.grants_items()
+            && !grant_error
+            && review.collection_unlocks() == 0
+        {
             ui.label("No account changes needed.");
+            return;
+        }
+        ui.strong("Account Changes");
+        self.draw_cleanup(ui, review);
+        self.draw_grants(ui, review);
+    }
+
+    /// The saved items, references and sockets the install removes or updates.
+    fn draw_cleanup(&self, ui: &mut egui::Ui, review: &crate::install::ReplacementReview) {
+        if !review.changes_account() {
             return;
         }
         let Some(cleanup) = review.account_cleanup() else {
             return;
         };
-        ui.strong("Account Changes");
         for movement in &cleanup.slot_moves {
             let name = self
                 .catalog
@@ -501,6 +529,78 @@ impl PackageAuthoringApp {
             );
         }
         reports::path_row(ui, "Account", &cleanup.settings_path);
+    }
+
+    /// The subclasses and shaders the install adds after its cleanup, the characters that equip
+    /// them, and the Collections unlocks it sets. A copy the account already holds is left
+    /// where it is, so a repeat install keeps each character's equipment and ability choices.
+    fn draw_grants(&self, ui: &mut egui::Ui, review: &crate::install::ReplacementReview) {
+        let unlocks = review.collection_unlocks();
+        if unlocks > 0 {
+            ui.label(format!(
+                "Unlock {unlocks} custom {} in Collections where not already unlocked.",
+                if unlocks == 1 { "item" } else { "items" }
+            ));
+        }
+        let grants = match review.item_grants() {
+            Some(Ok(grants)) => grants,
+            Some(Err(error)) => {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("Installs, but custom Subclasses and shaders can't be added: {error}"),
+                );
+                return;
+            }
+            None => return,
+        };
+        let name = |hash: u32| {
+            self.install_candidate()
+                .and_then(|build| build.weapons.iter().find(|item| item.item_hash == hash))
+                .map(|item| item.name.clone())
+                .or_else(|| {
+                    self.catalog
+                        .as_ref()
+                        .map(|catalog| catalog.plug_label(hash, false))
+                })
+                .unwrap_or_else(|| format!("Item 0x{hash:08X}"))
+        };
+        let place = |outcome: &sundial::package_authoring::account::AuthoredGrantOutcome| {
+            outcome.character_index.map_or_else(
+                || "the profile inventory".to_owned(),
+                |index| format!("Character {}", index + 1),
+            )
+        };
+        for outcome in &grants.added {
+            let equipped = grants.equipped.contains(outcome);
+            let reset = grants.abilities_reset.contains(outcome);
+            let mut line = if equipped {
+                format!(
+                    "Add and equip {} on {}.",
+                    name(outcome.item_hash),
+                    place(outcome)
+                )
+            } else {
+                format!("Add {} to {}.", name(outcome.item_hash), place(outcome))
+            };
+            if reset {
+                line.push_str(" Ability choices there start at the defaults.");
+            }
+            ui.label(line);
+        }
+        for outcome in &grants.full {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "No room to add {} to {}.",
+                    name(outcome.item_hash),
+                    place(outcome)
+                ),
+            );
+        }
+        if !grants.added.is_empty() {
+            ui.label("Characters that already hold these items keep their equipment.");
+            reports::path_row(ui, "Account", &grants.account_path);
+        }
     }
 
     pub(super) fn draw_install_status(&mut self, ui: &mut egui::Ui) {

@@ -18,6 +18,64 @@ pub(super) struct Source {
     pub bind: Vec<Pose>,
     pub parents: Vec<Option<usize>>,
     motions: BTreeMap<String, Vec<Vec<Pose>>>,
+    /// The first reference frame's local poses, which source overlays compose onto.
+    base: Vec<Pose>,
+    /// Source overlays, stored composed onto [`Self::base`].
+    overlays: BTreeSet<String>,
+    /// Planar root distance in metres over one pass of a clip with planar root movement.
+    /// Native gameplay moves the actor, so the movement itself is not played.
+    strides: BTreeMap<String, f32>,
+}
+
+/// Compose a source overlay sample onto its base: rotations multiply after the base rotation
+/// and translations add without rotation, as Reach applies overlays to a local pose.
+fn overlay(base: Pose, delta: [f32; 8]) -> Result<Pose> {
+    let [x, y, z, w, ..] = base.0;
+    let [i, j, k, r, ..] = delta;
+    Pose::checked([
+        w * i + x * r + y * k - z * j,
+        w * j - x * k + y * r + z * i,
+        w * k + x * j - y * i + z * r,
+        w * r - x * i - y * j - z * k,
+        base.0[4] + delta[4],
+        base.0[5] + delta[5],
+        base.0[6] + delta[6],
+        base.0[7] * delta[7],
+    ])
+}
+
+/// The planar distance a clip's kind-one root movement covers, from its dx/dy frame pairs.
+fn stride(root: &Path, shared: &Value, member: &Value) -> Result<f32> {
+    let sizes = member["sizes"]
+        .as_array()
+        .context("Source motion section sizes")?;
+    ensure!(sizes.len() == 17, "Source motion section layout differs");
+    let offset = sizes[..4].iter().try_fold(0usize, |total, value| {
+        total
+            .checked_add(usize::try_from(
+                value.as_u64().context("Source motion section size")?,
+            )?)
+            .context("Source motion section overflow")
+    })?;
+    let size = usize::try_from(sizes[4].as_u64().context("Source root motion size")?)?;
+    let frames = usize::try_from(shared["frames"].as_u64().context("Source frames")?)?;
+    ensure!(
+        size == frames.checked_mul(8).context("Root motion overflow")?,
+        "Source dx/dy stream does not cover its frames"
+    );
+    let bytes = fs::read(root.join(member["file"].as_str().context("Source motion resource")?))?;
+    let pairs = bytes
+        .get(offset..offset + size)
+        .context("Source root motion exceeds its resource")?;
+    let mut total = [0f32; 2];
+    for pair in pairs.chunks_exact(8) {
+        for (axis, value) in pair.chunks_exact(4).enumerate() {
+            let value = f32::from_le_bytes(value.try_into().unwrap());
+            ensure!(value.is_finite(), "Source root motion is not finite");
+            total[axis] += value;
+        }
+    }
+    Ok(total[0].hypot(total[1]) * crate::halo_reach::rig::METRES_PER_UNIT)
 }
 
 impl Source {
@@ -130,31 +188,45 @@ impl Source {
             ])?);
         }
         let mut motions = BTreeMap::new();
-        // Replacement clips inherit omitted channels from the selected base stance.
-        let reference = Self::decode(&graph, &options.reference, root, &bind, true)?;
-        let base = reference.first().context("Empty character reference")?;
+        let mut overlays = BTreeSet::new();
+        let mut strides = BTreeMap::new();
+        // Replacement clips inherit omitted channels from the selected base stance, and
+        // overlays compose onto its first frame.
+        let (reference, _) = Self::decode(&graph, &options.reference, root, &bind, true)?;
+        let base = reference
+            .first()
+            .context("Empty character reference")?
+            .clone();
         for name in requested {
-            motions.insert(
-                name.to_owned(),
-                if name == options.reference {
-                    reference.clone()
+            if name == options.reference {
+                motions.insert(name.to_owned(), reference.clone());
+                continue;
+            }
+            let kind = graph["clips"]
+                .as_array()
+                .context("Character clips")?
+                .iter()
+                .find(|clip| clip["name"] == name)
+                .context("Character action missing")?["shared"][0]["animation_type"]
+                .as_u64();
+            let (motion, stride) = Self::decode(
+                &graph,
+                &name,
+                root,
+                if matches!(kind, Some(2 | 3)) {
+                    &base
                 } else {
-                    let replacement = graph["clips"]
-                        .as_array()
-                        .context("Character clips")?
-                        .iter()
-                        .find(|clip| clip["name"] == name)
-                        .context("Character action missing")?["shared"][0]["animation_type"]
-                        == 3;
-                    Self::decode(
-                        &graph,
-                        &name,
-                        root,
-                        if replacement { base } else { &bind },
-                        false,
-                    )?
+                    &bind
                 },
-            );
+                false,
+            )?;
+            if kind == Some(2) {
+                overlays.insert(name.to_owned());
+            }
+            if let Some(stride) = stride {
+                strides.insert(name.to_owned(), stride);
+            }
+            motions.insert(name.to_owned(), motion);
         }
         crate::io::write_json(&root.join("character-animations.json"), &graph)?;
         Ok(Self {
@@ -163,16 +235,21 @@ impl Source {
             bind,
             parents,
             motions,
+            base,
+            overlays,
+            strides,
         })
     }
 
+    /// Decode one clip's local poses and, for planar root movement, the distance it covers.
+    /// Overlay samples compose onto `base`, and absent overlay channels leave it unchanged.
     fn decode(
         graph: &Value,
         name: &str,
         root: &Path,
         base: &[Pose],
         reference: bool,
-    ) -> Result<Vec<Vec<Pose>>> {
+    ) -> Result<(Vec<Vec<Pose>>, Option<f32>)> {
         let clips = graph["clips"].as_array().context("Character clips")?;
         let clip = clips
             .iter()
@@ -184,11 +261,20 @@ impl Source {
             .as_u64()
             .context("Character action kind")?;
         ensure!(
-            (kind == 1 || (!reference && kind == 3))
-                && shared["movement_type"] == 0
-                && member["movement"] == 0,
-            "Character motion requires a base or replacement action without root movement"
+            kind == 1 || (!reference && matches!(kind, 2 | 3)),
+            "Character motion requires a base, overlay or replacement action"
         );
+        let planar = shared["movement_type"] == 1 && member["movement"] == 1;
+        ensure!(
+            planar || (shared["movement_type"] == 0 && member["movement"] == 0),
+            "Character motion supports no root movement or planar root movement only"
+        );
+        ensure!(
+            !(reference && planar),
+            "A character reference stance cannot move its root"
+        );
+        let stride = planar.then(|| stride(root, shared, member)).transpose()?;
+        let overlaid = kind == 2;
         let file = member["motion"]["file"]
             .as_str()
             .context("Decoded character motion missing")?;
@@ -212,14 +298,14 @@ impl Source {
                 "Incomplete character motion channel"
             );
         }
-        (0..motion.frames)
+        let frames = (0..motion.frames)
             .map(|frame| {
                 motion
                     .tracks
                     .iter()
                     .zip(base)
                     .map(|(track, &base)| {
-                        let mut value = base.0;
+                        let mut value = if overlaid { Pose::IDENTITY.0 } else { base.0 };
                         if let Some(q) =
                             track
                                 .rotation
@@ -245,9 +331,71 @@ impl Source {
                             (value[7] - 1.).abs() < 1e-4,
                             "Character motion contains unsupported bone scaling"
                         );
-                        Pose::checked(value)
+                        if overlaid {
+                            overlay(base, value)
+                        } else {
+                            Pose::checked(value)
+                        }
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((frames, stride))
+    }
+
+    pub fn overlay(&self, action: &Action) -> Result<bool> {
+        let names = action.names(&self.graph)?;
+        let overlays = names
+            .iter()
+            .filter(|name| self.overlays.contains(**name))
+            .count();
+        ensure!(
+            overlays == 0 || overlays == names.len(),
+            "A character action sequence mixes overlays with complete poses"
+        );
+        Ok(overlays > 0)
+    }
+
+    /// The object poses of the stance that overlays compose onto.
+    pub fn base(&self) -> Vec<Pose> {
+        self.objects(&self.base)
+    }
+
+    pub fn stride(&self, action: &Action) -> Result<Option<f32>> {
+        let names = action.names(&self.graph)?;
+        let [name] = names.as_slice() else {
+            return Ok(None);
+        };
+        Ok(self.strides.get(*name).copied())
+    }
+
+    /// Sample one pass of a looping action over `frames` native frames that repeat every
+    /// `period` frames. The source pass wraps from its last sample to its first.
+    pub fn cycle(&self, action: &Action, frames: usize, period: usize) -> Result<Vec<Vec<Pose>>> {
+        ensure!(
+            frames > 0 && period > 0 && (frames == period || frames == period + 1),
+            "Looping character action has an invalid native period"
+        );
+        let names = action.names(&self.graph)?;
+        let [name] = names.as_slice() else {
+            anyhow::bail!("A looping character action selects one source clip")
+        };
+        let samples = self
+            .motions
+            .get(*name)
+            .context("Unprepared character action")?;
+        ensure!(!samples.is_empty(), "Character action is empty");
+        (0..frames)
+            .map(|frame| {
+                let time = frame as f32 * samples.len() as f32 / period as f32;
+                let first = (time.floor() as usize).min(samples.len());
+                let last = (first + 1) % samples.len();
+                let locals = samples[first % samples.len()]
+                    .iter()
+                    .zip(&samples[last])
+                    .map(|(&a, &b)| a.mix(b, time - first as f32))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(self.objects(&locals))
             })
             .collect()
     }

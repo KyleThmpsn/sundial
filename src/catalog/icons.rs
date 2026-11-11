@@ -45,6 +45,8 @@ const SUBCLASS_ICON_CACHE_PREFIX: u64 = 1_u64 << 60;
 const SECONDARY_ICON_CACHE_PREFIX: u64 = 1_u64 << 59;
 /// Namespaces the ammunition marks, keyed by their container tag.
 const AMMO_ICON_CACHE_PREFIX: u64 = 1_u64 << 58;
+/// Namespaces character creation thumbnails, keyed by their container tag.
+const CUSTOMIZATION_ICON_CACHE_PREFIX: u64 = 1_u64 << 57;
 
 #[cfg(test)]
 mod queue_tests;
@@ -168,6 +170,19 @@ impl Catalog {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         runtime.texture(context, &self.install_path, cache_key, container)
+    }
+
+    /// The creation menu's native face, hair or marking thumbnail.
+    pub(crate) fn customization_icon_texture(
+        &self,
+        context: &eframe::egui::Context,
+        container: u32,
+    ) -> Option<eframe::egui::TextureHandle> {
+        self.icon_texture_from_container(
+            context,
+            CUSTOMIZATION_ICON_CACHE_PREFIX | u64::from(container),
+            container,
+        )
     }
 
     /// The game's mark for an ammunition type, which carries its own class colour.

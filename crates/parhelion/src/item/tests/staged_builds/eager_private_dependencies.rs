@@ -1,7 +1,10 @@
 use super::*;
 use crate::perk::import::{Request as PerkImportRequest, prepare as prepare_perk_import};
 use crate::recipe::{HexHash, WeaponRecipe};
-use parhelion_import::d2_mot::{gameplay::perks, payload::Payload, reader::Reader};
+use parhelion_import::{
+    d2_mot::gameplay::perks,
+    tiger::{payload::Payload, reader::Reader},
+};
 use sha2::{Digest, Sha256};
 use sundial::package_authoring::{
     runtime::{

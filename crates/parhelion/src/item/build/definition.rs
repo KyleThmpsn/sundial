@@ -93,7 +93,7 @@ pub(super) fn apply_presentation(
 ) -> AuthoringResult<u16> {
     let identity = donor.weapon.identity;
     let authored_inventory_slot = weapon_inventory_slot(definition)?;
-    if let Some(presentation) = &donor.presentation_donor {
+    if let Some(presentation) = &donor.donors.presentation {
         transplant_weapon_geometry(definition, &presentation.definition)?;
         transplant_item_string_client_classification(
             strings,
@@ -107,9 +107,9 @@ pub(super) fn apply_presentation(
         // Stock Trust already names Kinetic here while its bucket is Energy.
         set_item_string_inventory_slot(strings, authored_inventory_slot)?;
     }
-    if let Some(render_gear) = &donor.render_gear_donor {
+    if let Some(render_gear) = &donor.donors.render_gear {
         transplant_weapon_render_gear(definition, &render_gear.definition)?;
-    } else if let Some(presentation) = &donor.presentation_donor {
+    } else if let Some(presentation) = &donor.donors.presentation {
         transplant_weapon_render_gear(definition, &presentation.definition)?;
     }
     if let Some(rows) = &donor.weapon.overrides.art_arrangements {
@@ -153,18 +153,19 @@ pub(super) fn apply_presentation(
     write_localized_reference(
         strings,
         ITEM_NAME_REFERENCE_OFFSET,
-        LOCALIZATION_DONOR_TABLE_INDEX as u32,
+        crate::package_profile::localization_table() as u32,
         identity.name_hash,
     )?;
     if donor.weapon.text.type_name.is_some() {
         write_localized_reference(
             strings,
             ITEM_TYPE_REFERENCE_OFFSET,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             identity.type_hash,
         )?;
     } else if let Some(presentation) = donor
-        .presentation_donor
+        .donors
+        .presentation
         .as_ref()
         .filter(|_| !donor.weapon.overrides.base_type)
     {
@@ -180,7 +181,7 @@ pub(super) fn apply_presentation(
     write_localized_reference(
         strings,
         ITEM_DESCRIPTION_REFERENCE_OFFSET,
-        LOCALIZATION_DONOR_TABLE_INDEX as u32,
+        crate::package_profile::localization_table() as u32,
         identity.flavor_hash,
     )?;
     // The item-string displaySource is the inventory tooltip's independent acquisition
@@ -189,7 +190,7 @@ pub(super) fn apply_presentation(
         write_localized_reference(
             strings,
             ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             identity.inventory_hint_hash,
         )?;
     } else {

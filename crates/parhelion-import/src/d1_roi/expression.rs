@@ -7,6 +7,20 @@ pub(super) struct Globals {
     pub scopes: BTreeMap<u8, u8>,
     pub dyes: [DyeScope; 3],
     pub depth: Depth,
+    pub advanced: Advanced,
+    /// Pixel texture slots of the three light-sample results, which both transparent scopes
+    /// bind from their extern fields 1 to 3.
+    pub light_samples: [u32; 3],
+}
+
+/// The `transparent_advanced` scope. Both builds fill its eight rows per draw (source
+/// `008D0D70`, native `01224DD0`) into the same pixel buffer, and both stored scope programs
+/// are empty.
+#[derive(Clone, Copy)]
+pub(super) struct Advanced {
+    /// Source scope ordinal, the material dependency-mask bit.
+    pub index: u32,
+    pub slot: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -17,8 +31,8 @@ pub(super) struct Depth {
     pub vectors: u8,
 }
 
-// Only vector zero has an equivalent producer in both transparent scopes.
-// Validate instruction boundaries, including every write, before using it.
+// Depth, irradiance and the common zero field have qualified producers. Validate the
+// complete scope instruction boundaries before admitting an individual output row.
 fn depth_producer(scope: &Payload, field: usize, write: u8) -> Result<()> {
     let range = scope.array_range(field, 1, Some(0x80800009))?;
     let code = &scope.0[range];
@@ -66,6 +80,21 @@ fn irradiance_producer(scope: &Payload, field: usize, source: bool) -> Result<()
             "Transparent irradiance vector producer differs"
         );
     }
+    let expected = [
+        0x3D,
+        if source { 41 } else { 39 },
+        if source { 6 } else { 9 },
+        if source { 0x42 } else { 0x43 },
+        5,
+    ];
+    let writes = code
+        .chunks_exact(5)
+        .filter(|pair| pair[3] == expected[3] && pair[4] == 5)
+        .collect::<Vec<_>>();
+    ensure!(
+        writes.len() == 1 && writes[0] == expected,
+        "Transparent zero-vector producer differs"
+    );
     Ok(())
 }
 
@@ -201,7 +230,7 @@ impl Globals {
             index: source_index as u32,
             source: source_depth.u32(0x90)?,
             native: native_depth.u32(0xB8)?,
-            vectors: 0b0001_1101,
+            vectors: 0b0011_1101,
         };
         ensure!(
             (1..=9).contains(&depth.source)
@@ -209,6 +238,58 @@ impl Globals {
                 && !dyes.iter().any(|d| d.slot == depth.native),
             "Transparent depth buffer conflicts with another bank"
         );
+        // The transparent scopes bind the light-sample results from extern fields 1 to 3 to
+        // pixel textures 12 to 14: source `3F 29 n 46 2B+n`, native `3F 27 n 47 2B+n`.
+        let light_samples = [12, 13, 14];
+        for (scope, field, extern_, bind) in [
+            (&source_depth, 0x38, 0x29, 0x46),
+            (native_depth.as_ref(), 0x58, 0x27, 0x47),
+        ] {
+            let code = scope.array_range(field, 1, Some(0x80800009))?;
+            let rows = scope.0[code].chunks_exact(5).collect::<Vec<_>>();
+            for (index, slot) in (1u8..).zip(light_samples) {
+                ensure!(
+                    rows.contains(&&[0x3F, extern_, index, bind, 0x20 | slot as u8][..]),
+                    "Transparent light-sample texture producer differs"
+                );
+            }
+        }
+        let position = |names: &[String]| names.iter().position(|n| n == "transparent_advanced");
+        let source_index =
+            position(&source_scopes).context("Source advanced transparent scope is missing")?;
+        let native_index =
+            position(&native_scopes).context("Native advanced transparent scope is missing")?;
+        ensure!(
+            source_index < 32 && native_index < 32,
+            "Advanced transparent scope exceeds its mask"
+        );
+        let source_advanced = source.read(from.u32(source_rows[source_index] + 12)?)?;
+        let native_advanced =
+            native.tag(to.u32(scope_rows[native_index] + 12)?, Some(0x808071F3))?;
+        let slot = source_advanced.u32(0x90)?;
+        ensure!(
+            source_advanced
+                .array_range(0x38, 1, Some(0x80800009))?
+                .is_empty()
+                && native_advanced
+                    .array_range(0x58, 1, Some(0x80800009))?
+                    .is_empty()
+                && source_advanced.array(0x68, 16, Some(0x80800090))?.len() == 8
+                && native_advanced.array(0x88, 16, Some(0x80800090))?.len() == 8
+                && native_advanced.u32(0xB8)? == slot,
+            "Advanced transparent scope differs"
+        );
+        ensure!(
+            (1..=13).contains(&slot)
+                && slot != depth.native
+                && slot != depth.source
+                && !dyes.iter().any(|d| d.slot == slot),
+            "Advanced transparent buffer conflicts with another bank"
+        );
+        let advanced = Advanced {
+            index: source_index as u32,
+            slot,
+        };
         let scopes = source_scopes
             .into_iter()
             .enumerate()
@@ -224,6 +305,8 @@ impl Globals {
             scopes,
             dyes: dyes.try_into().ok().context("Native dye banks")?,
             depth,
+            advanced,
+            light_samples,
         })
     }
 
@@ -284,6 +367,9 @@ pub(super) struct Program {
     pub textures: BTreeMap<u32, String>,
     /// Renderer globals absent from Shadowkeep retain their source default.
     pub defaulted_globals: Vec<u8>,
+    /// Frame extern fields, as texture or vector field operands, that take their source value
+    /// without a Shadowkeep producer.
+    pub defaulted_frame: Vec<[u8; 2]>,
     /// The texture register that takes the reticle mask, when the stage binds it.
     pub reticle_mask: Option<u32>,
 }
@@ -337,8 +423,23 @@ pub(super) fn operand_bytes(op: u8) -> Result<usize> {
     })
 }
 
-#[allow(clippy::cognitive_complexity)]
 pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) -> Result<Program> {
+    translate_in(code, constants, inputs, false)
+}
+
+/// Particle publishers supply the emitter packet, compact draw values and model transform.
+/// Their bindings are distinct from equipment inputs even when both use the same VM.
+pub(super) fn particle(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) -> Result<Program> {
+    translate_in(code, constants, inputs, true)
+}
+
+#[allow(clippy::cognitive_complexity)]
+fn translate_in(
+    code: &[u8],
+    constants: Vec<u8>,
+    inputs: &Inputs<'_>,
+    particle: bool,
+) -> Result<Program> {
     ensure!(
         constants.len().is_multiple_of(16) && constants.len() / 16 <= 256,
         "Invalid source expression constants"
@@ -348,6 +449,7 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
         constants,
         textures: BTreeMap::new(),
         defaulted_globals: Vec::new(),
+        defaulted_frame: Vec::new(),
         reticle_mask: None,
     };
     let mut at = 0;
@@ -397,6 +499,16 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                     at += 2;
                     continue;
                 }
+                if matches!(args, [1, 16 | 17]) {
+                    // Every frame extern Rise of Iron builds is 0x170 bytes, zeroed by its
+                    // allocation, and no traced writer fills +80 or +88, so these fields bind the
+                    // null resource, as an absent detail texture does.
+                    result.constant([0; 16])?;
+                    result.code.extend([0x47, slot]);
+                    result.defaulted_frame.push([args[0], args[1]]);
+                    at += 2;
+                    continue;
+                }
                 let symbol = match args {
                     [25, index @ 0..=2] => &inputs.plates[usize::from(*index)],
                     [27, index @ 0..=1] => &inputs.detail[usize::from(*index)],
@@ -430,6 +542,12 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                 at += 2;
             }
             0x3D => {
+                if particle && let [24, vector @ 0..=7] = args {
+                    // The source draw publisher copies its emitter packet to extern 24.
+                    // The native publisher copies the same ordered bytes to extern 25.
+                    result.code.extend([op, 25, *vector]);
+                    continue;
+                }
                 if args == [3, 0] {
                     // Both checked transparent scopes consume the same depth vector.
                     result.code.extend([0x3D, 3, 0]);
@@ -446,7 +564,15 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                 let value = match args {
                     // Normal production rendering with the source dye-debug display disabled.
                     [31, 0] => vector([0., 1., 1., 1.]),
-                    [27, index @ 1..=4] => match inputs.dye {
+                    // Frame vector 19 holds the scene's wind, which 008B11F0 copies from the
+                    // scene's wind record and zeroes without one. No traced writer fills vector 21,
+                    // which every frame extern's allocation zeroes. Shadowkeep has no established
+                    // counterpart, so both take the zero of a frame without wind.
+                    [1, field @ (19 | 21)] => {
+                        result.defaulted_frame.push([1, *field]);
+                        [0; 16]
+                    }
+                    [27, index @ 1..=5] => match inputs.dye {
                         Dye::Unset(_) if *index == 2 => vector([0., 0., 1., 0.]),
                         Dye::Selected { dye, secondary } | Dye::Unset(Some((dye, secondary))) => {
                             let offset = match *index {
@@ -460,6 +586,9 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                                         0x90
                                     }
                                 }
+                                // Source 00884FE0 stores the secondary color at +50 whichever
+                                // lane the dye byte selects for +40.
+                                5 => 0xA0,
                                 _ => unreachable!(),
                             };
                             let mut value = dye.bytes::<16>(offset)?;
@@ -487,8 +616,19 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
                 result.constant(value)?;
             }
             0x3C => match args {
+                [24, scalar @ 0..=31] if particle => {
+                    result.code.extend([op, 25, *scalar]);
+                }
+                [26, scalar @ 8..=13] if particle => {
+                    // Source draw values +20..+37 move to native +110..+127. These
+                    // are scalar indices, independent of the named scope-mask bits.
+                    result.code.extend([op, 26, scalar + 60]);
+                }
                 [4, 64] | [1, 7] if inputs.light => result.code.extend([op, args[0], args[1]]),
-                [1, 0 | 1] => result.code.extend([op, args[0], args[1]]),
+                // Frame scalars 0, 1 and 4 keep their fields. Where a source program reads scalar
+                // 4, a native program of the same decoded shape reads it at the same instruction
+                // 60 of 65 times, as scalar 0 does 525 times.
+                [1, 0 | 1 | 4] => result.code.extend([op, args[0], args[1]]),
                 // The inspected D1 frame producer writes zero to this fade input.
                 [1, 28] => result.constant([0; 16])?,
                 _ => anyhow::bail!("Untranslated source frame input {args:?}"),
@@ -496,6 +636,7 @@ pub(super) fn translate(code: &[u8], constants: Vec<u8>, inputs: &Inputs<'_>) ->
             // The source and native view producers retain these matrix blocks at
             // extern byte offsets 0x20, 0x60 and 0x120 despite camera layout changes.
             0x3E if matches!(args, [2, 2 | 6 | 18]) => result.code.extend([op, 2, args[1]]),
+            0x3E if particle && args == [8, 0] => result.code.extend([op, 8, 0]),
             0x3E | 0x40 => anyhow::bail!("Untranslated source matrix or integer extern {args:?}"),
             0x04 if !top.is_empty() => {
                 // Both interpreters return infinity or NaN for a zero divisor, and source

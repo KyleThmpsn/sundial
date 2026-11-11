@@ -41,6 +41,10 @@ impl PackageAuthoringApp {
             donors.entry(donor.hash).or_insert(donor);
         }
         let summary = |hash: u32| donors.get(&hash).copied();
+        let mut linked = entries
+            .clone()
+            .map(|entry| entry.kind.is_weapon() && entry.import_ornaments)
+            .collect::<Vec<_>>();
         let mut members = entries
             .map(|entry| {
                 (
@@ -87,14 +91,19 @@ impl PackageAuthoringApp {
             origin: current_origin.as_ref(),
             ornament: self.recipe.is_imported_ornament(),
         };
+        let current_linked = self.recipe.kind.is_weapon() && links_appearances(&self.recipe);
         if included {
             members.push(current);
+            linked.push(current_linked);
             gear_entries.push(current_gear);
         }
         let gear_pages = self.gear_collection_pages(&gear_entries);
-        let budget = NodeBudget::new(members.iter().copied()).with_gear_pages(gear_pages.len());
+        let ornament_pages = added_ornament_pages(&members, &linked);
+        let budget = NodeBudget::new(members.iter().copied())
+            .with_gear_pages(gear_pages.len() + ornament_pages.len());
         let mut selected_nodes = custom_node_hashes(members.iter().copied());
         selected_nodes.extend(gear_page_node_hashes(gear_pages.iter().copied()));
+        selected_nodes.extend(ornament_page_node_hashes(&ornament_pages));
         let installed_nodes = self.catalog.as_ref().map_or_else(BTreeSet::new, |catalog| {
             installed_custom_nodes(catalog.presentation_node_hashes())
         });
@@ -153,11 +162,16 @@ impl PackageAuthoringApp {
             ui.label(status).on_hover_text(&detail);
         }
         if !included {
-            let mut with_draft = custom_node_hashes(members.into_iter().chain([current]));
+            members.push(current);
+            linked.push(current_linked);
+            let mut with_draft = custom_node_hashes(members.iter().copied());
             gear_entries.push(current_gear);
             with_draft.extend(gear_page_node_hashes(
                 self.gear_collection_pages(&gear_entries),
             ));
+            with_draft.extend(ornament_page_node_hashes(&added_ornament_pages(
+                &members, &linked,
+            )));
             let with_draft = combined_custom_nodes(&installed_nodes, &with_draft).len();
             if with_draft > custom_used {
                 ui.weak(format!(
@@ -284,7 +298,9 @@ impl PackageAuthoringApp {
         ui.horizontal_wrapped(|ui| {
             let automatic = ui
                 .add(egui::Button::new("Automatic").selected(position.is_none()))
-                .on_hover_text("First, or Last when another Sunrise mod changes Collections");
+                .on_hover_text(
+                    "First, or Last for items in an importer mod and when another Sunrise mod changes Collections",
+                );
             if automatic.clicked() {
                 *position = None;
             }
@@ -402,6 +418,46 @@ impl PackageAuthoringApp {
             |rarity| rarity == crate::RecipeRarity::Exotic,
         )
     }
+}
+
+/// The weapon types whose Weapon Ornaments page a build adds: a type with no stock page, such as
+/// Glaives, of an ordinary weapon that brings ornaments of its own. `members` are the recipes'
+/// Collections destinations, which an Exotic has none of, and `linked` whether each recipe's
+/// imported graph carries appearances, as `item::placements` plans them.
+fn added_ornament_pages(
+    members: &[(Option<&str>, Option<Destination>)],
+    linked: &[bool],
+) -> BTreeSet<Family> {
+    members
+        .iter()
+        .zip(linked)
+        .filter(|&(_, &linked)| linked)
+        .filter_map(|((_, destination), _)| destination.map(|destination| destination.family))
+        .filter(|family| family.ornament_exemplar().is_none())
+        .collect()
+}
+
+fn ornament_page_node_hashes(families: &BTreeSet<Family>) -> BTreeSet<u64> {
+    families
+        .iter()
+        .map(|family| u64::from(family.ornament_page_hash("node")))
+        .collect()
+}
+
+/// Whether `recipe`'s imported graph carries appearances, such as ornaments, as a library
+/// listing reads it.
+#[cfg(feature = "d2-model-importer")]
+fn links_appearances(recipe: &WeaponRecipe) -> bool {
+    recipe
+        .overrides
+        .imported_graph
+        .as_ref()
+        .is_some_and(|graph| !graph.attachments.is_empty())
+}
+
+#[cfg(not(feature = "d2-model-importer"))]
+fn links_appearances(_: &WeaponRecipe) -> bool {
+    false
 }
 
 fn combined_custom_nodes(installed: &BTreeSet<u64>, selected: &BTreeSet<u64>) -> BTreeSet<u64> {

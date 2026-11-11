@@ -28,6 +28,13 @@ pub(super) fn sqlite_change_summaries(
 ) -> Vec<String> {
     let mut changes = Vec::new();
     summarize_native_value(
+        "character_appearance",
+        &before.appearance_summary(),
+        &after.appearance_summary(),
+        limit,
+        &mut changes,
+    );
+    summarize_native_value(
         "inventory_state",
         &before.inventory_state_summary(),
         &after.inventory_state_summary(),

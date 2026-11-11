@@ -3,16 +3,25 @@ use super::PerkRecipe;
 use crate::bundled_defaults::{self, AppliedVersions, DefaultsRefresh};
 mod embedded;
 mod restore;
+pub(crate) mod saved;
 pub use embedded::ImportReport;
 use fs2::FileExt;
 pub(crate) use restore::RestoreDefaults;
+use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
 };
 
 const BUNDLED_VERSIONS_FILE_NAME: &str = "bundled-versions.json";
+
+/// Each perk file's perk as it last read, by path, with the SHA-256 of the bytes it read from. A
+/// perk's image decodes as it reads, so a library of hundreds takes seconds to read whole, and the
+/// workbench reads it again after every save, delete and import. Matching bytes, not a file's
+/// length and time, decide that a file is unchanged, so an edit within one clock tick still reads.
+static READ: Mutex<BTreeMap<PathBuf, ([u8; 32], PerkRecipe)>> = Mutex::new(BTreeMap::new());
 
 #[derive(Clone, Debug)]
 pub struct Library {
@@ -63,23 +72,101 @@ impl Library {
         self.refresh.as_ref()
     }
 
+    /// Every perk in the library, read on several threads. Unchanged files reuse their parsed result.
     pub fn scan(&self) -> Result<Scan, String> {
-        let mut scan = Scan::default();
+        let mut paths = Vec::new();
         for entry in fs::read_dir(&self.root).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            if !entry.file_name().to_string_lossy().ends_with(".perk.json") {
-                continue;
-            }
-            match Self::read(&entry.path()) {
-                Ok(entry) => scan.entries.push(entry),
-                Err(error) => scan
-                    .errors
-                    .push(format!("{}: {error}", entry.path().display())),
+            if entry.file_name().to_string_lossy().ends_with(".perk.json") {
+                paths.push(entry.path());
             }
         }
+        let read = crate::recipe_library::in_parallel(&paths, Self::read_known);
+        let mut scan = Scan::default();
+        for (path, entry) in paths.iter().zip(read) {
+            match entry {
+                Ok(entry) => scan.entries.push(entry),
+                Err(error) => scan.errors.push(format!("{}: {error}", path.display())),
+            }
+        }
+        // Perks removed from this library leave the record.
+        let present = paths.iter().collect::<BTreeSet<_>>();
+        READ.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|path, _| !path.starts_with(&self.root) || present.contains(path));
         scan.entries
             .sort_by_cached_key(|entry| entry.recipe.name.to_lowercase());
         Ok(scan)
+    }
+
+    /// Whether the library's perk files are still the ones `scan` read, by name, size and
+    /// modified time, which needs no file read. A scan that could not read a file never stands,
+    /// since that file is not among its entries.
+    pub(crate) fn unchanged_since(&self, scan: &Scan) -> bool {
+        if !scan.errors.is_empty() {
+            return false;
+        }
+        let read = scan
+            .entries
+            .iter()
+            .map(|entry| (entry.path.as_path(), entry))
+            .collect::<BTreeMap<_, _>>();
+        let Ok(listing) = fs::read_dir(&self.root) else {
+            return false;
+        };
+        let mut found = 0;
+        for entry in listing {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if !entry.file_name().to_string_lossy().ends_with(".perk.json") {
+                continue;
+            }
+            found += 1;
+            let path = entry.path();
+            let (Some(known), Ok(metadata)) = (read.get(path.as_path()), entry.metadata()) else {
+                return false;
+            };
+            if known.modified.is_none()
+                || metadata.modified().ok() != known.modified
+                || metadata.len() != known.baseline.len() as u64
+            {
+                return false;
+            }
+        }
+        found == read.len()
+    }
+
+    /// [`Self::read`], taking the perk [`READ`] holds for the file's bytes when it holds one.
+    fn read_known(path: &Path) -> Result<Entry, String> {
+        let baseline = fs::read(path).map_err(|error| error.to_string())?;
+        let digest: [u8; 32] = Sha256::digest(&baseline).into();
+        let known = READ
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(path)
+            .filter(|(read, _)| *read == digest)
+            .map(|(_, recipe)| recipe.clone());
+        let recipe = match known {
+            Some(recipe) => recipe,
+            None => {
+                let recipe: PerkRecipe =
+                    serde_json::from_slice(&baseline).map_err(|error| error.to_string())?;
+                recipe.validate()?;
+                READ.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(path.to_owned(), (digest, recipe.clone()));
+                recipe
+            }
+        };
+        Ok(Entry {
+            recipe,
+            path: path.to_owned(),
+            baseline,
+            modified: fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        })
     }
 
     /// Adds the bundled examples the library does not hold yet, except ones the reader

@@ -3,10 +3,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    HexHash, WeaponSandboxPerkRuntimeRecipe, WeaponSocketPlugVariantRecipe, WeaponStatOverride,
-};
+use crate::{HexHash, WeaponSandboxPerkRuntimeRecipe, WeaponStatOverride};
 
+mod attachment;
 mod bundled;
 #[cfg(feature = "d2-model-importer")]
 pub mod import;
@@ -23,6 +22,9 @@ pub(crate) const SANDBOX_PERK_CAPACITY: usize = 4;
 /// An ordinary native trait plug supplies the item layout for a new document.
 /// Its effects are always replaced by the explicit authored effect list.
 pub const DEFAULT_PLUG_LAYOUT: u32 = 0x45A0_BDD7;
+/// Finished sandbox perks whose rows supply the layout of an authored effect. The compiler emits
+/// an entirely new action, so each carries any program. One perk's effects need distinct ones.
+pub const EFFECT_CARRIERS: [u16; 6] = [421, 422, 1178, 338, 1778, 405];
 
 /// Package artwork stays a reference. Downloaded artwork travels with the recipe.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -169,37 +171,6 @@ impl PerkRecipe {
         self.at_socket(0, 0)
             .validate()
             .map_err(|error| error.to_string())
-    }
-
-    /// Attachment takes a copy. Subsequent library edits do not mutate weapons.
-    #[must_use]
-    pub fn at_socket(&self, socket_index: u16, choice_index: u16) -> WeaponSocketPlugVariantRecipe {
-        WeaponSocketPlugVariantRecipe {
-            replace_effects: true,
-            socket_index,
-            choice_index,
-            source_plug_hash: self.template_plug.clone(),
-            name: Some(self.name.clone()),
-            // A custom perk owns its description, including an intentionally blank one.
-            // None would inherit unrelated gameplay text from the icon donor.
-            description: Some(if self.description.trim().is_empty() {
-                String::new()
-            } else {
-                self.description.clone()
-            }),
-            icon: self.icon.clone(),
-            classification_donor_hash: self.classification.clone(),
-            offer_everywhere: self.offer_everywhere,
-            projectile: self.projectile,
-            // Saved recipes keep stats in index order, so an applied perk equals its saved form.
-            investment_stats: {
-                let mut stats = self.stats.clone();
-                stats.sort_unstable_by_key(|stat| stat.definition_index);
-                stats
-            },
-            additional_sandbox_perks: Vec::new(),
-            sandbox_perks: self.effects.clone(),
-        }
     }
 }
 

@@ -13,7 +13,7 @@ static DECLARATIONS: OnceLock<Vec<Declaration>> = OnceLock::new();
 fn declaration(class: u32) -> Result<&'static Declaration> {
     DECLARATIONS
         .get_or_init(|| {
-            serde_json::from_str(include_str!("schema.json"))
+            serde_json::from_str(include_str!("equivalent/schema.json"))
                 .expect("embedded source orb declarations")
         })
         .iter()

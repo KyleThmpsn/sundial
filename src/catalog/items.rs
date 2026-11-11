@@ -33,7 +33,7 @@ pub(in crate::catalog) use inventory::scan_inventory_bucket_descriptors;
 pub(crate) use inventory::{InventoryDefinition, InventoryMetadata, InventoryScope};
 pub(crate) use investment::{
     InvestmentStatDisplayPoint, ItemInvestmentStat, ItemStatDefinition, ItemStatGroup,
-    format_in_game_investment_stat, interpolate_investment_stat_display,
+    interpolate_investment_stat_display,
 };
 pub(in crate::catalog) use investment::{
     scan_character_stat_rows, scan_stat_definitions, scan_stat_groups,

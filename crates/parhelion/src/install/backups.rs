@@ -26,12 +26,15 @@ fn completed_backup_owner(path: &Path) -> Option<PathBuf> {
         return None;
     }
     let record = read_install_transaction(&marker).ok()?;
-    // Account-removing installs are recovery sets, not disposable automatic snapshots.
-    if record.account_cleanup.is_some()
-        || record
-            .client_settings
-            .as_ref()
-            .is_some_and(account::AccountCleanupRecord::changes_source)
+    // An install that changed the account or Sunrise settings keeps its backup as a recovery set,
+    // since that backup holds the only copy of the earlier bytes. A review records a cleanup on
+    // every install, including ones that removed nothing, so only a change protects the backup.
+    // The mod-folder route applies the same rule (`loader::completed_backup_owner`).
+    if record
+        .account_cleanup
+        .iter()
+        .chain(record.client_settings.iter())
+        .any(account::AccountCleanupRecord::changes_source)
     {
         return None;
     }

@@ -16,7 +16,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use sundial::package_authoring::{PackageManager, runtime};
 use tiger_pkg::TagHash;
+mod energy;
+mod glyph;
 mod query;
+pub(crate) mod selection;
 mod storage;
 pub use storage::Offsets;
 
@@ -60,8 +63,30 @@ fn read(manager: &PackageManager, tag: u32, class: u32) -> Result<Payload> {
 /// deliberately separate from a complete D1-controller translation. The containing graph must
 /// connect the returned script aliases, publish the correct private bank and retain all common
 /// providers before the owner can be loaded.
-#[allow(clippy::cognitive_complexity)]
 pub fn prepare(manager: &PackageManager, template: u32, symbol: &str) -> Result<Prepared> {
+    prepare_with_selection(manager, template, symbol, None)
+}
+
+/// Translate the source controller's embedded ally query together with its native owner.
+pub fn prepare_source(
+    manager: &PackageManager,
+    template: u32,
+    symbol: &str,
+    source: &crate::d1_roi::Source,
+    controller: &Payload,
+) -> Result<Prepared> {
+    let registry = read(manager, 0x80C70CA1, 0x808094B4)?;
+    let selection = selection::Selection::read(source, controller, &registry)?;
+    prepare_with_selection(manager, template, symbol, Some(&selection))
+}
+
+#[allow(clippy::cognitive_complexity)]
+fn prepare_with_selection(
+    manager: &PackageManager,
+    template: u32,
+    symbol: &str,
+    selection: Option<&selection::Selection>,
+) -> Result<Prepared> {
     let original = read(manager, template, 0x80809C36)?;
     let live = original.pointer(16)?;
     let old_definition = original.pointer(24)?;
@@ -185,6 +210,10 @@ pub fn prepare(manager: &PackageManager, template: u32, symbol: &str) -> Result<
     put(&mut owner.payload.0, geometry + 4, &1.0f32.to_le_bytes())?;
     relative(&mut owner.payload, definition + 0x810, geometry)?;
     owner.size()?;
+    let query_geometry = match selection {
+        Some(selection) => selection.write(&mut owner, geometry)?,
+        None => json!({"class":0x808092B1u32,"kind":2,"radius":1.0,"nested_provider":false}),
+    };
 
     let mut script_aliases = Vec::new();
     for (at, settings) in [(0xAE0, 0x6C0), (0xBD0, 0x630)] {
@@ -441,7 +470,7 @@ pub fn prepare(manager: &PackageManager, template: u32, symbol: &str) -> Result<
     let evidence = json!({"template":template,"native_classes":[CLASSES.0,CLASSES.1],
         "template_sha256":hex::encode(Sha256::digest(&original.0)),
         "retained_callbacks":retained,"script_aliases":script_aliases,
-        "query_geometry":{"class":0x808092B1u32,"kind":2,"radius":1.0,"nested_provider":false},
+        "query_geometry":query_geometry,
         "query_action":query.evidence,
         "sequence_policy":"Each specialized input retains its common donor's connection policy.",
         "slot_binding":{"interface":0x80803BEAu32,"row":14,"implementation":CLASSES.0,"method":2},

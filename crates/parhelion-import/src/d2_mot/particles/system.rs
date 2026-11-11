@@ -136,18 +136,6 @@ impl System {
     }
 }
 
-/// Translate the class-80806929 container, preserving model order. Native
-/// class 80806E2E keeps the same envelope and a class-808073A4 model array.
-pub fn model_container(bytes: &[u8], dependencies: &BTreeMap<u32, Dependency>) -> Result<Vec<u8>> {
-    let models = model_container_sources(bytes)?;
-    let mut out = model_container_payload(&models);
-    for (i, source) in models.into_iter().enumerate() {
-        out[64 + i * 4..68 + i * 4]
-            .copy_from_slice(&link(dependencies, source, 0x808073A5)?.to_le_bytes());
-    }
-    Ok(out)
-}
-
 /// Validate a source wrapper before allocating or linking any geometry nodes.
 /// Duplicated models remain duplicated and their authored order is retained.
 pub fn model_container_sources(bytes: &[u8]) -> Result<Vec<u32>> {

@@ -1,4 +1,5 @@
 # Preserve the upstream writer's exact bytes and provenance hashes on every platform.
 *.pkg binary
 *.merge binary
+*.bin binary
 mod.json -text

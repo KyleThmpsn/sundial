@@ -95,6 +95,13 @@ pub(crate) fn inputs(
     objects: &mut Vec<Relocation>,
 ) -> Result<usize> {
     let source_rows = source.array(sd, 40, Some(0x80809591))?;
+    // A builtin-only expression has no external input instances to construct. Its containing
+    // controller need not carry an unrelated sequence's scalar-input template.
+    if source_rows.is_empty() {
+        array(output, ri, 0x80809788, &[], 96)?;
+        array(output, nd, 0x80809789, &[], 40)?;
+        return Ok(0);
+    }
     let source_owner = source.u32(source.pointer(16)?)?;
     let native_owner = output.u32(output.pointer(16)?)?;
     let troot = template.pointer(24)?;
@@ -319,9 +326,20 @@ pub fn emit(
     objects.extend(super::interfaces::event(source, &output, bindings)?);
     let output_allocation =
         super::outputs::emit(source, template, &mut output, bindings, &mut objects)?;
+    // A native flow without scalar inputs, as some slot flows are, takes its input rows from the
+    // first event template that holds them. A sequence without inputs reads none of them.
+    let input_template = std::iter::once(template)
+        .chain(bindings.event_templates.iter())
+        .find(|envelope| {
+            envelope
+                .pointer(24)
+                .and_then(|d| envelope.array(d + 0x188, 40, Some(0x80809789)))
+                .is_ok_and(|rows| !rows.is_empty())
+        })
+        .unwrap_or(template);
     let main_count = inputs(
         source,
-        template,
+        input_template,
         &mut output,
         sd + 0x208,
         nd + 0x188,
@@ -332,7 +350,7 @@ pub fn emit(
     )?;
     let aux_count = inputs(
         source,
-        template,
+        input_template,
         &mut output,
         sd + 0x380,
         nd + 0x2B8,

@@ -85,7 +85,7 @@ fn native_lists(
 }
 
 /// A query filter's labels as Shadowkeep objects can carry them, by the [`restrict`] rule.
-pub(in crate::d1_roi::native) fn destination(
+pub(in crate::d1_roi) fn destination(
     source: &Source,
     p: &Payload,
     at: usize,
@@ -97,22 +97,42 @@ pub(in crate::d1_roi::native) fn destination(
     restrict(source, tag, lists, registry)
 }
 
+/// Rise of Iron combatant rank atoms Shadowkeep replaced with its own rank vocabulary, source then
+/// native. Source atoms 175 to 180 form one rank block, which owners such as `816E6024` and matrix
+/// `80AAD664` pair with each combatant, and none of them is in Shadowkeep's registry. Hive
+/// Disruptor's "Increase damage to Hive Majors" filter matches `A4FB017C`. Shadowkeep authors
+/// majors with `elite` (`574459CE`), as its per-race `base` and `elite` filters and stock kill
+/// actions such as `80BC2945` do. The correspondence follows descriptions and rank structure, not a
+/// shared asset, so it is a product choice rather than a structural witness.
+const RANKS: [(u32, u32); 1] = [(0xA4FB_017C, 0x5744_59CE)];
+
 /// A source atom the destination registry lacks is on no destination object, so match any
 /// drops it, require all can never hold, exclude any drops it and exclude all together always
 /// holds. `None` means the filter can never hold. A source group the registry lacks has no
-/// established expansion and rejects.
+/// established expansion and rejects. A [`RANKS`] atom first takes its native rank.
 fn restrict(
     source: &Source,
     tag: u32,
     mut lists: [Vec<u32>; 4],
     registry: &Payload,
 ) -> Result<Option<[Vec<u32>; 4]>> {
-    let held = registry
-        .array(8, 4, Some(0x80800070))?
-        .into_iter()
-        .chain(registry.array(24, 44, Some(0x808094BE))?)
-        .map(|row| registry.u32(row))
-        .collect::<Result<BTreeSet<_>>>()?;
+    let held = held(registry)?;
+    for names in &mut lists {
+        let mut renamed = BTreeSet::new();
+        for name in names.iter_mut() {
+            if !held.contains(name)
+                && let Some(&(_, rank)) = RANKS
+                    .iter()
+                    .find(|&&(from, to)| from == *name && held.contains(&to))
+            {
+                *name = rank;
+                renamed.insert(rank);
+            }
+        }
+        // A list naming a rank twice keeps its first occurrence, in source order.
+        let mut seen = BTreeSet::new();
+        names.retain(|name| !renamed.contains(name) || seen.insert(*name));
+    }
     let dictionary = source.read(tag)?;
     for row in dictionary.array(24, 36, Some(0x80800513))? {
         let group = dictionary.u32(row)?;
@@ -141,10 +161,111 @@ fn restrict(
 
 /// A standalone native object-label predicate with masks compiled against `registry`. Query
 /// payloads have no package-assembly compile step, unlike perk conditions.
-pub(in crate::d1_roi::native) fn predicate(
-    lists: &[Vec<u32>; 4],
+pub(in crate::d1_roi) fn predicate(lists: &[Vec<u32>; 4], registry: &Payload) -> Result<Vec<u8>> {
+    compiled(lists, registry)?
+        .emit()
+        .map_err(anyhow::Error::msg)
+}
+
+/// The labels and groups `registry` holds.
+pub(in crate::d1_roi) fn held(registry: &Payload) -> Result<BTreeSet<u32>> {
+    registry
+        .array(8, 4, Some(0x80800070))?
+        .into_iter()
+        .chain(registry.array(24, 44, Some(0x808094BE))?)
+        .map(|row| registry.u32(row))
+        .collect()
+}
+
+/// The 320-bit mask `registry` gives `names`, as the shared native compiler builds a match-any
+/// list's mask. Native outgoing profiles store this beside their category rows.
+pub(in crate::d1_roi) fn mask(names: &[u32], registry: &Payload) -> Result<[u8; 40]> {
+    if names.is_empty() {
+        return Ok([0; 40]);
+    }
+    let graph = compiled(
+        &[names.to_vec(), Vec::new(), Vec::new(), Vec::new()],
+        registry,
+    )?;
+    let block = *graph.blocks[0]
+        .links
+        .get(&0x58)
+        .context("Compiled label mask is absent")?;
+    graph.blocks[block]
+        .bytes
+        .get(..40)
+        .and_then(|bytes| bytes.try_into().ok())
+        .context("Compiled label mask is truncated")
+}
+
+/// A source filter at `at` as a Shadowkeep inline filter holds it: the lists by the [`restrict`]
+/// rule, the compiled predicate mode, and the `808093F6` or `808093F5` mask record unless the mode
+/// is 255. Response filters inside a projectile movement have no package-assembly compile step.
+#[allow(clippy::type_complexity)]
+pub(in crate::d1_roi) fn inline(
+    source: &Source,
+    p: &Payload,
+    at: usize,
     registry: &Payload,
-) -> Result<Vec<u8>> {
+) -> Result<([Vec<u32>; 4], u8, Option<(u32, Vec<u8>)>)> {
+    let lists = destination(source, p, at, registry)?
+        .context("Source label filter can never hold, since Shadowkeep lacks labels it requires")?;
+    let graph = compiled(&lists, registry)?;
+    let root = &graph.blocks[0];
+    let record = root
+        .links
+        .get(&0x58)
+        .map(|&block| (graph.blocks[block].class, graph.blocks[block].bytes.clone()));
+    Ok((lists, root.bytes[0x50], record))
+}
+
+/// A source filter stored only as compiled 256-bit include-any and exclude-any masks over
+/// dictionary `tag`, bit `i` being atom `i`, as Shadowkeep's inline filter holds it. The lists
+/// follow the [`restrict`] rule and the shared compiler, as in [`inline`]. Masks carry no group
+/// names, so a group's atoms translate one by one.
+#[allow(clippy::type_complexity)]
+pub(in crate::d1_roi) fn masks(
+    source: &Source,
+    tag: u32,
+    include: [u8; 32],
+    exclude: [u8; 32],
+    registry: &Payload,
+) -> Result<([Vec<u32>; 4], u8, Option<(u32, Vec<u8>)>)> {
+    let dictionary = source.read(tag)?;
+    let atoms = dictionary
+        .array(8, 4, Some(0x80800070))?
+        .into_iter()
+        .map(|row| dictionary.u32(row))
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        !atoms.is_empty() && atoms.len() <= 256,
+        "Source label dictionary exceeds its mask width"
+    );
+    let names = |mask: [u8; 32]| -> Result<Vec<u32>> {
+        (0..256)
+            .filter(|bit| mask[bit / 8] & (1 << (bit % 8)) != 0)
+            .map(|bit| {
+                atoms
+                    .get(bit)
+                    .copied()
+                    .context("Source label mask names an undeclared atom")
+            })
+            .collect()
+    };
+    let lists = [names(include)?, Vec::new(), names(exclude)?, Vec::new()];
+    let lists = restrict(source, tag, lists, registry)?
+        .context("Source label filter can never hold, since Shadowkeep lacks labels it requires")?;
+    let graph = compiled(&lists, registry)?;
+    let root = &graph.blocks[0];
+    let record = root
+        .links
+        .get(&0x58)
+        .map(|&block| (graph.blocks[block].class, graph.blocks[block].bytes.clone()));
+    Ok((lists, root.bytes[0x50], record))
+}
+
+/// An `80804D73` predicate object over `lists`, compiled by the shared native compiler.
+fn compiled(lists: &[Vec<u32>; 4], registry: &Payload) -> Result<Graph> {
     let mut graph = Graph {
         blocks: vec![Block {
             class: 0x80804D73,
@@ -156,7 +277,7 @@ pub(in crate::d1_roi::native) fn predicate(
     graph.blocks[0].bytes[0x50] = 0xFF;
     write(lists, &mut graph, 0)?;
     labels::compile(&mut graph, &registry.0).map_err(anyhow::Error::msg)?;
-    graph.emit().map_err(anyhow::Error::msg)
+    Ok(graph)
 }
 
 /// Declared names for each operation, after checking them against the source's compiled masks.

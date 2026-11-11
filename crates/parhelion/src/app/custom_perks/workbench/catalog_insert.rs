@@ -62,7 +62,8 @@ impl Request {
         })
     }
 
-    pub fn apply(&self, recipe: &mut PerkRecipe) -> Result<(), String> {
+    /// `recipe` with the configuration inserted, leaving `recipe` as it is.
+    pub fn applied(&self, recipe: &PerkRecipe) -> Result<PerkRecipe, String> {
         if recipe.id != self.document
             || crate::perk::verification::recipe_hash(recipe)? != self.fingerprint
         {
@@ -93,8 +94,7 @@ impl Request {
             native_sha256: hex::encode_upper(Sha256::digest(&self.node.bytes)),
             client_build: sundial::package_authoring::sandbox_perk::nodes::CLIENT_BUILD.into(),
         });
-        *recipe = changed;
-        Ok(())
+        Ok(changed)
     }
 }
 

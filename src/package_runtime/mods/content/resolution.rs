@@ -30,6 +30,10 @@ pub(super) struct Mod {
     pub(super) config: Vec<config::Declaration>,
     #[serde(default)]
     pub(super) config_bindings: Vec<config::Binding>,
+    /// Version 4's new package ids the mod ships, each a JSON integer or a quoted `0x` hex
+    /// token. `None` when the key is absent, which the version check tells apart from `[]`.
+    #[serde(default)]
+    packages: Option<Vec<serde_json::Value>>,
     #[serde(skip)]
     pub(super) folder: PathBuf,
     /// Files read in place of the folder's packages and patches.
@@ -103,12 +107,15 @@ impl Mod {
     }
 
     fn valid(&self) -> bool {
-        self.valid_identity() && self.valid_relationships() && self.valid_config()
+        self.valid_identity()
+            && self.valid_relationships()
+            && self.valid_config()
+            && self.valid_packages()
     }
 
     fn valid_identity(&self) -> bool {
         let text = |s: &str, max| s.len() <= max && !s.contains(char::is_control);
-        (1..=3).contains(&self.manifest_version)
+        (1..=4).contains(&self.manifest_version)
             && valid_id(&self.id)
             && version(&self.version).is_some()
             && !self.name.is_empty()
@@ -147,6 +154,50 @@ impl Mod {
             && self.config_bindings.len() <= 256
             && self.config_bindings.iter().all(|b| b.valid(&self.config))
     }
+
+    /// The loader's own package list rules: the key needs version 4 even when the list is
+    /// empty, and it holds at most 256 distinct ids from `0x0100` to `0x0CFF`.
+    fn valid_packages(&self) -> bool {
+        let Some(packages) = &self.packages else {
+            return true;
+        };
+        let Some(mut ids) = packages
+            .iter()
+            .map(own_package_id)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        ids.sort_unstable();
+        self.manifest_version >= 4
+            && ids.len() <= OWN_PACKAGE_LIMIT
+            && ids.windows(2).all(|pair| pair[0] != pair[1])
+    }
+}
+
+/// Own package ids one manifest may list. The loader keeps them in fixed storage.
+const OWN_PACKAGE_LIMIT: usize = 256;
+
+/// One listed id, as the loader reads it: an unsigned JSON integer or a quoted `0x` or `0X` hex
+/// token with no sign, inside the range a mod may own.
+fn own_package_id(value: &serde_json::Value) -> Option<u16> {
+    let id = match value {
+        serde_json::Value::Number(number) => number.as_u64()?,
+        serde_json::Value::String(text) => {
+            let digits = text
+                .strip_prefix("0x")
+                .or_else(|| text.strip_prefix("0X"))?;
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            u64::from_str_radix(digits, 16).ok()?
+        }
+        _ => return None,
+    };
+    (0x0100..=0x0CFF)
+        .contains(&id)
+        .then(|| u16::try_from(id).ok())
+        .flatten()
 }
 
 impl Dependency {
@@ -258,6 +309,37 @@ pub(super) fn resolve(
         .map(|index| mods[index].take().expect("each mod is placed once"))
         .collect::<Vec<_>>();
     (ordered, notices)
+}
+
+/// The family `folders` as installation and removal read them: every member, each after the
+/// members it needs that are present. A manifest that can't be read fails the read.
+pub(super) fn family(install: &Path, folders: &[PathBuf]) -> Result<Vec<Mod>, String> {
+    let mut mods = Vec::new();
+    for folder in folders {
+        let manifest = folder.join(MANIFEST);
+        checked_path(install, &manifest)?;
+        let mut item = read_json::<Mod>(&manifest)?;
+        item.folder = folder.clone();
+        mods.push(item);
+    }
+    Ok(ordered(mods))
+}
+
+/// `mods` lowest id first, each after the mods it needs among them. A cycle keeps id order.
+pub(super) fn ordered(mut mods: Vec<Mod>) -> Vec<Mod> {
+    mods.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut ordered = Vec::with_capacity(mods.len());
+    while !mods.is_empty() {
+        let next = (0..mods.len())
+            .find(|&index| {
+                mods[index]
+                    .needs()
+                    .all(|id| id == mods[index].id || !mods.iter().any(|item| item.id == id))
+            })
+            .unwrap_or(0);
+        ordered.push(mods.remove(next));
+    }
+    ordered
 }
 
 /// Refuses each loadable mod whose dependency is missing, the wrong version or refused, until a

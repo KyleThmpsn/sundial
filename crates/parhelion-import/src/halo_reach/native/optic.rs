@@ -2,6 +2,7 @@ use super::material::Lens;
 use super::*;
 mod bore;
 mod scope;
+pub(super) use scope::quad as scope_quad;
 
 pub(super) struct Source<'a> {
     pub cache: &'a cache::Cache,
@@ -19,10 +20,34 @@ pub(super) struct Prepared {
     automatic: bool,
 }
 
+impl Prepared {
+    /// Whether aiming shows the weapon's source HUD scope, which Reach draws in place of the
+    /// weapon. Only a separate view carries the overlay.
+    pub(super) fn screen_scope(&self, cache: &cache::Cache, weapon: &cache::Tag) -> Result<bool> {
+        Ok(self.separate && crate::halo_reach::hud::scope::read(cache, weapon)?.is_some())
+    }
+}
+
 /// Distance behind the geometry for an automatically placed eye.
 const RELIEF: f32 = 0.08;
 /// Height of the sightline above the highest vertex.
 const CLEARANCE: f32 = 0.005;
+/// Distance in metres from the eye to the focus provider along the sight axis.
+///
+/// An imported weapon has no source aiming pose, so full aim leaves its eye short of the camera.
+/// Aimed shots then lean by about the eye's offset divided by the eye-to-focus distance. In
+/// gameplay, the Needle Rifle's focus 1.35 metres ahead of its eye sent aimed shots 2.2 to 2.6
+/// degrees above the camera axis at 11 and 780 metres, with no sideways error. Hip shots
+/// followed the axis. At this distance, a few centimetres of offset changes the aim by hundredths
+/// of a degree, and the axis direction is unchanged. How the native aiming consumer combines the
+/// two providers is inferred from that measurement, not traced.
+const FOCUS: f32 = 100.;
+
+/// The focus provider's point, [`FOCUS`] along the sight axis from `rear` through `front`.
+fn focus(rear: [f32; 3], front: [f32; 3]) -> Result<[f32; 3]> {
+    let direction = crate::halo_reach::rig::normalize(std::array::from_fn(|a| front[a] - rear[a]))?;
+    Ok(std::array::from_fn(|a| rear[a] + direction[a] * FOCUS))
+}
 
 /// Aim from behind the geometry along the sight axis, clear of its top.
 ///
@@ -67,9 +92,7 @@ pub(super) fn select(
     materials: &BTreeMap<u32, crate::halo_reach::material::Material>,
 ) -> Result<Option<Prepared>> {
     let scoped = scene.object.tag.group == "weap"
-        && scene.object.gameplay["zoom_levels"]
-            .as_u64()
-            .is_some_and(|levels| levels > 0);
+        && crate::halo_reach::hud::scope::zooms(&scene.object.gameplay);
     ensure!(
         entry.optic.is_none() || entry.sights.is_none(),
         "Choose a lens optic or iron sights, not both"
@@ -82,17 +105,19 @@ pub(super) fn select(
         (Some(config), _) => prepare(config, mesh, materials).map(Some),
         (_, Some(config)) => sights(config, mesh).map(Some),
         _ if scoped => {
-            // Reach hides a zoomed weapon behind its overlay. The overlay stays,
-            // and the eye clears the geometry like an unscoped firearm's.
+            // Reach hides a zoomed weapon behind its overlay, the weapon's own scope or the
+            // player's binoculars. The overlay stays, and the eye clears the geometry like an
+            // unscoped firearm's.
             let mut prepared = unscoped(mesh)?;
             prepared.separate = true;
             Ok(Some(prepared))
         }
+        // A weapon without barrels fires nothing to aim, as with swords, hammers and the
+        // knife, so it keeps the donor's view.
         _ if scene.object.tag.group == "weap"
-            && !matches!(
-                scene.object.gameplay["weapon_class"].as_str(),
-                Some("sword" | "hammer")
-            ) =>
+            && scene.object.gameplay["barrels"]
+                .as_array()
+                .is_some_and(|barrels| !barrels.is_empty()) =>
         {
             unscoped(mesh).map(Some)
         }
@@ -410,7 +435,7 @@ fn alignment(optic: &Prepared) -> &'static str {
 /// What the report says the aiming method leaves unverified.
 fn limits(optic: &Prepared) -> &'static str {
     if optic.separate {
-        "The aiming camera looks over the weapon from behind along the sight axis, preserving the physical lens. Scoped weapons use their source HUD bitmap layers and neutral reticle artwork. Dynamic meter and reticle inputs are reported separately. Source magnification is recorded in source_gameplay.aim."
+        "The aiming camera looks over the weapon from behind along the sight axis. At full aim a scoped weapon's surfaces discard and its body draws the source HUD bitmap layers and zero-error reticle in the reticle pass. Dynamic meter and reticle inputs are reported separately. Source magnification is recorded in source_gameplay.aim."
     } else if optic.automatic {
         "The aiming camera clears the selected source bounds along the forward axis. This is an adaptation for a source firearm without zoom, not recovered iron-sight alignment."
     } else {
@@ -441,6 +466,10 @@ fn positions(art: &Value, placement: &Value) -> Result<Vec<usize>> {
     Ok((0..width).collect())
 }
 
+/// Builds the private optic part. A screen scope's overlay draws from the body mesh group that
+/// [`scope_quad`] added, through the body's model `inputs`, so every optic render component
+/// keeps its connections with no draws.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build(
     native: &mut Reader,
     g: &mut Graph,
@@ -448,6 +477,7 @@ pub(super) fn build(
     optic: &Prepared,
     item: u32,
     source: Option<u32>,
+    inputs: &BTreeMap<String, u8>,
     reach: Source<'_>,
 ) -> Result<(Value, Value)> {
     let overlay = if optic.separate {
@@ -464,15 +494,14 @@ pub(super) fn build(
     let (parent, entity_tag, original_entity) = template(native, carrier)?;
     let positions = positions(art, &parent["placement"])?;
     let components = components(native, &original_entity)?;
+    let focus = focus(optic.rear, optic.front)?;
     let mut entity = original_entity.clone();
-    let mut scope_report = None;
-    let mut scope_target = None;
     let mut entity_patches = Vec::new();
     for (&tag, (symbol, original)) in &components {
         let schema = original.pointer(24)?;
         let class = original.u32(schema - 4)?;
         let mut payload = if class == 0x8080393b {
-            crate::tiger::markers::optics::aligned(original, optic.rear, optic.front)?
+            crate::tiger::markers::optics::aligned(original, optic.rear, focus)?
         } else {
             original.clone()
         };
@@ -481,15 +510,7 @@ pub(super) fn build(
             let model_tag = original.u32(schema + 0x1dc)?;
             let model = native.tag(model_tag, Some(0x808073a5))?;
             let model_symbol = format!("{symbol}-model");
-            if overlay.is_some() {
-                ensure!(
-                    scope_target.is_none(),
-                    "Separate scope has multiple render components"
-                );
-                scope_target = Some((model_symbol.clone(), symbol.clone()));
-            } else {
-                g.add(&model_symbol, model_tag, &no_draws(&model)?.0, None, vec![])?;
-            }
+            g.add(&model_symbol, model_tag, &no_draws(&model)?.0, None, vec![])?;
             put(&mut payload.0, schema + 0x1dc, &u32::MAX.to_le_bytes())?;
             patches.push(json!({"offset":schema+0x1dc,"symbol":model_symbol}));
         }
@@ -511,28 +532,21 @@ pub(super) fn build(
         }
     }
     g.add("optic-entity", entity_tag, &entity.0, None, entity_patches)?;
-    if let (Some(overlay), Some((model, owner))) = (&overlay, scope_target) {
-        let name = u32::from_str_radix(&scope::visibility(native)?, 16)?;
-        let inputs = crate::presentation::channel::inherit_named(
-            native,
-            g,
-            &[name],
-            "optic-entity",
-            &owner,
-            "optic",
-        )?;
-        scope_report = Some(scope::build(
-            native,
-            g,
-            &model,
-            &inputs,
-            scope::Source {
-                cache: reach.cache,
-                pages: reach.pages,
-                overlay,
-            },
-        )?);
-    }
+    let scope_report = overlay
+        .as_ref()
+        .map(|overlay| {
+            scope::build(
+                native,
+                g,
+                inputs,
+                scope::Source {
+                    cache: reach.cache,
+                    pages: reach.pages,
+                    overlay,
+                },
+            )
+        })
+        .transpose()?;
     let parent_tag = hash(&parent, "parent")?;
     let mut bytes = native.tag(parent_tag, None)?.0.clone();
     put(&mut bytes, 16, &u32::MAX.to_le_bytes())?;
@@ -557,11 +571,7 @@ pub(super) fn build(
     let assignment = hash(&parent, "assignment")?;
     let kept = json!({"assignment":assignment,"key":name_hash(&format!("reach-{item:08X}-optic")),"parent":"optic-parent",
         "native_region":true,"selector":parent["placement"]["selector"],"position":0,"positions":positions});
-    ensure!(
-        overlay.is_none() || scope_report.is_some(),
-        "Separate scope has no render component"
-    );
-    let report = json!({"source_item":carrier["item"],"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"positions":positions,"aperture_bounds":optic.bounds,"rear":optic.rear,"front":optic.front,"bore":optic.bore,"scope":scope_report,
+    let report = json!({"source_item":carrier["item"],"source_entity":format!("{entity_tag:08X}"),"placement":parent["placement"],"positions":positions,"aperture_bounds":optic.bounds,"rear":optic.rear,"front":focus,"sight_front":optic.front,"bore":optic.bore,"scope":scope_report,
         "alignment":alignment(optic),
         "lens_materials":optic.lenses.keys().map(|key|format!("{key:08X}")).collect::<Vec<_>>(),"automatic":optic.automatic,"gameplay_verified":false,
         "limits":limits(optic)});

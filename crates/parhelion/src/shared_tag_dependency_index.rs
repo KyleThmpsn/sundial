@@ -152,7 +152,7 @@ pub(crate) fn remove_hash_dependencies(
 }
 
 /// Reads both native dependency representations, retaining no pointers into package storage.
-#[cfg(test)]
+#[cfg(any(test, feature = "d2-model-importer"))]
 pub(crate) fn dependencies(
     payload: &[u8],
     companion: TagHash,
@@ -162,7 +162,7 @@ pub(crate) fn dependencies(
     Ok(dependency_set(&groups))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "d2-model-importer"))]
 fn dependency_set(groups: &BTreeMap<u16, Group>) -> BTreeSet<u32> {
     let mut tags = BTreeSet::new();
     for (package, group) in groups {

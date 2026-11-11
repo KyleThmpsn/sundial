@@ -38,8 +38,8 @@ pub(super) use graph_tree::{
 };
 use private_perk::*;
 pub(super) use private_perk::{
-    PrivateRuntimeEdits, append_private_action, clone_private_sandbox_perk_runtime,
-    program_names_imported_particles,
+    CompiledRuntimes, PrivateRuntimeEdits, append_private_action,
+    clone_private_sandbox_perk_runtime,
 };
 pub(super) use residency::build_private_perk_residency_chain;
 pub(super) use swaps::swap_patches;
@@ -89,6 +89,8 @@ pub(crate) fn preflight_runtime_edits(
     let allocator = AppendedTagAllocator::scratch(manager)?;
     #[allow(unused_mut)]
     let mut source_trajectory = false;
+    #[allow(unused_mut)]
+    let mut trajectories = None;
     let projectile = if let Some(fired) = &overrides.fired_graph {
         fired.validate()?;
         if let Some(symbol) = &fired.imported {
@@ -103,6 +105,7 @@ pub(crate) fn preflight_runtime_edits(
                     .ok_or_else(|| invalid("Imported projectile has no assets"))?;
                 assets.projectile(symbol)?;
                 source_trajectory = assets.source_trajectory;
+                trajectories = assets.trajectory_capacity(symbol);
                 // Preflight only mutates an in-memory weapon. The build allocates this root
                 // together with its complete asset group before performing the same edit.
                 Some(allocator.assigned_tag(0, "Imported projectile", "preflight")?)
@@ -142,6 +145,7 @@ pub(crate) fn preflight_runtime_edits(
             actions: &[],
             markers: &[],
             projectile,
+            trajectories,
             source_trajectory,
         },
         allocator,
@@ -361,6 +365,8 @@ pub(super) struct Sources<'a> {
     pub markers: &'a [WeaponRuntimeResourceAppend],
     /// A validated projectile root allocated with the imported asset group.
     pub projectile: Option<TagHash>,
+    /// Rows in that root's trajectory pool, when its layout is known.
+    pub trajectories: Option<usize>,
     pub source_trajectory: bool,
 }
 
@@ -379,6 +385,7 @@ pub(super) fn author_runtime_edits(
         actions,
         markers,
         projectile,
+        trajectories,
         source_trajectory,
     } = sources;
     let mut patches = overrides.runtime_resource_patches.clone();
@@ -410,6 +417,7 @@ pub(super) fn author_runtime_edits(
             donor,
         )?);
     }
+    let selected_group = groups.selected;
     let grafts = crate::weapon::behavior::patches(
         manager,
         entity,
@@ -430,6 +438,20 @@ pub(super) fn author_runtime_edits(
     appends.extend(grafts.appends);
     appends.extend_from_slice(markers);
     patches.extend(grafts.patches);
+    // A chosen row's presentation replaces what restoring the base's own block wrote there. A
+    // fired graph below still takes the graph slot.
+    if let Some(variant) = overrides.content_variant {
+        let chosen =
+            crate::weapon::behavior::variant_patches(manager, entity, selected_group, variant)?;
+        patches.retain(|patch| {
+            !chosen.iter().any(|slot| {
+                slot.binding_hash == patch.binding_hash
+                    && slot.resource_index == patch.resource_index
+                    && slot.offset == patch.offset
+            })
+        });
+        patches.extend(chosen);
+    }
     if let Some(fired) = &overrides.fired_graph {
         fired.validate()?;
         if !overrides.additional_behaviors.is_empty() {
@@ -523,7 +545,7 @@ pub(super) fn author_runtime_edits(
     firing::fit(
         manager,
         entity,
-        (projectile, groups.selected),
+        (projectile.zip(Some(trajectories)), groups.selected),
         allocator,
         tags,
     )?;

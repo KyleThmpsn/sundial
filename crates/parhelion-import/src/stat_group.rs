@@ -4,8 +4,9 @@
 pub(crate) mod limits;
 
 use crate::tiger::reader::Reader;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 pub(crate) use limits::Shown;
 
@@ -66,4 +67,31 @@ pub(crate) fn native(r: &mut Reader, donor: u32) -> Result<Value> {
     Ok(group
         .maximum
         .map_or(Value::Null, |maximum| recipe(maximum, &group.shown)))
+}
+
+/// Shows `value` across the whole range of the group's row for the stat `hash`, for an output an
+/// import writes as a fixed source value rather than one sampled from investment. `definitions`
+/// maps stat hashes to their native definition indices.
+pub(crate) fn constant(
+    group: &mut Value,
+    definitions: &BTreeMap<u32, u16>,
+    hash: u32,
+    value: i32,
+) -> Result<()> {
+    let index = *definitions
+        .get(&hash)
+        .context("Native numeric stat definition")?;
+    let maximum = group["maximum_value"]
+        .as_i64()
+        .context("Native stat display maximum")?;
+    ensure!(maximum > 0, "Native display group has no positive range");
+    for row in group["stats"]
+        .as_array_mut()
+        .context("Native stat display rows")?
+    {
+        if row["definition_index"].as_u64() == Some(u64::from(index)) {
+            row["display"] = json!([[0, value], [maximum, value]]);
+        }
+    }
+    Ok(())
 }

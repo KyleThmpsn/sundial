@@ -474,16 +474,24 @@ impl Bitmap {
         image_name(&self.tag, self.image, self.normal)
     }
 
-    /// Retain linear MCC block storage and its authored mips where native sampling has the same
-    /// channel contract. BC5 normals need reconstruction after sampling in the pixel program.
-    pub(super) fn blocks(&self, c: &Cache, pages: &mut Pages) -> Result<Option<Blocks>> {
-        let format = match self.format {
+    /// The native block format [`Self::blocks`] keeps this bitmap's storage in, when native
+    /// sampling has the same channel contract. BC5 normals need reconstruction after sampling in
+    /// the pixel program.
+    pub(super) fn block_format(&self) -> Option<u32> {
+        Some(match self.format {
             14 => 71,
             15 => 74,
             16 => 77,
             38 if self.normal => 84,
             44 if self.normal => 83,
-            _ => return Ok(None),
+            _ => return None,
+        })
+    }
+
+    /// Retain linear MCC block storage and its authored mips in [`Self::block_format`].
+    pub(super) fn blocks(&self, c: &Cache, pages: &mut Pages) -> Result<Option<Blocks>> {
+        let Some(format) = self.block_format() else {
+            return Ok(None);
         };
         let levels = self
             .source_mips
@@ -573,6 +581,31 @@ impl Stored {
     /// Its RGBA8 texels.
     pub(super) fn decode(&self) -> Result<Vec<u8>> {
         decode(&self.raw, self.width, self.height, self.format, self.normal)
+    }
+
+    /// Everything [`Self::decode`] reads, for remembering what is made of it: the layout, then
+    /// the stored bytes.
+    pub(super) fn input(&self) -> Vec<u8> {
+        let mut input = Vec::with_capacity(self.raw.len() + 24);
+        for field in [self.width as u64, self.height as u64] {
+            input.extend_from_slice(&field.to_le_bytes());
+        }
+        input.extend_from_slice(&self.format.to_le_bytes());
+        input.push(u8::from(self.normal));
+        input.extend_from_slice(&self.raw);
+        input
+    }
+
+    /// Its signed four-channel texels in row order, for format 28, whose bytes MCC reads as
+    /// signed values over 127 clamped to -1.
+    pub(super) fn signed(&self) -> Result<Vec<[f32; 4]>> {
+        ensure!(self.format == 28, "Bitmap is not signed four-channel bytes");
+        let count = self.width * self.height;
+        ensure!(self.raw.len() >= count * 4, "Signed bitmap is truncated");
+        Ok(self.raw[..count * 4]
+            .chunks_exact(4)
+            .map(|texel| std::array::from_fn(|k| (texel[k] as i8 as f32 / 127.).max(-1.)))
+            .collect())
     }
 }
 

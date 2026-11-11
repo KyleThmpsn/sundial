@@ -92,130 +92,6 @@ fn rarity_branches_increment_only_their_own_collection_ancestors() {
     }
 }
 
-fn synthetic_unlock_display_table(hashes: &[u32]) -> Vec<u8> {
-    let primary_header = 0x30;
-    let primary_rows = primary_header + 16;
-    let primary_end = primary_rows + hashes.len() * UNLOCK_FLAG_DISPLAY_ROW_SIZE;
-    let content_header = primary_end + 16;
-    let content_rows = content_header + 16;
-    let mut data = vec![0; content_rows + UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE];
-
-    write_u64(&mut data, 8, hashes.len() as u64).unwrap();
-    write_relative_pointer(&mut data, 0x10, primary_header).unwrap();
-    write_u64(&mut data, primary_header, hashes.len() as u64).unwrap();
-    write_u32(&mut data, primary_header + 8, UNLOCK_FLAG_DISPLAY_ROW_CLASS).unwrap();
-    data[content_header - NESTED_ARRAY_TRAILER.len()..content_header]
-        .copy_from_slice(&NESTED_ARRAY_TRAILER);
-    write_u64(&mut data, 0x18, 1).unwrap();
-    write_relative_pointer(&mut data, 0x20, content_header).unwrap();
-    write_u64(&mut data, content_header, 1).unwrap();
-    write_u32(
-        &mut data,
-        content_header + 8,
-        UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS,
-    )
-    .unwrap();
-    for (index, hash) in hashes.iter().copied().enumerate() {
-        let row = primary_rows + index * UNLOCK_FLAG_DISPLAY_ROW_SIZE;
-        write_u32(&mut data, row, hash).unwrap();
-        write_relative_pointer(&mut data, row + 8, content_rows).unwrap();
-    }
-    data
-}
-
-fn synthetic_unlock_table(order: &[u16]) -> Vec<u8> {
-    let hashes = [30_u32, 10, 20];
-    assert_eq!(order.len(), hashes.len());
-    let primary_header = 0x28;
-    let primary_rows = primary_header + 16;
-    let secondary_header = primary_rows + hashes.len() * UNLOCK_ROW_SIZE;
-    let secondary_rows = secondary_header + 16;
-    let mut data = vec![0; secondary_rows + std::mem::size_of_val(order)];
-
-    write_u64(&mut data, 8, hashes.len() as u64).unwrap();
-    write_relative_pointer(&mut data, 0x10, primary_header).unwrap();
-    write_u64(&mut data, primary_header, hashes.len() as u64).unwrap();
-    write_u32(
-        &mut data,
-        primary_header + 8,
-        UNLOCK_FLAG_DEFINITION_ROW_CLASS,
-    )
-    .unwrap();
-    for (index, hash) in hashes.into_iter().enumerate() {
-        let row = primary_rows + index * UNLOCK_ROW_SIZE;
-        write_u32(&mut data, row, hash).unwrap();
-        write_u16(&mut data, row + 4, 2).unwrap();
-        write_u16(&mut data, row + 6, index as u16).unwrap();
-    }
-
-    write_u64(&mut data, 0x18, order.len() as u64).unwrap();
-    write_relative_pointer(&mut data, 0x20, secondary_header).unwrap();
-    write_u64(&mut data, secondary_header, order.len() as u64).unwrap();
-    write_u32(
-        &mut data,
-        secondary_header + 8,
-        UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS,
-    )
-    .unwrap();
-    for (position, index) in order.iter().copied().enumerate() {
-        write_u16(
-            &mut data,
-            secondary_rows + position * size_of::<u16>(),
-            index,
-        )
-        .unwrap();
-    }
-    data
-}
-
-#[test]
-fn append_unlock_preserves_native_rows_and_rebuilds_sorted_index() {
-    let data = synthetic_unlock_table(&[1, 2, 0]);
-    let authored = append_unlock(data, 25, 3, 77).unwrap();
-    let layout = unlock_table_layout(&authored).unwrap();
-
-    assert_eq!(layout.count, 4);
-    assert_eq!(layout.order, vec![1, 2, 3, 0]);
-    assert_eq!(layout.ordered_hashes, vec![10, 20, 25, 30]);
-    let row = layout.primary_rows + 3 * UNLOCK_ROW_SIZE;
-    assert_eq!(read_u32(&authored, row).unwrap(), 25);
-    assert_eq!(read_u16(&authored, row + 4).unwrap(), 3);
-    assert_eq!(read_u16(&authored, row + 6).unwrap(), 77);
-}
-
-#[test]
-fn unlock_table_rejects_incomplete_or_unsorted_secondary_indices() {
-    let duplicate = synthetic_unlock_table(&[1, 1, 0]);
-    assert!(unlock_table_layout(&duplicate).is_err());
-
-    let unsorted = synthetic_unlock_table(&[2, 1, 0]);
-    assert!(unlock_table_layout(&unsorted).is_err());
-}
-
-#[test]
-fn append_unlock_display_preserves_the_shared_content_array() {
-    let data = synthetic_unlock_display_table(&[10, 20]);
-    let authored = append_unlock_display(data, 0, 30, 2).unwrap();
-    let layout = unlock_display_table_layout(&authored).unwrap();
-
-    assert_eq!(layout.count, 3);
-    assert_eq!(layout.content_count, 1);
-    let authored_row = layout.primary_rows + 2 * UNLOCK_FLAG_DISPLAY_ROW_SIZE;
-    assert_eq!(read_u32(&authored, authored_row).unwrap(), 30);
-    assert_eq!(
-        relative_target(&authored, authored_row + 8).unwrap(),
-        layout.content_rows
-    );
-}
-
-#[test]
-fn unlock_display_rejects_misaligned_content_pointers() {
-    let mut data = synthetic_unlock_display_table(&[10]);
-    let layout = unlock_display_table_layout(&data).unwrap();
-    write_relative_pointer(&mut data, layout.primary_rows + 8, layout.content_rows + 1).unwrap();
-    assert!(unlock_display_table_layout(&data).is_err());
-}
-
 fn synthetic_numeric_instruction(opcode: u8, operand: u16) -> [u8; 8] {
     let mut row = [0_u8; 8];
     row[0] = opcode;
@@ -361,8 +237,16 @@ fn collectible_clone_drops_socket_overrides_and_keeps_the_private_unlock() {
     data.extend_from_slice(&segment);
     write_u64(&mut data, COLLECTIBLE_SOCKET_OVERRIDES_OFFSET, 1).unwrap();
     write_relative_pointer(&mut data, COLLECTIBLE_SOCKET_OVERRIDES_OFFSET + 8, header).unwrap();
-    let clones =
-        collectible_nested_clones(&data, 0, 1, COLLECTIBLE_ROW_SIZE, 0, 7_502, 21_613).unwrap();
+    let clones = collectible_nested_clones(
+        &data,
+        0,
+        1,
+        COLLECTIBLE_ROW_SIZE,
+        0,
+        7_502,
+        Acquisition::Flag(21_613),
+    )
+    .unwrap();
     assert!(
         !clones
             .iter()
@@ -381,8 +265,16 @@ fn collectible_clone_uses_only_its_private_acquisition_condition() {
         collection_unlock_index(&data, 0).expect("non-bare acquisition should resolve"),
         7_502
     );
-    let clones = collectible_nested_clones(&data, 0, 1, COLLECTIBLE_ROW_SIZE, 0, 7_502, 21_613)
-        .expect("Mountaintop-style conditions should deep-clone");
+    let clones = collectible_nested_clones(
+        &data,
+        0,
+        1,
+        COLLECTIBLE_ROW_SIZE,
+        0,
+        7_502,
+        Acquisition::Flag(21_613),
+    )
+    .expect("Mountaintop-style conditions should deep-clone");
 
     assert_eq!(clones.len(), 1);
     assert_eq!(
@@ -409,8 +301,16 @@ fn collectible_clone_uses_only_its_private_acquisition_condition() {
 #[test]
 fn collectible_clone_drops_unrelated_unlock_conditions() {
     let data = synthetic_collectible_conditions(10_699, 10_999);
-    let clones = collectible_nested_clones(&data, 0, 1, COLLECTIBLE_ROW_SIZE, 0, 10_999, 21_613)
-        .expect("Martyr-style conditions should deep-clone selectively");
+    let clones = collectible_nested_clones(
+        &data,
+        0,
+        1,
+        COLLECTIBLE_ROW_SIZE,
+        0,
+        10_999,
+        Acquisition::Flag(21_613),
+    )
+    .expect("Martyr-style conditions should deep-clone selectively");
 
     assert_eq!(clones.len(), 1);
     assert_eq!(

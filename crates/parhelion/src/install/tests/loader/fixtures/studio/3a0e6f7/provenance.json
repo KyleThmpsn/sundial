@@ -1,0 +1,11 @@
+{
+  "producer": "SunriseStudio MergeSidecarFormat, ModManifest and ReferenceMap",
+  "revision": "3a0e6f7",
+  "recipe": "MergeSidecarFormat.Read of the 007dd7a6 disjoint sidecar, then MergeSidecarFormat.Write, which emits version 3 and binds to the same patch digest. MergeSidecarFormat.Write of an empty version 3 sidecar for 0aaa bound to its header digest at +0x118, since Studio writes a sidecar beside every package it builds. ModManifest.Serialize of dev.studio.fixture with own package 0x0AAA, which emits manifestVersion 4 and a packages list. ReferenceMap for that package with no rows. The disjoint patch and the 0aaa package are the 007dd7a6 files, since a 3a0e6f7 mod ships the same package bytes beside these. No game data.",
+  "files": {
+    "mod.json": "476CF22B8B731F392E58F61D333E16A50D23AE96EC1C33598BCF670732332949",
+    "refmap.bin": "301FE510C313C5E85CC91B7A07B4DC7EB8AC2EEF934998E90516A1362493717C",
+    "w64_investment_globals_client_058c_4.merge": "7209C6C71A3CE8843C9B2216982C8ABE3E8193EB54AAF92C901BA247F3783000",
+    "w64_sunrise_0aaa_0.merge": "12D753ADCD4B4FF6EDAF672133379FB2C8A6248526E0C25B8DFD2AC8CFE5640C"
+  }
+}

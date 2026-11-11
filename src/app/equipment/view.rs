@@ -355,11 +355,13 @@ impl SundialApp {
                     );
                     let picker_anchor = header_response.clone() | actions.response;
                     let key = format!("{id_scope}:{character_index}:{slot}");
-                    if actions.empty_requested {
+                    if actions.empty_requested
+                        && let Some(item) = snapshot
+                    {
                         let item_name = current
                             .as_ref()
                             .map_or("this equipped item", |item| item.name.as_str());
-                        self.request_equipment_delete(character_index, slot, item_name);
+                        self.request_equipment_delete(character_index, item, item_name);
                     }
                     if actions.unequip_requested {
                         self.unequip_weapon(character_index, slot);

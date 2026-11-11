@@ -18,6 +18,7 @@ fn write_payload(run: &StagedRun) {
                 b"synthetic merge data".to_vec(),
             )],
             report: b"{}".to_vec(),
+            touched: None,
         },
     )
     .unwrap();

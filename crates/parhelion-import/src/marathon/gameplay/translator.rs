@@ -330,6 +330,15 @@ pub(super) fn translates(stat: u32) -> bool {
     STATS.iter().any(|row| row.source == stat)
 }
 
+/// The native stat source `stat` is matched to by effect, which differs from its identity for
+/// Range.
+pub(super) fn native(stat: u32) -> Option<u32> {
+    STATS
+        .iter()
+        .find(|row| row.source == stat)
+        .map(|row| row.native)
+}
+
 /// Donor investment values for the source stats whose native effect can be matched, keyed by
 /// native stat hash, with the evidence for each. Stats that cannot be matched are left out with a
 /// reason.

@@ -18,7 +18,8 @@ pub(super) use paths::{
 };
 pub(super) use persistence::{
     SaveJsonError, SaveJsonResult, create_adjacent_backup, load_workspace_json,
-    require_game_closed, save_json, verify_workspace_source_unchanged,
+    require_game_closed, restore_settings_backup, save_json, settings_backup_directory,
+    validate_settings_backup, verify_workspace_source_unchanged,
 };
 #[cfg(test)]
 pub(super) use persistence::{load_json, save_json_with_backup_root, save_test_json_checked};

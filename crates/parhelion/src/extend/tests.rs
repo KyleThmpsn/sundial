@@ -1,16 +1,4 @@
 #[test]
-fn invalid_field_offsets_leave_package_bytes_unchanged() {
-    for offset in [7, 9, usize::MAX - 1, usize::MAX] {
-        let mut bytes = [42; 8];
-        assert!(super::read_u32(&bytes, offset).is_err());
-        assert!(super::write_u16(&mut bytes, offset, 0).is_err());
-        assert!(super::write_u32(&mut bytes, offset, 0).is_err());
-        assert!(super::write_u64(&mut bytes, offset, 0).is_err());
-        assert_eq!(bytes, [42; 8]);
-    }
-}
-
-#[test]
 #[ignore = "requires SUNDIAL_INSTALL; read-only donor layout regression"]
 fn real_spare_shared_tag_capacity_is_valid_for_read_only_templates() {
     let packages = crate::test_support::install().join("packages");

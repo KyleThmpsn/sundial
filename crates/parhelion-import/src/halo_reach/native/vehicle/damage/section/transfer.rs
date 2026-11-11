@@ -77,10 +77,12 @@ pub(super) fn build(
         let kind = row["function"]
             .as_i64()
             .context("Source transfer function")?;
-        ensure!(
-            kind == 0 && flags(row)? == 0x71 && row["seat"] == "",
-            "Source section transfer needs a different native contract"
-        );
+        // Native percentage transfers express function 0 with flags 0x71 and no seat. Other
+        // local forms, such as a windshield's flags 0x01 transfer to the body, stay untranslated.
+        if !(kind == 0 && flags(row)? == 0x71 && row["seat"] == "") {
+            report.push(json!({"source":row,"status":"Local transfer form has no native percentage contract"}));
+            continue;
+        }
         let name = *names
             .get(target)
             .context("Source transfer section exceeds table")?;

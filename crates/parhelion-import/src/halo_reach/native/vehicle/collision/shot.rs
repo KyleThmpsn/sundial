@@ -22,11 +22,14 @@ pub(super) fn build(scene: &Scene, bones: &Value) -> Result<Vec<Mesh>> {
     let source_materials = source["materials"]
         .as_array()
         .context("Source collision materials")?;
-    let first = usize::try_from(
-        bones["source_bone_first"]
-            .as_u64()
-            .context("Source collision skeleton")?,
-    )?;
+    let first = usize::try_from(bones["source_bone_first"].as_u64().with_context(|| {
+        format!(
+            "Source collision skeleton: the native skeleton has no appended source bones ({:?})",
+            bones
+                .as_object()
+                .map(|fields| fields.keys().collect::<Vec<_>>())
+        )
+    })?)?;
     let model = &scene.models[0].model;
     let world = rig::world(&model.bones)?;
     let mut out = Vec::new();
@@ -94,9 +97,7 @@ pub(super) fn build(scene: &Scene, bones: &Value) -> Result<Vec<Mesh>> {
                     .as_i64()
                     .context("Hit material damage section")?;
                 if section == -1 {
-                    section = damage["indirect_section"]
-                        .as_i64()
-                        .context("Indirect damage section")?;
+                    section = i64::try_from(super::super::damage::primary_section(damage)?)?;
                 }
                 let section = usize::try_from(section)?;
                 ensure!(

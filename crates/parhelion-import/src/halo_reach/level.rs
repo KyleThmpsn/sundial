@@ -25,6 +25,7 @@ mod decals;
 mod decorators;
 pub(crate) mod lighting;
 pub mod lightmap;
+pub mod menu;
 pub mod mission;
 pub mod native;
 pub mod objectives;
@@ -58,6 +59,14 @@ const BSP_SIZE: usize = 0x4E4;
 const INSTANCES: usize = 0x48;
 const INSTANCE_SIZE: usize = 0x9C;
 const INSTANCE_MESH: usize = 0x34;
+const INSTANCE_FLAGS: usize = 0x36;
+/// The original Reach instance flag descriptor names word bit 7 `outside map`. These placements
+/// retain valid mesh and lighting rows, which are not sufficient to make them visible geometry.
+const OUTSIDE_MAP: u16 = 1 << 7;
+/// The bitmap index of the row's `cubemap sample 0` (`+0x94`: cluster, cluster cubemap index,
+/// cubemap point index, bitmap index), the image of its BSP's cubemap bitmap Reach binds as the
+/// instance's dynamic environment map.
+const INSTANCE_CUBEMAP: usize = 0x9A;
 /// Meters per Reach world unit.
 const METRES_PER_UNIT: f32 = 3.048;
 /// The mesh part flag of a part lit per vertex. Its vertices follow the lightmapped parts' in the
@@ -124,14 +133,24 @@ pub struct Instance {
     /// The structure BSP whose mesh it draws, by its index in [`Level::bsps`].
     pub bsp: usize,
     pub mesh: usize,
+    pub flags: u16,
     pub scale: f32,
     /// Forward, left and up axes.
     pub axes: [[f32; 3]; 3],
     /// Position in meters.
     pub position: [f32; 3],
+    /// The image of its BSP's cubemap bitmap that Reach binds as its dynamic environment map,
+    /// when it names one.
+    pub cubemap: Option<usize>,
 }
 
 impl Instance {
+    /// Outside placements keep their source ordinal for lighting and cubemap lookup, but do not
+    /// contribute rendered surfaces or placed collision to the level.
+    fn outside(&self) -> bool {
+        self.flags & OUTSIDE_MAP != 0
+    }
+
     fn place(&self, position: [f32; 3]) -> [f32; 3] {
         let mut out = self.position;
         for (axis, value) in self.axes.iter().zip(position) {
@@ -509,6 +528,68 @@ pub fn zone_sets(maps: &Path, map: &str) -> Result<Vec<ZoneSet>> {
         .collect()
 }
 
+/// What a map recipe takes from a Reach level: its menu text, its zone sets, the zone sets that
+/// load a structure BSP whose render geometry holds no data in the cache, and, in meters, the
+/// spawn points its first zone set places ([`spawn::read`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct Entry {
+    pub map: String,
+    pub text: Option<menu::Text>,
+    pub zone_sets: Vec<ZoneSet>,
+    pub incomplete: Vec<usize>,
+    pub spawns: Vec<[f32; 3]>,
+}
+
+/// The [`Entry`] of cache `map` in `maps`. Long Night of Solace's `m45_025`, which its wafer and
+/// outro zone sets load, keeps its render geometry in a resource with no data, and a conversion
+/// that loads it fails.
+pub fn entry(maps: &Path, map: &str) -> Result<Entry> {
+    let zone_sets = zone_sets(maps, map)?;
+    let cache = Cache::open(&maps.join(map))?;
+    let mut incomplete = Vec::new();
+    for index in 0..zone_sets.len() {
+        let mut complete = true;
+        for bsp in loaded(&cache, &[index])? {
+            complete &= geometry_present(&cache, &bsp.tag)?;
+        }
+        if !complete {
+            incomplete.push(index);
+        }
+    }
+    let spawns = spawn::read(&cache, None, 0)?
+        .into_iter()
+        .map(|spawn| spawn.position)
+        .collect();
+    Ok(Entry {
+        map: map.to_owned(),
+        text: menu::read(maps, map)?,
+        zone_sets,
+        incomplete,
+        spawns,
+    })
+}
+
+/// Whether structure BSP `tag`'s render geometry resource, in its lightmap BSP data when it has
+/// any, as the level reader takes it, holds data in the cache. The handle sits at the render
+/// geometry block's `+0x94`, where the model geometry reader takes it.
+fn geometry_present(cache: &Cache, tag: &Tag) -> Result<bool> {
+    let lightmap = cache
+        .tags
+        .iter()
+        .flatten()
+        .find(|candidate| candidate.group == LIGHTMAP_GROUP && candidate.path == tag.path)
+        .cloned();
+    let (owner, base) = match &lightmap {
+        Some(data) => (data, data.address()? + LIGHTMAP_GEOMETRY),
+        None => (tag, tag.address()? + BSP_GEOMETRY),
+    };
+    match cache.resource(owner, cache.u32(base + 0x94)?) {
+        Ok(_) => Ok(true),
+        Err(error) if error.downcast_ref::<super::resource::Absent>().is_some() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// The first playable structure BSP the scenario's first zone set loads.
 fn playable(cache: &Cache) -> Result<Tag> {
     bsps(cache, &[0])?
@@ -542,12 +623,19 @@ fn instances(cache: &Cache, tag: &Tag, bsp: usize) -> Result<Vec<Instance>> {
         for (k, value) in position.iter_mut().enumerate() {
             *value = definition.f32(row + 0x28 + k * 4)? * METRES_PER_UNIT;
         }
+        let cubemap = i16::from_le_bytes(
+            definition.bytes[row + INSTANCE_CUBEMAP..row + INSTANCE_CUBEMAP + 2].try_into()?,
+        );
         out.push(Instance {
             bsp,
             mesh: usize::from(mesh),
+            flags: u16::from_le_bytes(
+                definition.bytes[row + INSTANCE_FLAGS..row + INSTANCE_FLAGS + 2].try_into()?,
+            ),
             scale: definition.f32(row)?,
             axes,
             position,
+            cubemap: usize::try_from(cubemap).ok(),
         });
     }
     Ok(out)
@@ -732,7 +820,12 @@ fn read_bsp(
     let required = cluster_meshes
         .keys()
         .copied()
-        .chain(instances.iter().map(|instance| instance.mesh))
+        .chain(
+            instances
+                .iter()
+                .filter(|instance| !instance.outside())
+                .map(|instance| instance.mesh),
+        )
         .collect::<BTreeSet<_>>();
     for mesh in 0..sections {
         if !required.contains(&mesh) {
@@ -818,6 +911,9 @@ fn read_bsp(
         }
     }
     for (index, instance) in instances.iter().enumerate() {
+        if instance.outside() {
+            continue;
+        }
         let coordinates =
             lightmap_coordinates(pages, lightmap_streams.get(index).copied().flatten())?;
         // An instance without lightmap coordinates is lit per vertex when the lightmap data names
@@ -860,9 +956,18 @@ fn read_bsp(
             primitives.push(placed);
         }
     }
-    // Preplaced decals follow, with their decal systems' materials after the BSP's own.
-    for decal in decals::read(cache, pages, tag, at, &mut materials)? {
-        primitive_probes.push(None);
+    // Preplaced decals follow, with their decal systems' materials after the BSP's own, each
+    // turned, lit and stood off as the surface it copies among the primitives before it.
+    for (decal, probe) in decals::read(
+        cache,
+        pages,
+        tag,
+        at,
+        &mut materials,
+        &primitives,
+        &primitive_probes,
+    )? {
+        primitive_probes.push(probe);
         primitives.push(decal);
     }
     // Then decorators, each instance lit by a probe of its own baked light. Their probes stay out
@@ -870,7 +975,11 @@ fn read_bsp(
     let decorated = decorators::read(cache, pages, tag, at, &mut materials, &mut |texel| {
         add_probe(&mut probes, &mut (0., 0), texel)
     })?;
-    let drawn: BTreeSet<usize> = instances.iter().map(|i| i.mesh).collect();
+    let drawn: BTreeSet<usize> = instances
+        .iter()
+        .filter(|instance| !instance.outside())
+        .map(|instance| instance.mesh)
+        .collect();
     let unused_meshes = (0..geometry.sections.len())
         .filter(|mesh| !cluster_meshes.contains_key(mesh) && !drawn.contains(mesh))
         .collect();
@@ -1250,6 +1359,29 @@ pub fn export_shaders(maps: &Path, map: &str, material: &str, output: &Path) -> 
         .first()
         .context("Material has no shader template")?
         .template;
+    write_template_shaders(&cache, found.tag.as_ref(), template, output)
+}
+
+/// Writes the compiled pixel shaders of shader template `template` (an `rmt2` tag path, such as
+/// `shaders\particle_templates\_9_8_0_0_1_1_1_0_0_0`) in cache `map` into `output`, laid out as
+/// [`export_shaders`] lays out a level material's.
+pub fn export_template_shaders(
+    maps: &Path,
+    map: &str,
+    template: &str,
+    output: &Path,
+) -> Result<()> {
+    let cache = Cache::open(&maps.join(map))?;
+    let template = cache.find("rmt2", template)?.clone();
+    write_template_shaders(&cache, None, &template, output)
+}
+
+fn write_template_shaders(
+    cache: &Cache,
+    material: Option<&Tag>,
+    template: &Tag,
+    output: &Path,
+) -> Result<()> {
     let template_at = template.address()?;
     let pixel = cache
         .reference(template_at + 0x10, Some("pixl"))?
@@ -1261,7 +1393,7 @@ pub fn export_shaders(maps: &Path, map: &str, material: &str, output: &Path) -> 
         .map(|row| Ok([cache.u8(row)?, cache.u8(row + 1)?]))
         .collect::<Result<Vec<_>>>()?;
     fs::create_dir_all(output)?;
-    let shaders = write_compiled_shaders(&cache, pixel_at, "", output)?;
+    let shaders = write_compiled_shaders(cache, pixel_at, "", output)?;
     let names = |at: usize| -> Result<Vec<String>> {
         cache
             .block(template_at + at, 4)?
@@ -1270,7 +1402,7 @@ pub fn export_shaders(maps: &Path, map: &str, material: &str, output: &Path) -> 
             .collect()
     };
     let report = serde_json::json!({
-        "material": found.tag,
+        "material": material,
         "template": template,
         "pixel_shader": pixel,
         "pixel_entry_points": entry_points,
@@ -1290,15 +1422,9 @@ pub fn export_shaders(maps: &Path, map: &str, material: &str, output: &Path) -> 
     Ok(())
 }
 
-/// Writes what the playable structure BSP of `map` lights with beyond its lightmap images into
-/// `output`: `lighting.json` with the lightmap BSP data's brightness, a count of its geometry's
-/// subparts by analytical light index, its instance rows, coloring rows, per-vertex lighting
-/// buffer indices and the first six such buffers (each one's declaration and first bytes), and
-/// the compiled vertex shaders of the template of the material whose path ends with `material`
-/// as `vertex-<index>-<slot>.bin`, with that material's `g_sample_vmf_diffuse` table as an image.
-/// The scenario's cubemap rows (`+0x7B8`, `0x20` bytes: a name, a position, two indices and a
-/// block of points) and each structure BSP's cubemap bitmap with its image count and the cube
-/// indices its clusters name, written to `cubemaps.json` in `output`.
+/// Writes the scenario's cubemap rows (`+0x7B8`, `0x20` bytes: a name, a position, two indices and
+/// a block of points) and each structure BSP's cubemap bitmap with its image count and the cube
+/// indices its clusters name, to `cubemaps.json` in `output`.
 pub fn export_cubemaps(maps: &Path, map: &str, output: &Path) -> Result<()> {
     let cache = Cache::open(&maps.join(map))?;
     let scenario = cache.only("scnr")?.address()?;
@@ -1351,6 +1477,12 @@ pub fn export_cubemaps(maps: &Path, map: &str, output: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writes what the playable structure BSP of `map` lights with beyond its lightmap images into
+/// `output`: `lighting.json` with the lightmap BSP data's brightness, a count of its geometry's
+/// subparts by analytical light index, its instance rows, coloring rows, per-vertex lighting
+/// buffer indices and the first six such buffers (each one's declaration and first bytes), and
+/// the compiled vertex shaders of the template of the material whose path ends with `material`
+/// as `vertex-<index>-<slot>.bin`, with that material's `g_sample_vmf_diffuse` table as an image.
 pub fn export_lighting(maps: &Path, map: &str, material: &str, output: &Path) -> Result<()> {
     let cache = Cache::open(&maps.join(map))?;
     let mut pages = Pages::default();

@@ -3,6 +3,7 @@ mod defaults;
 #[cfg(test)]
 mod tests;
 use crate::app::account_workspace as account;
+use std::path::PathBuf;
 
 use super::saving::settings_save_note;
 use super::settings::{
@@ -25,8 +26,7 @@ impl SundialApp {
         };
         match self.document.validate_sqlite_backup(&path) {
             Ok(()) => {
-                self.pending_sqlite_restore = Some(path);
-                self.confirmation = Some(ConfirmationDialog::RestoreSqliteBackup);
+                self.confirmation = Some(ConfirmationDialog::RestoreSqliteBackup(path));
             }
             Err(error) => self.set_status(
                 format!("Backup not selected: {error}. No files were changed"),
@@ -35,10 +35,7 @@ impl SundialApp {
         }
     }
 
-    pub(super) fn restore_selected_sqlite_backup(&mut self) {
-        let Some(backup) = self.pending_sqlite_restore.take() else {
-            return;
-        };
+    pub(super) fn restore_selected_sqlite_backup(&mut self, backup: PathBuf) {
         let require_closed = || match platform::destiny_is_running() {
             Ok(true) => Err(
                 "close Destiny 2 before replacing investment.sqlite3, then try again".to_owned(),
@@ -106,7 +103,13 @@ impl SundialApp {
                 return;
             }
         };
-        if account::requires_sqlite(&default_document) {
+        // settings.json's account data is inactive whenever the account lives elsewhere: in
+        // investment.sqlite3 from Sunrise settings v18, or in Dawn's player-state.db whatever the
+        // settings version, which Dawn's own defaults never reach. A missing Dawn database is
+        // seeded from it on Dawn's next boot, so it is kept either way.
+        if account::requires_sqlite(&default_document)
+            || !self.persisted_document.uses_json_account()
+        {
             preserve_inactive_json_account_domains(
                 &mut default_document,
                 self.persisted_document.json(),
@@ -135,7 +138,8 @@ impl SundialApp {
                 self.replace_loaded_document(document);
                 self.set_status(
                     format!(
-                        "Restored the defaults bundled with the installed Project Sunrise.{size_note} Original: {}. Backup: {}.{retention_note}",
+                        "Restored the settings bundled with the installed {}.{size_note} Original: {}. Backup: {}.{retention_note}",
+                        self.runtime_name(),
                         adjacent_backup.display(),
                         result.backup.display()
                     ),

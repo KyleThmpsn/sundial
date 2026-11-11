@@ -1,8 +1,9 @@
 //! Fit explicit Reach first-person actions to a private native arm controller.
 mod actions;
+mod aim;
+mod ammunition;
 mod arm;
 mod carrier;
-mod constraint;
 mod defaults;
 mod framing;
 mod layer;
@@ -330,8 +331,11 @@ pub(in crate::halo_reach) fn prepare(
             }
             let mut converted =
                 animation::clip::replace_for(&clip, &poses, rig.bind.len(), &controls)?;
-            let released_constraints = constraint::release(&mut converted, &rig)
-                .with_context(|| format!("Source action {action}, native clip {template:08X}"))?;
+            let released_constraints =
+                animation::constraint::release(&mut converted, &controls, &rig.names)
+                    .with_context(|| {
+                        format!("Source action {action}, native clip {template:08X}")
+                    })?;
             let marker = hash(&format!(
                 "reach/arms/{action}/{descriptor}/{}",
                 serde_json::to_string(source_clip)?
@@ -423,6 +427,44 @@ pub(in crate::halo_reach) fn prepare(
         }
     }
     let clips = offset::clips(native, &bank, &rig, grip, held_offset, &mut files)?;
+    let mut converted_layers = (*pose_layers).clone();
+    append(&mut converted_layers.0, 40, 0x80800006, &dispatch, 2)?;
+    let (mut converted_layers, layer_report) =
+        layer::source_actions(native, &converted_layers, &bank, descriptors.len())?;
+    let (ammunition, aim) = phase_layers(
+        native,
+        PhaseRig {
+            bank: &bank,
+            layers: &converted_layers,
+            rig: &rig,
+            controls: &controls,
+            consumers: &consumers,
+            owner: pose_owner,
+            entity,
+            ordinal: clip_rows.len() / 4,
+        },
+        (
+            scene,
+            source.as_ref(),
+            calibration.as_ref(),
+            &source_root,
+            &framing,
+        ),
+    )?;
+    let phase = [("ammunition", &ammunition), ("aim", &aim)]
+        .into_iter()
+        .find_map(|(key, result)| result.as_ref().ok().map(|pair| (key, pair)));
+    if let Some((key, (clip, wiring))) = phase {
+        ensure!(
+            ![0, u32::MAX].contains(&clip.marker) && markers.insert(clip.marker),
+            "Private phase clip marker collides with a bank word"
+        );
+        let file = files.add(key, &clip.payload)?;
+        extras.push(json!({"source":clip.marker,"template":clip.template,"file":file}));
+        clip_rows.extend(clip.marker.to_le_bytes());
+        auxiliary.extend(u32::MAX.to_le_bytes());
+        converted_layers = wiring.layers.clone();
+    }
     let mut converted_bank = (*bank).clone();
     append(&mut converted_bank.0, 8, 0x80808F48, &clip_rows, 4)?;
     append(&mut converted_bank.0, 24, 0x80800007, &auxiliary, 4)?;
@@ -438,22 +480,30 @@ pub(in crate::halo_reach) fn prepare(
         "states",
         &animation::state::clone_variants(&states, &routes)?,
     )?;
-    let mut converted_layers = (*pose_layers).clone();
-    append(&mut converted_layers.0, 40, 0x80800006, &dispatch, 2)?;
-    let (converted_layers, layer_report) =
-        layer::source_actions(native, &converted_layers, &bank, descriptors.len())?;
     let layer_template = files.add("pose-layers-template", &pose_layers)?;
     let layer_file = files.add("pose-layers", &converted_layers)?;
+    let mut pose_layer_row = json!({"owner":pose_owner,"tag":pose_tag,"file":layer_file,
+        "template_file":layer_template,"source_actions":layer_report});
     let mut consumer_rows = Vec::new();
     for (tag, payload) in consumers {
         let key = format!("consumer-{tag:08X}");
         files.add(&key, &payload)?;
         consumer_rows.push(json!({"owner":tag,"file_key":key}));
     }
+    write_phase_wiring(
+        native,
+        &mut files,
+        &mut consumer_rows,
+        &mut pose_layer_row,
+        pose_owner,
+        phase.map(|(_, (_, wiring))| wiring),
+    )?;
+    let (aim, ammunition) = (aim::report(&aim), aim::report(&ammunition));
     Ok(
         json!({"runtime_entity":runtime,"first_person_status":"linked","equipment_skeleton":equipment_skeleton,"first_person":{
             "attachment_owner":attachment,"entity":entity,"lookup_owner":lookup_tag,"bank":bank_tag,"files":files.names,"clips":clips,"extra_clips":extras,"bank_consumers":consumer_rows,"rig_extension":!rigs.is_empty(),"rigs":rigs,
-            "pose_layers":{"owner":pose_owner,"tag":pose_tag,"file":layer_file,"template_file":layer_template,"source_actions":layer_report},
+            "pose_layers":pose_layer_row,"ammunition":ammunition,"aim":aim,
+            "reload_seconds":source.as_ref().map(reload_seconds).transpose()?,
             "state_conversion":{"status":"source_states","parameters":parameter_tag,"states":state_tag},
             "melee":{"strikes":strikes,"selection":"Equal source alternatives inside each native state choice",
                 "limits":["The source primary keyframe and full motion duration are translated."]},
@@ -462,4 +512,180 @@ pub(in crate::halo_reach) fn prepare(
             "limits":["Non-melee source motion is fitted to native action duration and events. Weapon strikes retain their source duration and contact keyframe. Source elbow and shoulder controls drive the native arm solver. Weapon parts without a corresponding native control remain unmapped and are listed separately. In-game playback remains unverified.", "Source framing maps camera-relative source positions into the native utility-parented weapon reference. This does not establish the final native camera origin, view projection or ADS blend."]
         }}),
     )
+}
+
+/// How long each source reload plays: its one first-person clip's frames at 30 a second, from
+/// the first frame to the last. Reach's reload lasts as long as its animation, so these are the
+/// source reload times. A state with no single clip is left out.
+fn reload_seconds(source: &source::Source) -> Result<Value> {
+    let mut seconds = serde_json::Map::new();
+    for state in ["reload_full", "reload_empty"] {
+        let name = format!("first_person:{state}");
+        let clips = source.graph["clips"]
+            .as_array()
+            .context("Source clips")?
+            .iter()
+            .filter(|clip| clip["name"] == name.as_str())
+            .collect::<Vec<_>>();
+        let [clip] = clips.as_slice() else {
+            continue;
+        };
+        let Some([shared]) = clip["shared"].as_array().map(Vec::as_slice) else {
+            continue;
+        };
+        let frames = shared["frames"].as_u64().context("Source reload frames")?;
+        if frames >= 2 {
+            seconds.insert(state.to_owned(), json!((frames - 1) as f32 / 30.));
+        }
+    }
+    Ok(Value::Object(seconds))
+}
+
+struct PhaseRig<'a> {
+    bank: &'a Payload,
+    layers: &'a Payload,
+    rig: &'a animation::control::Rig,
+    controls: &'a Payload,
+    consumers: &'a [(u32, std::sync::Arc<Payload>)],
+    owner: u32,
+    entity: u32,
+    ordinal: usize,
+}
+
+type PhaseInput<'a> = (
+    &'a Scene,
+    Option<&'a source::Source>,
+    Option<&'a motion::Calibration>,
+    &'a Path,
+    &'a Value,
+);
+type PhaseLayer = std::result::Result<(ammunition::Clip, ammunition::Wiring), String>;
+
+fn phase_layers(
+    native: &mut Reader,
+    rig: PhaseRig<'_>,
+    (scene, source, calibration, source_root, framing): PhaseInput<'_>,
+) -> Result<(PhaseLayer, PhaseLayer)> {
+    let PhaseRig {
+        bank,
+        layers: converted_layers,
+        rig,
+        controls,
+        consumers,
+        owner: pose_owner,
+        entity,
+        ordinal,
+    } = rig;
+    // Weapon parts the source shows by magazine level take a bank ordinal of their own, and
+    // only once their layer, parameters and input are wired.
+    let ammunition = match (source, calibration, ammunition::capacity(scene)) {
+        (Some(source), Some(calibration), Some(capacity)) => {
+            match ammunition::clip(
+                native,
+                source,
+                source_root,
+                bank,
+                converted_layers,
+                rig,
+                controls,
+                &calibration.parts,
+                ordinal,
+            )? {
+                // Native arms laid out another way keep their parts unscaled.
+                Ok(clip) => match ammunition::wire(
+                    native,
+                    &clip,
+                    converted_layers,
+                    consumers,
+                    (pose_owner, entity),
+                    capacity,
+                ) {
+                    Ok(Ok(wiring)) => Ok((clip, wiring)),
+                    Ok(Err(reason)) => Err(reason.to_owned()),
+                    Err(error) => Err(format!("The native arms differ: {error:#}")),
+                },
+                Err(reason) => Err(reason.to_owned()),
+            }
+        }
+        (_, _, None) => Err("The source weapon has no single magazine".to_owned()),
+        _ => Err("The source actions are not translated".to_owned()),
+    };
+    // A scoped weapon's hands leave the zoomed view once aiming completes, when the arms carry no
+    // other phase layer.
+    let scoped = crate::halo_reach::hud::scope::zooms(&scene.object.gameplay);
+    // The right carrying wrist's idle distance from its shoulder, where source framing measured it,
+    // bounds how far the aim layer may slide that hand back.
+    let wrist = (framing["reach"]["side"] == "r")
+        .then(|| framing["reach"]["wrist_distance"].as_f64())
+        .flatten()
+        .map(|value| value as f32);
+    let aim = match (&ammunition, scoped) {
+        (_, false) => Err("The source weapon does not zoom".to_owned()),
+        (_, true) if !aim::ENABLED => Err(aim::DISABLED.to_owned()),
+        (Ok(_), true) => Err("The arms already carry the ammunition layer".to_owned()),
+        (Err(_), true) => match aim::clip(
+            native,
+            bank,
+            converted_layers,
+            rig,
+            controls,
+            ordinal,
+            wrist,
+        )? {
+            Ok(clip) => match aim::wire(
+                native,
+                &clip,
+                converted_layers,
+                consumers,
+                (pose_owner, entity),
+            ) {
+                Ok(Ok(wiring)) => Ok((clip, wiring)),
+                Ok(Err(reason)) => Err(reason.to_owned()),
+                Err(error) => Err(format!("The native arms differ: {error:#}")),
+            },
+            Err(reason) => Err(reason.to_owned()),
+        },
+    };
+    Ok((ammunition, aim))
+}
+
+fn write_phase_wiring(
+    native: &mut Reader,
+    files: &mut Files<'_>,
+    consumer_rows: &mut [Value],
+    pose_layer_row: &mut Value,
+    pose_owner: u32,
+    wiring: Option<&ammunition::Wiring>,
+) -> Result<()> {
+    if let Some(wiring) = wiring {
+        for (tag, converted, (allocation, payload)) in [
+            (
+                pose_owner,
+                &wiring.controller,
+                &wiring.controller_allocation,
+            ),
+            (
+                wiring.implementation.0,
+                &wiring.implementation.1,
+                &wiring.implementation_allocation,
+            ),
+        ] {
+            let row = consumer_rows
+                .iter_mut()
+                .find(|row| row["owner"] == tag)
+                .context("Phase layer wiring names an absent consumer")?;
+            let key = format!("consumer-{tag:08X}-converted");
+            files.add(&key, converted)?;
+            row["converted_file_key"] = json!(key);
+            row["allocation"] = json!({"tag":allocation,
+                "template_file":files.add(&format!("allocation-{allocation:08X}-template"), &*native.tag(*allocation, Some(0x80809BBB))?)?,
+                "file":files.add(&format!("allocation-{allocation:08X}"), payload)?});
+        }
+        let (library, payload) = &wiring.library;
+        pose_layer_row["parameters"] = json!({"tag":library,
+            "template_file":files.add("pose-parameters-template", &*native.tag(*library, None)?)?,
+            "file":files.add("pose-parameters", payload)?});
+        files.add("entity_converted", &wiring.entity)?;
+    }
+    Ok(())
 }

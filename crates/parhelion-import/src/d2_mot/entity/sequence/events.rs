@@ -435,9 +435,15 @@ fn shape(source: &Payload, from: usize, omitted: bool) -> Result<Shape> {
         0x808066AD => (0x80806B98, 0x80806B97, 0x138, 0x50, 5),
         0x808091CF => (0x808093C2, 0x808093C1, 0x118, 0x50, 23),
         0x80803F24 => (0x80804AB9, 0x80804AB8, 0x520, 0x50, 29),
+        0x80802FFD => (0x80803D8D, 0x80803D8C, 0x370, 0x40, 12),
         _ => anyhow::bail!("unsupported sequence event {class:08X}"),
     };
-    let source_kind = if class == 0x80808485 { 16 } else { kind };
+    // Modern spawn and feedback events number their kinds one higher than Shadowkeep's.
+    let source_kind = match class {
+        0x80808485 => 16,
+        0x80802FFD => 13,
+        _ => kind,
+    };
     ensure!(
         source.u32(from + 0x1C)? == source_kind
             && (matches!(kind, 0 | 34) || source.u32(from + 0x20)? == 0xFF),
@@ -588,6 +594,7 @@ pub(super) fn write(
                 source, from, output, target, bindings, sequence, inputs, locators,
             )?,
             33 | 39 => child(source, from, output, target, bindings, kind)?,
+            12 => feedback(source, from, output, target, bindings, inputs)?,
             _ => unreachable!(),
         }
         allocation.children.push(Allocation::node(ic));
@@ -599,6 +606,76 @@ pub(super) fn write(
         &u32::try_from(count)?.to_le_bytes(),
     )?;
     Ok(allocation)
+}
+
+/// The modern feedback event (`80802FFD`, `360` bytes) holds the fields of Shadowkeep's kind-12
+/// feedback event (`80803D8D`, `370` bytes) with a 24-byte resource reference before its program
+/// block, so everything after the reference sits `10` bytes earlier. Twin slot flows of 581
+/// weapons pair one event of each class.
+///
+/// | Field | Modern | Native |
+/// | --- | --- | --- |
+/// | Front, eight bytes | `+28` | `+40` |
+/// | Feedback resource (`808031DE`, native `80803EB0`) | `+30`, reference | `+48`, tag |
+/// | Fields without a counterpart, zero | `+48..+88` | |
+/// | Empty array descriptor | `+88` | `+98` |
+/// | Ten scale programs, two builtins | `+98 + 40 n` | `+A8 + 40 n` |
+/// | Fallback resource | `+318`, tag | `+328` |
+/// | Target mode and stop byte, each 0 or 1 | `+31C`, `+31D` | `+32C`, `+32D` |
+/// | Final program, one builtin | `+320` | `+330` |
+///
+/// Native `+32E`, transform from the event owner, stays zero. Programs that read sequence inputs
+/// after their builtins take the translated sequence's input slots.
+fn feedback(
+    source: &Payload,
+    from: usize,
+    output: &mut Payload,
+    to: usize,
+    bindings: &Bindings,
+    inputs: &BTreeMap<u32, u32>,
+) -> Result<()> {
+    ensure!(
+        source.u32(
+            from.checked_sub(4)
+                .context("feedback source class offset")?
+        )? == 0x80802FFD
+            && output.u32(to.checked_sub(4).context("feedback native class offset")?)?
+                == 0x80803D8D,
+        "feedback event class differs"
+    );
+    source.bytes::<0x360>(from)?;
+    ensure!(
+        source.0[from + 0x48..from + 0x88].iter().all(|b| *b == 0)
+            && source.array_range(from + 0x88, 1, None)?.is_empty()
+            && source.0[from + 0x31E..from + 0x320].iter().all(|b| *b == 0),
+        "feedback event has fields without a native counterpart"
+    );
+    let (mode, stop) = (source.u8(from + 0x31C)?, source.u8(from + 0x31D)?);
+    ensure!(
+        mode <= 1 && stop <= 1,
+        "feedback target mode or stop byte differs"
+    );
+    put(output, to + 0x40, &source.bytes::<8>(from + 0x28)?)?;
+    let resource = link(bindings, from + 0x30, 0x808031DE, 0x80803EB0)?;
+    put(output, to + 0x48, &resource.to_le_bytes())?;
+    let fallback = if source.u32(from + 0x318)? == u32::MAX {
+        u32::MAX
+    } else {
+        link(bindings, from + 0x318, 0x808031DE, 0x80803EB0)?
+    };
+    put(output, to + 0x328, &fallback.to_le_bytes())?;
+    for program in 0..10 {
+        expression::bound(
+            source,
+            from + 0x98 + program * 0x40,
+            output,
+            to + 0xA8 + program * 0x40,
+            2,
+            inputs,
+        )?;
+    }
+    put(output, to + 0x32C, &[mode, stop])?;
+    expression::bound(source, from + 0x320, output, to + 0x330, 1, inputs)
 }
 
 fn child(

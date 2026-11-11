@@ -51,6 +51,70 @@ fn fixture(name: &str) -> (TestDirectory, PathBuf, Value, Value) {
 }
 
 #[test]
+fn settings_schemas_save_export_keys_and_require_the_multiplayer_opt_in() {
+    for schema in [18, 19] {
+        let directory = TestDirectory::new("settings schema workflow");
+        let path = directory.0.join("settings.json");
+        let backups = directory.0.join("backups");
+        let mut original: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/sunrise-v18-9260d10-defaults.json"
+        ))
+        .unwrap();
+        original["unknown"] = json!({"preserve":[1,2]});
+        // V19's synthetic document exercises its key shapes, without claiming that these
+        // rows cover the complete native defaults for that schema.
+        let export = if schema == 19 {
+            original["version"] = json!(19);
+            original["client"]
+                .as_object_mut()
+                .unwrap()
+                .remove("dump_package_keys");
+            original["client"]["exports"] = json!({"package_keys":false,"tag_definitions":false});
+            original["multiplayer_enabled"] = json!(false);
+            "/client/exports/package_keys"
+        } else {
+            "/client/dump_package_keys"
+        };
+        let encoded = serde_json::to_vec(&original).unwrap();
+        fs::write(&path, &encoded).unwrap();
+        crate::persistence::sqlite_account::tests::versions::fixture(
+            &directory.0.join("data/investment.sqlite3"),
+            if schema == 19 { "v5-fresh" } else { "v3-fresh" },
+        );
+        let mut app = crate::app::tests::driver::app(directory.0.clone());
+        app.persisted_document =
+            crate::app::account_workspace::WorkspaceDocument::load(original.clone(), &path, false);
+        let save = |edited: &Value| -> Result<SaveJsonResult, String> {
+            let mut candidate = app.persisted_document.clone();
+            *candidate.json_mut() = edited.clone();
+            // The application validates before it calls the byte writer, which owns only
+            // concurrency checks, backups, replacement and readback.
+            app.validation_warning_for_write(&candidate)?;
+            save_test_json_checked(&path, edited, &original, false, &backups)
+                .map_err(|error| error.message)
+        };
+        let mut edited = original.clone();
+        *edited.pointer_mut(export).unwrap() = json!(true);
+        edited["server"]["gameplay"]["bind_address"] = json!("0.0.0.0");
+        if schema == 19 {
+            edited["client"]["exports"]["tag_definitions"] = json!(true);
+            let result = save(&edited);
+            assert!(
+                result.is_err(),
+                "A listener beyond loopback requires the opt-in"
+            );
+            assert_eq!(fs::read(&path).unwrap(), encoded);
+            edited["multiplayer_enabled"] = json!(true);
+        }
+        let saved = save(&edited).unwrap();
+        let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded, edited);
+        assert_eq!(fs::read(saved.backup).unwrap(), encoded);
+        crate::test_support::artifact(&format!("settings-schema-{schema}.json"), &reloaded);
+    }
+}
+
+#[test]
 fn settings_only_save_is_blocked_if_the_game_starts_during_preparation() {
     let (directory, path, before, after) = fixture("settings-game-started");
     let checks = std::cell::Cell::new(0);

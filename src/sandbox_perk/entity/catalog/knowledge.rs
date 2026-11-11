@@ -16,8 +16,9 @@ pub struct Observation {
 fn observations() -> &'static [Observation] {
     static DATA: OnceLock<Vec<Observation>> = OnceLock::new();
     DATA.get_or_init(|| {
-        let mut entries: Vec<Observation> = serde_json::from_str(include_str!("knowledge.json"))
-            .expect("bundled gameplay observations");
+        let mut entries: Vec<Observation> =
+            serde_json::from_str(include_str!("knowledge/knowledge.json"))
+                .expect("bundled gameplay observations");
         entries.sort_by_key(|entry| entry.graph);
         entries
     })

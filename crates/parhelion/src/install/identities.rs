@@ -9,7 +9,7 @@ mod grants;
 mod placement;
 mod sockets;
 pub(crate) use grants::SHADER_STACK;
-pub(super) use grants::{GrantedItem, grant_items, installed_grants};
+pub(super) use grants::{GrantedItem, grant_items, installed_grants, preview_grants};
 pub(super) use placement::slot_replacement;
 pub(super) use sockets::socket_defaults;
 
@@ -19,27 +19,32 @@ pub(super) fn installed_identities(
     generation_identities(target, target)
 }
 
-/// The installed authored item hashes, as the active runtime loads them. An installation whose
-/// packages carry no authored investment tables, such as one with only other mods or nothing
-/// installed, has none.
+/// The installed authored item hashes, as the active runtime loads them.
 pub(super) fn installed_item_hashes(target: &Path) -> Result<BTreeSet<u32>, String> {
     let generation = Generation::loaded(target)?;
-    let result = (|| {
-        let globals = resolve_live_named_tag(&generation.manager, "investment_globals", None)?;
-        let profile = canonical_package(globals.pkg_id()).ok_or_else(|| {
-            format!("Ownership table {globals} is outside the recognized package chains")
-        })?;
-        if !generation
-            .directory
-            .join(profile.authored_file_name)
-            .try_exists()
-            .map_err(|e| e.to_string())?
-        {
-            return Ok(BTreeSet::new());
-        }
-        read_identities(&generation).map(|(hashes, _)| hashes)
-    })();
+    let result = read_installed_identities(&generation).map(|(hashes, _)| hashes);
     generation.finish(result)
+}
+
+/// The installed generation's authored identities. An installation whose packages carry no
+/// authored investment tables has none: one with only other mods or nothing installed, or one on
+/// Dawn or Sunrise before 0.6 whose only build is in the mod folder those runtimes don't read.
+pub(in crate::install) fn read_installed_identities(
+    generation: &Generation,
+) -> Result<(BTreeSet<u32>, Vec<AuthoredCollectionUnlock>), String> {
+    let globals = resolve_live_named_tag(&generation.manager, "investment_globals", None)?;
+    let profile = canonical_package(globals.pkg_id()).ok_or_else(|| {
+        format!("Ownership table {globals} is outside the recognized package chains")
+    })?;
+    if !generation
+        .directory
+        .join(profile.authored_file_name)
+        .try_exists()
+        .map_err(|e| e.to_string())?
+    {
+        return Ok((BTreeSet::new(), Vec::new()));
+    }
+    read_identities(generation)
 }
 
 /// Read an authored generation against the same installation's stock baseline.
@@ -67,7 +72,18 @@ impl Generation {
         authored_directory: &Path,
     ) -> Result<Self, String> {
         super::validation::decoder::ensure_initialized(target)?;
+        let mod_loader = super::uses_mod_loader(target);
         if paths_equal(target, authored_directory) {
+            // Dawn and Sunrise before 0.6 never read the mod folder, so their installation is
+            // stock `packages` with any Parhelion files in them. A build left in the folder for
+            // Sunrise 0.6 is not part of it.
+            if !mod_loader {
+                return Ok(Self {
+                    manager: open_shadowkeep_package_manager(target)?,
+                    directory: target.to_path_buf(),
+                    view: None,
+                });
+            }
             let manager =
                 sundial::package_authoring::open_managed_shadowkeep_package_manager(target)?;
             let directory = manager.package_dir.clone();
@@ -85,27 +101,65 @@ impl Generation {
             .iter()
             .map(|p| p.file_name.to_owned())
             .collect::<Vec<_>>();
-        let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
-        let manager = (|| {
-            let manifest_path = authored_directory.join(MANIFEST_FILE_NAME);
-            if manifest_path.is_file() {
-                let manifest: ManifestDocument = sundial::package_authoring::read_json(
-                    File::open(&manifest_path).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
-                manifest.validate()?;
-                if !manifest.mods.is_empty() {
-                    for artifact in &manifest.artifacts {
-                        let path = crate::mod_family::source(
+        let manifest_path = authored_directory.join(MANIFEST_FILE_NAME);
+        let manifest = if manifest_path.is_file() {
+            let manifest: ManifestDocument = sundial::package_authoring::read_json(
+                File::open(&manifest_path).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            manifest.validate()?;
+            Some(manifest)
+        } else {
+            None
+        };
+        let family = manifest
+            .as_ref()
+            .filter(|manifest| !manifest.mods.is_empty())
+            .map(|manifest| {
+                let sources = manifest
+                    .artifacts
+                    .iter()
+                    .map(|artifact| {
+                        crate::mod_family::source(
                             &manifest.mods,
                             authored_directory,
                             target,
                             &artifact.file_name,
-                        )?;
-                        view.add_overlay(&path)?;
-                    }
-                    return open_shadowkeep_package_manager(view.path());
+                        )
+                        .map(|path| (artifact.clone(), path))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, String>((manifest, sources))
+            })
+            .transpose()?;
+        // Members that each patch one package are read with those entries as the loader merges
+        // them, which one view of overlays can't hold.
+        if let Some((manifest, sources)) = &family {
+            let natives = sources
+                .iter()
+                .map(|(artifact, _)| crate::mod_family::native_name(&artifact.file_name))
+                .collect::<BTreeSet<_>>();
+            if natives.len() != sources.len() {
+                // Legacy files in stock `packages` stay out, as they do from the view below.
+                let incoming =
+                    crate::mod_family::incoming(&manifest.mods, sources, ignored.clone())?;
+                let manager = sundial::package_authoring::open_family_shadowkeep_package_manager(
+                    target, &incoming,
+                )?;
+                return Ok(Self {
+                    directory: manager.package_dir.clone(),
+                    manager,
+                    view: None,
+                });
+            }
+        }
+        let view = crate::workflow::FilteredPackageView::create(target, &ignored)?;
+        let manager = (|| {
+            if let Some((_, sources)) = &family {
+                for (_, path) in sources {
+                    view.add_overlay(path)?;
                 }
+                return open_shadowkeep_package_manager(view.path());
             }
             for profile in &profiles {
                 let path = authored_directory.join(profile.file_name);
@@ -127,8 +181,7 @@ impl Generation {
 
     /// The installation as the active runtime loads it. Dawn and Sunrise before 0.6 ignore
     /// Parhelion's mod folder, so there it is stock `packages` with any Parhelion files in them,
-    /// whatever the folder holds. Installation and removal read [`Self::open`] instead, which
-    /// includes the folder on any runtime, since they replace or remove it wherever it is.
+    /// whatever the folder holds. Unlike [`Self::open`], it refuses a runtime it can't identify.
     fn loaded(target: &Path) -> Result<Self, String> {
         let install = target.parent().ok_or("Missing game root")?;
         let runtime = sundial::package_authoring::installed_runtime(install)
@@ -171,21 +224,19 @@ fn with_generation<T>(
 pub(in crate::install) fn read_identities(
     generation: &Generation,
 ) -> Result<(BTreeSet<u32>, Vec<AuthoredCollectionUnlock>), String> {
-    let target = generation.directory.as_path();
     let manager = &generation.manager;
     let globals = resolve_live_named_tag(manager, "investment_globals", None)?;
     // Follow each generation's own root. Do not assume authored root/table tags are unchanged.
     let tables = |authored| -> Result<(Vec<u8>, Vec<u8>), String> {
-        let directory = target;
-        let globals = payload(directory, globals, authored)?;
+        let globals = payload(generation, globals, authored)?;
         let root = payload(
-            directory,
+            generation,
             TagHash(investment_globals_table_tag(&globals, 0)?),
             authored,
         )?;
         Ok((
             payload(
-                directory,
+                generation,
                 TagHash(investment_root_table_tag(
                     &root,
                     ROOT_ITEM_DEFINITION_TABLE_SLOT,
@@ -193,7 +244,7 @@ pub(in crate::install) fn read_identities(
                 authored,
             )?,
             payload(
-                directory,
+                generation,
                 TagHash(investment_root_table_tag(
                     &root,
                     ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT,
@@ -234,7 +285,10 @@ pub(in crate::install) fn available_definitions(
     Ok(definitions)
 }
 
-fn payload(target: &Path, tag: TagHash, authored: bool) -> Result<Vec<u8>, String> {
+/// One ownership table: the stock generation's entry, or the authored generation's entry as its
+/// reader serves it, merged where several family members change it. The authored patch must be
+/// present in the generation.
+fn payload(generation: &Generation, tag: TagHash, authored: bool) -> Result<Vec<u8>, String> {
     let profile = canonical_package(tag.pkg_id())
         .ok_or_else(|| format!("Ownership table {tag} is outside the recognized package chains"))?;
     let name = if authored {
@@ -242,8 +296,11 @@ fn payload(target: &Path, tag: TagHash, authored: bool) -> Result<Vec<u8>, Strin
     } else {
         profile.stock_file_name(profile.stock_patch_id)
     };
-    let path = target.join(name);
+    let path = generation.directory.join(name);
     reject_symlink(&path, "ownership source").map_err(|e| e.to_string())?;
+    if authored {
+        return generation.manager.read_tag(tag);
+    }
     let package = PackageD2PreBL::open(path.to_str().ok_or("Package path is not UTF-8")?)
         .map_err(|e| e.to_string())?;
     package
@@ -266,6 +323,9 @@ fn rows(data: &[u8], class: u32, size: usize) -> Result<Vec<&[u8]>, String> {
         .collect())
 }
 
+/// The authored item hashes and unlocks of a generation. Current builds acquire their items
+/// unconditionally and author no unlocks. A generation installed by an earlier build for Dawn or
+/// Sunrise before 0.6 has an unlock for each item, which the review then retires.
 fn identify(
     stock_items: &[u8],
     items: &[u8],
@@ -346,8 +406,8 @@ fn identify(
             slot,
         });
     }
-    // A set of maps alone authors neither items nor unlocks.
-    if hashes.is_empty() != owned_unlocks.is_empty() {
+    // A set of maps alone authors neither items nor unlocks, and an unlock needs an item.
+    if hashes.is_empty() && !owned_unlocks.is_empty() {
         return Err("The installed set has no provable authored item/unlock identities".into());
     }
     Ok((hashes, owned_unlocks))

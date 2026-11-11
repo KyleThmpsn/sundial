@@ -538,6 +538,8 @@ mod tests {
         }
     }
 
+    // The cubic's lanes are the coefficients of t^3, t^2, t and 1. Each case is chosen so that
+    // returning the input unchanged would fail, and each expected value is exact in f32.
     #[test]
     fn evaluates_cubic_expression_into_a_native_register() {
         let program = program(
@@ -545,22 +547,24 @@ mod tests {
             vec![[2.0, -3.0, 0.0, 1.0]],
         );
         let mut registers = Registers::new(&program);
-        registers.set(2, 0, [0.5, 0.0, 0.0, 0.0]).unwrap();
+        registers.set(2, 0, [0.25, 0.0, 0.0, 0.0]).unwrap();
         program.evaluate_section(0, &mut registers).unwrap();
-        assert_eq!(registers.get(1, 0).unwrap()[0], 0.5);
+        // 2(0.25)^3 - 3(0.25)^2 + 1
+        assert_eq!(registers.get(1, 0).unwrap()[0], 0.84375);
     }
 
     #[test]
     fn cubic_evaluates_each_input_lane() {
         let program = program(
             vec![0x47, 0, 0x34, 0, 0x0F, 0x3F, 1, 0, 0],
-            vec![[0.0, 0.0, 1.0, 0.0]],
+            vec![[1.0, -2.0, 0.5, 0.25]],
         );
         let mut registers = Registers::new(&program);
         program
             .evaluate_section_with_inputs(0, &mut registers, &[[0.0, 0.25, 0.5, 1.0]])
             .unwrap();
-        assert_eq!(registers.get(1, 0), Some([0.0, 0.25, 0.5, 1.0]));
+        // t^3 - 2t^2 + 0.5t + 0.25 at each lane's t
+        assert_eq!(registers.get(1, 0), Some([0.25, 0.265625, 0.125, -0.25]));
     }
 
     #[test]

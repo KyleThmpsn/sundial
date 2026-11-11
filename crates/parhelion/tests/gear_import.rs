@@ -6,7 +6,10 @@ use parhelion::{
     BatchBuildRequest, BatchBuildSnapshot, ItemKind, WeaponRecipe,
     build_and_stage_snapshot_with_progress,
 };
-use parhelion_import::d2_mot::{payload::Payload, reader::Reader, service};
+use parhelion_import::{
+    d2_mot::service,
+    tiger::{payload::Payload, reader::Reader},
+};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -41,12 +44,12 @@ fn gear_imports_keep_their_family_and_art_variants_through_staging()
     for kind in ["armor", "ghost_shell", "ship", "sparrow", "emblem"] {
         assert!(kinds.contains(&Some(kind)), "Matrix must include {kind}");
     }
-    let output = parhelion_import::d2_mot::reader::outside(
+    let output = parhelion_import::tiger::reader::outside(
         &configured("PARHELION_GEAR_OUTPUT")?,
         modern.parent().ok_or("Modern root")?,
     )?;
     let output =
-        parhelion_import::d2_mot::reader::outside(&output, native.parent().ok_or("Native root")?)?;
+        parhelion_import::tiger::reader::outside(&output, native.parent().ok_or("Native root")?)?;
     assert!(!output.exists(), "Use a fresh artifact directory");
     fs::create_dir_all(&output)?;
     let selectors = art_selector_oracle(&native, &modern, &output)?;
@@ -336,7 +339,7 @@ fn gear_imports_keep_their_family_and_art_variants_through_staging()
             ItemKind::GhostShell | ItemKind::Ship | ItemKind::Sparrow
         ) {
             let rig =
-                parhelion_import::d2_mot::rig::inspect(&mut staged, items.u32(row + 16)?, false)?;
+                parhelion_import::tiger::rig::inspect(&mut staged, items.u32(row + 16)?, false)?;
             assert_eq!(
                 u32::from_str_radix(rig["pattern_key"].as_str().ok_or("Pattern key")?, 16)?,
                 recipe

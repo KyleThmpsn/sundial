@@ -150,7 +150,7 @@ fn native_workbench_roundtrip_preserves_all_effects_extra_choices_and_socket_met
     let variant = &weapon.overrides.socket_plug_variants[0];
     assert_eq!(variant.choice_index, 1);
     assert_eq!(variant.socket_index as usize, socket);
-    let restored = templates::from_variant(variant, &catalog);
+    let restored = crate::perk::PerkRecipe::from_variant(variant, &catalog);
     assert_eq!(restored.effects, authored.effects);
     assert_eq!(restored.stats, authored.stats);
     assert_eq!(restored.classification, authored.classification);

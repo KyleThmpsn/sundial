@@ -10,6 +10,8 @@ use serde_json::json;
 use std::time::Instant;
 use sundial::package_authoring::mod_content;
 
+mod toggle;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scenario {
@@ -30,21 +32,105 @@ struct LegacyBaseline {
     manifest: PathBuf,
 }
 
+/// The importer whose mod holds `recipe`: one whose graph and every attachment come wholly from
+/// it, by the build's ownership rule. A graph with native nodes, or one that mixes sources, is
+/// the main mod's. Kept donor parts stay with the import.
 fn origin(recipe: &crate::WeaponRecipe) -> Option<String> {
     let reference = recipe.overrides.imported_graph.as_ref()?;
-    let graph: serde_json::Value =
-        serde_json::from_slice(&fs::read(reference.directory.join("asset-graph.json")).unwrap())
-            .unwrap();
-    Some(
-        graph["source"]
-            .as_str()
-            .expect("imported graph source")
-            .to_owned(),
-    )
+    let owner = |directory: &Path| {
+        let graph: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("asset-graph.json")).unwrap()).unwrap();
+        crate::mod_family::build::graph_origin(&graph, None)
+    };
+    let first = owner(&reference.directory)?;
+    reference
+        .attachments
+        .iter()
+        .all(|attachment| owner(&attachment.directory) == Some(first))
+        .then(|| first.source().to_owned())
 }
 
 fn manifests(build: &crate::BuildReport) -> serde_json::Value {
     serde_json::from_slice(&fs::read(&build.manifest_path).unwrap()).unwrap()
+}
+
+/// The member of the family that owns the content of `origin`, or the main mod for native content.
+fn member_id(origin: Option<&str>) -> String {
+    origin.map_or_else(
+        || mod_content::ID.to_owned(),
+        |origin| format!("{}-{origin}", mod_content::ID),
+    )
+}
+
+/// Each member owns its source's records, registrations, patches, maps and scripts, and needs no
+/// other member to load. `origins` are the importers whose items the build holds. Every map the
+/// scenario selects is a Halo: Reach map.
+fn assert_independent(
+    staged: &serde_json::Value,
+    origins: &BTreeSet<String>,
+    maps: &[crate::map::MapRecipe],
+) {
+    let mods = staged["mods"].as_array().expect("split mod manifests");
+    for member in mods {
+        let id = member["manifest"]["id"].as_str().unwrap();
+        assert!(
+            member["manifest"]["dependencies"]
+                .as_array()
+                .is_none_or(Vec::is_empty),
+            "{id} needs another member to load"
+        );
+        let paths = member["receipt"]["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|artifact| artifact["path"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        let has_items =
+            id == mod_content::ID || origins.iter().any(|origin| member_id(Some(origin)) == id);
+        if has_items {
+            assert!(
+                paths
+                    .iter()
+                    .any(|path| path.contains("_parhelion_investment_")),
+                "{id} registers its items in another member's records"
+            );
+        }
+        // Sunrise merges an entry several mods change only when each describes it.
+        for patch in paths
+            .iter()
+            .filter(|path| path.starts_with("patches/") && path.ends_with(".pkg"))
+        {
+            let merge = format!("{}.merge", patch.strip_suffix(".pkg").unwrap());
+            assert!(
+                paths.contains(merge.as_str()),
+                "{id} {patch} has no merge data"
+            );
+        }
+        if id == mod_content::ID && !maps.is_empty() {
+            // Map worlds, activities, mission scripts and map diagnostics follow their map.
+            for path in &paths {
+                let native =
+                    path.starts_with("patches/") || path.starts_with("packages/w64_parhelion_");
+                assert!(native, "the main mod holds Halo: Reach map content {path}");
+            }
+        }
+    }
+    // Every Collections entry is acquired unconditionally, so no mod holds an unlock flag or an
+    // account slot another could take.
+    for weapon in staged["project"]["weapons"].as_array().unwrap() {
+        assert!(
+            weapon["unlock"].is_null(),
+            "{} has an unlock flag",
+            weapon["namespace"]
+        );
+    }
+    if !maps.is_empty() {
+        let reach = member_id(Some("halo_reach"));
+        assert!(
+            mods.iter().any(|member| member["manifest"]["id"] == reach),
+            "the selected maps have no Halo: Reach member"
+        );
+    }
 }
 
 fn importer_files(
@@ -98,8 +184,7 @@ fn account_tables(path: &Path) -> BTreeMap<String, serde_json::Value> {
                 .unwrap();
             let columns = statement
                 .column_names()
-                .iter()
-                .map(|column| (*column).to_owned())
+                .map(str::to_owned)
                 .collect::<Vec<_>>();
             let width = columns.len();
             let mut rows = statement
@@ -124,6 +209,64 @@ fn account_tables(path: &Path) -> BTreeMap<String, serde_json::Value> {
             (name, json!({"columns":columns,"rows":rows}))
         })
         .collect()
+}
+
+/// A temporary Sunrise 0.6 installation over a stock view. Settings v8 keep the account in
+/// `settings.json`, and v18 in `data/investment.sqlite3`.
+struct Installation {
+    _view: tempfile::TempDir,
+    packages: PathBuf,
+    /// The file that holds the account.
+    account: PathBuf,
+}
+
+/// A temporary installation on Sunrise's mod loader, with a settings v18 SQLite account, the only
+/// account storage that runtime accepts.
+fn installation(prefix: &str) -> Installation {
+    let source = crate::test_support::stock_packages();
+    let (view, packages) = stock_view(&source, prefix, Oodle::Required);
+    let root = packages.parent().unwrap();
+    fs::write(root.join("destiny2.exe"), []).unwrap();
+    fs::create_dir_all(root.join("bin/x64/Sunrise")).unwrap();
+    fs::copy(
+        crate::test_support::mod_loader_runtime(),
+        root.join("bin/x64/steam_api64.dll"),
+    )
+    .unwrap();
+    let settings = root.join("bin/x64/Sunrise/settings.json");
+    fs::write(
+        &settings,
+        br#"{"version":18,"unknown":{"keep":true},"client":{"reveal_lore_books":false}}"#,
+    )
+    .unwrap();
+    let data = root.join("bin/x64/Sunrise/data");
+    fs::create_dir(&data).unwrap();
+    let account_path = data.join("investment.sqlite3");
+    let account = rusqlite::Connection::open(&account_path).unwrap();
+    account.execute_batch("BEGIN").unwrap();
+    for sql in [
+        include_str!(
+            "../../../../../../src/persistence/sqlite_account/fixtures/investment_schema.sql"
+        ),
+        include_str!(
+            "../../../../../../src/persistence/sqlite_account/fixtures/account_settings_schema.sql"
+        ),
+        include_str!(
+            "../../../../../../src/persistence/sqlite_account/fixtures/investment_defaults.sql"
+        ),
+        include_str!(
+            "../../../../../../src/persistence/sqlite_account/fixtures/account_settings_defaults.sql"
+        ),
+    ] {
+        account.execute_batch(sql).unwrap();
+    }
+    account.execute_batch("COMMIT").unwrap();
+    drop(account);
+    Installation {
+        _view: view,
+        packages,
+        account: account_path,
+    }
 }
 
 fn install(
@@ -161,12 +304,22 @@ fn readback(packages: &Path, build: &crate::BuildReport) -> serde_json::Value {
     }
     let root = packages.parent().unwrap();
     let mut decoded = Vec::new();
+    // Every new package an importer holds. A patch reads blocks from the stock patches before
+    // it, so only its loader can open it.
     for path in mod_content::files(root)
         .unwrap()
         .into_iter()
         .filter(|path| {
-            path.to_string_lossy().contains("parhelion-")
-                && path.extension().is_some_and(|extension| extension == "pkg")
+            path.extension().is_some_and(|extension| extension == "pkg")
+                && path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|folder| folder == "packages")
+                && path.strip_prefix(root).unwrap().components().any(|part| {
+                    part.as_os_str()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("dev.kylethmpsn.parhelion-"))
+                })
         })
     {
         let package = PackageD2PreBL::open(path.to_str().unwrap()).unwrap();
@@ -178,11 +331,21 @@ fn readback(packages: &Path, build: &crate::BuildReport) -> serde_json::Value {
         for index in 0..package.entries().len() {
             let address = TagHash::new(id, index.try_into().unwrap());
             let payload = package.read_entry(index).unwrap();
-            assert_eq!(manager.read_tag(address).unwrap(), payload);
+            let served = manager.read_tag(address).unwrap();
+            let class = package.entries()[index].reference;
+            // An entry of a class with site rules names rows its member added, which the merge
+            // renumbers after an earlier member's rows. It keeps its size, and every other entry
+            // is served as written.
+            if mod_content::merge::recipes::has_class_rules(class) {
+                assert_eq!(served.len(), payload.len(), "{address}");
+            } else {
+                assert_eq!(served, payload, "{address}");
+            }
             entries.push(json!({
                 "tag":address.0,
-                "reference":package.entries()[index].reference,
+                "reference":class,
                 "sha256":crate::artifact::digest_bytes(&payload).sha256,
+                "served_sha256":crate::artifact::digest_bytes(&served).sha256,
             }));
         }
         assert!(!entries.is_empty());
@@ -242,44 +405,10 @@ fn importer_mods_reuse_changed_content_and_retire_as_one_generation() {
         .collect::<Vec<_>>();
     let output = crate::test_support::artifact_dir("importer-mod-family");
     fs::create_dir_all(&output).unwrap();
-    let source = crate::test_support::stock_packages();
-    let (_view, packages) = stock_view(&source, "importer-mod-family-", Oodle::Required);
+    let installation = installation("importer-mod-family-");
+    let packages = installation.packages.clone();
     let root = packages.parent().unwrap();
-    fs::write(root.join("destiny2.exe"), []).unwrap();
-    fs::create_dir_all(root.join("bin/x64/Sunrise")).unwrap();
-    fs::copy(
-        crate::test_support::mod_loader_runtime(),
-        root.join("bin/x64/steam_api64.dll"),
-    )
-    .unwrap();
-    fs::write(
-        root.join("bin/x64/Sunrise/settings.json"),
-        br#"{"version":18,"unknown":{"keep":true},"client":{"reveal_lore_books":false}}"#,
-    )
-    .unwrap();
-    let data = root.join("bin/x64/Sunrise/data");
-    fs::create_dir(&data).unwrap();
-    let account_path = data.join("investment.sqlite3");
-    let account = rusqlite::Connection::open(&account_path).unwrap();
-    account.execute_batch("BEGIN").unwrap();
-    for sql in [
-        include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/investment_schema.sql"
-        ),
-        include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/account_settings_schema.sql"
-        ),
-        include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/investment_defaults.sql"
-        ),
-        include_str!(
-            "../../../../../../src/persistence/sqlite_account/fixtures/account_settings_defaults.sql"
-        ),
-    ] {
-        account.execute_batch(sql).unwrap();
-    }
-    account.execute_batch("COMMIT").unwrap();
-    drop(account);
+    let account_path = installation.account.clone();
     let account_before = account_tables(&account_path);
     let settings = fs::read(root.join("bin/x64/Sunrise/settings.json")).unwrap();
     let mut events = Vec::new();
@@ -312,58 +441,20 @@ fn importer_mods_reuse_changed_content_and_retire_as_one_generation() {
         };
     let (first, first_seconds) = run(recipes.clone(), maps.clone(), "first");
     let staged = manifests(&first);
-    let mods = staged["mods"].as_array().expect("split mod manifests");
-    assert_eq!(mods.len(), origins.len() + 1);
-    for member in mods {
-        let id = member["manifest"]["id"].as_str().unwrap();
-        let files = member["receipt"]["artifacts"].as_array().unwrap();
-        if id == mod_content::ID {
-            assert_eq!(
-                member["manifest"]["dependencies"].as_array().unwrap().len(),
-                origins.len()
-            );
-            assert!(files.iter().any(|file| {
-                file["path"]
-                    .as_str()
-                    .unwrap()
-                    .contains("parhelion_investment")
-            }));
-        } else {
-            assert!(
-                files
-                    .iter()
-                    .all(|file| file["path"].as_str().unwrap().starts_with("packages/"))
-            );
-            assert!(files.iter().all(|file| {
-                !file["path"]
-                    .as_str()
-                    .unwrap()
-                    .contains("parhelion_investment")
-            }));
-        }
-    }
+    assert_eq!(
+        staged["mods"]
+            .as_array()
+            .expect("split mod manifests")
+            .len(),
+        origins.len() + 1
+    );
+    assert_independent(&staged, &origins, &maps);
     let (_, first_install_seconds) = install(&first, &packages, &output.join("backups"));
     let first_readback = readback(&packages, &first);
     let mut before = importer_files(root);
     let (second, second_seconds) = run(recipes.clone(), maps.clone(), "unchanged");
-    let repeated = manifests(&second);
-    for member in repeated["mods"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|member| member["manifest"]["id"] != mod_content::ID)
-    {
-        assert_eq!(member["kept"], true);
-        for artifact in member["receipt"]["artifacts"].as_array().unwrap() {
-            let name = Path::new(artifact["path"].as_str().unwrap())
-                .file_name()
-                .unwrap();
-            assert!(
-                !second.run_directory.join(name).exists(),
-                "kept import was rewritten"
-            );
-        }
-    }
+    // The main mod's native content is unchanged too, so no member is written again.
+    toggle::assert_only_rebuilt(&second, "");
     assert!(second.import_conversions.values().all(|count| *count == 0));
     let (_, second_install_seconds) = install(&second, &packages, &output.join("backups"));
     assert_eq!(
@@ -376,19 +467,7 @@ fn importer_mods_reuse_changed_content_and_retire_as_one_generation() {
     before.retain(|path, _| !path.contains(&format!("parhelion-{changed_origin}/")));
     recipes.push(added);
     let (changed, changed_seconds) = run(recipes.clone(), maps.clone(), "changed");
-    let changed_manifest = manifests(&changed);
-    for member in changed_manifest["mods"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|member| member["manifest"]["id"] != mod_content::ID)
-    {
-        let id = member["manifest"]["id"].as_str().unwrap();
-        assert_eq!(
-            member["kept"].as_bool().unwrap(),
-            !id.ends_with(&changed_origin)
-        );
-    }
+    toggle::assert_only_rebuilt(&changed, &member_id(Some(changed_origin.as_str())));
     install(&changed, &packages, &output.join("backups"));
     for (path, identity) in &before {
         if !path.contains(&format!("parhelion-{changed_origin}/")) {
@@ -491,7 +570,7 @@ fn importer_mods_reuse_changed_content_and_retire_as_one_generation() {
     fs::write(output.join("receipt.json"), serde_json::to_vec_pretty(&json!({
         "source_revision":source_revision,
         "executable":crate::artifact::digest_file(&std::env::current_exe().unwrap()).unwrap().sha256,
-        "inputs":scenario_path,"first":staged,"unchanged":repeated,"changed":changed_manifest,
+        "inputs":scenario_path,"first":staged,"unchanged":manifests(&second),"changed":manifests(&changed),
         "retired":manifests(&removed),
         "readback":[first_readback,second_readback,last_readback],
         "account_readback":{"before":account_before,"after":account_after},

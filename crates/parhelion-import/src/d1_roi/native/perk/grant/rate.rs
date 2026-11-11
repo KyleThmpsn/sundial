@@ -23,7 +23,7 @@ pub(super) fn lower(
     let value = sundial::package_authoring::ability_bank::FixedModifier {
         template_key: source.u32(row)?,
         class: 0x8080452E,
-        words,
+        words: sundial::package_authoring::ability_bank::widened(words),
         selection: Some(sundial::package_authoring::ability_bank::FixedSelection {
             name: source.u32(row + 4)?,
             priority: 255,
@@ -35,7 +35,7 @@ pub(super) fn lower(
         AbilityRowModifier::Fixed {
             template_key: value.template_key,
             class: value.class,
-            words: value.words,
+            words,
             selection: value.selection,
         },
         None,

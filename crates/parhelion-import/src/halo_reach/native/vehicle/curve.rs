@@ -158,7 +158,8 @@ impl Program {
         Ok(result)
     }
 
-    pub(super) fn source(source: &Value) -> Result<Self> {
+    /// A source torque function whose output range is multiplied by `scale`.
+    pub(super) fn source(source: &Value, scale: f32) -> Result<Self> {
         let p = Payload(hex::decode(
             source["bytes"]
                 .as_str()
@@ -168,8 +169,12 @@ impl Program {
             p.0.len() >= 32 && p.u8(1)? == 0x34 && p.u16(2)? == 0,
             "Unsupported source torque function header"
         );
-        let low = p.f32(4)?;
-        let high = p.f32(8)?;
+        ensure!(
+            scale.is_finite() && scale > 0.,
+            "Torque scale must be positive"
+        );
+        let low = p.f32(4)? * scale;
+        let high = p.f32(8)? * scale;
         ensure!(
             p.u32(28)? as usize == p.0.len() - 32,
             "Source torque function size differs"
@@ -197,15 +202,57 @@ impl Program {
         );
         let count = usize::try_from(p.u32(32)?)?;
         ensure!(
-            (1..=16).contains(&count) && p.0.len() == 36 + count * 36,
+            (1..=16).contains(&count),
             "Unsupported source torque spline extent"
         );
+        // Source 174D98 evaluates the first segment whose end reaches the input. Kind 4
+        // is linear and kind 7 a cubic, both in the raw input. Kind 10 is a cubic in
+        // t^exponent, with t normalized by its start and width.
+        let mut segments = Vec::with_capacity(count);
+        let mut at = 36;
+        for _ in 0..count {
+            let kind = p.u8(at)?;
+            segments.push((kind, at));
+            at += match kind {
+                4 => 16,
+                7 => 24,
+                10 => 36,
+                _ => anyhow::bail!("Unsupported source torque spline segment"),
+            };
+        }
+        ensure!(at == p.0.len(), "Unsupported source torque spline extent");
         let mut result = Self::default();
+        if let [(kind @ (4 | 7), at)] = segments[..] {
+            ensure!(
+                p.f32(at + 4)? == f32::MAX,
+                "A single source torque polynomial needs an unbounded end"
+            );
+            let coefficients = if kind == 7 {
+                [
+                    p.f32(at + 8)?,
+                    p.f32(at + 12)?,
+                    p.f32(at + 16)?,
+                    p.f32(at + 20)?,
+                ]
+            } else {
+                [0., 0., p.f32(at + 8)?, p.f32(at + 12)?]
+            };
+            result.code.extend([0x3c, 0]);
+            result.vector(coefficients)?;
+            result.code.push(0x0f);
+            result.scalar(high - low)?;
+            result.code.push(0x03);
+            result.scalar(low)?;
+            result.code.push(0x01);
+            return Ok(result);
+        }
+        ensure!(
+            segments.iter().all(|&(kind, _)| kind == 10),
+            "Mixed source torque spline segments require explicit branch translation"
+        );
         let mut previous_end = 0f32;
         let mut previous_value: Option<f32> = None;
-        for index in 0..count {
-            let at = 36 + index * 36;
-            ensure!(p.u8(at)? == 10, "Unsupported source torque spline segment");
+        for (index, &(_, at)) in segments.iter().enumerate() {
             let end = p.f32(at + 4)?;
             let coefficients = [
                 p.f32(at + 8)?,
@@ -215,12 +262,14 @@ impl Program {
             ];
             let start = p.f32(at + 24)?;
             let width = p.f32(at + 28)?;
-            // The trailing source spline value is retained in the source export.
-            // Its use outside this bounded polynomial form is not established.
-            p.f32(at + 32)?;
+            let exponent = p.f32(at + 32)?;
             ensure!(
                 width > 0. && (start - previous_end).abs() < 0.00001,
                 "Source torque spline has a gap or reversed segment"
+            );
+            ensure!(
+                exponent.is_finite() && exponent > 0.,
+                "Source torque spline exponent must be positive"
             );
             if index + 1 == count {
                 ensure!(
@@ -244,6 +293,16 @@ impl Program {
             result.code.push(0x02);
             result.scalar(width)?;
             result.code.extend([0x04, 0x23]);
+            if exponent != 1. {
+                // t^exponent as exp2(exponent * log2(t)). Clamped t is never negative.
+                // Native log2 of zero is -127, and native exp2 wraps its exponent bits
+                // below -127, so the product is held at -126, which is effectively zero.
+                result.code.push(0x25);
+                result.scalar(exponent)?;
+                result.code.push(0x03);
+                result.scalar(-126.)?;
+                result.code.extend([0x09, 0x24]);
+            }
             result.vector(coefficients)?;
             result.code.push(0x0f);
             if index != 0 {

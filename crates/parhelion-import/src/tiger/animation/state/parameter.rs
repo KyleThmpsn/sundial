@@ -117,6 +117,14 @@ pub fn alias(dictionary: &Payload, builtin: u8, parent: u32, private: u32) -> Re
     Ok(output)
 }
 
+/// Whether the dictionary's `builtin` group names `name`, so [`extend`] can inherit from it.
+pub fn contains(dictionary: &Payload, builtin: u8, name: u32) -> Result<bool> {
+    Ok(Group::read(dictionary, builtin)?
+        .names
+        .iter()
+        .any(|&(known, _)| known == name))
+}
+
 /// Every existing bit ordinal and lookup record is retained. The new name inherits its parent.
 pub fn extend(dictionary: &Payload, builtin: u8, parent: u32, private: u32) -> Result<Payload> {
     let mut group = Group::read(dictionary, builtin)?;
@@ -408,16 +416,6 @@ fn selected_choices(
     Ok(selected_choices)
 }
 
-/// Standalone 3478 selectors return motion-table row ordinals directly.
-pub fn table_choices(
-    p: &Payload,
-    dictionary: &Payload,
-    builtin: u8,
-    name: u32,
-) -> Result<BTreeSet<usize>> {
-    table_choices_for(p, dictionary, &BTreeMap::from([(builtin, name)]))
-}
-
 pub fn table_choices_for(
     p: &Payload,
     dictionary: &Payload,
@@ -428,18 +426,6 @@ pub fn table_choices_for(
         .map(|(&builtin, &name)| Ok((builtin, Group::read(dictionary, builtin)?.selected(name)?)))
         .collect::<Result<_>>()?;
     selected_choices(&Selector::at(p, 8)?, &fixed)
-}
-
-/// Retain the complete stock decision tree and remap only the private descendant.
-pub fn table_branch(
-    p: &Payload,
-    dictionary: &Payload,
-    builtin: u8,
-    private: u32,
-    mapping: &BTreeMap<usize, usize>,
-    conditions: &BTreeMap<u8, u32>,
-) -> Result<Payload> {
-    table_branch_from(p, p, dictionary, builtin, private, mapping, conditions)
 }
 
 /// Fork an original selector for the new profile while retaining all previously added profiles.
@@ -469,6 +455,17 @@ pub fn table_branch_from(
         .collect::<Vec<_>>();
     let old_operation = gates.len();
     let new_operation = old_operation + selector.operations.len();
+    // Each fork holds the current tree and another copy of the stock one, so the selector grows by
+    // the stock tree with every private profile. Records, operations and choices are signed 16-bit
+    // indices, and this is a limit of the whole build's shared selector, not of one profile.
+    ensure!(
+        2 * gates.len() + selector.records.len() + private_selector.records.len()
+            <= i16::MAX as usize
+            && new_operation + private_selector.operations.len() < i16::MAX as usize,
+        "The shared motion selector has no room for another private profile ({} records, {} operations, 32,767 at most)",
+        selector.records.len(),
+        selector.operations.len()
+    );
     let mut records = Vec::new();
     let mut operations = Vec::new();
     for (index, &(parameter, name)) in gates.iter().enumerate() {
@@ -549,6 +546,86 @@ pub fn table_branch_from(
     Ok(out)
 }
 
+/// Let `private` select the branch [`table_branch_from`] added for the earlier profile `existing`,
+/// by chaining a record for `private`'s exact name after `existing`'s gate. That gate compares a
+/// lookup alias's exact name, so the record selects the same branch for `private` alone. A profile
+/// whose clips, routes and tables match an earlier one adds this one record, not another fork.
+pub fn table_share(
+    p: &Payload,
+    dictionary: &Payload,
+    builtin: u8,
+    existing: u32,
+    private: u32,
+) -> Result<Payload> {
+    let group = Group::read(dictionary, builtin)?;
+    let existing_gate = group.gate(existing)?;
+    let gate = group.gate(private)?;
+    ensure!(
+        existing != private && existing_gate[..16] == [0; 16] && gate[..16] == [0; 16],
+        "Only distinct lookup aliases share a motion branch"
+    );
+    let mut selector = Selector::at(p, 8)?;
+    let found = selector
+        .records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record[..20] == existing_gate[..20])
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [index] = found[..] else {
+        anyhow::bail!("The shared motion profile's gate is missing or repeated");
+    };
+    ensure!(
+        short(&selector.records[index], 20) == -1 && short(&selector.records[index], 24) > 0,
+        "The shared motion profile's gate has an unexpected shape"
+    );
+    ensure!(
+        !selector
+            .records
+            .iter()
+            .any(|record| record[16..20] == gate[16..20]),
+        "The sharing motion profile already has a gate"
+    );
+    // The new record joins the end of the gate's alternates, which are tried in order.
+    let mut last = index;
+    let mut seen = BTreeSet::new();
+    while let [_, Some(next)] = selector.children(last)? {
+        ensure!(
+            seen.insert(next),
+            "Animation selector contains a record cycle"
+        );
+        last = next;
+    }
+    let added = selector.records.len();
+    ensure!(
+        added < i16::MAX as usize,
+        "The shared motion selector has no room for another shared profile"
+    );
+    let mut record = [0; 28];
+    record[..20].copy_from_slice(&gate[..20]);
+    set_short(&mut record, 20, -1);
+    set_short(&mut record, 22, -1);
+    set_short(&mut record, 24, short(&selector.records[index], 24));
+    set_short(&mut selector.records[last], 22, i16::try_from(added)?);
+    selector.records.push(record);
+    let mut out = p.clone();
+    append(
+        &mut out.0,
+        24,
+        0x8080347D,
+        &selector
+            .records
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>(),
+        28,
+    )?;
+    finish(&mut out)?;
+    Selector::at(&out, 8)?;
+    Ok(out)
+}
+
 fn finish(p: &mut Payload) -> Result<()> {
     let size = u64::try_from(p.0.len())?;
     put(&mut p.0, 0, &size.to_le_bytes())
@@ -598,9 +675,12 @@ fn relocated(
     Ok((records, operations))
 }
 
-/// The new parameter selects translated copies. Every old name keeps its original selector.
+/// The new parameter selects translated copies of the stock choices through the stock selector.
+/// Every other name keeps the state's current selector, including earlier private branches, so
+/// each added profile grows a state by one stock selector instead of doubling it.
 pub fn branch(
     p: &Payload,
+    original: &Payload,
     dictionary: &Payload,
     builtin: u8,
     private: u32,
@@ -627,12 +707,16 @@ pub fn branch(
     for (&name, map) in routes {
         ensure!(!map.is_empty(), "Empty private character action mapping");
         let row = node(p, name)?;
-        let original_choices = choices(p, row)?;
-        let selector = Selector::read(p, row, builtin)?;
-        let choice_count = original_choices.len();
+        let current_choices = choices(p, row)?;
+        let current = Selector::read(p, row, builtin)?;
+        let stock_row = node(original, name)?;
+        let stock_choices = choices(original, stock_row)?;
+        let stock = Selector::read(original, stock_row, builtin)?;
+        let choice_count = current_choices.len() + stock_choices.len();
         ensure!(
-            choice_count * 2 <= i16::MAX as usize
-                && selector.operations.len() * 2 < i16::MAX as usize,
+            choice_count <= i16::MAX as usize
+                && current.records.len() + stock.records.len() + 2 <= i16::MAX as usize
+                && current.operations.len() + stock.operations.len() + 2 < i16::MAX as usize,
             "Private character action exceeds native selector capacity"
         );
         let target = (out.0.len() + 19) & !15;
@@ -643,33 +727,39 @@ pub fn branch(
             &mut out.0,
             target,
             0x80803437,
-            &vec![0; choice_count * 32],
+            &vec![0; choice_count * 16],
             16,
         )?;
         let fields = out.array(target, 16, Some(0x80803437))?;
-        for (index, &choice) in original_choices.iter().enumerate() {
+        for (index, &choice) in current_choices.iter().enumerate() {
             let mut old = Vec::new();
-            let mut new = Vec::new();
             for at in p.array(choice, 8, Some(0x80803439))? {
                 old.extend(p.bytes::<8>(at)?);
-                let descriptor = p.u32(at)? as usize;
+            }
+            append(&mut out.0, fields[index], 0x80803439, &old, 8)?;
+        }
+        for (index, &choice) in stock_choices.iter().enumerate() {
+            let mut new = Vec::new();
+            for at in original.array(choice, 8, Some(0x80803439))? {
+                let descriptor = original.u32(at)? as usize;
                 new.extend(
                     u32::try_from(*map.get(&descriptor).unwrap_or(&descriptor))?.to_le_bytes(),
                 );
-                new.extend(p.bytes::<4>(at + 4)?);
+                new.extend(original.bytes::<4>(at + 4)?);
             }
-            append(&mut out.0, fields[index], 0x80803439, &old, 8)?;
             append(
                 &mut out.0,
-                fields[index + choice_count],
+                fields[current_choices.len() + index],
                 0x80803439,
                 &new,
                 8,
             )?;
         }
-        let mut parameters = selector.parameters.clone();
-        if !parameters.contains(&builtin) {
-            parameters.push(builtin);
+        let mut parameters = current.parameters.clone();
+        for parameter in stock.parameters.iter().copied().chain([builtin]) {
+            if !parameters.contains(&parameter) {
+                parameters.push(parameter);
+            }
         }
         append(&mut out.0, target + 16, 0x80808DA4, &parameters, 1)?;
         let mut root = [0; 28];
@@ -685,20 +775,21 @@ pub fn branch(
         set_short(
             &mut selected,
             24,
-            i16::try_from(selector.operations.len() + 2)?,
+            i16::try_from(current.operations.len() + 2)?,
         );
         let mut records = vec![root, selected];
         let mut operations = vec![u32::from(builtin)];
-        for (record_base, operation_base, choice_base) in [
-            (2, 1, 0),
+        for (selector, record_base, operation_base, choice_base) in [
+            (&current, 2, 1, 0),
             (
-                2 + selector.records.len(),
-                1 + selector.operations.len(),
-                choice_count,
+                &stock,
+                2 + current.records.len(),
+                1 + current.operations.len(),
+                current_choices.len(),
             ),
         ] {
             let (copied_records, copied_operations) =
-                relocated(&selector, record_base, operation_base, choice_base)?;
+                relocated(selector, record_base, operation_base, choice_base)?;
             records.extend(copied_records);
             operations.extend(copied_operations);
         }

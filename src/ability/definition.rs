@@ -10,9 +10,10 @@
 //!   assignment table, then two empty strings and an empty icon.
 //! - root slot 105 (`81319130`, class `80807AAF`): the identity hashes alone.
 //!
-//! Both are single terminal arrays: the payload size at +0, a count and a relative pointer at +8,
-//! the array header at +0x20 and the rows from +0x30 to the end. The client reads a row index as a
-//! signed byte, so the tables hold at most 128 rows.
+//! Both have terminal arrays: the payload size at +0, a count and a relative pointer at +8.
+//! Stock puts the array header at +0x20. A merged table can relocate it after retained bytes,
+//! so reads and appends follow the pointer. The client reads a row index as a signed byte,
+//! so the tables hold at most 128 rows.
 use crate::package_payload::{native_array_at, u32_at, u64_at, write_bytes};
 
 /// Globals slot of the definition table, and root slot of the identity table.
@@ -22,7 +23,7 @@ pub const DEFINITION_TABLE_CLASS: u32 = 0x8080_5CA4;
 pub const DEFINITION_ROW_CLASS: u32 = 0x8080_5CAA;
 pub const IDENTITY_TABLE_CLASS: u32 = 0x8080_7AAF;
 const DESCRIPTOR: usize = 0x08;
-const HEADER: usize = 0x20;
+const MIN_HEADER: usize = 0x20;
 const DEFINITION_ROW_SIZE: usize = 28;
 const IDENTITY_ROW_SIZE: usize = 4;
 const ROW_IDENTITY: usize = 0x00;
@@ -54,9 +55,9 @@ fn rows(
         ));
     }
     let (count, header, first, class) = native_array_at(payload, DESCRIPTOR)?;
-    if header != HEADER {
+    if header < MIN_HEADER || !header.is_multiple_of(16) {
         return Err(format!(
-            "{label} array header is at 0x{header:X}, expected 0x{HEADER:X}"
+            "{label} array header at 0x{header:X} is not aligned after the table fields"
         ));
     }
     if let Some(expected) = row_class
@@ -199,11 +200,12 @@ pub fn append(
     let mut authored_identities = identities.to_vec();
     authored_identities.extend_from_slice(&identity.to_le_bytes());
     for payload in [&mut authored, &mut authored_identities] {
+        let (_, header, _, _) = native_array_at(payload, DESCRIPTOR)?;
         let count = (row + 1) as u64;
         let size = payload.len() as u64;
         write_bytes(payload, 0, &size.to_le_bytes())?;
         write_bytes(payload, DESCRIPTOR, &count.to_le_bytes())?;
-        write_bytes(payload, HEADER, &count.to_le_bytes())?;
+        write_bytes(payload, header, &count.to_le_bytes())?;
     }
     let appended = self::definitions(&authored, &authored_identities)?;
     if appended.len() != row + 1

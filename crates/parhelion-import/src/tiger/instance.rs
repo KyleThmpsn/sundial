@@ -201,6 +201,37 @@ pub(crate) fn seal_span(
     })))
 }
 
+/// Where `seal_span` copied the word at `offset` of a sealed owner, read back from the sealed
+/// payload alone. The record stream from header +8 minus 4 is copied `delta` bytes after the
+/// original, where `delta` is the size before sealing rounded up to 16. A sealed payload of
+/// length `L` is `delta` plus that size, so `delta` is the one multiple of 16 in
+/// `L / 2..=(L + 15) / 2`, and the moved schema view at header +24 lies in the copy. A word of
+/// the original stream maps forward and a word of the copy maps back. Returns `None` when the
+/// payload does not have that shape or `offset` is in neither stream.
+pub fn sealed_copy(p: &Payload, offset: usize) -> Result<Option<usize>> {
+    let length = p.0.len();
+    let delta = (length / 2).next_multiple_of(16);
+    if delta == 0 || delta * 2 > length + 15 || (length - delta).next_multiple_of(16) != delta {
+        return Ok(None);
+    }
+    let first = p
+        .pointer(8)?
+        .checked_sub(4)
+        .context("component record start")?;
+    let original = length - delta;
+    if first < 0x60 || first >= original || p.pointer(24)? < delta + first {
+        return Ok(None);
+    }
+    let end = offset.checked_add(4).context("component word overflow")?;
+    Ok(if offset >= first && end <= original {
+        Some(offset + delta)
+    } else if offset >= delta + first && end <= length {
+        Some(offset - delta)
+    } else {
+        None
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

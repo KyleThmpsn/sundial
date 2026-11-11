@@ -1,7 +1,9 @@
 //! Adapts Sundial's picker widgets, preferences, and account persistence for Parhelion.
 mod appearance_picker;
+mod choice_filter;
 mod donor_picker;
 mod grants;
+pub use choice_filter::{ItemChoiceFields, ItemChoiceFilter};
 pub use donor_picker::WeaponChoiceFilter;
 pub(crate) use donor_picker::draw_weapon_choice_filters;
 pub(crate) use donor_picker::draw_weapon_donor_dropdown_picker;
@@ -10,7 +12,7 @@ pub(crate) use donor_picker::draw_weapon_donor_picker_from;
 pub(crate) use donor_picker::weapon_choice_passes;
 use donor_picker::*;
 mod plug_picker;
-pub(crate) use grants::grant_authored_items;
+pub(crate) use grants::{grant_authored_items, preview_authored_grants};
 pub(crate) use plug_picker::draw_perk_card_row;
 pub(crate) use plug_picker::draw_perk_icon;
 pub(crate) use plug_picker::draw_perk_row;

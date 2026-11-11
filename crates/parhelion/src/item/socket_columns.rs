@@ -123,6 +123,7 @@ pub(super) fn resolve_socket_column_indices(
                     reusable_choices: authored
                         .and_then(|column| column.reusable_choices)
                         .map(usize::from),
+                    hide_perks_in_tooltip: authored.and_then(|column| column.hide_perks_in_tooltip),
                 }
             })
         })
@@ -711,6 +712,9 @@ pub(super) fn set_weapon_socket_columns(
             row + ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET,
             column.randomized_plug_set_index.unwrap_or(u16::MAX),
         )?;
+        if let Some(hide) = column.hide_perks_in_tooltip {
+            data[row + ITEM_ORDINARY_SOCKET_HIDE_PERKS_IN_TOOLTIP_OFFSET] = u8::from(hide);
+        }
 
         while !data.len().is_multiple_of(16) {
             data.push(0);
@@ -806,6 +810,10 @@ pub(super) fn validate_weapon_socket_columns(
                 != column.reusable_plug_set_index.unwrap_or(u16::MAX)
             || read_u16(data, row + ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET)?
                 != column.randomized_plug_set_index.unwrap_or(u16::MAX)
+            || column.hide_perks_in_tooltip.is_some_and(|hide| {
+                data.get(row + ITEM_ORDINARY_SOCKET_HIDE_PERKS_IN_TOOLTIP_OFFSET)
+                    != Some(&u8::from(hide))
+            })
         {
             return Err(validation(format!(
                 "Authored weapon socket lane {lane} has inconsistent scalar metadata"

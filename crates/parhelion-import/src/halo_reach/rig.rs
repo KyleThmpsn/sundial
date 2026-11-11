@@ -3,6 +3,18 @@ use anyhow::{Result, ensure};
 use serde::Serialize;
 
 pub const METRES_PER_UNIT: f32 = 3.048;
+
+/// Native recipient-push strength for a source instantaneous acceleration in world units per
+/// second, at the import's length scale. A velocity-faithful strength of acceleration times length
+/// scale barely moves combatants, since the native physical listener divides the push by the
+/// recipient's mass. The scale is a gameplay calibration: the Concussion Rifle's 2.5 at the
+/// default length scale gives 20, the strength of Chosen of the Warmind's stronger stock push
+/// profile `81A69860`, which throws combatants the way the source blast does.
+pub fn push_strength(acceleration: f32, metres: f32) -> f32 {
+    const CALIBRATION: f32 = 20. / (2.5 * METRES_PER_UNIT);
+    acceleration * metres * CALIBRATION
+}
+
 pub const IDENTITY: [f32; 16] = [
     1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
 ];

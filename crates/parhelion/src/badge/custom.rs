@@ -79,6 +79,82 @@ pub(crate) fn append_custom_badges(
     Ok(graph)
 }
 
+/// Gives each importer's items in the main mod a badge of their own, in a build without mod
+/// folders or for an importer that builds with the main mod, with the identity, text and mark
+/// that importer's mod gives them on Sunrise's mod loader. Those items leave Project Sunrise
+/// (`badge::joins_own_badge`).
+pub(crate) fn append_source_badges(
+    mut graph: SunriseBadgeGraph,
+    weapons: &[WeaponCloneSpec],
+    placements: &[SunriseBadgePlacement],
+    icons: &BTreeMap<Importer, u16>,
+    pools: &[u8],
+    collectibles: &mut Vec<u8>,
+    localization_table_index: u32,
+) -> AuthoringResult<SunriseBadgeGraph> {
+    if weapons.len() != placements.len() {
+        return Err(invalid(
+            "Badge membership does not match the authored weapons",
+        ));
+    }
+    let mut groups = BTreeMap::<Importer, Vec<SunriseBadgePlacement>>::new();
+    for (weapon, placement) in weapons.iter().zip(placements) {
+        if let Some(source) = super::source_badge(weapon) {
+            groups.entry(source).or_default().push(*placement);
+        }
+    }
+    for (importer, members) in groups {
+        let node_start = array_at(&graph.nodes, 8)?.0;
+        let record_start = array_at(&graph.records, 8)?.0;
+        let objective_start = array_at(&graph.objectives, 8)?.0;
+        if node_start + 4 > crate::collection::NODE_CAPACITY
+            || record_start + 4 > 4096
+            || objective_start + 4 >= u16::MAX as usize
+        {
+            return Err(invalid(
+                "Source badges exceed the native table index capacity",
+            ));
+        }
+        let identity = Identity::importer(importer);
+        let layout = Layout {
+            node_start,
+            record_start,
+            objective_start,
+            node_hashes: identity.node_hashes,
+            record_hashes: identity.record_hashes,
+            objective_hash: identity.objective_hash,
+            name_hash: identity.name_hash,
+            description_hash: identity.description_hash,
+        };
+        graph = author_graph(
+            SunriseBadgeGraphInput {
+                stock_nodes: graph.nodes,
+                stock_node_strings: graph.node_strings,
+                stock_objectives: graph.objectives,
+                stock_objective_strings: graph.objective_strings,
+                stock_records: graph.records,
+                stock_record_strings: graph.record_strings,
+                shared_expression_pools: pools,
+                localization_table_index,
+                badge_icon_index: *icons
+                    .get(&importer)
+                    .ok_or_else(|| invalid("Source badge icon was not allocated"))?,
+                placements: &members,
+            },
+            &layout,
+        )?;
+        for member in members {
+            append_parents(
+                collectibles,
+                member.authored_collectible_index,
+                node_start,
+                member.classes,
+            )?;
+        }
+    }
+    Ok(graph)
+}
+
 fn append_parents(
     data: &mut Vec<u8>,
     index: usize,

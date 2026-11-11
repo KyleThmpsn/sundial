@@ -21,7 +21,8 @@ pub(super) struct Type {
 pub(super) fn get() -> &'static Vocabulary {
     static TABLE: OnceLock<Vocabulary> = OnceLock::new();
     TABLE.get_or_init(|| {
-        serde_json::from_str(include_str!("u13.json")).expect("Bundled MCC U13 script vocabulary")
+        serde_json::from_str(include_str!("vocabulary/u13.json"))
+            .expect("Bundled MCC U13 script vocabulary")
     })
 }
 

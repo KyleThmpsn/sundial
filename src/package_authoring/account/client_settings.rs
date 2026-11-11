@@ -68,7 +68,9 @@ fn disable_lore_reveal(bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
     if version < 16 {
         return Ok(None);
     }
-    if version > 18 {
+    // The field keeps its place and meaning in every schema Sundial supports, v19 included, so
+    // the installer follows the same ceiling as the settings editor rather than a copy of it.
+    if version > crate::game_settings::MAX_SUPPORTED_SCHEMA {
         return Err(
             "This Sunrise settings schema is newer than the package installer supports".into(),
         );

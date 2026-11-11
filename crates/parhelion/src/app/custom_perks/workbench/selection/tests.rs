@@ -349,7 +349,7 @@ fn verify_creation_and_stale_destination(
 
     let target = Target::capture(&app.recipe, donor, 0, 2).unwrap();
     app.perk_workbench
-        .open_picker(target, app.catalog.as_ref().unwrap(), None, &app.recipe);
+        .open_picker(target, app.catalog.as_ref().unwrap(), &app.recipe);
     app.recipe.overrides.socket_columns[0]
         .as_mut()
         .unwrap()
@@ -376,7 +376,7 @@ fn verify_empty_picker(app: &mut PackageAuthoringApp, donor: &WeaponDonor) {
     app.recipe.overrides.socket_plug_variants.clear();
     let target = Target::capture(&app.recipe, donor, 0, 2).unwrap();
     app.perk_workbench
-        .open_picker(target, app.catalog.as_ref().unwrap(), None, &app.recipe);
+        .open_picker(target, app.catalog.as_ref().unwrap(), &app.recipe);
     for width in [480.0, 900.0] {
         let ctx = egui::Context::default();
         let output = settle(&ctx, app, width);

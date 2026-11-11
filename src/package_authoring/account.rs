@@ -103,3 +103,17 @@ pub fn grant_authored_items(
 ) -> Result<AuthoredGrantReport, String> {
     authoring_bridge::grant_authored_items(install, grants, bucket_of)
 }
+
+/// The items [`grant_authored_items`] would add and equip, and the characters whose ability
+/// choices would start over, read from the account as it is now without saving. An installation
+/// review shows it before anything changes. `removed` holds the definitions the reviewed cleanup
+/// deletes before the grants run, so their saved rows leave room in every inventory.
+pub fn preview_authored_grants_for_runtime(
+    install: &Path,
+    runtime: &crate::package_authoring::RuntimeSnapshot,
+    grants: &[AuthoredItemGrant],
+    removed: &BTreeSet<u32>,
+    bucket_of: &mut dyn FnMut(u32) -> Result<Option<u8>, String>,
+) -> Result<AuthoredGrantReport, String> {
+    authoring_bridge::preview_authored_grants(install, runtime, grants, removed, bucket_of)
+}

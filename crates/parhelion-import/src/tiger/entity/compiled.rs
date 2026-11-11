@@ -5,11 +5,13 @@
 //! Every provider is resolved through its reciprocal definition in the converted payload.
 //! Connection rows are supplied by the typed cross-version linker.
 pub mod authored;
+mod condition;
 pub mod replication;
 
 use super::links::NativeRows;
 use crate::tiger::payload::Payload;
 use anyhow::{Context, Result, ensure};
+use condition::Conditions;
 use std::collections::BTreeMap;
 
 pub struct Component<'a> {
@@ -93,10 +95,10 @@ struct Registration {
     descriptor: Vec<u8>,
 }
 
-fn registrations(
-    component: &Component<'_>,
+fn registrations<'a>(
+    component: &Component<'a>,
     ordinal: usize,
-    masks: &mut Vec<Vec<u8>>,
+    conditions: &mut Conditions<'a>,
     groups: &mut BTreeMap<u32, Vec<Registration>>,
 ) -> Result<()> {
     let p = component.payload;
@@ -148,18 +150,12 @@ fn registrations(
         "native registration tables differ in length"
     );
     let old_masks = entity.array(120, 2, Some(0x80800006))?;
-    let mask_base = masks.len();
     for &at in &old_masks {
         ensure!(
             entity.u16(at)? == 0,
             "native template condition state is initialized"
         );
-        masks.push(vec![0; 2]);
     }
-    ensure!(
-        masks.len() <= i16::MAX as usize,
-        "compiled condition mask capacity exceeded"
-    );
     for binding in entity.array(72, 8, Some(0x80809C25))? {
         let key = entity.u32(binding)?;
         if key == u32::MAX {
@@ -216,14 +212,17 @@ fn registrations(
             );
             let mut map = entity.0[mr..mr + 40].to_vec();
             let mut descriptor = entity.0[dr..dr + 24].to_vec();
-            if entity.u16(mr + 2)? != 0 {
+            let bits = entity.u16(mr + 2)?;
+            if bits != 0 {
                 let old =
                     usize::try_from(entity.i16(mr)?).context("negative condition mask index")?;
                 ensure!(
                     old < old_masks.len(),
                     "native condition mask index exceeds table"
                 );
-                map[..2].copy_from_slice(&i16::try_from(mask_base + old)?.to_le_bytes());
+                let (word, bits) = conditions.place(entity, old, bits)?;
+                map[..2].copy_from_slice(&word.to_le_bytes());
+                map[2..4].copy_from_slice(&bits.to_le_bytes());
             }
             let relative = i32::try_from(instance as i64 - ni as i64)?;
             let priority = i32::from(p.i16(provider + 16)?);
@@ -249,20 +248,41 @@ fn registrations(
 
 /// Build the complete native component tables. Native-only registration keys come from
 /// the selected component implementations, while ordinary events follow the source graph.
-pub fn emit(
-    template: &Payload,
-    components: &[Component<'_>],
+pub fn emit<'a>(
+    template: &'a Payload,
+    components: &[Component<'a>],
     connections: &NativeRows,
 ) -> Result<Payload> {
     emit_authored(template, components, connections, &BTreeMap::new())
 }
 
 /// Assemble stock components and native implementations with explicit provider contracts.
-pub fn emit_authored(
-    template: &Payload,
-    components: &[Component<'_>],
+pub fn emit_authored<'a>(
+    template: &'a Payload,
+    components: &[Component<'a>],
     connections: &NativeRows,
     authored: &BTreeMap<u32, Vec<authored::Provider<'_>>>,
+) -> Result<Payload> {
+    emit_providers(template, components, connections, authored, true)
+}
+
+/// Keep each component's native registrations and append providers for newly authored helpers.
+/// Existing native condition bits remain shared with their original consumers.
+pub fn emit_extended<'a>(
+    template: &'a Payload,
+    components: &[Component<'a>],
+    connections: &NativeRows,
+    additional: &BTreeMap<u32, Vec<authored::Provider<'_>>>,
+) -> Result<Payload> {
+    emit_providers(template, components, connections, additional, false)
+}
+
+fn emit_providers<'a>(
+    template: &'a Payload,
+    components: &[Component<'a>],
+    connections: &NativeRows,
+    authored: &BTreeMap<u32, Vec<authored::Provider<'_>>>,
+    replace: bool,
 ) -> Result<Payload> {
     ensure!(
         authored
@@ -281,14 +301,17 @@ pub fn emit_authored(
             .context("native entity prefix")?
             .to_vec(),
     );
-    let mut masks = Vec::new();
+    let mut conditions = Conditions::new(template)?;
     let mut groups = BTreeMap::new();
     let mut owners = Vec::new();
     for (ordinal, component) in components.iter().enumerate() {
         if let Some(providers) = authored.get(&component.owner) {
-            authored::registrations(component, ordinal, providers, &mut masks, &mut groups)?;
+            if !replace {
+                registrations(component, ordinal, &mut conditions, &mut groups)?;
+            }
+            authored::registrations(component, ordinal, providers, &mut conditions, &mut groups)?;
         } else {
-            registrations(component, ordinal, &mut masks, &mut groups)?;
+            registrations(component, ordinal, &mut conditions, &mut groups)?;
         }
         let mut row = vec![0; 12];
         row[..4].copy_from_slice(&component.owner.to_le_bytes());
@@ -312,6 +335,7 @@ pub fn emit_authored(
         }
     }
     let definitions = lookup(template.u32(64)?, &spans)?;
+    let masks = conditions.words()?;
     for (field, class, stride, rows) in [
         (16, 0x80809C04, 12, &owners),
         (32, 0x80809BC9, 72, &connections.connections),

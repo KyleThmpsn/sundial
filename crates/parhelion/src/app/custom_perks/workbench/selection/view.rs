@@ -1,13 +1,24 @@
 //! Draws the selection dialog and returns user intent without changing a weapon.
 use super::*;
 
+/// What the list shows besides the reader's own perks.
+struct Shown {
+    imported: bool,
+    ornaments: bool,
+}
+
+/// `shown` holds Show Imported Perks and Show Ornaments, which Custom Perks shares.
 pub(super) fn show(
     ctx: &egui::Context,
     picker: &mut Picker,
-    donor: &WeaponDonor,
-    catalog: &InvestmentCatalog,
+    (donor, catalog): (&WeaponDonor, &InvestmentCatalog),
     stale: Option<&str>,
+    shown: (&mut bool, &mut bool),
 ) -> Option<Action> {
+    let (imported, ornaments) = shown;
+    // A socket that offers ornaments lists them whatever Show Ornaments says, so its box is
+    // left out.
+    let ornament_socket = picker.target.holds_ornaments(catalog);
     let mut open = true;
     let mut action = None;
     let screen = ctx.content_rect();
@@ -52,8 +63,31 @@ pub(super) fn show(
                 response.request_focus();
             }
             crate::app::style::named_control(response, "Search Custom Perks");
-            if let Some(index) = draw_choices(ui, picker, catalog, stale.is_none(), screen.height())
-            {
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(imported, "Show Imported Perks")
+                    .on_hover_text("Include perks imported from saved item recipes.");
+                if !ornament_socket {
+                    ui.checkbox(ornaments, "Show Ornaments")
+                        .on_hover_text("Include ornaments, which change how an item looks.");
+                }
+            });
+            if picker.pending {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Reading saved recipes…");
+                });
+            }
+            let shown = Shown {
+                imported: *imported,
+                ornaments: *ornaments || ornament_socket,
+            };
+            if let Some(index) = draw_choices(
+                ui,
+                picker,
+                (catalog, &shown),
+                stale.is_none(),
+                screen.height(),
+            ) {
                 action = Some(Action::Use(index));
             }
         });
@@ -79,7 +113,7 @@ fn draw_warnings(ui: &mut egui::Ui, warnings: &[String]) {
 fn draw_choices(
     ui: &mut egui::Ui,
     picker: &Picker,
-    catalog: &InvestmentCatalog,
+    (catalog, shown): (&InvestmentCatalog, &Shown),
     enabled: bool,
     screen_height: f32,
 ) -> Option<usize> {
@@ -96,12 +130,11 @@ fn draw_choices(
         .max_height((screen_height - 300.0).clamp(100.0, 380.0))
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            for (index, choice) in picker
-                .choices
-                .iter()
-                .enumerate()
-                .filter(|(_, choice)| choice.matches(&query))
-            {
+            for (index, choice) in picker.choices.iter().enumerate().filter(|(_, choice)| {
+                (shown.imported || !choice.imported)
+                    && (shown.ornaments || !choice.ornament)
+                    && choice.matches(&query)
+            }) {
                 visible = true;
                 let description = choice.recipe.description.trim();
                 let detail = match (shared_source, description.is_empty()) {
@@ -137,7 +170,8 @@ fn draw_choices(
                     ui.small(egui::RichText::new(warning).color(color));
                 }
             }
-            if !visible {
+            // The list may still gain the saved recipes' perks, which the line above says.
+            if !visible && !(picker.pending && picker.choices.is_empty()) {
                 ui.label(if picker.choices.is_empty() {
                     "No Custom Perks"
                 } else {

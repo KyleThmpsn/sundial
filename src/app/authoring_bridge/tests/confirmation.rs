@@ -10,7 +10,10 @@ fn accepted_introduction_survives_restart_and_later_opens() {
     app.preferences = serde_json::from_str("{}").unwrap();
     assert!(!app.preferences.parhelion_warning_acknowledged);
     app.request_open_parhelion(&ctx);
-    assert!(app.confirmation == Some(ConfirmationDialog::OpenParhelion));
+    assert!(matches!(
+        app.confirmation,
+        Some(ConfirmationDialog::OpenParhelion)
+    ));
     app.finish_parhelion_confirmation(true);
     let path = directory.0.join("preferences.json");
     preferences::store::save_preferences(&path, &app.preferences).unwrap();

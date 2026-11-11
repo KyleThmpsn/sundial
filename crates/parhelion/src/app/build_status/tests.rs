@@ -11,6 +11,8 @@ use super::*;
 use std::fmt::Write as _;
 use std::sync::mpsc;
 
+mod progress;
+
 const BUILDS: (u32, &str) = (0xA25B_8F8F, "Arc Logic");
 /// A Legendary whose game data carries no ammo type, so Collections refuses it without one.
 const NO_AMMO: (u32, &str) = (0x90D4_2800, "Rose");
@@ -74,7 +76,7 @@ fn click(ctx: &egui::Context, app: &mut PackageAuthoringApp, label: &str) {
 
 fn build(app: &PackageAuthoringApp) -> Result<BuildReport, BuildFailure> {
     let snapshot = BatchBuildSnapshot::new(app.batch_request()?)?;
-    build_and_stage_snapshot_reporting(&snapshot, |_| {})
+    crate::build_and_stage_snapshot_reporting(&snapshot, |_| {})
 }
 
 /// Hands a finished build to the app the way its worker does, with the dialog open.

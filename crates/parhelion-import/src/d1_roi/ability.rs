@@ -10,12 +10,14 @@ use sundial::package_authoring::{
 };
 
 mod catalog;
+pub mod grid;
 pub(crate) mod movement;
 pub use catalog::{AbilityCatalog, SubclassCatalog, SubclassNode, SubclassStep};
 pub mod controller;
-pub mod revival;
-pub use super::lifecycle;
-pub mod dependency;
+pub mod radiance;
+pub mod upgrades;
+// Effect graphs and resource closures serve perks and weapons too. Ability code names them here.
+pub use super::{dependency, effect, lifecycle};
 pub use crate::d1_roi::native::animation::ability as animation;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

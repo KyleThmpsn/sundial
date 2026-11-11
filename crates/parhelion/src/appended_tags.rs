@@ -1,7 +1,7 @@
 use sundial::package_authoring::is_valid_package_tag;
 use tiger_pkg::TagHash;
 
-use crate::package_profile::{PRIVATE_PERK_RUNTIME_PACKAGE_ID, is_authored_standalone_package_id};
+use crate::package_profile::PRIVATE_PERK_RUNTIME_PACKAGE_ID;
 use crate::{AuthoringError, AuthoringResult};
 
 pub(crate) const MAX_PACKAGE_ENTRY_COUNT: usize = 8192;
@@ -13,20 +13,22 @@ pub(crate) fn clear() {
     crate::asset_packages::stream::clear();
 }
 
+/// The end of the record indices the build has assigned so far, when it has assigned any.
+pub(crate) fn records_end() -> Option<usize> {
+    records::exposed_end(false)
+}
+
 /// Appended tags by package: the allocation's own package's, then each overflow package's with
 /// its id.
 pub(crate) type Split<T> = (Vec<T>, Vec<(u16, Vec<T>)>);
 
-/// Assigns destination tags for entries appended to one package table, and past its last entry
-/// to fresh standalone packages when the allocation may overflow.
+/// Assigns destination tags for entries appended to one package table. Record and private runtime
+/// allocations continue past its last entry in packages the build reserves, and others refuse
+/// those tags.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AppendedTagAllocator {
     package_id: u16,
     current_entry_count: usize,
-    /// The standalone package that takes the tags past this package's last entry, then each one
-    /// after it, every one from its first entry, and whether those count up. Without one, those
-    /// tags are refused.
-    overflow: Option<(u16, bool)>,
     /// Logical investment records or private runtime, sharing build-scoped package reservations.
     paged: Option<bool>,
     stream: Option<usize>,
@@ -37,7 +39,6 @@ impl AppendedTagAllocator {
         Self {
             package_id,
             current_entry_count,
-            overflow: None,
             paged: None,
             stream: None,
         }
@@ -118,16 +119,6 @@ impl AppendedTagAllocator {
         }
     }
 
-    /// This allocation, continuing past its package's last entry in standalone package `top`, then
-    /// each one below it.
-    #[cfg(test)]
-    pub(crate) const fn overflowing_into(self, top: u16) -> Self {
-        Self {
-            overflow: Some((top, false)),
-            ..self
-        }
-    }
-
     /// How many of its tags its own package holds before any overflow.
     pub(crate) const fn capacity(self) -> usize {
         MAX_PACKAGE_ENTRY_COUNT.saturating_sub(self.current_entry_count)
@@ -135,27 +126,19 @@ impl AppendedTagAllocator {
 
     /// `tags`, which this allocation assigned in order, by the package each went to: its own
     /// package's, then each overflow package's with its id.
-    pub(crate) fn split<T>(self, mut tags: Vec<T>) -> AuthoringResult<Split<T>> {
+    pub(crate) fn split<T>(self, tags: Vec<T>) -> AuthoringResult<Split<T>> {
         if let Some(private) = self.paged {
             return records::split(private, self.current_entry_count, tags);
         }
-        let mut spilled = tags.split_off(self.capacity().min(tags.len())).into_iter();
-        let mut overflow = Vec::new();
-        loop {
-            let chunk = spilled
-                .by_ref()
-                .take(MAX_PACKAGE_ENTRY_COUNT)
-                .collect::<Vec<_>>();
-            if chunk.is_empty() {
-                break;
-            }
-            let first = self.capacity() + overflow.len() * MAX_PACKAGE_ENTRY_COUNT;
-            let package = self
-                .assigned_tag(first, "Overflow package", "overflowing tag")?
-                .pkg_id();
-            overflow.push((package, chunk));
+        let capacity = self.capacity();
+        if tags.len() > capacity {
+            return Err(AuthoringError::InvalidInput(format!(
+                "{} appended tags exceed the {capacity} entries package {:04X} has room for",
+                tags.len(),
+                self.package_id
+            )));
         }
-        Ok((tags, overflow))
+        Ok((tags, Vec::new()))
     }
 
     pub(crate) fn ordinal(self, tag: TagHash) -> AuthoringResult<usize> {
@@ -204,44 +187,9 @@ impl AppendedTagAllocator {
             return records::tag(private, self.current_entry_count, index);
         }
         if index >= MAX_PACKAGE_ENTRY_COUNT {
-            let Some((start, upward)) = self.overflow else {
-                return Err(AuthoringError::InvalidInput(format!(
-                    "{destination_description} index {index} exceeds the package-table limit"
-                )));
-            };
-            // Each overflow package holds a whole table, from its first entry.
-            let spill = index - MAX_PACKAGE_ENTRY_COUNT;
-            let offset = spill / MAX_PACKAGE_ENTRY_COUNT;
-            let package = if self.package_id == PRIVATE_PERK_RUNTIME_PACKAGE_ID
-                && crate::package_profile::host().is_standalone()
-            {
-                Some(
-                    crate::mod_family::build::private_runtime(offset)
-                        .map_err(AuthoringError::InvalidInput)?,
-                )
-            } else {
-                u16::try_from(offset)
-                    .ok()
-                    .and_then(|n| {
-                        if upward {
-                            start.checked_add(n)
-                        } else {
-                            start.checked_sub(n)
-                        }
-                    })
-                    .filter(|&package| is_authored_standalone_package_id(package))
-            }
-            .ok_or_else(|| {
-                AuthoringError::InvalidInput(format!(
-                    "{destination_description} index {index} exceeds every authored package"
-                ))
-            })?;
-            crate::mod_family::build::native(package);
-            return Self::new(package, 0).assigned_tag(
-                spill % MAX_PACKAGE_ENTRY_COUNT,
-                destination_description,
-                tag_description,
-            );
+            return Err(AuthoringError::InvalidInput(format!(
+                "{destination_description} index {index} exceeds the package-table limit"
+            )));
         }
 
         let encoded_index = u16::try_from(index).map_err(|_| {
@@ -295,45 +243,5 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("test tag"));
         assert!(message.contains("ordinal") && message.contains("overflow"));
-    }
-
-    #[test]
-    fn an_overflowing_allocation_continues_down_the_standalone_range() {
-        let allocator =
-            AppendedTagAllocator::new(0x01BB, MAX_PACKAGE_ENTRY_COUNT - 2).overflowing_into(0x0CFF);
-        let tag = |ordinal| {
-            allocator
-                .assigned_tag(ordinal, "Test destination", "test tag")
-                .unwrap()
-        };
-        // Its own table first, then each overflow package from its first entry.
-        assert_eq!(tag(1), TagHash::new(0x01BB, 0x1FFF));
-        assert_eq!(tag(2), TagHash::new(0x0CFF, 0));
-        assert_eq!(
-            tag(1 + MAX_PACKAGE_ENTRY_COUNT),
-            TagHash::new(0x0CFF, 0x1FFF)
-        );
-        assert_eq!(tag(2 + MAX_PACKAGE_ENTRY_COUNT), TagHash::new(0x0CFE, 0));
-        // The tags split by the package each was assigned to.
-        let count = 2 + MAX_PACKAGE_ENTRY_COUNT + 3;
-        let (own, overflow) = allocator.split((0..count).collect::<Vec<_>>()).unwrap();
-        assert_eq!(own, [0, 1]);
-        assert_eq!(
-            overflow
-                .iter()
-                .map(|(id, tags)| (*id, tags.len(), tags[0]))
-                .collect::<Vec<_>>(),
-            [
-                (0x0CFF, MAX_PACKAGE_ENTRY_COUNT, 2),
-                (0x0CFE, 3, 2 + MAX_PACKAGE_ENTRY_COUNT)
-            ]
-        );
-        // The range ends rather than running into stock package ids.
-        let low =
-            AppendedTagAllocator::new(0x01BB, MAX_PACKAGE_ENTRY_COUNT).overflowing_into(0x0AA0);
-        assert!(
-            low.assigned_tag(MAX_PACKAGE_ENTRY_COUNT, "Test destination", "test tag")
-                .is_err()
-        );
     }
 }

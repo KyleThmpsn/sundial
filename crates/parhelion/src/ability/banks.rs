@@ -25,6 +25,7 @@ use sundial::package_authoring::{
         ordered_rows_match, parameters, property_rows, retarget_references, slot_banks,
         with_ordered_rows, with_property_row, with_property_row_mode,
     },
+    ability_movement::evade,
     referrers,
     sandbox_perk::program::{
         AbilityInput, AbilityRow, AbilityRowModifier, AbilityTuning, Program, ability_properties_in,
@@ -44,7 +45,7 @@ pub(crate) struct Perk<'a> {
 
 /// Private damage profiles selected only by an equipped item's property action, with the
 /// item's own per-surface impact responses when it has them.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MeleeImpact {
     pub key: u32,
     pub damage: u32,
@@ -59,15 +60,33 @@ pub(crate) struct Plan {
     /// Each edited stock bank's added rows, in the order they were added, so a private copy of
     /// the bank can take them too.
     pub rows: BTreeMap<u32, Vec<Row>>,
+    /// The build's own rows and evade profiles, as another member's build adds them.
+    pub hosted: Hosted,
 }
 
+/// The rows one member's build adds to the stock banks and the evade profiles it adds to the
+/// movement controllers, in the order it added them. A row names the member's private damage
+/// profiles by tag, so another member's build that writes the banks adds it as it is.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Hosted {
+    rows: Vec<(u32, Row)>,
+    evades: Vec<(u32, evade::Profile)>,
+}
+
+impl Hosted {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rows.is_empty() && self.evades.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Row {
     key: u32,
     value: RowValue,
     mode: Option<u8>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 enum RowValue {
     Single(Modifier),
     Ordered(Vec<FixedRow>),
@@ -80,6 +99,29 @@ impl From<Modifier> for RowValue {
 }
 
 impl Row {
+    /// What the row does, without the private profiles a member's build allocates for it. Each
+    /// member that applies one attack or contact definition holds its own copies of the
+    /// definition's profiles, so rows that differ only there are the same row.
+    fn definition(&self) -> Self {
+        let value = match &self.value {
+            RowValue::Single(Modifier::Attack(body)) => {
+                let mut body = *body;
+                body.damage = None;
+                RowValue::Single(Modifier::Attack(body))
+            }
+            RowValue::Single(Modifier::Melee { .. }) => RowValue::Single(Modifier::Melee {
+                damage: 0,
+                responses: None,
+            }),
+            value => value.clone(),
+        };
+        Self {
+            key: self.key,
+            value,
+            mode: self.mode,
+        }
+    }
+
     fn append(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
         match &self.value {
             RowValue::Ordered(members) => with_ordered_rows(payload, self.key, members),
@@ -96,13 +138,16 @@ impl Row {
 /// each tuning they apply, every bank of the slot that lists the parameter, each with the row
 /// added.
 /// `rows` adds explicit property rows, each to one bank: a Subclass ability modifier's charges
-/// or parameter value under a key of its own.
+/// or parameter value under a key of its own. `hosted` adds other members' rows and evade
+/// profiles after the build's own, each with the member's name. A bank takes one row per key,
+/// and every later request for the key must have the same definition.
 #[allow(clippy::cognitive_complexity)]
 pub(crate) fn plan<'a>(
     manager: &PackageManager,
     perks: impl IntoIterator<Item = Perk<'a>>,
     impacts: &[MeleeImpact],
     rows: &[(u32, u32, Modifier)],
+    hosted: &[(&str, Hosted)],
     allocator: crate::appended_tags::AppendedTagAllocator,
     tags: &mut Vec<crate::NewTagSpec>,
 ) -> AuthoringResult<Plan> {
@@ -187,6 +232,7 @@ pub(crate) fn plan<'a>(
                 name: tuning.parameter,
                 applied: f32::from_bits(tuning.value_bits),
                 add: tuning.add,
+                gate: None,
             }
             .into(),
         ));
@@ -281,6 +327,7 @@ pub(crate) fn plan<'a>(
                 input: input.input,
                 value: f32::from_bits(input.value_bits),
                 multiply: input.multiply,
+                selection: None,
             }
             .into(),
         ));
@@ -316,21 +363,34 @@ pub(crate) fn plan<'a>(
     // A bank may take several rows, so each edit starts from the bank's latest payload.
     let mut edited: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
     let mut added: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
-    let mut filed = BTreeSet::new();
+    let mut own = Hosted::default();
+    let own_name = crate::package_profile::member().map_or("Parhelion", |member| member.name());
+    let mut filed = Filed::default();
     for (key, banks, value) in wanted {
         for &bank in &banks {
-            // A key names what its row does, so a second request for it is the same row.
-            if !filed.insert((bank, key)) {
-                continue;
-            }
             let row = Row {
                 key,
                 value: value.clone(),
                 mode: scoped.get(&key).map(|r| r.mode),
             };
+            if !filed.first(bank, &row, own_name)? {
+                continue;
+            }
             if let Some(next) = with_row(manager, &edited, bank, &row)? {
                 edited.insert(bank, next);
+                own.rows.push((bank, row.clone()));
                 added.entry(bank).or_default().push(row);
+            }
+        }
+    }
+    for (name, other) in hosted {
+        for (bank, row) in &other.rows {
+            if !filed.first(*bank, row, name)? {
+                continue;
+            }
+            if let Some(next) = with_row(manager, &edited, *bank, row)? {
+                edited.insert(*bank, next);
+                added.entry(*bank).or_default().push(row.clone());
             }
         }
     }
@@ -338,6 +398,14 @@ pub(crate) fn plan<'a>(
     // edited bank that references another ships the payload with both changes, once.
     let retargeted = retarget_referrers(manager, &edited)?;
     edited.extend(retargeted);
+    own.evades = evade_profiles(scoped.values());
+    let mut evades = own.evades.clone();
+    for profile in hosted.iter().flat_map(|(_, other)| &other.evades) {
+        if !evades.contains(profile) {
+            evades.push(*profile);
+        }
+    }
+    add_evade_profiles(manager, &evades, &mut edited)?;
     let mut replacements: BTreeMap<u16, Vec<ReplacementSpec>> = BTreeMap::new();
     for (bank, payload) in edited {
         let tag = TagHash(bank);
@@ -349,7 +417,40 @@ pub(crate) fn plan<'a>(
     Ok(Plan {
         replacements,
         rows: added,
+        hosted: own,
     })
+}
+
+/// The definition each bank took under each key, with the member that asked first.
+#[derive(Default)]
+struct Filed<'a> {
+    rows: BTreeMap<(u32, u32), (Row, &'a str)>,
+}
+
+impl<'a> Filed<'a> {
+    /// Whether `row` is the first request for its key in `bank`. A later request with the same
+    /// definition is the same row. One with another definition is refused, since a bank row
+    /// serves every member's perks that apply the key and keeping either would give the other
+    /// perk its behavior.
+    fn first(&mut self, bank: u32, row: &Row, member: &'a str) -> AuthoringResult<bool> {
+        let definition = row.definition();
+        let Some((filed, first)) = self.rows.get(&(bank, row.key)) else {
+            self.rows.insert((bank, row.key), (definition, member));
+            return Ok(true);
+        };
+        if *filed == definition {
+            return Ok(false);
+        }
+        let tag = TagHash(bank);
+        let key = row.key;
+        Err(invalid(if *first == member {
+            format!("{member} gives ability bank {tag} two different rows under key {key:08X}")
+        } else {
+            format!(
+                "{first} and {member} give ability bank {tag} different rows under key {key:08X}. Change one of their perks"
+            )
+        }))
+    }
 }
 
 /// Gives each private copy of an ability bank among `tags` the rows `rows` added to its stock
@@ -464,13 +565,13 @@ fn with_row(
         // shared with an unrelated row would bind the perk to that row's behavior instead.
         let same = match modifier {
             Modifier::Charges(count) => existing.charge == Some(count),
-            Modifier::Parameter { name, applied, add } => {
-                existing.parameters.iter().any(|parameter| {
-                    parameter.name == name
-                        && parameter.applied.to_bits() == applied.to_bits()
-                        && parameter.add == add
-                })
-            }
+            Modifier::Parameter {
+                name, applied, add, ..
+            } => existing.parameters.iter().any(|parameter| {
+                parameter.name == name
+                    && parameter.applied.to_bits() == applied.to_bits()
+                    && parameter.add == add
+            }),
             // A property row does not expose a fixed body's words, so an existing row under
             // the key cannot be shown to be the same body.
             Modifier::Fixed(_) | Modifier::Group(_) | Modifier::Attack(_) => false,
@@ -550,6 +651,98 @@ fn retarget_referrers(
     Ok(retargeted)
 }
 
+/// Each evade row's movement controller and the profile it adds there, in row order.
+fn evade_profiles<'a>(
+    rows: impl IntoIterator<Item = &'a AbilityRow>,
+) -> Vec<(u32, evade::Profile)> {
+    rows.into_iter()
+        .filter_map(|row| match row.modifier {
+            AbilityRowModifier::Evade {
+                controller,
+                template_profile,
+                actions,
+                ungated,
+                ..
+            } => Some((
+                controller,
+                evade::Profile {
+                    identity: row.key,
+                    template: template_profile,
+                    actions,
+                    ungated,
+                },
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every evade profile added to its movement controller, and every tag the reference index
+/// lists for an extended controller with the offsets it names moved to the controller's rebuilt
+/// layout. A referrer already edited, such as a movement graph that follows its bank, starts
+/// from its edited payload.
+fn add_evade_profiles(
+    manager: &PackageManager,
+    profiles: &[(u32, evade::Profile)],
+    edited: &mut BTreeMap<u32, Vec<u8>>,
+) -> AuthoringResult<()> {
+    let mut wanted: BTreeMap<u32, Vec<evade::Profile>> = BTreeMap::new();
+    for &(controller, profile) in profiles {
+        wanted.entry(controller).or_default().push(profile);
+    }
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let index = referrers::read(manager, &AtomicBool::new(false), |_, _| {})
+        .map_err(|error| invalid(format!("Could not read the reference index: {error}")))?;
+    for (controller, profiles) in wanted {
+        let tag = TagHash(controller);
+        if crate::package_profile::canonical_package(tag.pkg_id()).is_none() {
+            return Err(invalid(format!(
+                "Movement controller {tag} is outside the packages the build overlays"
+            )));
+        }
+        let context = |error: String| invalid(format!("Movement controller {tag}: {error}"));
+        let before = manager.read_tag(tag).map_err(|error| {
+            invalid(format!("Could not read movement controller {tag}: {error}"))
+        })?;
+        let mut after = edited
+            .get(&controller)
+            .cloned()
+            .unwrap_or_else(|| before.clone());
+        for profile in profiles {
+            after = evade::with_profile(&after, profile).map_err(context)?;
+        }
+        for &referrer in index.of(controller) {
+            if referrer == controller {
+                continue;
+            }
+            let referrer_tag = TagHash(referrer);
+            let payload = match edited.get(&referrer) {
+                Some(payload) => payload.clone(),
+                None => manager.read_tag(referrer_tag).map_err(|error| {
+                    invalid(format!(
+                        "Could not read {referrer_tag}, which references movement controller {tag}: {error}"
+                    ))
+                })?,
+            };
+            let Some(next) = evade::retarget_references(&payload, controller, &before, &after)
+                .map_err(context)?
+            else {
+                continue;
+            };
+            if crate::package_profile::canonical_package(referrer_tag.pkg_id()).is_none() {
+                return Err(invalid(format!(
+                    "{referrer_tag} names blocks of movement controller {tag} by offset and is outside the packages the build overlays"
+                )));
+            }
+            edited.insert(referrer, next);
+        }
+        edited.insert(controller, after);
+    }
+    Ok(())
+}
+
 /// The slot and key of every Ability Property action a private perk applies, read from the
 /// program it compiles to, or from the stock action it clones unchanged.
 fn keys_applied(perk: &Perk<'_>) -> AuthoringResult<BTreeSet<(AbilityTarget, u32)>> {
@@ -565,17 +758,55 @@ fn keys_applied(perk: &Perk<'_>) -> AuthoringResult<BTreeSet<(AbilityTarget, u32
     .map_err(invalid)
 }
 
+/// The tags whose blocks `tags` name by offset: a tag hash, then the class expected there, at
+/// eight byte alignment. An ability entity names its bank's blocks this way and an extended
+/// movement controller's too, so only these tags' replacements change what
+/// [`retarget_new_tags`] writes for `tags`.
+pub(crate) fn offset_targets(tags: &[crate::NewTagSpec]) -> BTreeSet<u32> {
+    let mut targets = BTreeSet::new();
+    for tag in tags {
+        for at in (0..tag.payload.len().saturating_sub(15)).step_by(8) {
+            if let (Ok(target), Ok(class)) = (
+                crate::tag_payload::read_u32(&tag.payload, at),
+                crate::tag_payload::read_u32(&tag.payload, at + 4),
+            ) && class & 0xFFFF_0000 == 0x8080_0000
+            {
+                targets.insert(target);
+            }
+        }
+    }
+    targets
+}
+
 /// Moves the offsets a new tag names inside an edited bank, as the reference index moves the
 /// stock referrers'. A private copy of an ability entity names its bank's blocks by offset too,
-/// and the index does not know it.
+/// and the index does not know it. Returns whether any tag moved.
 pub(crate) fn retarget_new_tags(
     manager: &PackageManager,
     replaced: &BTreeMap<u16, Vec<ReplacementSpec>>,
     tags: &mut [crate::NewTagSpec],
-) -> AuthoringResult<()> {
+) -> AuthoringResult<bool> {
+    let mut moved = false;
     for spec in replaced.values().flatten() {
         let bank = spec.tag.0;
         if !sundial::package_authoring::ability_modifier::is_bank(bank) {
+            // An extended movement controller is named by offset the same way.
+            let before = manager
+                .read_tag(spec.tag)
+                .map_err(|error| invalid(error.to_string()))?;
+            if !evade::is_controller(&before) {
+                continue;
+            }
+            for tag in tags.iter_mut() {
+                if let Some(next) =
+                    evade::retarget_references(&tag.payload, bank, &before, &spec.payload).map_err(
+                        |error| invalid(format!("Movement controller {}: {error}", spec.tag)),
+                    )?
+                {
+                    tag.payload = next;
+                    moved = true;
+                }
+            }
             continue;
         }
         let before = manager.read_tag(spec.tag).map_err(|error| {
@@ -586,8 +817,9 @@ pub(crate) fn retarget_new_tags(
                 .map_err(|error| invalid(format!("Ability bank {}: {error}", spec.tag)))?
             {
                 tag.payload = next;
+                moved = true;
             }
         }
     }
-    Ok(())
+    Ok(moved)
 }

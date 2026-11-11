@@ -1,20 +1,16 @@
-//! Checked payload access. The app's package_payload module is private; this
-//! standalone experiment keeps the same bounds/pointer contracts without changing it.
-use anyhow::{Result, bail, ensure};
+//! Checked payload access over the host's native payload reads. Arrays keep the importer's own
+//! contract: an empty array needs no header, a count is capped, its class is checked only when a
+//! caller names one, and a long read honors cancellation.
+use anyhow::{Context, Result, bail, ensure};
+use sundial::package_authoring::native_payload;
 mod compact;
 pub use compact::{Compacted, compact};
 #[derive(Clone)]
 pub struct Payload(pub Vec<u8>);
 impl Payload {
     pub fn bytes<const N: usize>(&self, o: usize) -> Result<[u8; N]> {
-        let end = o
-            .checked_add(N)
-            .ok_or_else(|| anyhow::anyhow!("offset overflow"))?;
-        Ok(self
-            .0
-            .get(o..end)
-            .ok_or_else(|| anyhow::anyhow!("read outside payload at {o:X}"))?
-            .try_into()?)
+        native_payload::bytes_at(&self.0, o)
+            .map_err(|_| anyhow::anyhow!("read outside payload at {o:X}"))
     }
     pub fn u8(&self, o: usize) -> Result<u8> {
         Ok(self.bytes::<1>(o)?[0])
@@ -36,14 +32,13 @@ impl Payload {
         ensure!(v.is_finite(), "nonfinite transform");
         Ok(v)
     }
+    /// The offset a relative pointer at `o` names, which may be the payload's end.
     pub fn pointer(&self, o: usize) -> Result<usize> {
         let delta = i64::from_le_bytes(self.bytes(o)?);
-        let target = (o as i128) + (delta as i128);
-        ensure!(
-            target >= 0 && target <= self.0.len() as i128,
-            "relative pointer outside payload"
-        );
-        Ok(target as usize)
+        native_payload::relative_offset(o, 0, delta)
+            .ok()
+            .filter(|target| *target <= self.0.len())
+            .ok_or_else(|| anyhow::anyhow!("relative pointer outside payload"))
     }
     pub fn array(&self, o: usize, stride: usize, class: Option<u32>) -> Result<Vec<usize>> {
         Ok(self
@@ -107,10 +102,17 @@ pub(crate) fn write_array(
     target.extend_from_slice(&(count as u64).to_le_bytes());
     target.extend_from_slice(&(class as u64).to_le_bytes());
     target.extend_from_slice(bytes);
-    target[descriptor..descriptor + 8].copy_from_slice(&(count as u64).to_le_bytes());
-    target[descriptor + 8..descriptor + 16]
-        .copy_from_slice(&(header as i64 - descriptor as i64 - 8).to_le_bytes());
-    Ok(())
+    let pointer = descriptor
+        .checked_add(8)
+        .context("array descriptor overflow")?;
+    native_payload::write_bytes(target, descriptor, &(count as u64).to_le_bytes())
+        .map_err(anyhow::Error::msg)?;
+    native_payload::write_bytes(
+        target,
+        pointer,
+        &(header as i64 - pointer as i64).to_le_bytes(),
+    )
+    .map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]

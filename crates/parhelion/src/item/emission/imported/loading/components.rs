@@ -1,7 +1,7 @@
 //! Grafted components load their native dispatch and layout resources with their
 //! private parent. Their geometry donor's dependency index need not contain them.
 use super::*;
-use parhelion_import::d2_mot::payload::Payload;
+use parhelion_import::tiger::payload::Payload;
 use sundial::package_authoring::sandbox_perk::entity::residency::owner_requirements;
 
 fn interface(

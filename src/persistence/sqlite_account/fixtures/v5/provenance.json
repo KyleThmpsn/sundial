@@ -1,0 +1,21 @@
+{
+  "upstream": "https://github.com/stanuwu/Sunrise",
+  "revision": "9ab7b50b2e0ccb878ba5ded43e7d3ae09308b78a",
+  "resources": {
+    "character_starter.sql": {
+      "sha256": "6924aec666d48d2c7ca7a87db8322d0f7faf6cec0110defebebbfe0f6bef8ed5",
+      "upstream_path": "Sunrise/resources/database/character_starter.sql"
+    },
+    "investment_schema.sql": {
+      "sha256": "b9d115ba38625cb883f25026dc2dc77abefbd24e2b996a4dd38e8cd319943f7a",
+      "upstream_path": "Sunrise/resources/database/investment_schema.sql"
+    }
+  },
+  "parked_items": {
+    "file": "parked_items.sql",
+    "sha256": "b1667d33add06251b94b5d0b537cd369f7635dfac8ed28578531363d9c510f1a",
+    "source": "Sunrise/src/state/investment/investment_database.cpp",
+    "source_sha256": "7fdf81968f9e0fc5756cff25315394056bc905d2d721778f8c2b9e1df7d1f849",
+    "extraction": "The kParkedItemsTable string literals joined in order. Sunrise runs this statement when it creates a save and in the version 5 upgrade, and bundles no resource for it."
+  }
+}

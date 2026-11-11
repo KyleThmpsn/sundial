@@ -488,23 +488,6 @@ pub fn inspect(
     )
 }
 
-/// The same catalog, with the ancestry walk's answers kept per package under the cache
-/// directory so the next build after an install rescans only the changed packages.
-pub fn inspect_cached(
-    packages: &Path,
-    manager: &PackageManager,
-    index: &dependencies::Index,
-    names: &tft::Index,
-) -> Result<Catalog, String> {
-    build(
-        manager,
-        index,
-        names,
-        ancestry::Cache::open(packages).as_ref(),
-        &std::sync::atomic::AtomicBool::new(false),
-    )
-}
-
 fn build(
     manager: &PackageManager,
     index: &dependencies::Index,

@@ -1,5 +1,6 @@
 mod assembly;
 mod assets;
+mod census;
 mod collections;
 mod custom_plugs;
 mod definition;
@@ -8,6 +9,9 @@ mod runtime;
 mod tables;
 
 use super::*;
+pub(crate) use census::census;
+#[cfg(feature = "d2-model-importer")]
+pub(super) use collections::count_constant_entries;
 pub(super) use progress::Progress;
 pub(crate) use progress::{Event, Phase};
 
@@ -115,7 +119,7 @@ pub fn build_weapon_project(
     package_directory: &Path,
     project: &WeaponProjectSpec,
 ) -> AuthoringResult<NewWeaponProjectBundle> {
-    let weapons = canonical_project_weapons(project)?;
+    let mut weapons = canonical_project_weapons(project)?;
     let install_directory = package_directory.parent().ok_or_else(|| {
         invalid(format!(
             "Package directory has no install root: {}",
@@ -123,6 +127,7 @@ pub fn build_weapon_project(
         ))
     })?;
     validate_weapon_clone_specs_against_catalog(install_directory, weapons.iter())?;
+    super::expand_subclass_gates(install_directory, &mut weapons)?;
     build_weapon_project_canonical(package_directory, &weapons)
 }
 
@@ -153,9 +158,12 @@ pub(crate) fn compile_with_progress(
     report: &mut dyn FnMut(Event<'_>),
 ) -> AuthoringResult<NewWeaponProjectBundle> {
     let mut progress = Progress::new(SHARED_OPERATIONS + 1 + 3 * project.weapons.len(), report);
-    // A set of maps alone builds no items.
+    // A set of maps alone builds no items, and neither does a main mod that only hosts the shared
+    // rows of importers whose mods hold every recipe.
     let weapons = progress.step("Validating Recipe Identities", || {
-        if project.weapons.is_empty() && !maps.is_empty() {
+        if project.weapons.is_empty()
+            && (!maps.is_empty() || crate::mod_family::build::main_hosts())
+        {
             return Ok(Vec::new());
         }
         canonical_project_weapons(project)
@@ -245,7 +253,7 @@ fn compile_canonical(
             .iter()
             .map(|donor| {
                 crate::subclass::compile::plan(
-                    donor.subclass_list.as_ref(),
+                    donor.subclass_list(),
                     &donor.weapon.namespace,
                     &mut planner,
                 )
@@ -424,9 +432,8 @@ fn compile_canonical(
             &mut sources,
             &collection_plan,
             &tables.project_rows,
-            icons.badge_index,
             &collected,
-            &icons.custom_badges,
+            &icons,
             &mut tables.collectibles,
         )
         .map_err(|error| error.context("Collections authoring"))
@@ -453,9 +460,19 @@ fn compile_canonical(
     let ability_banks = progress.step("Planning Ability Banks", || {
         let rows = resolved
             .iter()
-            .filter_map(|donor| donor.subclass_list.as_ref())
+            .filter_map(resolve::ResolvedWeapon::subclass_list)
             .flat_map(crate::subclass::authoring::ResolvedList::bank_rows)
             .map(|row| (row.bank, row.key, row.modifier))
+            .collect::<Vec<_>>();
+        use crate::mod_family::build::{
+            Shared, contribute, contributors, finish_shared, hosts, needs_main, produced,
+            produced_by, shared_payloads,
+        };
+        // The main mod's build adds every importer's bank rows after its own, since Sunrise
+        // can't merge the banks and the build's copies name their blocks by offset.
+        let hosted = contributors()
+            .into_iter()
+            .map(|(importer, contributions)| (importer.name(), contributions.banks))
             .collect::<Vec<_>>();
         let banks = crate::ability::banks::plan(
             &sources.manager,
@@ -475,20 +492,64 @@ fn compile_canonical(
                 }),
             &runtime.impacts,
             &rows,
+            &hosted,
             runtime.private_perk_allocator,
             &mut runtime.private_perk_tags,
         )?;
-        // The build's own copies of ability entities follow their banks' moves too.
-        crate::ability::banks::retarget_new_tags(
+        produced(
+            Shared::Banks,
+            banks.replacements.values().flatten().map(|spec| spec.tag.0),
+        );
+        // The importer records its rows whether or not the main mod writes them yet, so a pass
+        // without a main mod build hands them to the next one that has it.
+        contribute(|contributions| contributions.banks = banks.hosted.clone());
+        // An importer whose rows the main mod writes ships no bank. Its copies name the blocks
+        // of the banks Sunrise serves, the main mod's, so they follow those.
+        let leaves = hosts(Shared::Banks);
+        let served = if leaves {
+            let main = produced_by(None);
+            let mut served = BTreeMap::<u16, Vec<ReplacementSpec>>::new();
+            for (tag, payload) in shared_payloads() {
+                if main.get(&tag) == Some(&Shared::Banks) {
+                    served
+                        .entry(TagHash(tag).pkg_id())
+                        .or_default()
+                        .push(ReplacementSpec {
+                            tag: TagHash(tag),
+                            payload,
+                        });
+                }
+            }
+            served
+        } else {
+            for spec in banks.replacements.values().flatten() {
+                finish_shared(spec.tag.0, &spec.payload);
+            }
+            banks.replacements.clone()
+        };
+        // The build's own copies of ability entities follow their banks' moves too. They follow
+        // only the served entries they name by offset, so a later pass whose main mod writes
+        // other bank rows keeps this build.
+        if leaves {
+            use crate::ability::banks::offset_targets;
+            crate::mod_family::build::reads_shared(
+                offset_targets(&runtime.private_perk_tags)
+                    .into_iter()
+                    .chain(offset_targets(&runtime.weapon_tags)),
+            );
+        }
+        let moved = crate::ability::banks::retarget_new_tags(
             &sources.manager,
-            &banks.replacements,
+            &served,
             &mut runtime.private_perk_tags,
-        )?;
-        crate::ability::banks::retarget_new_tags(
+        )? | crate::ability::banks::retarget_new_tags(
             &sources.manager,
-            &banks.replacements,
+            &served,
             &mut runtime.weapon_tags,
         )?;
+        if leaves && moved {
+            needs_main(Shared::Banks);
+        }
         // A private copy of a bank takes the rows its stock bank took, and the copies that bind
         // it follow its move.
         crate::ability::banks::sync_private_banks(
@@ -496,10 +557,40 @@ fn compile_canonical(
             &mut runtime.private_perk_tags,
             &mut runtime.weapon_tags,
         )?;
-        Ok(banks.replacements)
+        Ok(if leaves {
+            BTreeMap::new()
+        } else {
+            banks.replacements
+        })
     })?;
     let hud_statuses = progress.step("Planning HUD Statuses", || {
-        super::hud_status::replacements(&sources.manager, &programs, &assets.hud_status_layers)
+        use crate::mod_family::build::{Shared, contribute, contributions, hosts, produced};
+        // The names of the importers' statuses join the main mod's name bank, which Sunrise
+        // can't merge. Each member keeps its own statuses' rows and images.
+        let hosted = contributions()
+            .into_iter()
+            .flat_map(|contributions| contributions.hud_names)
+            .collect::<Vec<_>>();
+        let (replacements, names) = super::hud_status::replacements(
+            &sources.manager,
+            &programs,
+            &assets.hud_status_layers,
+            &runtime.hud_statuses,
+            &hosted,
+        )?;
+        let (table, names_bank): (Vec<_>, Vec<_>) = replacements
+            .into_iter()
+            .partition(|replacement| super::hud_status::is_table(replacement.tag));
+        produced(
+            Shared::HudNames,
+            names_bank.iter().map(|replacement| replacement.tag.0),
+        );
+        contribute(|contributions| contributions.hud_names = names);
+        Ok(if hosts(Shared::HudNames) {
+            table
+        } else {
+            table.into_iter().chain(names_bank).collect()
+        })
     })?;
     let output = assembly::Output {
         dye_table,

@@ -7,7 +7,7 @@ use crate::shared_tag_dependency_index::{
     dependency_entries,
     scoped::{LoadingOwner, clone_scoped_dependencies},
 };
-use parhelion_import::d2_mot::payload::Payload;
+use parhelion_import::tiger::payload::Payload;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
@@ -18,8 +18,10 @@ const PARENT_CLASS: u32 = 0x8080_744A;
 const GROUP_CLASS: u32 = 0x8080_902D;
 const SOUND_CLASS: u32 = 0x8080_9802;
 mod clips;
+mod effect;
 mod firing;
 mod impacts;
+pub(in crate::item) use effect::{FiringEffect, load as load_firing_effect};
 pub(in crate::item) use impacts::author as author_impacts;
 
 pub(in crate::item) struct ImportedAudio {
@@ -42,6 +44,69 @@ impl ImportedAudio {
     /// use the authored copy's identity when a recipe is renamed or duplicated.
     pub(in crate::item) fn set_item(&mut self, item: u32) {
         self.item = item;
+    }
+}
+
+/// Converted media the build's items share. Weapons of one source family often play the same
+/// recordings, so a medium whose bytes an earlier sound of the build allocated is named again
+/// instead of copied. The record is the runtime's content record, which a cached runtime records
+/// its borrowed entries against and checks again on replay. A loading group lists the tags it
+/// allocated, so the media its sounds borrow are collected for it to list as well.
+pub(in crate::item) struct Media<'a> {
+    cache: &'a mut super::animation::AnimationTagCache,
+    borrowed: BTreeSet<u32>,
+}
+
+impl<'a> Media<'a> {
+    pub(in crate::item) fn new(cache: &'a mut super::animation::AnimationTagCache) -> Self {
+        Self {
+            cache,
+            borrowed: BTreeSet::new(),
+        }
+    }
+
+    /// The media the sounds since the last call borrowed from earlier allocations.
+    fn borrowed(&mut self) -> BTreeSet<u32> {
+        std::mem::take(&mut self.borrowed)
+    }
+
+    /// The tag of medium `pcm`: an earlier allocation of the same bytes, or a new entry cloned
+    /// from `template` and appended to `tags`.
+    fn medium(
+        &mut self,
+        manager: &PackageManager,
+        (allocator, tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
+        template: u32,
+        pcm: Vec<u8>,
+    ) -> AuthoringResult<u32> {
+        use sha2::Digest;
+        let digest: [u8; 32] = sha2::Sha256::digest(&pcm).into();
+        // A medium is recorded under its template's reference, which differs between templates,
+        // so the same recording can sit under another class than this template's.
+        if let Some(tag) = self
+            .cache
+            .iter()
+            .find(|(key, _)| key.1 == digest)
+            .map(|(_, tag)| *tag)
+        {
+            self.borrowed.insert(tag);
+            return Ok(tag);
+        }
+        let class = manager
+            .get_entry(TagHash(template))
+            .ok_or_else(|| invalid("Native media entry missing"))?
+            .reference;
+        let tag = append(
+            manager,
+            allocator,
+            tags,
+            template,
+            pcm,
+            crate::NewTagStorageMode::AudioMedia,
+            "PCM media",
+        )?;
+        self.cache.insert((class, digest), tag);
+        Ok(tag)
     }
 }
 
@@ -68,13 +133,8 @@ fn put(bytes: &mut [u8], at: usize, value: u32) -> AuthoringResult<()> {
     Ok(())
 }
 
-fn fnv1(name: &str) -> u32 {
-    name.bytes()
-        .map(|byte| byte.to_ascii_lowercase())
-        .fold(0x811C_9DC5u32, |hash, byte| {
-            hash.wrapping_mul(16_777_619) ^ u32::from(byte)
-        })
-}
+/// Wwise names hash as the client's case-insensitive FNV-1 names do.
+use sundial::package_authoring::fnv1_name_hash as fnv1;
 
 pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedAudio>> {
     let graph_value = graph.value();
@@ -285,6 +345,44 @@ fn list<'a>(value: &'a Value, what: &str) -> AuthoringResult<&'a Vec<Value>> {
     value
         .as_array()
         .ok_or_else(|| invalid(format!("Imported audio {what} missing")))
+}
+
+/// The build's private copy of `owner` that `entity` binds in its place, when an earlier edit
+/// made one. `None` while the entity still binds the stock owner.
+fn bound_copy(
+    entity: &[u8],
+    owner: u32,
+    allocator: AppendedTagAllocator,
+    tags: &[NewTagSpec],
+) -> AuthoringResult<Option<u32>> {
+    use sundial::package_authoring::entity::{
+        weapon_component_binding_hashes, weapon_component_bindings,
+    };
+    let mut bound = BTreeSet::new();
+    for hash in weapon_component_binding_hashes(entity).map_err(invalid)? {
+        for binding in weapon_component_bindings(entity, hash).map_err(invalid)? {
+            bound.insert(binding.owner_tag);
+        }
+    }
+    if bound.contains(&owner) {
+        return Ok(None);
+    }
+    let mut copies = Vec::new();
+    for (index, tag) in tags.iter().enumerate() {
+        let private = allocator
+            .assigned_tag(index, "Imported audio", "private owner")?
+            .0;
+        if tag.template_tag.0 == owner && bound.contains(&private) {
+            copies.push(private);
+        }
+    }
+    match copies.as_slice() {
+        [] => Ok(None),
+        [private] => Ok(Some(*private)),
+        _ => Err(invalid(
+            "Imported audio owner has several private copies in this weapon",
+        )),
+    }
 }
 
 fn stock(manager: &PackageManager, tag: u32, class: u32, what: &str) -> AuthoringResult<Vec<u8>> {
@@ -499,8 +597,12 @@ fn private_sound(
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
     remap: &mut BTreeMap<u32, u32>,
+    media: &mut Media<'_>,
 ) -> AuthoringResult<u32> {
-    emit_sound(manager, audio, source, native, name, allocator, tags, remap).map_err(|error| {
+    emit_sound(
+        manager, audio, source, native, name, allocator, tags, remap, media,
+    )
+    .map_err(|error| {
         error.context(format!(
             "Building private Wwise audio for item {:08X}, source bank {}, event {}, native cue {}. This step links prepared audio and does not run FFmpeg",
             audio.item, source["bank"], source["event_id"], native["tag"]
@@ -518,21 +620,37 @@ fn emit_sound(
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
     remap: &mut BTreeMap<u32, u32>,
+    media: &mut Media<'_>,
 ) -> AuthoringResult<u32> {
     let native_tag = hex(&native["tag"], "native sound")?;
     let stock_sound = stock(manager, native_tag, SOUND_CLASS, "sound")?;
     let source_media = list(&source["media"], "source media")?;
     let source_ids = list(&source["media_ids"], "source media IDs")?;
     let native_media = list(&native["media"], "native media")?;
-    let native_count = word(&stock_sound, 0x40)? as usize;
+    let slots = word(&stock_sound, 0x40)? as usize;
+    if word(&stock_sound, 0x18)? as usize != slots || stock_sound.len() != 0x50 + 4 * slots {
+        return Err(invalid("Native sound has an unsupported media array"));
+    }
+    // Stock cues can keep explicit empty media slots, all bits set. They name no media, so the
+    // import lists only the filled slots and so does this count.
+    let native_count = (0..slots)
+        .map(|slot| word(&stock_sound, 0x50 + 4 * slot))
+        .collect::<AuthoringResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|media| *media != u32::MAX)
+        .count();
     if source_media.is_empty()
         || source_media.len() != source_ids.len()
         || native_media.len() != native_count
         || native_count == 0
-        || word(&stock_sound, 0x18)? as usize != native_count
-        || stock_sound.len() != 0x50 + 4 * native_count
     {
-        return Err(invalid("Imported audio sound layouts differ"));
+        return Err(invalid(format!(
+            "Imported audio sound layouts differ: {} source media with {} IDs, {} native media \
+             for {native_count} filled stock slots of {slots}",
+            source_media.len(),
+            source_ids.len(),
+            native_media.len(),
+        )));
     }
     // The media array ends the sound tag, so it follows the source's variation count.
     let mut sound = stock_sound[..0x50].to_vec();
@@ -572,15 +690,7 @@ fn emit_sound(
                     u32::try_from(pcm.len())
                         .map_err(|_| invalid("Imported audio medium is too large"))?,
                 );
-                append(
-                    manager,
-                    allocator,
-                    tags,
-                    template,
-                    pcm,
-                    crate::NewTagStorageMode::AudioMedia,
-                    "PCM media",
-                )?
+                media.medium(manager, (allocator, &mut *tags), template, pcm)?
             }
         };
         put(&mut sound, 0x50 + index * 4, private)?;
@@ -683,16 +793,41 @@ fn stock_companion(manager: &PackageManager, owner: u32) -> AuthoringResult<(Tag
     found.ok_or_else(|| invalid("Audio parent has no shared-tag companion"))
 }
 
+/// Bind a prepared firing flow in a presentation the weapon's audio does not also change.
+pub(in crate::item) fn author_firing_effect(
+    manager: &PackageManager,
+    effect: &FiringEffect,
+    symbols: &BTreeMap<String, TagHash>,
+    pattern: &mut [u8],
+    allocator: AppendedTagAllocator,
+    tags: &mut Vec<NewTagSpec>,
+    (assets, asset_tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
+) -> AuthoringResult<()> {
+    firing::author(
+        manager,
+        None,
+        Some((effect, symbols)),
+        pattern,
+        allocator,
+        tags,
+        (assets, asset_tags),
+        None,
+    )?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::item) fn author(
     manager: &PackageManager,
     audio: &ImportedAudio,
+    effect: Option<(&FiringEffect, &BTreeMap<String, TagHash>)>,
     pattern_tag: TagHash,
     pattern: &mut [u8],
     animation_owner: Option<u32>,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
     (assets, asset_tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
+    media: &mut Media<'_>,
 ) -> AuthoringResult<usize> {
     if pattern_tag.0 != audio.runtime_entity {
         return Err(invalid(
@@ -712,10 +847,20 @@ pub(in crate::item) fn author(
             .push(event);
     }
     let mut owners = BTreeMap::<u32, Vec<u8>>::new();
-    let mut count = firing::author(manager, audio, pattern, allocator, tags, assets, asset_tags)?;
+    let mut count = firing::author(
+        manager,
+        Some(audio),
+        effect,
+        pattern,
+        allocator,
+        tags,
+        (assets, asset_tags),
+        Some(&mut *media),
+    )?;
     for ((owner_tag, parent_tag, group_tag), events) in grouped {
         let group_start = tags.len();
         let asset_start = asset_tags.len();
+        media.borrowed();
         let mut remap = BTreeMap::new();
         let mut group = stock(manager, group_tag, GROUP_CLASS, "event group")?;
         for event in events {
@@ -744,7 +889,7 @@ pub(in crate::item) fn author(
                 let (row, old_path) = sound_row(&group, hash, native_tag)?;
                 let name = format!("ph_{:08x}_{hash:08x}_{native_tag:08x}_{index}", audio.item);
                 let private = private_sound(
-                    manager, audio, source, native, &name, assets, asset_tags, &mut remap,
+                    manager, audio, source, native, &name, assets, asset_tags, &mut remap, media,
                 )?;
                 put(&mut group, row + 0x18, private)?;
                 rename_path(&mut group, row, &old_path, &name)?;
@@ -797,6 +942,8 @@ pub(in crate::item) fn author(
                     .0,
             );
         }
+        // Media an earlier sound of the build allocated load with this group too.
+        dependencies.extend(media.borrowed());
         dependencies.insert(private_companion);
         let companion = clone_scoped_dependencies(
             (
@@ -856,17 +1003,23 @@ pub(in crate::item) fn author(
                 .and_then(|ordinal| tags.get(ordinal))
                 .is_some_and(|tag| tag.template_tag.0 == owner_tag)
         });
-        if let Some(private) = animated_owner {
+        // An authored patch, such as a character animation profile, may have copied the owner
+        // already, and the entity then binds that copy. The events join it too.
+        let private_owner = match animated_owner {
+            Some(private) => Some(private),
+            None => bound_copy(pattern, owner_tag, allocator, tags)?,
+        };
+        if let Some(private) = private_owner {
             let ordinal = allocator.ordinal(TagHash(private))?;
             let entry = tags
                 .get_mut(ordinal)
-                .ok_or_else(|| invalid("Private animation owner is missing"))?;
+                .ok_or_else(|| invalid("Private audio owner is missing"))?;
             if entry.template_tag.0 != owner_tag {
-                return Err(invalid("Private animation owner differs from audio owner"));
+                return Err(invalid("Private audio owner differs from its stock owner"));
             }
             let old = stock(manager, owner_tag, OWNER_CLASS, "audio owner")?;
             if old.len() != owner.len() || entry.payload.len() != owner.len() {
-                return Err(invalid("Private animation owner layout differs"));
+                return Err(invalid("Private audio owner layout differs"));
             }
             for at in (0..owner.len().saturating_sub(3)).step_by(4) {
                 let before = word(&old, at)?;

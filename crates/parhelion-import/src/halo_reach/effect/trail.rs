@@ -22,8 +22,11 @@ pub(in crate::halo_reach) struct Profile {
     emission: Property,
     life: f32,
     width: Property,
-    color: Property,
+    pub(in crate::halo_reach) color: Property,
     alpha: Property,
+    /// Multiplies `alpha`. Its contrail age input, which the native samples do not carry, takes
+    /// its resting value.
+    secondary_alpha: Property,
     intensity: Property,
     black_point: Property,
     palette: Property,
@@ -34,96 +37,204 @@ pub(in crate::halo_reach) struct Profile {
     material: Material,
 }
 
+impl Profile {
+    /// Whether the profile adds its light to the scene, as energy contrails do, rather than
+    /// blending over it as smoke does.
+    pub(in crate::halo_reach) fn additive(&self) -> bool {
+        self.material.options.get("blend_mode").map(String::as_str)
+            == Some("add_src_times_srcalpha")
+    }
+
+    /// The mean linear color a palettized profile's palette multiplies its color by, or white for a
+    /// diffuse-only profile. The palette row sits at the profile's palette coordinate and the base
+    /// map's red channel indexes it, so the mean runs over the base map's texels, each weighted by
+    /// the alpha it draws with: the alpha map's on `palettized_plus_alpha`, the palette's own
+    /// otherwise. The black point and the alpha curve are left out.
+    pub(in crate::halo_reach) fn palette_tint(
+        &self,
+        cache: &Cache,
+        pages: &mut Pages,
+    ) -> Result<[f32; 3]> {
+        let albedo = self.material.options.get("albedo").map(String::as_str);
+        if albedo == Some("diffuse_only") {
+            return Ok([1.; 3]);
+        }
+        let mapping = |role: &str| {
+            self.material
+                .mapping(&[role])
+                .with_context(|| format!("Contrail {role}"))
+        };
+        let image = |pages: &mut Pages, mapping: &material::Mapping| {
+            let tag = mapping.bitmap.as_ref().context("Contrail bitmap")?;
+            material::image(cache, pages, tag, mapping.frame, false)
+        };
+        let base = image(pages, mapping("base_map")?)?;
+        let palette_map = mapping("palette")?;
+        let palette = image(pages, palette_map)?;
+        let alpha = if albedo == Some("palettized_plus_alpha") {
+            let alpha = image(pages, mapping("alpha_map")?)?;
+            ensure!(
+                (alpha.width, alpha.height) == (base.width, base.height),
+                "Contrail alpha map differs from its base map in size"
+            );
+            Some(alpha)
+        } else {
+            None
+        };
+        let row = self
+            .palette
+            .constant()
+            .context("Contrail palette coordinate")?;
+        let [u_scale, v_scale, u_offset, v_offset] = palette_map.transform;
+        let gamma = palette.curve != material::LINEAR_CURVE;
+        let y = ((row * v_scale + v_offset).clamp(0., 1.) * palette.height as f32) as usize;
+        let y = y.min(palette.height - 1);
+        let texel = |index: f32| -> [f64; 4] {
+            let u = (index * u_scale + u_offset).clamp(0., 1.);
+            let x = ((u * palette.width as f32) as usize).min(palette.width - 1);
+            let at = (y * palette.width + x) * 4;
+            std::array::from_fn(|k| {
+                let value = f64::from(palette.rgba[at + k]) / 255.;
+                if k < 3 && gamma {
+                    value.powf(2.2)
+                } else {
+                    value
+                }
+            })
+        };
+        let mut sum = [0f64; 3];
+        let mut weight = 0f64;
+        for (k, texel_at) in base.rgba.chunks_exact(4).enumerate() {
+            let color = texel(f32::from(texel_at[0]) / 255.);
+            let w = alpha
+                .as_ref()
+                .map_or(color[3], |alpha| f64::from(alpha.rgba[k * 4 + 3]) / 255.);
+            for (total, value) in sum.iter_mut().zip(color) {
+                *total += value * w;
+            }
+            weight += w;
+        }
+        ensure!(weight > 0., "Contrail palette draws nothing");
+        Ok(sum.map(|total| (total / weight) as f32))
+    }
+}
+
 pub(in crate::halo_reach) fn read(cache: &Cache, tag: &Tag) -> Result<Vec<Profile>> {
+    each(cache, tag)?
+        .into_iter()
+        .map(|(_, profile)| profile)
+        .collect()
+}
+
+/// Every profile of source contrail `tag` with its name, each read on its own, so a caller can
+/// draw the profiles that translate and report why the others do not.
+pub(in crate::halo_reach) fn each(
+    cache: &Cache,
+    tag: &Tag,
+) -> Result<Vec<(String, Result<Profile>)>> {
     ensure!(tag.group == "cntl", "Expected a source contrail system");
     cache
         .block(tag.address()?, 0x280)?
         .into_iter()
-        .map(|at| {
-            let emission = Property::read(cache, at + 0x28)?;
-            let life = Property::read(cache, at + 0x48)?.constant()?;
-            ensure!(
-                emission.emission(1.)? > 0. && life > 0.,
-                "Contrail has no finite emission or lifetime"
-            );
-            let material = material::embedded(cache, tag.clone(), at + 0x134)?;
-            ensure!(
-                matches!(
-                    material.options.get("albedo").map(String::as_str),
-                    Some("diffuse_only" | "palettized" | "palettized_plus_alpha")
-                ) && matches!(
-                    material.options.get("blend_mode").map(String::as_str),
-                    Some("add_src_times_srcalpha" | "alpha_blend")
-                ) && matches!(
-                    material.options.get("black_point").map(String::as_str),
-                    Some("off" | "on")
-                ) && matches!(
-                    material.options.get("fog").map(String::as_str),
-                    Some("off" | "on")
-                ),
-                "Source contrail needs an unsupported material mode"
-            );
-            ensure!(
-                cache.u8(at + 0x132)? == 0
-                    && material.properties.len() == 1
-                    && material.properties[0].functions.is_empty(),
-                "Source contrail needs another profile shape or animated material"
-            );
-            ensure!(
-                cache.floats::<6>(at + 0x88)? == [0.; 6]
-                    && cache.u8(at + 0x6a)? == 0
-                    && cache.floats::<4>(at + 0xe0)? == [0.; 4]
-                    && cache.u8(at + 0xc2)? == 0
-                    && Property::read(cache, at + 0xf0)?.constant()? == 0.
-                    && Property::read(cache, at + 0x110)?.constant()? == 0.,
-                "Source contrail requires profile acceleration, offset or rotation"
-            );
-            // Secondary alpha must stay at one. A curve over another source input, such as a
-            // profile's input 7, needs that input's producer before it can be translated.
-            let secondary = Property::read(cache, at + 0x1e8)?;
-            ensure!(
-                secondary.constant().ok() == Some(1.),
-                "Source contrail {} requires secondary alpha from source input {}",
-                cache.string_id(cache.u32(at)?)?,
-                secondary.input()
-            );
-            let result = Profile {
-                source: tag.clone(),
-                name: cache.string_id(cache.u32(at)?)?,
-                emission,
-                life,
-                width: Property::read(cache, at + 0xa0)?,
-                color: Property::read(cache, at + 0x1a8)?,
-                alpha: Property::read(cache, at + 0x1c8)?,
-                intensity: Property::read(cache, at + 0x248)?,
-                black_point: Property::read(cache, at + 0x208)?,
-                palette: Property::read(cache, at + 0x228)?,
-                tiling: cache.floats::<2>(at + 0x198)?,
-                scroll: cache.floats::<2>(at + 0x1a0)?,
-                appearance_flags: cache.u16(at + 0x130)?,
-                origin_fade: cache.floats::<2>(at + 4)?,
-                material,
-            };
-            ensure!(
-                result.tiling.into_iter().all(|v| v.is_finite() && v > 0.)
-                    && result.scroll.into_iter().all(f32::is_finite)
-                    && result.origin_fade.into_iter().all(f32::is_finite)
-                    && (result.appearance_flags & 0x20 == 0
-                        || result.origin_fade[0] > 0. && result.origin_fade[1] >= 0.)
-                    && result.appearance_flags & !0xed == 0
-                    && result.intensity.bounds()?.into_iter().all(|v| v >= 0.),
-                "Source contrail has unsupported appearance settings"
-            );
-            // Validate the complete selected mapping before emitting any graph nodes.
-            result.width.expression()?;
-            result.color.expression()?;
-            result.alpha.expression()?;
-            result.intensity.expression()?;
-            result.black_point.expression()?;
-            result.palette.expression()?;
-            Ok(result)
-        })
+        .map(|at| Ok((cache.string_id(cache.u32(at)?)?, profile(cache, tag, at))))
         .collect()
+}
+
+/// Source contrail inputs a profile property may read: profile age (0), the sample's own age, and
+/// contrail age (7), the time since the contrail began.
+const PROFILE_AGE: u8 = 0;
+const CONTRAIL_AGE: u8 = 7;
+
+/// The secondary alpha's expression. Contrail age, which no native sample carries, takes one, the
+/// end of a mapping's unit domain, as a resting value. A curve that settles before it, such as the
+/// Grenade Launcher `hot_glow` fade-in that holds one from 0.0425, keeps its settled value, and an
+/// earlier source fade is not drawn.
+fn secondary_alpha(profile: &Profile) -> Result<String> {
+    profile
+        .secondary_alpha
+        .expression_with(&|index| match index {
+            PROFILE_AGE => Ok("age".into()),
+            CONTRAIL_AGE => Ok("1.0".into()),
+            other => anyhow::bail!("Source contrail secondary alpha reads source input {other}"),
+        })
+}
+
+fn profile(cache: &Cache, tag: &Tag, at: usize) -> Result<Profile> {
+    let emission = Property::read(cache, at + 0x28)?;
+    let life = Property::read(cache, at + 0x48)?.constant()?;
+    ensure!(
+        emission.emission(1.)? > 0. && life > 0.,
+        "Contrail has no finite emission or lifetime"
+    );
+    let material = material::embedded(cache, tag.clone(), at + 0x134)?;
+    ensure!(
+        matches!(
+            material.options.get("albedo").map(String::as_str),
+            Some("diffuse_only" | "palettized" | "palettized_plus_alpha")
+        ) && matches!(
+            material.options.get("blend_mode").map(String::as_str),
+            Some("add_src_times_srcalpha" | "alpha_blend")
+        ) && matches!(
+            material.options.get("black_point").map(String::as_str),
+            Some("off" | "on")
+        ) && matches!(
+            material.options.get("fog").map(String::as_str),
+            Some("off" | "on")
+        ),
+        "Source contrail needs an unsupported material mode"
+    );
+    ensure!(
+        cache.u8(at + 0x132)? == 0
+            && material.properties.len() == 1
+            && material.properties[0].functions.is_empty(),
+        "Source contrail needs another profile shape or animated material"
+    );
+    ensure!(
+        cache.floats::<6>(at + 0x88)? == [0.; 6]
+            && cache.u8(at + 0x6a)? == 0
+            && cache.floats::<4>(at + 0xe0)? == [0.; 4]
+            && cache.u8(at + 0xc2)? == 0
+            && Property::read(cache, at + 0xf0)?.constant()? == 0.
+            && Property::read(cache, at + 0x110)?.constant()? == 0.,
+        "Source contrail requires profile acceleration, offset or rotation"
+    );
+    let result = Profile {
+        source: tag.clone(),
+        name: cache.string_id(cache.u32(at)?)?,
+        emission,
+        life,
+        width: Property::read(cache, at + 0xa0)?,
+        color: Property::read(cache, at + 0x1a8)?,
+        alpha: Property::read(cache, at + 0x1c8)?,
+        secondary_alpha: Property::read(cache, at + 0x1e8)?,
+        intensity: Property::read(cache, at + 0x248)?,
+        black_point: Property::read(cache, at + 0x208)?,
+        palette: Property::read(cache, at + 0x228)?,
+        tiling: cache.floats::<2>(at + 0x198)?,
+        scroll: cache.floats::<2>(at + 0x1a0)?,
+        appearance_flags: cache.u16(at + 0x130)?,
+        origin_fade: cache.floats::<2>(at + 4)?,
+        material,
+    };
+    ensure!(
+        result.tiling.into_iter().all(|v| v.is_finite() && v > 0.)
+            && result.scroll.into_iter().all(f32::is_finite)
+            && result.origin_fade.into_iter().all(f32::is_finite)
+            && (result.appearance_flags & 0x20 == 0
+                || result.origin_fade[0] > 0. && result.origin_fade[1] >= 0.)
+            && result.appearance_flags & !0xed == 0
+            && result.intensity.bounds()?.into_iter().all(|v| v >= 0.),
+        "Source contrail has unsupported appearance settings"
+    );
+    // Validate the complete selected mapping before emitting any graph nodes.
+    result.width.expression()?;
+    result.color.expression()?;
+    result.alpha.expression()?;
+    secondary_alpha(&result)?;
+    result.intensity.expression()?;
+    result.black_point.expression()?;
+    result.palette.expression()?;
+    Ok(result)
 }
 
 const PIXEL: &str = r#"
@@ -196,13 +307,12 @@ fn material(
     )?];
     let mut textures = vec![(
         0u32,
-        native::material::texture(
+        native::material::effect_texture(
             cache,
             pages,
             native,
             graph,
             map,
-            false,
             albedo == "diffuse_only",
         )?,
     )];
@@ -243,7 +353,7 @@ fn material(
             );
             textures.push((
                 2,
-                native::material::texture(cache, pages, native, graph, alpha, false, false)?,
+                native::material::effect_texture(cache, pages, native, graph, alpha, false)?,
             ));
             // Tiling and scrolling precede each texture's independent transform.
             let [u, v, x, y] = alpha.transform;
@@ -282,7 +392,18 @@ fn material(
         ("$SAMPLERS$", declarations),
         ("$WIDTH$", profile.width.expression()?),
         ("$COLOR$", profile.color.expression()?),
-        ("$ALPHA$", profile.alpha.expression()?),
+        (
+            "$ALPHA$",
+            if profile.secondary_alpha.constant().ok() == Some(1.) {
+                profile.alpha.expression()?
+            } else {
+                format!(
+                    "{}*max({},0.0)",
+                    profile.alpha.expression()?,
+                    secondary_alpha(profile)?
+                )
+            },
+        ),
         ("$METRES$", format!("{metres:.9}")),
         ("$LENGTH$", format!("{length:.9}")),
         ("$RADIUS$", format!("{radius:.9}")),
@@ -326,6 +447,7 @@ fn material(
         true,
     )?;
     let mut bytes = shell.0.clone();
+    bytes[0x22] = super::BOTH_FACES;
     // Custom particle stages read object and view scopes directly. Drop the
     // carrier's expressions and inactive shader stages before binding our own.
     for stage in [0x48, 0xe8, 0x188, 0x228, 0x2c8, 0x368] {
@@ -459,6 +581,12 @@ pub(in crate::halo_reach) fn emit(
             json!({"offset":0x14,"symbol":material}),
         ],
     )?;
+    let mut limits = vec![
+        "Billboards approximate the source connected ribbon. Emission and longitudinal UV distance use reference speed. Source lightmap tint and atmospheric fog, randomized UV origin, edge fading and opacity from effect scale are not translated. Spline2 uses the GPU cubic basis without CPU input-bias behavior.",
+    ];
+    if profile.secondary_alpha.constant().ok() != Some(1.) {
+        limits.push("Secondary alpha multiplies alpha. Where it reads contrail age, it takes its value at contrail age one, so a source fade earlier in the contrail's life is not drawn.");
+    }
     Ok((
         symbol,
         json!({
@@ -468,7 +596,7 @@ pub(in crate::halo_reach) fn emit(
             "geometry":"Stationary CPU particles born at successive marker positions, with linear within-frame placement and overlapping camera-facing quads.",
             "appearance":"Source lifetime, width, color, alpha, tiling, scrolling and flagged origin fading. Each texture uses its source address and filter modes without mip bias.",
             "composition":profile.material.options["blend_mode"],"gameplay_verified":false,
-            "limits":["Billboards approximate the source connected ribbon. Emission and longitudinal UV distance use reference speed. Source lightmap tint and atmospheric fog, randomized UV origin, edge fading and opacity from effect scale are not translated. Spline2 uses the GPU cubic basis without CPU input-bias behavior."]
+            "limits":limits
         }),
     ))
 }

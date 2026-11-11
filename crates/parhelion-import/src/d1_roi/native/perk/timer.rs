@@ -59,14 +59,21 @@ pub(super) fn read(
     );
     // D1 6CB720 clamps even an already-over-cap timer down. Native EC2F60 skips
     // that timer. One extension and initial timers within its cap keep both routes
-    // equivalent through repeated use. Do not widen this to arbitrary timers.
+    // equivalent through repeated use. An initial timer above the cap by no more than
+    // one extension differs only while it stays above the cap: an extension event then
+    // lowers it to the cap in D1 and leaves it natively, so Shadowkeep keeps at most the
+    // excess longer, and both agree once the timer runs down to the cap. No Land Beyond's
+    // The Master starts at 9 seconds under an 8 second cap, The Roadborn at 10.01 under
+    // 10. Do not widen this to arbitrary timers.
+    let (addition, cap) = (p.f32(at + 4)?, p.f32(at + 8)?);
     for descriptor in [0x20, 0x48, 0x58] {
         for row in p.array(descriptor, 8, None)? {
             let condition = p.pointer(row)?;
             if p.u8(condition + 5)? == 1 {
+                let seconds = p.f32(condition + 8)?;
                 ensure!(
-                    p.f32(condition + 8)? >= 0.0 && p.f32(condition + 8)? <= p.f32(at + 8)?,
-                    "Source running timer exceeds the extension cap"
+                    seconds >= 0.0 && seconds <= cap + addition,
+                    "Source running timer exceeds the extension cap by more than one extension"
                 );
             }
         }

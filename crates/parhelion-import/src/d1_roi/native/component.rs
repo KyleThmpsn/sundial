@@ -20,39 +20,46 @@ const WEAPON_RENDER: u32 = 0x81522FE0;
 const WEAPON_MARKERS: u32 = 0x81522FE1;
 const CHARACTER_PART_ENTITY: u32 = 0x80BC358D;
 const CHARACTER_RENDER: u32 = 0x80BC359E;
+/// A stock armor marker set with one activation group per gender, and the part entity that
+/// binds it to the character skeleton.
+const CHARACTER_MARKERS: u32 = 0x80BFAD0A;
+const CHARACTER_MARKER_ENTITY: u32 = 0x80BFACD3;
 
-struct Component {
-    id: u32,
-    template_tag: u32,
-    template: Payload,
-    entity: Payload,
-    payload: Payload,
-    symbol: String,
-    patches: Vec<Value>,
+pub(super) struct Component {
+    pub(super) id: u32,
+    pub(super) template_tag: u32,
+    pub(super) template: Payload,
+    pub(super) entity: Payload,
+    pub(super) payload: Payload,
+    pub(super) symbol: String,
+    pub(super) patches: Vec<Value>,
     inputs: Vec<(u32, usize)>,
     /// Source owner and input definition paired with the emitted getter definition.
-    incoming: Vec<(u32, usize, usize)>,
+    pub(super) incoming: Vec<(u32, usize, usize)>,
 }
 
 impl Component {
-    fn patch(&mut self, at: usize, symbol: &str) -> Result<()> {
+    pub(super) fn patch(&mut self, at: usize, symbol: &str) -> Result<()> {
         put(&mut self.payload.0, at, &u32::MAX.to_le_bytes())?;
         self.patches.push(json!({"offset":at,"symbol":symbol}));
         Ok(())
     }
 
-    fn seal(&mut self) -> Result<()> {
+    pub(super) fn seal(&mut self) -> Result<()> {
         let end = self.payload.0.len();
         instance::seal_span(&mut self.payload, &mut self.patches, end)?;
         size(&mut self.payload.0)
     }
 }
 
+/// Rename every typed reference to the owner: its tag, a class and an offset inside the payload.
+/// Classes range beyond `8080xxxx`, as network owner `80C709E1` names itself through
+/// `80C70EDD` and `80C70EDC`.
 fn replace_owner(p: &mut Payload, before: u32, after: u32) -> Result<()> {
     for at in (0..p.0.len().saturating_sub(15)).step_by(4) {
         if p.u32(at)? == before {
             ensure!(
-                p.u32(at + 4)? & 0xFFFF0000 == 0x80800000 && p.u64(at + 8)? < p.0.len() as u64,
+                p.u32(at + 4)? & 0xFF800000 == 0x80800000 && p.u64(at + 8)? < p.0.len() as u64,
                 "Untyped native component owner reference"
             );
             put(&mut p.0, at, &after.to_le_bytes())?;
@@ -98,7 +105,7 @@ fn activation(source: &Payload, target: &mut Payload) -> Result<()> {
 }
 
 impl Assembly<'_> {
-    fn component(
+    pub(super) fn component(
         &mut self,
         template_tag: u32,
         entity_tag: u32,
@@ -351,6 +358,24 @@ impl Assembly<'_> {
                     component.seal()?;
                     components.push(component);
                 }
+                0x808008FB => {
+                    // An armor body's marker set names the points its effects attach to. Each row
+                    // binds to one of the set's gender activation groups and a body bone, as a
+                    // native character marker set's rows do, over a palette the rig check has
+                    // found equal to the native one.
+                    let layout = crate::tiger::markers::Layout {
+                        row_class: 0x80800428,
+                        ..crate::tiger::markers::NATIVE
+                    };
+                    let markers = crate::tiger::markers::read(&source, sr + 0xD8, layout)?;
+                    ensure!(self.bone_map.is_none(), "Armor markers require the native body palette");
+                    let groups = source.array(sr + 0x50, 24, Some(0x80800785))?.len();
+                    let mut component = self.component(CHARACTER_MARKERS, CHARACTER_MARKER_ENTITY, &name, components.len())?;
+                    activation(&source, &mut component.payload)?;
+                    component.payload = crate::tiger::markers::replace_grouped(&component.payload, &markers, groups, self.palette)?;
+                    component.seal()?;
+                    components.push(component);
+                }
                 0x808027FC if self.weapon => {
                     source_owners.insert(ordinal, components.len());
                     components.push(self.optic(tag, &source, &source_entity, &name, components.len())?);
@@ -370,13 +395,25 @@ impl Assembly<'_> {
                     components.push(self.scalar_sequence(tag, ordinal, &source, &source_entity, &name, components.len())?);
                 }
                 0x80800610 => self.evidence.push(json!({"source_component":tag,"resource_class":class,"omitted":"source effect sequence is outside the translated visual graph"})),
+                0x80802E55 if !self.weapon => {
+                    // Rows of a state name and value, class 80802AF0, at resource +78. The one
+                    // Rise of Iron owner pairs helmet state 090E39A4 with 37798A64, a value its
+                    // selector does not declare and no armor activation reads. Its consumer is
+                    // unrecovered, so no drawing part depends on it.
+                    let rows = source
+                        .array(sr + 0x78, 8, Some(0x80802AF0))?
+                        .into_iter()
+                        .map(|at| Ok([source.u32(at)?, source.u32(at + 4)?]))
+                        .collect::<Result<Vec<_>>>()?;
+                    self.evidence.push(json!({"source_component":tag,"resource_class":class,"states":rows,
+                        "omitted":"source state component has no recovered consumer"}));
+                    self.approximations.insert("A source helmet state component with no recovered consumer is not translated.".to_owned());
+                }
                 _ => anyhow::bail!("Untranslated source body component {tag:08X}, class {class:08X}"),
             }
         }
-        ensure!(
-            self.weapon || bank.is_some(),
-            "Source body has no inherited material bank"
-        );
+        // A body needs an inherited bank only for its drawing components' object inputs, which
+        // connect to it below. A body whose models declare no inputs, as some armor's do, has none.
         let mut connections =
             self.channel_connections(&source_entity, &components, &source_owners)?;
         for (index, component) in components.iter().enumerate() {

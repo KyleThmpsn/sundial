@@ -245,8 +245,13 @@ impl PackageAuthoringApp {
         };
         let can_save =
             (self.recipe_dirty || !can_save_existing) && self.invalid_weapon_name.is_none();
+        let shortcut = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::S,
+        ));
         if ui
             .add_enabled(can_save, egui::Button::new(save_label))
+            .on_hover_text(shortcut)
             .on_disabled_hover_text(if self.invalid_weapon_name.is_some() {
                 "Enter a valid weapon name before saving"
             } else {

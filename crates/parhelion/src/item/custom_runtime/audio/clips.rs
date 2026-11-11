@@ -36,6 +36,7 @@ pub(in crate::item) fn author(
     animation: &mut ImportedAnimation,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
+    media: &mut Media<'_>,
 ) -> AuthoringResult<usize> {
     let mut seen = BTreeSet::new();
     for row in &audio.clips {
@@ -78,6 +79,7 @@ pub(in crate::item) fn author(
             allocator,
             tags,
             &mut BTreeMap::new(),
+            media,
         )?;
         for (extra, ordinal, at) in matches {
             let bytes = if extra {

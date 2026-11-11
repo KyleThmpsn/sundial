@@ -1,15 +1,23 @@
 //! Select compatible source actions for browser imports without an explicit motion plan.
 use super::*;
 
+/// The source overheat sequence: entering the lock, holding it and leaving it.
+const VENT: [&str; 3] = ["overheating", "overheated", "o_h_exit"];
+
+/// `vents` is true when the weapon's heat lock stands in for its magazine, so the native reload is
+/// its vent.
 pub(in crate::halo_reach) fn select(
     cache: &Cache,
     scene: &Scene,
     native: &mut Reader,
     donor: u32,
     root: &Path,
+    vents: bool,
 ) -> Result<Option<Options>> {
     const ARMS: &str = "objects\\characters\\spartans\\fp\\fp";
     if scene.object.tag.group != "weap"
+        // A sword donor's first-person entity has no single 80808546 component, which the
+        // carrier reader requires, so Reach swords and hammers keep native first-person arms.
         || matches!(
             scene.object.gameplay["weapon_class"].as_str(),
             Some("sword" | "hammer")
@@ -67,30 +75,58 @@ pub(in crate::halo_reach) fn select(
                 .insert(clip.to_owned());
         }
     }
-    for (state, names) in candidates {
-        if !states.contains(&hash(&state)) {
-            continue;
-        }
-        ensure!(
-            names.len() == 1,
-            "Source action {state} has ambiguous unconditional routes"
-        );
-        let descriptors = animation::state::descriptors(&carrier.states, hash(&state))?;
+    // Every descriptor of a native state plays absolute motion, which a complete source pose needs.
+    let absolute = |state: &str| -> Result<bool> {
         let mut absolute = true;
-        for descriptor in descriptors {
+        for descriptor in animation::state::descriptors(&carrier.states, hash(state))? {
             let row = *carrier
                 .descriptors
                 .get(descriptor)
                 .context("Native action descriptor outside bank")?;
             absolute &= carrier.bank.u16(row + 26)? == 1;
         }
-        if !absolute {
+        Ok(absolute)
+    };
+    for (state, names) in &candidates {
+        if !states.contains(&hash(state)) {
+            continue;
+        }
+        ensure!(
+            names.len() == 1,
+            "Source action {state} has ambiguous unconditional routes"
+        );
+        if !absolute(state)? {
             continue;
         }
         for name in names {
-            if source.supports(root, &name)? {
-                actions.insert(state.clone(), Action::Clip(name));
+            if source.supports(root, name)? {
+                actions.insert(state.clone(), Action::Clip(name.clone()));
                 break;
+            }
+        }
+    }
+    // Reach plays a heat-locked weapon's overheat sequence while it cools. Where that lock is the
+    // native magazine, the native reload is the vent, so a source without reloads of its own plays
+    // the sequence there, fitted to the reload's duration.
+    let vent = VENT
+        .iter()
+        .map(|state| match candidates.get(*state) {
+            Some(names) if names.len() == 1 => names.first().cloned(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    if vents && let Some(vent) = vent {
+        let mut supported = true;
+        for name in &vent {
+            supported &= source.supports(root, name)?;
+        }
+        for state in ["reload_full", "reload_empty"] {
+            if supported
+                && !actions.contains_key(state)
+                && states.contains(&hash(state))
+                && absolute(state)?
+            {
+                actions.insert(state.to_owned(), Action::Sequence(vent.clone()));
             }
         }
     }

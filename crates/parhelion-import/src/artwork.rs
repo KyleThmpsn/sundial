@@ -230,6 +230,59 @@ pub fn apply(recipe: &mut Value, directory: &Path) -> Result<()> {
         "Icon edit must be an object"
     );
     recipe["overrides"]["icon_edit"]["imported_image"] =
-        json!({"png_base64":STANDARD.encode(bytes)});
+        json!({"png_base64":STANDARD.encode(recipe_icon(bytes)?)});
     Ok(())
+}
+
+/// The edge of the primary icon a recipe saves. Recipes reject an embedded icon of any other size.
+const RECIPE_ICON_EDGE: u32 = 96;
+
+/// `png` at the recipe's icon size. Source art of another size, such as the 102-pixel tiles some
+/// Rise of Iron class items use, is scaled to fit and centered on a transparent square, as an
+/// image a user chooses is.
+fn recipe_icon(png: Vec<u8>) -> Result<Vec<u8>> {
+    let source = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+        .context("Decoding the source icon")?
+        .to_rgba8();
+    let (width, height) = source.dimensions();
+    if (width, height) == (RECIPE_ICON_EDGE, RECIPE_ICON_EDGE) {
+        return Ok(png);
+    }
+    anyhow::ensure!(width > 0 && height > 0, "The source icon is empty");
+    let edge = f64::from(RECIPE_ICON_EDGE);
+    let scale = (edge / f64::from(width)).min(edge / f64::from(height));
+    let fitted = |side: u32| ((f64::from(side) * scale).round() as u32).clamp(1, RECIPE_ICON_EDGE);
+    let (fitted_width, fitted_height) = (fitted(width), fitted(height));
+    // Filter premultiplied color so hidden color in transparent pixels cannot reach visible edges.
+    let mut premultiplied = source;
+    for pixel in premultiplied.pixels_mut() {
+        let alpha = u32::from(pixel[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = ((u32::from(*channel) * alpha + 127) / 255) as u8;
+        }
+    }
+    let mut resized = image::imageops::resize(
+        &premultiplied,
+        fitted_width,
+        fitted_height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    for pixel in resized.pixels_mut() {
+        let alpha = u32::from(pixel[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = (u32::from(*channel) * 255 + alpha / 2)
+                .checked_div(alpha)
+                .map_or(0, |value| value.min(255) as u8);
+        }
+    }
+    let mut canvas = image::RgbaImage::new(RECIPE_ICON_EDGE, RECIPE_ICON_EDGE);
+    image::imageops::replace(
+        &mut canvas,
+        &resized,
+        i64::from((RECIPE_ICON_EDGE - fitted_width) / 2),
+        i64::from((RECIPE_ICON_EDGE - fitted_height) / 2),
+    );
+    let mut encoded = Cursor::new(Vec::new());
+    canvas.write_to(&mut encoded, image::ImageFormat::Png)?;
+    Ok(encoded.into_inner())
 }

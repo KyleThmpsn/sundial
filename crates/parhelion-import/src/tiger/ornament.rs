@@ -246,8 +246,8 @@ pub fn categories(r: &mut Reader) -> Result<BTreeSet<u32>> {
 /// stock weapons of the donor's type in preference order. The ornament socket is the donor's own
 /// when it has one, else an appended lane of the first kin weapon's ornament socket type, else of
 /// the type that whitelists the first stock ornament's category. Layout plugs come first from that
-/// socket type's ornament category, then from the rest of its Collections leaf, the weapon type's
-/// own, then from the other leaves.
+/// socket type's ornament category, then from the rest of the weapon type's Collections leaf, then
+/// from the other leaves. An Exotic's imported ornaments join their layout plug's leaf.
 pub fn layout(r: &mut Reader, donor: u32, kin: &[u32], count: usize) -> Result<Layout> {
     ensure!(count > 0, "No imported appearances to lay out");
     let t = Tables::read(r)?;
@@ -301,10 +301,38 @@ pub fn layout(r: &mut Reader, donor: u32, kin: &[u32], count: usize) -> Result<L
     let [category] = categories[..] else {
         anyhow::bail!("Socket type {socket_type} does not whitelist one ornament category");
     };
-    let leaf = ornaments
-        .iter()
-        .find(|ornament| ornament.category == category)
-        .map(|ornament| ornament.leaf);
+    let listed = |category: u32| {
+        ornaments
+            .iter()
+            .find(|ornament| ornament.category == category)
+            .map(|ornament| ornament.leaf)
+    };
+    // The weapon type's leaf lists the socket type's category. A socket type lent by an ordinary
+    // weapon whitelists a category no Exotic leaf lists, so the leaf is then the one listing the
+    // ornament category of the first kin weapon that has one, an Exotic of the same type.
+    let mut leaf = listed(category).map(|leaf| (leaf, type_source));
+    for &weapon in kin {
+        if leaf.is_some() {
+            break;
+        }
+        let lane = match ornament_lane(r, &t, weapon) {
+            Ok((_, lane)) => lane,
+            Err(error) if crate::cancellation::is_cancelled(&error) => return Err(error),
+            Err(_) => None,
+        };
+        let Some((_, kin_type)) = lane else {
+            continue;
+        };
+        leaf = whitelists
+            .get(usize::from(kin_type))
+            .into_iter()
+            .flatten()
+            .filter(|&&category| category != reset)
+            .find_map(|&category| listed(category))
+            .map(|found| (found, Some(weapon)));
+    }
+    let (leaf, leaf_source) = leaf.unzip();
+    let leaf_source = leaf_source.flatten();
     let rank = |ornament: &Ornament| {
         if ornament.category == category {
             0
@@ -340,6 +368,7 @@ pub fn layout(r: &mut Reader, donor: u32, kin: &[u32], count: usize) -> Result<L
     let report = json!({"lane":lane,"appended":appended,"socket_type":socket_type,
         "socket_type_from":type_source.map(|hash| format!("{hash:08X}")),
         "category":category,"reset_category":reset,"leaf":leaf,
+        "leaf_from":leaf_source.map(|hash| format!("{hash:08X}")),
         "plugs":plugs.iter().map(|hash| format!("{hash:08X}")).collect::<Vec<_>>(),
         "stock_ornaments":ornaments.len()});
     Ok(Layout {

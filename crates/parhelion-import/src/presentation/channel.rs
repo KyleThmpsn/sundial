@@ -369,29 +369,6 @@ pub(crate) fn inherit(
     )
 }
 
-/// Connect another part's model while retaining the part's native channel sources.
-pub(crate) fn inherit_named(
-    native: &mut Reader,
-    g: &mut Graph,
-    requested: &[u32],
-    entity: &str,
-    owner: &str,
-    prefix: &str,
-) -> Result<BTreeMap<String, u8>> {
-    inherit_for(
-        native,
-        g,
-        requested,
-        Symbols {
-            entity,
-            owner,
-            bank: format!("{prefix}-channels"),
-            allocation: format!("{prefix}-channel-allocation"),
-            inputs: format!("{prefix}-input-allocation"),
-        },
-    )
-}
-
 fn inherit_for(
     native: &mut Reader,
     g: &mut Graph,

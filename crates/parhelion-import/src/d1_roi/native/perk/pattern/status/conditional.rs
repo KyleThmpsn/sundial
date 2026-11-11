@@ -3,9 +3,12 @@ use super::*;
 
 pub(super) struct Companion {
     pub owner: u32,
+    /// The count program's first constant row, which the envelope's single row takes.
     pub threshold: [u8; 16],
     name: u32,
     code: Vec<u8>,
+    /// Every constant row of the count program, in source order.
+    constants: Vec<u8>,
 }
 
 pub(super) fn read(
@@ -149,23 +152,38 @@ pub(super) fn read(
     let constants = status.array(expression + 40, 16, Some(0x80800090))?;
     let inputs = status.array(expression + 72, 48, Some(0x80800927))?;
     ensure!(
-        code == [0x3C, 1, 0x34, 0, 0x02, 0x23, 0x3E, 0]
-            && constants.len() == 1
+        !constants.is_empty()
             && inputs.len() == 1
             && status.u64(expression + 56)? == 2
             && status.u64(expression + 64)? == 1
             && status.bytes::<16>(expression + 88)? == [0; 16],
         "Conditional status count needs another expression or input contract"
     );
-    let threshold = status.bytes::<16>(constants[0])?;
-    let scalar = status.f32(constants[0])?;
+    let lanes = constants
+        .iter()
+        .map(|&row| {
+            Ok([
+                status.u32(row)?,
+                status.u32(row + 4)?,
+                status.u32(row + 8)?,
+                status.u32(row + 12)?,
+            ])
+        })
+        .collect::<Result<Vec<_>>>()?;
     ensure!(
-        scalar.is_finite()
-            && (0.0..=127.0).contains(&scalar)
-            && (1..4)
-                .all(|lane| status.u32(constants[0] + lane * 4).ok() == Some(scalar.to_bits())),
-        "Conditional status threshold is not a bounded scalar"
+        lanes
+            .iter()
+            .flatten()
+            .all(|&v| f32::from_bits(v).is_finite()),
+        "Conditional status count has a nonfinite constant"
     );
+    // Both builds evaluate the count with the same one-byte-operand value dialect, so the
+    // program and its constants carry whole. The threshold form `3C 01 34 00 02 23 3E 00` reads
+    // the channel against one constant. Danger Close's scales the channel, saturates it and maps
+    // it through a piecewise cubic (`37 01`) over constant rows 1 to 5.
+    crate::d1_roi::procedure::validate(&code, &lanes, 2)
+        .context("Conditional status count program")?;
+    let threshold = status.bytes::<16>(constants[0])?;
     let input = inputs[0];
     pair(
         status,
@@ -206,6 +224,11 @@ pub(super) fn read(
         threshold,
         name,
         code,
+        constants: constants
+            .iter()
+            .map(|&row| status.bytes::<16>(row))
+            .collect::<Result<Vec<_>>>()?
+            .concat(),
     })
 }
 
@@ -400,16 +423,30 @@ pub(super) fn patch(
         input + 32,
         companion.name.to_le_bytes().to_vec(),
     )?;
-    // Append a typed code array. The owner clone keeps the existing one-input
-    // allocation and event connection, while its definition can grow privately.
+    // Append a typed code array, and a constant array when the program has more rows than the
+    // envelope's one. The owner clone keeps the existing one-input allocation and event
+    // connection, while its definition can grow privately.
     let start = status.0.len();
-    let mut bytes = vec![0; (start + 4).next_multiple_of(16) - start - 4];
-    bytes.extend(0x80809FBDu32.to_le_bytes());
-    let header = start + bytes.len();
-    bytes.extend((companion.code.len() as u64).to_le_bytes());
-    bytes.extend(0x80800009u32.to_le_bytes());
-    bytes.extend([0; 4]);
-    bytes.extend(&companion.code);
+    let mut bytes = Vec::new();
+    let array = |bytes: &mut Vec<u8>, class: u32, rows: usize, data: &[u8]| -> usize {
+        let at = start + bytes.len();
+        bytes.resize(bytes.len() + (at + 4).next_multiple_of(16) - at - 4, 0);
+        bytes.extend(0x80809FBDu32.to_le_bytes());
+        let header = start + bytes.len();
+        bytes.extend((rows as u64).to_le_bytes());
+        bytes.extend(class.to_le_bytes());
+        bytes.extend([0; 4]);
+        bytes.extend(data);
+        header
+    };
+    let header = array(
+        &mut bytes,
+        0x80800009,
+        companion.code.len(),
+        &companion.code,
+    );
+    let rows = companion.constants.len() / 16;
+    let table = (rows > 1).then(|| array(&mut bytes, 0x80800090, rows, &companion.constants));
     replace(
         status,
         &status_binding[0],
@@ -420,6 +457,18 @@ pub(super) fn patch(
         ]
         .concat(),
     )?;
+    if let Some(table) = table {
+        replace(
+            status,
+            &status_binding[0],
+            expression + 32,
+            [
+                (rows as u64).to_le_bytes(),
+                (i64::try_from(table)? - i64::try_from(expression + 40)?).to_le_bytes(),
+            ]
+            .concat(),
+        )?;
+    }
     let append = NativeAssetResourceAppend {
         binding_hash: status_binding[0].binding_hash,
         resource_index: u16::try_from(status_binding[0].resource_index)?,

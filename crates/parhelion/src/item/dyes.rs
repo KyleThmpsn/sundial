@@ -11,7 +11,7 @@
 //! companion lists what loads with the relation, which is those records and the textures the
 //! edited scope binds, as a stock companion does. A new table row names the copy, the entity
 //! assignments map its key to the new relation, and the shader's rows point at the new row.
-use super::resolve::ResolvedWeapon;
+use super::resolve::{KindModel, ResolvedWeapon};
 use super::sources::ProjectSources;
 use super::*;
 use crate::dye::{
@@ -392,7 +392,7 @@ pub(super) fn plan(
             shared.insert((source, signature), index);
             row.dye_reference_index = index;
         }
-        donor.dye_rows = Some(arrays);
+        donor.kind_model = Some(KindModel::Shader(arrays));
     }
     Ok(plan)
 }

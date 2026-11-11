@@ -17,6 +17,7 @@ pub(super) struct TimedBuildProgress {
     pub(super) total: usize,
     pub(super) elapsed: Duration,
     pub(super) activity: Option<crate::workflow::BuildActivity>,
+    pub(super) member: Option<crate::workflow::MemberProgress>,
 }
 
 impl TimedBuildProgress {
@@ -28,6 +29,23 @@ impl TimedBuildProgress {
             total: progress.total,
             elapsed: progress.timestamp.saturating_duration_since(started),
             activity: progress.activity,
+            member: progress.member,
+        }
+    }
+
+    /// The progress heading: the phase, and in a family build the mod, with its pass once a later
+    /// pass builds it again. The first pass can't know whether another follows.
+    pub(super) fn title(&self) -> std::borrow::Cow<'static, str> {
+        match self.member {
+            Some(member) if member.pass > 1 => format!(
+                "{} for {} (Pass {})",
+                self.phase.label(),
+                member.name,
+                member.pass
+            )
+            .into(),
+            Some(member) => format!("{} for {}", self.phase.label(), member.name).into(),
+            None => self.phase.label().into(),
         }
     }
 

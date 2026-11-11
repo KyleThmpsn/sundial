@@ -244,6 +244,7 @@ fn column(choices: Vec<u32>, socket_type: Option<u16>) -> crate::item::WeaponSoc
         randomized_plug_set_index: None,
         randomized_selection_program: Vec::new(),
         reusable_choices: None,
+        hide_perks_in_tooltip: None,
     }
 }
 

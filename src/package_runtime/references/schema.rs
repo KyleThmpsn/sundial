@@ -1,6 +1,6 @@
-//! Reference declarations from native build 86657.20.08.23.1800.d2_rc.
-//! Captured image SHA-256: 26554b0c48109c9752a1a015ec0c45ff1137b675666338353ca35b9e81977484.
-//! Each row retains (handle, size, native layout). Layout opcodes are not member type handles.
+//! Reference declarations of native build 86657.20.08.23.1800.d2_rc, read from the client's
+//! definition table (`crate::runtime::native_layouts`). Each declaration is a handle, a size
+//! and a native layout program. Layout opcodes are not member type handles.
 use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
@@ -14,9 +14,27 @@ pub(crate) struct Record {
     pub fields: Arc<[(usize, u32)]>,
 }
 
-type Encoded = (u32, usize, Vec<(usize, u32)>);
 type Records = BTreeMap<u32, Result<Record, String>>;
 static NATIVE: OnceLock<Result<Records, String>> = OnceLock::new();
+
+/// Definitions that reference discovery leaves unresolved. They are runtime tables of 1 to 2 MB, and
+/// the reference capture of the same build that discovery used before it read the definition
+/// table did not list them. That capture matched the table on every other handle, size and
+/// layout program. Discovery keeps refusing these as unknown schemas.
+const UNREFERENCED: [u32; 12] = [
+    0x8080_79F3,
+    0x8080_79F4,
+    0x8080_79F5,
+    0x8080_7BD2,
+    0x8080_7BD3,
+    0x8080_7BD4,
+    0x8080_7FDA,
+    0x8080_7FDB,
+    0x8080_7FDC,
+    0x8080_9921,
+    0x8080_9922,
+    0x8080_9923,
+];
 
 pub(crate) struct Registry {
     native: &'static Records,
@@ -27,15 +45,12 @@ impl Registry {
     pub fn new() -> Result<Self, String> {
         let native = NATIVE
             .get_or_init(|| {
-                let source: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
+                let source = crate::runtime::native_layouts()
                     .map_err(|error| format!("Native reference schemas are invalid: {error}"))?;
-                let mut records = BTreeMap::new();
-                for (class, size, layout) in source {
-                    if records.insert(class, decode(size, &layout)).is_some() {
-                        return Err("Duplicate native reference schema".into());
-                    }
-                }
-                Ok(records)
+                Ok(source
+                    .filter(|(class, ..)| !UNREFERENCED.contains(class))
+                    .map(|(class, size, layout)| (class, decode(size, &layout)))
+                    .collect())
             })
             .as_ref()
             .map_err(Clone::clone)?;

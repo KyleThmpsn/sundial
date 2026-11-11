@@ -3,8 +3,10 @@ use super::*;
 
 pub(super) struct Input {
     pub ordinal: usize,
-    name: u32,
-    definition: usize,
+    pub(super) name: u32,
+    /// The getter definition in its originating bank, the source's or a native carrier's.
+    pub(super) definition: usize,
+    pub(super) owner: u32,
 }
 
 fn empty_state(source: &Payload, at: usize) -> Result<()> {
@@ -84,17 +86,22 @@ pub(super) fn read(source: &Payload, names: &[u32]) -> Result<Vec<Input>> {
                 ordinal,
                 name: *lookup.get(&ordinal).context("Source incoming name")?,
                 definition,
+                owner,
             })
         })
         .collect()
 }
 
-pub(super) fn write(
-    inputs: &[Input],
-    source: &Payload,
-    component: &mut Component,
-    template: &Payload,
-) -> Result<()> {
+pub(super) fn write(inputs: &[Input], component: &mut Component, template: &Payload) -> Result<()> {
+    // Native refresh treats declarations below the getter count as imported inputs, and each
+    // getter's index is its declaration ordinal.
+    ensure!(
+        inputs
+            .iter()
+            .enumerate()
+            .all(|(index, input)| input.ordinal == index),
+        "Incoming channels do not lead their bank"
+    );
     let ti = template.pointer(16)?;
     let td = template.pointer(24)?;
     let input = *template
@@ -148,11 +155,9 @@ pub(super) fn write(
             input + 16,
             &(instance as i64 - (input + 16) as i64).to_le_bytes(),
         )?;
-        component.incoming.push((
-            source.u32(source.pointer(16)?)?,
-            source_input.definition,
-            definition,
-        ));
+        component
+            .incoming
+            .push((source_input.owner, source_input.definition, definition));
     }
     let mut lookup = inputs
         .iter()

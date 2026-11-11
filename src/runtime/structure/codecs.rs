@@ -79,7 +79,7 @@ impl Field {
 
 fn load() -> Result<Codecs, String> {
     type Encoded = (u32, usize, usize, Vec<[u32; 10]>);
-    let encoded: Vec<Encoded> = serde_json::from_str(include_str!("codecs.json"))
+    let encoded: Vec<Encoded> = serde_json::from_str(include_str!("codecs/codecs.json"))
         .map_err(|error| format!("Native field declarations are invalid: {error}"))?;
     let mut result = BTreeMap::new();
     for (handle, size, array_len, encoded) in encoded {

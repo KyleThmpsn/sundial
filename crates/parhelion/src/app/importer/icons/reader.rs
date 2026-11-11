@@ -2,7 +2,7 @@
 use super::*;
 
 pub(super) enum Reader {
-    D2Modern(Box<parhelion_import::d2_mot::reader::Reader>),
+    D2Modern(Box<parhelion_import::tiger::reader::Reader>),
     D1RiseOfIron(Box<parhelion_import::d1_roi::Source>, Option<PathBuf>),
 }
 
@@ -15,7 +15,7 @@ impl Reader {
     ) -> Result<Self, String> {
         match source {
             Source::D2Modern => {
-                parhelion_import::d2_mot::reader::Reader::discovery(folder, cache, true)
+                parhelion_import::tiger::reader::Reader::discovery(folder, cache, true)
                     .map(|reader| Self::D2Modern(Box::new(reader)))
             }
             Source::D1RiseOfIron => parhelion_import::d1_roi::Source::open(folder, |_, _| {})

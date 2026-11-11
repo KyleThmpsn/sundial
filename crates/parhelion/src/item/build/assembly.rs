@@ -89,8 +89,12 @@ impl Timings {
         let seconds = |duration: std::time::Duration| duration.as_secs_f64();
         let dependencies = &self.dependencies;
         format!(
-            "Linking timings: payload sizes {:.3}s, loading roots {:.3}s, native prerequisites {:.3}s ({} graphs, {} added), dependency index {:.3}s ({} entries).",
+            "Linking timings: payload sizes {:.3}s, on-demand groups {:.3}s ({} relations, {} entries, {:.2} MiB), loading roots {:.3}s, native prerequisites {:.3}s ({} graphs, {} added), dependency index {:.3}s ({} entries).",
             seconds(self.payload_sizes),
+            seconds(dependencies.on_demand),
+            dependencies.relations,
+            dependencies.on_demand_entries,
+            dependencies.on_demand_bytes as f64 / 1_048_576.0,
             seconds(dependencies.roots),
             seconds(dependencies.prerequisites),
             dependencies.graphs,
@@ -114,7 +118,7 @@ pub(super) fn prepare(
         lore,
         assets,
         icons,
-        runtime,
+        mut runtime,
         tables,
         collections,
         localization,
@@ -134,6 +138,7 @@ pub(super) fn prepare(
             "Project localization header and locale data unexpectedly have different package owners",
         ));
     }
+    runtime.defer_relation_groups(&sources.manager, &mut timings.dependencies)?;
     let runtime_dependencies = runtime.dependencies(
         &sources.manager,
         &assets,
@@ -159,6 +164,14 @@ pub(super) fn prepare(
         ));
     }
     host_new_tags.extend(runtime.weapon_tags);
+    // An importer's own build keeps its text in a bank of its own after its records, since two
+    // mods' text in the stock bank can't merge.
+    let localization = match crate::package_profile::member() {
+        Some(importer) => {
+            crate::item::localization::own_bank(localization, importer, &mut host_new_tags)?
+        }
+        None => localization,
+    };
     let emission = emission::PackageEmission {
         lore,
         hud_table: assets.hud_table,
@@ -210,6 +223,7 @@ pub(super) fn prepare(
         ornament_targets: collections.ornament_targets,
         item_icons: icons.payload,
         runtime_dependencies,
+        on_demand: runtime.on_demand,
         host_new_tags,
         maps,
     };

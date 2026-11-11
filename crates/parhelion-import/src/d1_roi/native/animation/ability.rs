@@ -30,6 +30,38 @@ pub struct Plan {
     pub inputs: BTreeMap<u32, String>,
 }
 
+/// One converted clip as a shared-table merge adds it: the native descriptor whose row it copies,
+/// its duration and the source descriptor's eight policy bytes at row `+10`.
+#[derive(Debug, Serialize)]
+pub struct MergeClip {
+    pub symbol: String,
+    pub template: u32,
+    pub descriptor: usize,
+    pub duration: f32,
+    pub policy: [u8; 8],
+}
+
+/// What a build needs to add the prepared actions to the shared native tables on top of earlier
+/// additions: the clips, and by the native action each copies, its private name and weighted
+/// choices by clip index. Weights keep the native cumulative cutoff form.
+#[derive(Debug, Serialize)]
+pub struct Merge {
+    pub clips: Vec<MergeClip>,
+    pub actions: BTreeMap<u32, (u32, Vec<(usize, u32)>)>,
+}
+
+/// The playable human controller: Shadowkeep lookup, pose, skeleton and controls, with the Rise
+/// of Iron controls and pose that share source lookup [`SOURCE_HUMAN_LOOKUP`]'s bank.
+pub const HUMAN: Target = Target {
+    lookup: 0x80EF62E5,
+    pose: 0x8161D5F7,
+    skeleton: 0x80C22410,
+    controls: 0x80BFCB38,
+    source_controls: 0x80A7F7F6,
+    source_pose: 0x80A7E157,
+};
+pub const SOURCE_HUMAN_LOOKUP: u32 = 0x80A7E159;
+
 /// The player animation objects to receive private copies. The graph assembler must bind all
 /// returned resources to this same player route, including both the lookup and pose consumer.
 pub struct Target {
@@ -48,9 +80,88 @@ pub struct Prepared {
     bindings: Vec<(u32, Patch)>,
     /// Sequence events reference action names, not the names inside clip payloads.
     pub actions: BTreeMap<u32, u32>,
+    pub merge: Merge,
     pub evidence: Value,
     roots: Vec<String>,
     owners: BTreeMap<u32, String>,
+}
+
+/// Converted clips and private actions for the shared human tables, with the stock records they
+/// were prepared against. The build adds them on top of other items' additions.
+pub struct Human {
+    pub merge: Merge,
+    clips: Vec<Payload>,
+    stock: BTreeMap<&'static str, (u32, String)>,
+}
+
+impl Human {
+    /// The clips of `prepared`, which were prepared against [`HUMAN`], each of which must bind
+    /// nothing the shared tables cannot, and the digests of the stock human records.
+    pub fn new(native: &mut Reader, prepared: Prepared) -> Result<Self> {
+        let clips = prepared
+            .merge
+            .clips
+            .iter()
+            .map(|clip| {
+                let asset = prepared
+                    .assets
+                    .iter()
+                    .find(|asset| asset.symbol == clip.symbol)
+                    .context("Converted human clip is absent")?;
+                ensure!(
+                    asset.class == 0x80808F49 && asset.patches.is_empty(),
+                    "Human clip names resources the shared tables cannot bind"
+                );
+                Ok(asset.payload.clone())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let lookup = native.tag(HUMAN.lookup, Some(0x80809C36))?;
+        let pose = native.tag(HUMAN.pose, Some(0x80809C36))?;
+        let (lp, pp) = (lookup.pointer(24)?, pose.pointer(24)?);
+        let mut stock = BTreeMap::new();
+        for (key, tag) in [
+            ("lookup", HUMAN.lookup),
+            ("pose", HUMAN.pose),
+            ("skeleton", HUMAN.skeleton),
+            ("controls", HUMAN.controls),
+            ("bank", lookup.u32(lp + 0x90)?),
+            ("states", lookup.u32(lp + 0x9C)?),
+            ("layers", pose.u32(pp + 0x11C)?),
+            ("directions", pose.u32(pp + 0x114)?),
+        ] {
+            let digest = hex::encode(Sha256::digest(&native.tag(tag, None)?.0));
+            stock.insert(key, (tag, digest));
+        }
+        Ok(Self {
+            merge: prepared.merge,
+            clips,
+            stock,
+        })
+    }
+
+    /// Write the clips under `directory/human` and the graph's `human_actions` section, which
+    /// the build's human action emitter reads.
+    pub fn write(&self, directory: &Path, graph: &mut Value) -> Result<()> {
+        fs::create_dir_all(directory.join("human"))?;
+        let mut clips = Vec::new();
+        for (clip, payload) in self.merge.clips.iter().zip(&self.clips) {
+            let file = format!("human/{}.bin", clip.symbol);
+            fs::write(directory.join(&file), &payload.0)?;
+            clips.push(json!({"file":file,"template":clip.template,
+                "descriptor":clip.descriptor,"duration":clip.duration,
+                "policy":hex::encode(clip.policy)}));
+        }
+        let stock = self
+            .stock
+            .iter()
+            .map(|(key, (tag, digest))| ((*key).to_owned(), json!({"tag":tag,"sha256":digest})))
+            .collect::<serde_json::Map<_, _>>();
+        graph["human_actions"] = json!({"schema":1,"stock":stock,"clips":clips,
+            "actions":self.merge.actions.iter()
+                .map(|(name, (private, choices))| json!({"name":name,"private":private,"choices":choices}))
+                .collect::<Vec<_>>()});
+        Ok(())
+    }
 }
 
 pub struct Bound {
@@ -164,14 +275,15 @@ pub fn read(source: &Source, lookup: u32, names: &BTreeSet<u32>) -> Result<Plan>
         let action = conditional::action(&states, &bank, node, true, &BTreeMap::new())?;
         let mut choices = Vec::new();
         for choice in action.choices {
+            let tag = choice.clip()?;
             ensure!(
-                source.reference(choice.tag)? == SOURCE_CLIP,
+                source.reference(tag)? == SOURCE_CLIP,
                 "Ability action names a non-clip resource"
             );
-            inputs.insert(choice.tag, digest(&source.read(choice.tag)?));
+            inputs.insert(tag, digest(&source.read(tag)?));
             choices.push(Choice {
                 descriptor: choice.descriptor,
-                clip: choice.tag,
+                clip: tag,
                 weight: choice.weight,
             });
         }
@@ -360,6 +472,10 @@ pub fn prepare(
     let mut selector_mapping = BTreeMap::new();
     let mut evidence = Vec::new();
     let mut used_resources = BTreeSet::new();
+    let mut merge = Merge {
+        clips: Vec::new(),
+        actions: BTreeMap::new(),
+    };
     for action in &plan.actions {
         let node = *nodes
             .get(&action.name)
@@ -378,12 +494,19 @@ pub fn prepare(
                     .all(|(a, b)| a.weight == b.weight),
             "Named action weighted variants differ"
         );
-        let library =
-            event::Library::selected(native, &witness.choices.iter().map(|c| c.tag).collect())?;
+        let library = event::Library::selected(
+            native,
+            &witness
+                .choices
+                .iter()
+                .map(|c| c.clip())
+                .collect::<Result<_>>()?,
+        )?;
         let mut weights = Vec::new();
         for (choice, template) in action.choices.iter().zip(witness.choices) {
             let original = source.read(choice.clip)?;
-            let counterpart = native.tag(template.tag, Some(0x80808F49))?;
+            let witness_clip = template.clip()?;
+            let counterpart = native.tag(witness_clip, Some(0x80808F49))?;
             ensure!(
                 usize::from(original.u8(0x12A)?) == rig.bind.len()
                     && usize::from(original.u8(0x12B)?) == rig.defaults.len()
@@ -459,7 +582,7 @@ pub fn prepare(
             let symbol = format!("{prefix}-clip-{index}");
             additions.push(bank::Addition {
                 descriptor: template.descriptor,
-                template: template.tag,
+                template: witness_clip,
                 clip: 0x7D000000u32
                     .checked_add(u32::try_from(index)?)
                     .context("Ability clip identity overflow")?,
@@ -467,8 +590,21 @@ pub fn prepare(
             });
             weights.push((native_descriptors.len() + index, choice.weight));
             descriptors.push(source_bank.bytes::<8>(sr + 16)?);
+            merge.clips.push(MergeClip {
+                symbol: symbol.clone(),
+                template: witness_clip,
+                descriptor: template.descriptor,
+                duration: source_bank.f32(sr + 20)?,
+                policy: source_bank.bytes::<8>(sr + 16)?,
+            });
+            merge
+                .actions
+                .entry(action.name)
+                .or_insert_with(|| (private_actions[&action.name], Vec::new()))
+                .1
+                .push((index, choice.weight));
             evidence.push(
-                json!({"action":action.name,"source_clip":choice.clip,"native_witness":template.tag,
+                json!({"action":action.name,"source_clip":choice.clip,"native_witness":witness_clip,
                 "source_sha256":digest(&original),"native_witness_sha256":digest(&counterpart),
                 "marker_translation":marker_evidence,"conversion":report}),
             );
@@ -572,6 +708,7 @@ pub fn prepare(
         assets,
         bindings,
         actions: private_actions,
+        merge,
         roots,
         owners: BTreeMap::from([
             (target.lookup, digest(&lookup)),

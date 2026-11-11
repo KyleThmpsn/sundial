@@ -212,4 +212,19 @@ pub(super) const FIELDS: &[Field] = &[
         kind: Kind::Bool(false),
         help: "Writes the installed package keys to Sunrise\\exports\\package_keys.bin at startup for Sunrise Studio.",
     },
+    // Settings schema 19 holds the same switch here, beside the tag definitions export.
+    Field {
+        path: "/client/exports/package_keys",
+        label: "Export Package Keys",
+        group: "Advanced Runtime",
+        kind: Kind::Bool(false),
+        help: "Writes the installed package keys to Sunrise\\exports\\package_keys.bin at startup for Sunrise Studio.",
+    },
+    Field {
+        path: "/client/exports/tag_definitions",
+        label: "Export Tag Definitions",
+        group: "Advanced Runtime",
+        kind: Kind::Bool(false),
+        help: "Writes the game's tag definitions to a tagdefs-raw JSON file in Sunrise\\exports at startup for Sunrise Studio.",
+    },
 ];

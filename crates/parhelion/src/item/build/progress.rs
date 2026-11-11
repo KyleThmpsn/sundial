@@ -77,6 +77,14 @@ impl<'a> Progress<'a> {
         self.emit("", Instant::now(), Some(BuildActivity::Diagnostic(message)));
     }
 
+    pub(in crate::item) fn runtime_detail(&mut self, message: String) {
+        self.emit(
+            "",
+            Instant::now(),
+            Some(BuildActivity::RuntimeDetail(message)),
+        );
+    }
+
     pub(in crate::item) fn step<T>(
         &mut self,
         label: &str,

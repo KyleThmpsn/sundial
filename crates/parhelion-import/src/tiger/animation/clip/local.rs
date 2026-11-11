@@ -38,6 +38,15 @@ impl Local {
         })
     }
 
+    /// The control's default local pose, its rest.
+    pub(super) fn rest(&self, slot: usize) -> Result<[f32; 8]> {
+        Ok(self
+            .defaults
+            .get(slot)
+            .context("Clip default control slot")?
+            .0)
+    }
+
     pub(super) fn encode(&self, slot: usize, value: [f32; 8]) -> Result<[f32; 8]> {
         let pose = Pose::checked(value)?;
         if !self.additive {

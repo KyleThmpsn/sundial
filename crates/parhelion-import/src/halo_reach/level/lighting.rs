@@ -112,8 +112,8 @@ pub(super) fn materials(cache: &Cache, level: &mut Level) -> Result<BTreeMap<u32
     let mut lights = BTreeMap::new();
     let mut selected = BTreeMap::new();
     for primitive in &mut level.primitives {
-        // Model placements have no structure subpart ID. Sky zero is the current static
-        // adaptation until object cluster/probe selection is translated.
+        // Scenery probes and structure subparts keep their source selection. Other model
+        // placements still use sky zero until their spatial probe lookup is translated.
         let identifier = primitive.analytical_light.unwrap_or(SKY);
         let key = (primitive.material, identifier);
         let material = match variants.get(&key) {

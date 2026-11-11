@@ -227,7 +227,7 @@ pub(super) fn create_integrity_checked_snapshot(
             })?;
         validate_integrity(&source, "the current investment.sqlite3")?;
         source
-            .backup(MAIN_DB, backup, None)
+            .backup(MAIN_DB, backup, rusqlite::backup::NO_PROGRESS)
             .map_err(|error| SqliteAccountError::sqlite("create a recovery snapshot of", error))?;
         let snapshot = Connection::open_with_flags(backup, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| SqliteAccountError::sqlite("open a recovery snapshot for", error))?;
@@ -291,7 +291,7 @@ fn create_verified_backup(
             .busy_timeout(Duration::from_secs(2))
             .map_err(|error| SqliteAccountError::sqlite("configure a backup source for", error))?;
         source
-            .backup(MAIN_DB, backup, None)
+            .backup(MAIN_DB, backup, rusqlite::backup::NO_PROGRESS)
             .map_err(|error| SqliteAccountError::sqlite("create a verified backup of", error))?;
         let loaded = document::load(backup)?;
         let SqliteAccountDocumentLoad::Loaded(loaded) = loaded else {
@@ -357,7 +357,6 @@ pub(super) fn rows(
         .map_err(|error| SqliteAccountError::sqlite("preserve native rows from", error))?;
     let names = statement
         .column_names()
-        .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let mapped = statement
@@ -374,14 +373,35 @@ pub(super) fn rows(
         .map_err(|error| SqliteAccountError::sqlite("preserve native rows from", error))
 }
 
-pub(super) fn matching(rows: &[NativeRow], keys: &[(&str, i64)]) -> NativeRow {
-    rows.iter()
-        .find(|row| {
-            keys.iter()
-                .all(|(key, value)| row.get(*key) == Some(&super::snapshot::Cell::Integer(*value)))
-        })
-        .cloned()
-        .unwrap_or_default()
+/// Preserved rows by the integer columns that name them. An account holds thousands of items and
+/// sockets and each written row looks up the one it replaces, so a save indexes the rows once
+/// instead of searching them per row. Of rows that share a key, the first stands.
+pub(super) struct Preserved<'a>(std::collections::BTreeMap<Vec<i64>, &'a NativeRow>);
+
+impl<'a> Preserved<'a> {
+    pub(super) fn new(rows: &'a [NativeRow], columns: &[&str]) -> Self {
+        let mut index = std::collections::BTreeMap::new();
+        for row in rows {
+            let key = columns
+                .iter()
+                .map(|column| match row.get(*column) {
+                    Some(super::snapshot::Cell::Integer(value)) => Some(*value),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(key) = key {
+                index.entry(key).or_insert(row);
+            }
+        }
+        Self(index)
+    }
+
+    /// The row whose columns hold `key`, in the order they were named, or an empty row.
+    pub(super) fn get(&self, key: &[i64]) -> NativeRow {
+        self.0
+            .get(key)
+            .map_or_else(NativeRow::default, |row| (*row).clone())
+    }
 }
 
 pub(super) fn put(row: &mut NativeRow, name: &str, value: impl Into<rusqlite::types::Value>) {

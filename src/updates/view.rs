@@ -27,7 +27,7 @@ impl UpdateCheck {
     ) -> Action {
         if matches!(
             self.install,
-            InstallState::Downloading | InstallState::Preparing
+            InstallState::Downloading | InstallState::Canceling | InstallState::Preparing
         ) {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -40,6 +40,7 @@ impl UpdateCheck {
         let mut open = true;
         let mut download = false;
         let mut cancel_restart = false;
+        let mut cancel_download = false;
         let mut action = Action::None;
         // Wide enough that a note reads in a line or two, and tall enough for a screen of them,
         // while still fitting Sundial's smallest window.
@@ -112,9 +113,11 @@ impl UpdateCheck {
                         } else {
                             "Downloading the update…"
                         });
-                        if ui.button("Cancel Download").clicked() {
-                            self.progress.cancel.store(true, Ordering::Relaxed);
-                        }
+                        cancel_download = ui.button("Cancel Download").clicked();
+                    }
+                    InstallState::Canceling => {
+                        ui.spinner();
+                        ui.label("Stopping the download…");
                     }
                     InstallState::Ready(_) => {
                         ui.label("The update is downloaded and verified.");
@@ -154,6 +157,11 @@ impl UpdateCheck {
         if cancel_restart {
             self.install = InstallState::Idle;
             action = Action::None;
+        }
+        // The worker may still be blocked in a read. Keep its receiver until cleanup can finish.
+        if cancel_download && matches!(self.install, InstallState::Downloading) {
+            self.progress.cancel.store(true, Ordering::Relaxed);
+            self.install = InstallState::Canceling;
         }
         if !open && matches!(self.install, InstallState::Waiting(_)) {
             self.install = InstallState::Idle;

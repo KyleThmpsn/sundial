@@ -203,6 +203,17 @@ impl Graph<'_> {
                     );
                 }
             }
+            "hclGatherSomeVerticesOperator" => {
+                let input = self.vertices(&v["inputBufferIdx"])?;
+                let output = self.vertices(&v["outputBufferIdx"])?;
+                for pair in array(&v["vertexPairs"])? {
+                    ensure!(
+                        integer(&pair["indexInput"])? < input
+                            && integer(&pair["indexOutput"])? < output,
+                        "Cloth gather pair exceeds its vertex buffers"
+                    );
+                }
+            }
             "hclUpdateSomeVertexFramesOperator" => {
                 let count = self.vertices(&v["bufferIdx"])?;
                 // This source profile reconstructs tangents from selected vertices.
@@ -242,6 +253,36 @@ impl Graph<'_> {
                     );
                 }
             }
+            "hclUpdateAllVertexFramesOperator" => {
+                let count = self.vertices(&v["bufferIdx"])?;
+                // Shadowkeep's tangent pass at RVA 225350 walks every vertex of the buffer and
+                // reads one reference vertex, cosine and sine per vertex without checking the
+                // array lengths. The normal and bitangent passes read the other arrays.
+                ensure!(
+                    v["updateNormals"] == 0
+                        && v["updateTangents"] == 1
+                        && v["updateBiTangents"] == 0
+                        && v["numUniqueNormalIDs"] == 0,
+                    "Cloth frame reconstruction requires a separate native contract"
+                );
+                for field in ["vertToNormalID", "triangleFlips", "biTangentFlip"] {
+                    ensure!(
+                        array(&v[field])?.is_empty(),
+                        "Unsupported cloth frame array {field}"
+                    );
+                }
+                for field in [
+                    "referenceVertices",
+                    "tangentEdgeCosAngle",
+                    "tangentEdgeSinAngle",
+                ] {
+                    ensure!(
+                        array(&v[field])?.len() == count,
+                        "Cloth tangent arrays differ from their buffer"
+                    );
+                }
+                indices(&v["referenceVertices"], count)?;
+            }
             "hclObjectSpaceMeshMeshDeformPOperator" => {
                 let input = self.buffer(&v["inputBufferIdx"])?;
                 let output = self.vertices(&v["outputBufferIdx"])?;
@@ -268,7 +309,9 @@ impl Graph<'_> {
         }
         Ok(())
     }
-    fn validate_simulation(&self, sim: &Value) -> Result<Option<usize>> {
+    /// The simulation's transition constraint sets, by constraint index. A game role names the
+    /// one it switches through when a simulation holds several.
+    fn validate_simulation(&self, sim: &Value) -> Result<Vec<usize>> {
         let particles = array(&sim["particleDatas"])?;
         ensure!(
             !particles.is_empty() && particles.len() <= 65535,
@@ -323,7 +366,7 @@ impl Graph<'_> {
                 "Cloth pose length differs"
             );
         }
-        let mut transition = None;
+        let mut transitions = Vec::new();
         for (index, reference) in array(&sim["staticConstraintSets"])?.iter().enumerate() {
             let constraint = object(self.objects, reference)?;
             let v = &constraint.value;
@@ -363,10 +406,7 @@ impl Graph<'_> {
                     }
                 }
                 "hclTransitionConstraintSet" => {
-                    ensure!(
-                        transition.replace(index).is_none(),
-                        "Multiple cloth transition constraints are ambiguous"
-                    );
+                    transitions.push(index);
                     let count = self.vertices(&v["referenceMeshBufferIdx"])?;
                     let mut seen = BTreeSet::new();
                     for row in array(&v["perParticleData"])? {
@@ -414,7 +454,7 @@ impl Graph<'_> {
                 _ => anyhow::bail!("Unsupported cloth constraint {}", constraint.name),
             }
         }
-        Ok(transition)
+        Ok(transitions)
     }
 }
 
@@ -454,6 +494,7 @@ pub(super) fn graph(objects: &BTreeMap<usize, Object>) -> Result<Value> {
             "Unsupported cloth transform set"
         );
     }
+    let displays = definitions.iter().filter(|d| d.value["type"] == 4).count();
     for definition in &definitions {
         let buffer = &definition.value;
         let vertices = integer(&buffer["numVertices"])?;
@@ -477,9 +518,12 @@ pub(super) fn graph(objects: &BTreeMap<usize, Object>) -> Result<Value> {
                     "Cloth simulation buffer topology differs"
                 );
             }
+            // A display buffer's subtype numbers its display mesh within a detail level, as
+            // Rise of Iron's multi-piece cloth shows: 0, 1 and 2 at each of two levels. The model
+            // binds display buffers by buffer index, so the subtype only has to be in range.
             4 => ensure!(
-                buffer["subType"] == 0,
-                "Unsupported cloth display buffer subtype"
+                integer(&buffer["subType"])? < displays,
+                "Cloth display buffer subtype exceeds its display buffers"
             ),
             6 => {
                 let triangles = array(&buffer["triangleIndices"])?;
@@ -513,10 +557,10 @@ pub(super) fn graph(objects: &BTreeMap<usize, Object>) -> Result<Value> {
         for t in array(&state["usedTransformSets"])? {
             graph.transform_count(&t["transformSetIndex"])?;
         }
-        let constraints = array(&state["usedSimCloths"])?
-            .iter()
-            .map(|i| Ok(transitions[integer(i)?]))
-            .collect::<Result<BTreeSet<_>>>()?;
+        let mut constraints = BTreeSet::new();
+        for i in array(&state["usedSimCloths"])? {
+            constraints.extend(transitions[integer(i)?].iter().copied());
+        }
         states.push(json!({"name":state["name"],"transition_constraints":constraints}));
     }
     Ok(json!({"states":states,

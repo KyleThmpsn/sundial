@@ -1,14 +1,19 @@
 use crate::progression::begin_array_block;
 use crate::progression::presentation::*;
 mod custom;
+mod mark;
 mod membership;
-pub(crate) use custom::append_custom_badges;
+mod root;
+pub(crate) use custom::{append_custom_badges, append_source_badges};
+pub(crate) use mark::artwork as mark;
 pub(crate) use membership::set_sunrise_members;
+pub(crate) use root::arrange as arrange_root;
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::mem::size_of;
 
+use sundial::package_authoring::mod_content::Importer;
 use sundial::package_authoring::{
     investment_schema::{
         ITEM_ICON_CONTAINER_OFFSET, ITEM_ICON_ROW_CLASS, ITEM_ICON_ROW_SIZE,
@@ -67,8 +72,12 @@ const RECORD_STRING_POINTER_FIELDS: [usize; 2] = [0x48, 0x58];
 const ACE_BADGE_RECORD_HASHES: [u32; 4] = [0x6984_793E, 0x4BB4_68ED, 0x4D7F_9B2B, 0x6756_8088];
 const SUNRISE_BADGE_RECORD_HASHES: [u32; 4] = [0x5355_5252, 0x5355_5254, 0x5355_5248, 0x5355_5257];
 
-const OBJECTIVE_POINTER_FIELDS: [usize; 3] = [0x08, 0x38, 0x48];
-const STOCK_OBJECTIVE_COUNT: usize = 8_483;
+/// The arrays an objective row owns: its programs at `+0x08`, `+0x18` and `+0x38` and its perk
+/// flags at `+0x48`. Rows inserted before the arrays move every one of them.
+const OBJECTIVE_POINTER_FIELDS: [usize; 4] = [0x08, 0x18, 0x38, 0x48];
+/// The program an objective's text row owns at `+0x30`.
+const OBJECTIVE_STRING_POINTER_FIELDS: [usize; 1] = [0x30];
+pub(crate) const STOCK_OBJECTIVE_COUNT: usize = 8_483;
 const STOCK_BADGES_ROOT_COMPLETION_VALUE: i32 = 19;
 const BADGES_ROOT_ACCOUNT_VALUE_INDEX: u16 = 3_824;
 const BADGES_ROOT_CHARACTER_VALUE_INDEX: u16 = 3_825;
@@ -88,6 +97,97 @@ pub(crate) const SUNRISE_BADGE_DESCRIPTION: &str =
     "Artifacts forged from a future written outside the lines.";
 const SUNRISE_CLASS_FLAG_OPERANDS: [u16; 3] = [0x108, 0xEF, 0x10F];
 
+/// The badge a build's mod adds. The main mod's badge keeps the Project Sunrise identity, and an
+/// importer's takes one derived from its mod ID, so each mod's badge holds its own rows, strings
+/// and icon whichever mods load beside it.
+#[derive(Clone, Copy)]
+pub(crate) struct Identity {
+    pub node_hashes: [u32; 4],
+    pub record_hashes: [u32; 4],
+    pub objective_hash: u32,
+    pub name_hash: u32,
+    pub description_hash: u32,
+    pub icon_key: u32,
+}
+
+impl Identity {
+    const SUNRISE: Self = Self {
+        node_hashes: SUNRISE_BADGE_NODE_HASHES,
+        record_hashes: SUNRISE_BADGE_RECORD_HASHES,
+        objective_hash: SUNRISE_BADGE_OBJECTIVE_HASH,
+        name_hash: SUNRISE_BADGE_NAME_HASH,
+        description_hash: SUNRISE_BADGE_DESCRIPTION_HASH,
+        icon_key: SUNRISE_BADGE_ICON_KEY,
+    };
+
+    /// The badge of the family member the build is compiling.
+    pub(crate) fn current() -> Self {
+        crate::package_profile::member().map_or(Self::SUNRISE, Self::importer)
+    }
+
+    /// The badge of `importer`'s items, in its own mod or in one mod for every source.
+    pub(crate) fn importer(importer: Importer) -> Self {
+        let namespace = format!("badge/{}", importer.id());
+        let hash = |field: &str| crate::presentation::text_hash(&namespace, field);
+        Self {
+            node_hashes: ["group", "titan", "hunter", "warlock"].map(hash),
+            record_hashes: [
+                "record/group",
+                "record/titan",
+                "record/hunter",
+                "record/warlock",
+            ]
+            .map(hash),
+            objective_hash: hash("objective"),
+            name_hash: hash("name"),
+            description_hash: hash("description"),
+            icon_key: hash("icon"),
+        }
+    }
+}
+
+/// The name and description of the badge the build is compiling: the runtime's for the main mod,
+/// and an importer's source game for an importer.
+pub(crate) fn text(branding: crate::branding::Branding) -> (&'static str, &'static str) {
+    match crate::package_profile::member() {
+        None => (branding.name(), branding.description()),
+        Some(importer) => source_text(importer),
+    }
+}
+
+/// The name and description of `importer`'s badge.
+pub(crate) fn source_text(importer: Importer) -> (&'static str, &'static str) {
+    match importer {
+        Importer::HaloReach => ("Halo: Reach", "Items brought over from Halo: Reach."),
+        Importer::D2Mot => (
+            "Destiny 2: Monument of Triumph",
+            "Items brought over from Destiny 2: Monument of Triumph.",
+        ),
+        Importer::Marathon => ("Marathon", "Items brought over from Marathon."),
+        Importer::D1Roi => (
+            "Destiny 1: Rise of Iron",
+            "Items brought over from Destiny 1: Rise of Iron.",
+        ),
+    }
+}
+
+/// The source badge `weapon`'s item joins in the main mod: in a build without mod folders, where
+/// one mod holds every source's items, and for an importer that builds with the main mod. An
+/// importer in its own mod gives its items that mod's badge.
+pub(crate) fn source_badge(weapon: &crate::item::WeaponCloneSpec) -> Option<Importer> {
+    if weapon.joins_sunrise_badge() {
+        crate::mod_family::build::source_of(weapon)
+    } else {
+        None
+    }
+}
+
+/// Whether `weapon`'s item joins the badge of the mod it builds in: Project Sunrise for the main
+/// mod and the importer's own badge for an importer's mod.
+pub(crate) fn joins_own_badge(weapon: &crate::item::WeaponCloneSpec) -> bool {
+    weapon.joins_sunrise_badge() && crate::mod_family::build::source_of(weapon).is_none()
+}
+
 #[derive(Clone, Copy)]
 struct Layout {
     node_start: usize,
@@ -100,17 +200,27 @@ struct Layout {
     description_hash: u32,
 }
 impl Layout {
-    fn sunrise() -> Self {
+    /// The badge after the stock rows, as each member's build adds it against stock.
+    fn of(identity: Identity) -> Self {
         Self {
             node_start: STOCK_PRESENTATION_NODE_COUNT,
             record_start: STOCK_RECORD_COUNT,
             objective_start: STOCK_OBJECTIVE_COUNT,
-            node_hashes: SUNRISE_BADGE_NODE_HASHES,
-            record_hashes: SUNRISE_BADGE_RECORD_HASHES,
-            objective_hash: SUNRISE_BADGE_OBJECTIVE_HASH,
-            name_hash: SUNRISE_BADGE_NAME_HASH,
-            description_hash: SUNRISE_BADGE_DESCRIPTION_HASH,
+            node_hashes: identity.node_hashes,
+            record_hashes: identity.record_hashes,
+            objective_hash: identity.objective_hash,
+            name_hash: identity.name_hash,
+            description_hash: identity.description_hash,
         }
+    }
+
+    #[cfg(test)]
+    fn sunrise() -> Self {
+        Self::of(Identity::SUNRISE)
+    }
+
+    fn current() -> Self {
+        Self::of(Identity::current())
     }
 }
 
@@ -130,9 +240,9 @@ pub(crate) struct SunriseBadgePlacement {
     pub classes: crate::collection::Classes,
     pub donor_collectible_index: usize,
     pub authored_collectible_index: usize,
-    pub authored_unlock_index: u16,
-    /// Whether the entry goes before the stock entries of the pages it joins.
-    pub first: bool,
+    pub acquisition: crate::progression::Acquisition,
+    /// Where the entry goes among the stock entries of the pages it joins.
+    pub position: Option<crate::collection::Position>,
 }
 
 pub(crate) struct SunriseBadgeGraph {
@@ -178,7 +288,8 @@ pub(crate) fn append_badge_icon_row(
     mut icons: Vec<u8>,
     container_tag: TagHash,
 ) -> AuthoringResult<(Vec<u8>, u16)> {
-    let donor_container = validate_lunar_badge_icon_donor(&icons)?;
+    let icon_key = Identity::current().icon_key;
+    let donor_container = validate_lunar_badge_icon_donor(&icons, icon_key)?;
     let (count, header, rows, class) = array_at(&icons, 8)?;
     let rows_end = rows
         .checked_add(
@@ -192,13 +303,7 @@ pub(crate) fn append_badge_icon_row(
         || rows_end != icons.len()
         || !is_valid_package_tag(container_tag)
         || container_tag == donor_container
-        || contains_u32_row_key(
-            &icons,
-            rows,
-            count,
-            ITEM_ICON_ROW_SIZE,
-            SUNRISE_BADGE_ICON_KEY,
-        )?
+        || contains_u32_row_key(&icons, rows, count, ITEM_ICON_ROW_SIZE, icon_key)?
     {
         return Err(invalid(
             "Sunrise badge icon row cannot be appended to the installed item-icon table",
@@ -207,7 +312,7 @@ pub(crate) fn append_badge_icon_row(
     let donor = rows + LUNAR_BADGE_ICON_ROW_INDEX * ITEM_ICON_ROW_SIZE;
     let template = icons[donor..donor + ITEM_ICON_ROW_SIZE].to_vec();
     icons.extend_from_slice(&template);
-    write_u32(&mut icons, rows_end, SUNRISE_BADGE_ICON_KEY)?;
+    write_u32(&mut icons, rows_end, icon_key)?;
     write_u32(
         &mut icons,
         rows_end + ITEM_ICON_CONTAINER_OFFSET,
@@ -222,7 +327,7 @@ pub(crate) fn append_badge_icon_row(
 pub(crate) fn author_sunrise_badge_graph(
     input: SunriseBadgeGraphInput<'_>,
 ) -> AuthoringResult<SunriseBadgeGraph> {
-    author_graph(input, &Layout::sunrise())
+    author_graph(input, &Layout::current())
 }
 
 fn author_graph(
@@ -244,15 +349,15 @@ fn author_graph(
     let first = placements
         .first()
         .ok_or_else(|| invalid("Project Sunrise requires at least one authored collectible"))?;
-    let unlock_indices = placements
+    let acquisitions = placements
         .iter()
-        .map(|placement| placement.authored_unlock_index)
+        .map(|placement| placement.acquisition)
         .collect::<Vec<_>>();
     let (objectives, objective_strings, objective_index) = append_objective(
         stock_objectives,
         stock_objective_strings,
         shared_expression_pools,
-        &unlock_indices,
+        &acquisitions,
         localization_table_index,
         layout,
     )?;
@@ -282,14 +387,36 @@ fn author_graph(
                 .iter()
                 .filter(|&page| usize::from(page) < STOCK_PRESENTATION_NODE_COUNT)
             {
-                pages.entry((page, placement.first)).or_default().push((
+                let lead = crate::collection::leads(
+                    placement.position,
+                    usize::from(page),
+                    PRESENTATION_NODE_COLLECTIBLES_OFFSET,
+                );
+                pages.entry((page, lead)).or_default().push((
                     placement.donor_collectible_index,
                     placement.authored_collectible_index,
                 ));
             }
         }
-        for ((page, first), members) in pages {
-            add_collectible_children_to_node(&mut nodes, usize::from(page), &members, first)?;
+        // Every row copies its donor's stock row before any is written, since an importer's
+        // entries placed first take stock rows (`collection::front`). Those go in before any
+        // placed after the stock entries, so the family reads each page's stock count from its
+        // length.
+        let groups = pages
+            .into_iter()
+            .map(|((page, first), members)| {
+                let page = usize::from(page);
+                let rows = crate::collection::front::donor_rows(&nodes, page, &members)?;
+                Ok((page, first, rows))
+            })
+            .collect::<AuthoringResult<Vec<_>>>()?;
+        let (first, after): (Vec<_>, Vec<_>) = groups.into_iter().partition(|(_, first, _)| *first);
+        for (page, _, rows) in first {
+            crate::collection::front::place_first(&mut nodes, page, &rows)?;
+        }
+        for (page, _, rows) in after {
+            let (_, existing) = collectible_children(&nodes, page)?;
+            insert_collectible_children(&mut nodes, page, existing.len(), &rows)?;
         }
     }
     let node_strings = append_strings(
@@ -310,16 +437,47 @@ fn author_graph(
     Ok(graph)
 }
 
-/// Extends the stock badge-root objective with an acquired-all term for each authored badge.
+/// The badges a member's build adds for `weapons`: its own badge when any of them has a
+/// Collections entry, one for each custom badge name those items use, and in a build without mod
+/// folders one for each importer whose items join a source badge (`append_source_badges`).
+pub(crate) fn count<'a>(
+    weapons: impl IntoIterator<Item = &'a crate::item::WeaponCloneSpec>,
+) -> usize {
+    let collected = weapons
+        .into_iter()
+        .filter(|weapon| weapon.has_collections())
+        .collect::<Vec<_>>();
+    if collected.is_empty() {
+        return 0;
+    }
+    let custom = collected
+        .iter()
+        .filter_map(|weapon| weapon.overrides.badge.as_ref())
+        .map(|badge| badge.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let sources = collected
+        .iter()
+        .filter_map(|weapon| source_badge(weapon))
+        .collect::<BTreeSet<_>>();
+    1 + custom.len() + sources.len()
+}
+
+/// Extends the stock badge-root objective with an acquired-all term for each badge in `groups`
+/// and raises its target by as many. `children` is how many of those badges this build adds to
+/// the root itself.
 ///
 /// The stock root reads its persisted account/character badge totals. Project Sunrise has no
 /// native persisted objective-value slot, so its contribution is the conjunction of every
-/// authored collection unlock: zero until the badge is complete, then one.
+/// authored collection unlock: zero until the badge is complete, then one. A badge with no unlocks
+/// is always complete and counts as a constant one. Built items are always acquired, so every
+/// build counts its badges this way, and the main mod on Sunrise's mod loader counts every family
+/// member's badges, its own and the importers'.
 pub(crate) fn patch_badge_objectives(
     mut objectives: Vec<u8>,
     nodes: &[u8],
     shared_expression_pools: &[u8],
     groups: &[Vec<u16>],
+    children: usize,
 ) -> AuthoringResult<Vec<u8>> {
     for authored_unlock_indices in groups {
         if authored_unlock_indices
@@ -350,13 +508,28 @@ pub(crate) fn patch_badge_objectives(
     {
         return Err(invalid("The stock badge-root objective link changed"));
     }
-    let (child_count, _, _, child_class) =
+    // On Sunrise's mod loader the main mod's root also keeps the stock rows an importer's badge
+    // takes, so only the rows naming badges this build added are counted.
+    let (child_count, _, child_rows, child_class) =
         array_at(nodes, root_node + PRESENTATION_NODE_CHILD_NODES_OFFSET)?;
+    let authored_children = (0..child_count)
+        .map(|position| {
+            read_u16(
+                nodes,
+                child_rows + position * PRESENTATION_NODE_CHILD_NODE_ROW_SIZE,
+            )
+        })
+        .collect::<AuthoringResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|child| usize::from(*child) >= STOCK_PRESENTATION_NODE_COUNT)
+        .count();
     if child_class != PRESENTATION_NODE_CHILD_NODE_ROW_CLASS
-        || child_count != STOCK_BADGES_ROOT_COMPLETION_VALUE as usize + groups.len()
+        || child_count < STOCK_BADGES_ROOT_COMPLETION_VALUE as usize + children
+        || authored_children != children
+        || children > groups.len()
     {
         return Err(invalid(
-            "The badge root does not contain exactly one authored badge child",
+            "The badge root does not hold one child for each badge this build adds",
         ));
     }
 
@@ -451,7 +624,7 @@ pub(crate) fn patch_badge_objectives(
     Ok(objectives)
 }
 
-fn validate_lunar_badge_icon_donor(icons: &[u8]) -> AuthoringResult<TagHash> {
+fn validate_lunar_badge_icon_donor(icons: &[u8], icon_key: u32) -> AuthoringResult<TagHash> {
     let (count, _, rows, class) = array_at(icons, 8)?;
     if class != ITEM_ICON_ROW_CLASS
         || count != STOCK_ITEM_ICON_COUNT
@@ -460,13 +633,7 @@ fn validate_lunar_badge_icon_donor(icons: &[u8]) -> AuthoringResult<TagHash> {
             icons,
             rows + LUNAR_BADGE_ICON_ROW_INDEX * ITEM_ICON_ROW_SIZE,
         )? != LUNAR_BADGE_ICON_KEY
-        || contains_u32_row_key(
-            icons,
-            rows,
-            count,
-            ITEM_ICON_ROW_SIZE,
-            SUNRISE_BADGE_ICON_KEY,
-        )?
+        || contains_u32_row_key(icons, rows, count, ITEM_ICON_ROW_SIZE, icon_key)?
     {
         return Err(invalid(
             "Sunrise badge icon authoring requires the audited 15,725-row icon table and Lunar donor",
@@ -550,11 +717,10 @@ fn append_nodes(
     for index in 0..node_count {
         let row = node_rows + index * PRESENTATION_NODE_ROW_SIZE;
         for field in PRESENTATION_NODE_POINTER_FIELDS {
-            if read_u64(&nodes, row + field)? != 0 {
-                let header = relative_target(&nodes, row + field + 8)?;
-                if header >= rows_end {
-                    top_level_headers.insert(header);
-                }
+            if let Some(header) = crate::tag_payload::nested_header(&nodes, row + field, rows_end)?
+                && header >= rows_end
+            {
+                top_level_headers.insert(header);
             }
         }
     }
@@ -564,10 +730,10 @@ fn append_nodes(
         let row = node_rows + template_index * PRESENTATION_NODE_ROW_SIZE;
         let mut clones = Vec::new();
         for field in PRESENTATION_NODE_POINTER_FIELDS {
-            if read_u64(&nodes, row + field)? == 0 {
+            let Some(header) = crate::tag_payload::nested_header(&nodes, row + field, rows_end)?
+            else {
                 continue;
-            }
-            let header = relative_target(&nodes, row + field + 8)?;
+            };
             if header < rows_end {
                 return Err(invalid(
                     "Ace presentation template has a nonempty array inside fixed rows",
@@ -594,10 +760,10 @@ fn append_nodes(
     for index in 0..node_count {
         let row = node_rows + index * PRESENTATION_NODE_ROW_SIZE;
         for field in PRESENTATION_NODE_POINTER_FIELDS {
-            if read_u64(&nodes, row + field)? == 0 {
+            let Some(target) = crate::tag_payload::nested_header(&nodes, row + field, rows_end)?
+            else {
                 continue;
-            }
-            let target = relative_target(&nodes, row + field + 8)?;
+            };
             if target < rows_end {
                 return Err(invalid(
                     "Presentation-node nested array unexpectedly targets fixed rows",
@@ -689,13 +855,8 @@ fn append_nodes(
         )?;
     }
 
-    append_presentation_node_child(
-        &mut nodes,
-        BADGES_ROOT_NODE_INDEX,
-        ACE_BADGE_GROUP_NODE_INDEX,
-        layout.node_start,
-        crate::collection::first(None),
-    )?;
+    // Each badge takes its place in the Badges root once the build has added them all
+    // (`arrange_root`).
     Ok(nodes)
 }
 
@@ -782,17 +943,17 @@ fn append_objective(
     objectives: Vec<u8>,
     objective_strings: Vec<u8>,
     shared_expression_pools: &[u8],
-    authored_unlock_indices: &[u16],
+    members: &[crate::progression::Acquisition],
     localization_table_index: u32,
     layout: &Layout,
 ) -> AuthoringResult<(Vec<u8>, Vec<u8>, u16)> {
-    if authored_unlock_indices
+    // A member acquired unconditionally counts through a constant 1, so the badge is complete
+    // whatever the account holds.
+    let flags = members
         .iter()
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .len()
-        != authored_unlock_indices.len()
-    {
+        .filter_map(|member| member.flag())
+        .collect::<Vec<_>>();
+    if flags.iter().copied().collect::<BTreeSet<_>>().len() != flags.len() {
         return Err(invalid(
             "Sunrise badge objective requires distinct authored unlock flags",
         ));
@@ -818,7 +979,7 @@ fn append_objective(
         layout.objective_start,
         OBJECTIVE_STRING_ROW_SIZE,
         OBJECTIVE_STRING_ROW_CLASS,
-        &[],
+        &OBJECTIVE_STRING_POINTER_FIELDS,
         &[],
         &template_indices,
         &template_hashes,
@@ -830,7 +991,7 @@ fn append_objective(
     let (_, _, string_rows, _) = array_at(&objective_strings, 8)?;
     let objective_row = objective_rows + layout.objective_start * OBJECTIVE_ROW_SIZE;
     let string_row = string_rows + layout.objective_start * OBJECTIVE_STRING_ROW_SIZE;
-    let completion = i32::try_from(authored_unlock_indices.len())
+    let completion = i32::try_from(members.len())
         .map_err(|_| invalid("Sunrise badge objective target does not fit i32"))?;
     write_i32(
         &mut objectives,
@@ -857,13 +1018,10 @@ fn append_objective(
         NUMERIC_ADD_INSTRUCTION,
         Some(u16::MAX),
     )?;
-    let mut instructions = Vec::with_capacity(authored_unlock_indices.len().saturating_mul(2));
-    for (position, flag) in authored_unlock_indices.iter().copied().enumerate() {
-        instructions.push(
-            flag_template
-                .with_semantics(NUMERIC_FLAG_INSTRUCTION, flag)
-                .serialized,
-        );
+    let mut instructions = Vec::with_capacity(members.len().saturating_mul(2));
+    for (position, member) in members.iter().enumerate() {
+        let (opcode, operand) = member.token();
+        instructions.push(flag_template.with_semantics(opcode, operand).serialized);
         if position != 0 {
             instructions.push(add_template.serialized);
         }

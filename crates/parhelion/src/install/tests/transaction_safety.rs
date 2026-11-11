@@ -140,11 +140,12 @@ fn installation_lock_covers_install_uninstall_and_recovery() {
     let _reacquired = lock_installation(&fixture.target).unwrap();
 }
 
+/// The second process of [`installation_lock_excludes_a_second_process`], which runs it by name.
 #[test]
+#[ignore = "runs only as the second process of installation_lock_excludes_a_second_process"]
 fn lock_probe_child() {
-    let Some(target) = std::env::var_os("PARHELION_LOCK_PROBE_TARGET") else {
-        return;
-    };
+    let target = std::env::var_os("PARHELION_LOCK_PROBE_TARGET")
+        .expect("PARHELION_LOCK_PROBE_TARGET names the locked installation");
     assert!(lock_installation(Path::new(&target)).is_err());
 }
 
@@ -152,16 +153,22 @@ fn lock_probe_child() {
 fn installation_lock_excludes_a_second_process() {
     let fixture = Fixture::new();
     let _lock = lock_installation(&fixture.target).unwrap();
-    let status = process::Command::new(std::env::current_exe().unwrap())
+    let output = process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "install::tests::transaction_safety::lock_probe_child",
+            "--ignored",
             "--nocapture",
         ])
         .env("PARHELION_LOCK_PROBE_TARGET", &fixture.target)
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success());
+    // A filter that matches nothing also exits successfully, so the child must report its run.
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && report.contains("1 passed"),
+        "{report}"
+    );
 }
 
 fn replace_then_fail(

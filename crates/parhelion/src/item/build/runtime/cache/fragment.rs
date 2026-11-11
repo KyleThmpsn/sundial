@@ -118,26 +118,28 @@ fn restore_group(
     Some((tags, references))
 }
 
-/// The animation assets the fragment added, keyed by their content at their new tags. A key the
-/// build already holds means a newly shared asset, which changes deduplication and group sizes,
-/// so that case recompiles.
+/// The animation assets the fragment added, keyed by their content at their new tags, with each
+/// stored key whose relocated content has another key. A key the build already holds means a
+/// newly shared asset, which changes deduplication and group sizes, so that case recompiles.
+#[allow(clippy::type_complexity)]
 fn restore_animation(
     manager: &PackageManager,
-    cached: &[((u32, Hash), u32)],
+    cached: &[(AnimationKey, u32)],
     (payloads, animation, moves): (
         &BTreeMap<u32, &NewTagSpec>,
         &AnimationCache,
         &BTreeMap<u32, u32>,
     ),
     reason: &mut Reason,
-) -> Option<AnimationCache> {
+) -> Option<(AnimationCache, Vec<(AnimationKey, AnimationKey)>)> {
     let mut restored = AnimationCache::new();
-    for ((class, _), old) in cached {
+    let mut renamed = Vec::new();
+    for (stored, old) in cached {
         let tag = payloads.get(old)?;
-        if manager.get_entry(tag.template_tag)?.reference != *class {
+        if manager.get_entry(tag.template_tag)?.reference != stored.0 {
             return None;
         }
-        let key = (*class, hash(&tag.payload));
+        let key = (stored.0, hash(&tag.payload));
         if animation.contains_key(&key) {
             *reason = Reason::SharedAnimationChanged;
             return None;
@@ -148,8 +150,11 @@ fn restore_animation(
         {
             return None;
         }
+        if key != *stored {
+            renamed.push((*stored, key));
+        }
     }
-    Some(restored)
+    Some((restored, renamed))
 }
 
 impl Pending<'_> {
@@ -265,8 +270,24 @@ impl Pending<'_> {
                 }
             }
         }
+        // The key holds each attachment group's prepared fingerprint. A directory that changed
+        // since then recompiles, which reports it as authoring would.
+        #[cfg(feature = "d2-model-importer")]
+        for (directory, expected) in &entry.attachments {
+            let actual = parhelion_import::d2_mot::native::attachment::fingerprint(directory)
+                .map_err(|_| Reason::ImportUnavailable(directory.clone()))?;
+            if actual != *expected {
+                return Err(Reason::ImportChanged(directory.clone()));
+            }
+        }
+        // Every member of a family build checks the same stock tags, so the turn keeps their
+        // digests by the package set they came from.
+        let source = self.identity.map(|identity| identity.source);
         for (tag, expected) in &entry.reads {
-            let known = self.verified.borrow().get(tag).copied();
+            let known =
+                self.verified.borrow().get(tag).copied().or_else(|| {
+                    source.and_then(|source| crate::turn_cache::tag_digest(source, *tag))
+                });
             let actual = match known {
                 Some(digest) => digest,
                 None => {
@@ -275,6 +296,9 @@ impl Pending<'_> {
                         .map_err(|_| Reason::NativeUnavailable(*tag))?;
                     let digest = hash(&payload);
                     self.verified.borrow_mut().insert(*tag, digest);
+                    if let Some(source) = source {
+                        crate::turn_cache::keep_tag_digest(source, *tag, digest);
+                    }
                     digest
                 }
             };
@@ -349,8 +373,16 @@ impl Pending<'_> {
             group_moves(group, &plan, &mut moves)?;
             plans.push(plan);
         }
+        // A dependency names its asset by the key the asset's own fragment stores. A replay that
+        // moved that asset gave it another key in this build.
+        let provenance = self.provenance.borrow();
         for (key, old) in &entry.dependencies {
-            let Some(current) = animation.get(key) else {
+            let current = animation.get(key).or_else(|| {
+                provenance
+                    .get(key)
+                    .and_then(|renamed| animation.get(renamed))
+            });
+            let Some(current) = current else {
                 *reason = Reason::SharedAnimationChanged;
                 return None;
             };
@@ -431,12 +463,23 @@ impl Pending<'_> {
                 )
                 .map(|(record, tag)| (record.assigned, tag))
                 .collect::<BTreeMap<_, _>>();
-            let restored_animation = restore_animation(
+            let (restored_animation, renamed) = restore_animation(
                 manager,
                 &entry.animation,
                 (&payloads, animation, &moves),
                 &mut reason,
             )?;
+            // A stored key another asset of this build already answers to would make the
+            // fragments that share it ambiguous.
+            {
+                let provenance = self.provenance.borrow();
+                if renamed.iter().any(|(stored, _)| {
+                    animation.contains_key(stored) || provenance.contains_key(stored)
+                }) {
+                    reason = Reason::SharedAnimationChanged;
+                    return None;
+                }
+            }
             let placed = entry
                 .placed
                 .iter()
@@ -453,6 +496,25 @@ impl Pending<'_> {
                 })
                 .collect::<Vec<_>>();
             let result = entry.result.map(|tag| TagHash(moved(tag)));
+            // The particle symbols are kept for the item the fragment was prepared for, which no
+            // other work of this build may have recorded yet.
+            #[cfg(feature = "d2-model-importer")]
+            let symbols = match (&entry.symbols, self.ordinal) {
+                (Some(symbols), Some(ordinal)) => {
+                    if assets.particle_symbols.contains_key(&ordinal) {
+                        return None;
+                    }
+                    Some((
+                        ordinal,
+                        symbols
+                            .iter()
+                            .map(|(symbol, tag)| (symbol.clone(), TagHash(moved(*tag))))
+                            .collect::<BTreeMap<_, _>>(),
+                    ))
+                }
+                (None, _) => None,
+                (Some(_), None) => return None,
+            };
             host.extend(restored_host);
             *assignments = restored_assignments;
             for (plan, (tags, references)) in plans.into_iter().zip(restored_groups) {
@@ -471,7 +533,15 @@ impl Pending<'_> {
             }
             assets.placed.extend(placed);
             assets.impacts.extend(impacts);
+            #[cfg(feature = "d2-model-importer")]
+            {
+                if let Some((ordinal, symbols)) = symbols {
+                    assets.particle_symbols.insert(ordinal, symbols);
+                }
+                assets.hud_statuses.extend(entry.statuses);
+            }
             animation.extend(restored_animation);
+            self.provenance.borrow_mut().extend(renamed);
             if let Ok(file) = File::options().write(true).open(&self.path) {
                 let _ = file.set_modified(std::time::SystemTime::now());
             }
@@ -488,6 +558,27 @@ impl Pending<'_> {
 
     pub(in crate::item::build::runtime) fn timings(&self) -> String {
         self.timings.borrow().to_string()
+    }
+
+    fn capture_assignment(
+        &self,
+        assignments: &[u8],
+        pattern: Option<u32>,
+    ) -> Option<Option<(u32, u32)>> {
+        let assignment = match pattern {
+            Some(pattern) => Some((
+                pattern,
+                weapon_entity_assignment(assignments, pattern).ok()??,
+            )),
+            None => None,
+        };
+        let expected = match assignment {
+            Some((pattern, tag)) => {
+                append_weapon_entity_assignment(self.assignments.clone(), pattern, tag).ok()?
+            }
+            None => self.assignments.clone(),
+        };
+        (expected == assignments).then_some(assignment)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -510,22 +601,7 @@ impl Pending<'_> {
             if result.is_some() != self.returns {
                 return None;
             }
-            let assignment = match pattern {
-                Some(pattern) => Some((
-                    pattern,
-                    weapon_entity_assignment(assignments, pattern).ok()??,
-                )),
-                None => None,
-            };
-            let expected = match assignment {
-                Some((pattern, tag)) => {
-                    append_weapon_entity_assignment(self.assignments.clone(), pattern, tag).ok()?
-                }
-                None => self.assignments.clone(),
-            };
-            if expected != assignments {
-                return None;
-            }
+            let assignment = self.capture_assignment(assignments, pattern)?;
             let size = self.size(host, assets)?;
             if size as u64 > ENTRY_LIMIT {
                 reason = Reason::TooLarge;
@@ -552,6 +628,20 @@ impl Pending<'_> {
                 .map(|tag| tag.0)
                 .collect::<Vec<_>>();
             let impacts = assets.impacts.get(self.impact_start..)?.to_vec();
+            #[cfg(feature = "d2-model-importer")]
+            let symbols = self
+                .ordinal
+                .and_then(|ordinal| assets.particle_symbols.get(&ordinal))
+                .map(|symbols| {
+                    symbols
+                        .iter()
+                        .map(|(symbol, tag)| (symbol.clone(), tag.0))
+                        .collect::<BTreeMap<_, _>>()
+                });
+            #[cfg(not(feature = "d2-model-importer"))]
+            let symbols: Option<BTreeMap<String, u32>> = None;
+            #[cfg(feature = "d2-model-importer")]
+            let statuses = assets.hud_statuses.get(self.status_start..)?.to_vec();
             let all = host
                 .iter()
                 .chain(groups.iter().flat_map(|group| &group.tags))
@@ -560,10 +650,18 @@ impl Pending<'_> {
             if owned.len() != all.len() {
                 return None;
             }
+            // Each shared asset by the key its own fragment stores, which a replay of that
+            // fragment finds again wherever it moves the asset.
+            let stored = self
+                .provenance
+                .borrow()
+                .iter()
+                .map(|(stored, current)| (*current, *stored))
+                .collect::<BTreeMap<_, _>>();
             let previous = self
                 .animation
                 .iter()
-                .map(|(key, tag)| (*tag, *key))
+                .map(|(key, tag)| (*tag, stored.get(key).copied().unwrap_or(*key)))
                 .collect::<BTreeMap<_, _>>();
             let mut dependencies = BTreeMap::new();
             let mut relocatable = all.iter().all(|tag| tag.fields.is_some());
@@ -600,6 +698,7 @@ impl Pending<'_> {
                 .chain(impacts.iter().filter_map(|impact| impact.responses))
                 .chain(entry_references)
                 .chain(loading_references)
+                .chain(symbols.iter().flat_map(|symbols| symbols.values().copied()))
             {
                 if owned.contains(&reference) {
                     continue;
@@ -626,6 +725,11 @@ impl Pending<'_> {
             self.verified
                 .borrow_mut()
                 .extend(reads.iter().map(|(tag, digest)| (*tag, *digest)));
+            if let Some(identity) = self.identity {
+                for (tag, digest) in &reads {
+                    crate::turn_cache::keep_tag_digest(identity.source, *tag, *digest);
+                }
+            }
             let entry = Entry {
                 identity: self.identity,
                 key: self.key,
@@ -643,6 +747,12 @@ impl Pending<'_> {
                 result,
                 #[cfg(feature = "d2-model-importer")]
                 inputs,
+                #[cfg(feature = "d2-model-importer")]
+                attachments: self.attachments.clone(),
+                #[cfg(feature = "d2-model-importer")]
+                symbols,
+                #[cfg(feature = "d2-model-importer")]
+                statuses,
             };
             Some((entry, bytes))
         })();

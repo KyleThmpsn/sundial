@@ -86,6 +86,7 @@ pub fn decompile(
         removal_key: ending.removal_key,
         native_trigger,
         native_removal: ending.native_removal,
+        subclass_damage_type: None,
         native: None,
         auxiliary: action.auxiliary.iter().map(NativeRecord::from).collect(),
         policy: policy_of(action),
@@ -102,6 +103,8 @@ pub fn decompile(
         ability_tunings: Vec::new(),
         ability_inputs: Vec::new(),
         ability_rows: Vec::new(),
+        ability_counterparts: Vec::new(),
+        allocated_entities: std::collections::BTreeSet::new(),
     };
     // Shape only. Stock actions can ship with unfilled references (Sidearm Targeting leaves
     // a Create Entity slot empty), and build readiness is the workbench's job.

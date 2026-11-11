@@ -73,6 +73,18 @@ fn fail(log: &mut ActivityLog, state: &mut State, message: String) {
     state.failures.push(message);
 }
 
+/// Where a reimport the review started has got.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Phase {
+    /// No reimport runs, and the review offers the pending recipes.
+    #[default]
+    Idle,
+    /// The next batch of `queue` waits for its source to be shown and read.
+    Queued,
+    /// The importer runs the front batch, whose outcome is collected next.
+    Importing,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     pub pending: Vec<Item>,
@@ -81,17 +93,21 @@ pub(super) struct State {
     /// The revisions of each recipe the review already offered.
     seen: BTreeMap<PathBuf, BTreeSet<u32>>,
     queue: VecDeque<(Source, Vec<Item>)>,
-    active: bool,
-    importing: bool,
+    phase: Phase,
     added: usize,
     failures: Vec<String>,
 }
 
 impl State {
+    /// Whether a reimport the review started is under way.
+    pub fn running(&self) -> bool {
+        self.phase != Phase::Idle
+    }
+
     /// Runs every frame, so the pending recipes are rebuilt only when the library changed them. A
     /// library of thousands of imported recipes is otherwise copied each frame.
     pub fn observe(&mut self, entries: &[RecipeLibraryEntry]) {
-        if self.active {
+        if self.phase != Phase::Idle {
             return;
         }
         let outdated = entries.iter().filter_map(|entry| {
@@ -175,14 +191,14 @@ impl State {
         }
         self.dismiss();
         self.queue = groups.into_iter().collect();
-        self.active = true;
+        self.phase = Phase::Queued;
     }
 }
 
 impl PackageAuthoringApp {
     pub(super) fn draw_import_refresh(&mut self, ctx: &egui::Context) {
         if self.importer.refresh.pending.is_empty()
-            || self.importer.refresh.active
+            || self.importer.refresh.phase != Phase::Idle
             || !self.importer_idle()
         {
             return;
@@ -230,7 +246,7 @@ impl PackageAuthoringApp {
                 ui.label(egui::RichText::new("Importer · Library").color(muted));
                 ui.label(egui::RichText::new("Reimport Recipes").size(24.0).strong());
                 ui.label(format!(
-                    "{} were converted by an older importer. Sockets and perks come from the new conversion, and a recipe they change is backed up first. Your other edits are kept.",
+                    "{} were converted by an older importer. Sockets and perks come from the new conversion. Edited recipes follow your preference, or you choose once the reimport ends whether to reapply their edits or overwrite them. A recipe that loses edits is backed up first.",
                     state.pending.len()
                 ));
                 choices(ui, state, &outside_build, &mut requests);
@@ -285,10 +301,10 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn advance_import_refresh(&mut self, ctx: &egui::Context) {
-        if !self.importer.refresh.active || !self.importer_idle() {
+        if self.importer.refresh.phase == Phase::Idle || !self.importer_idle() {
             return;
         }
-        if self.importer.refresh.importing {
+        if self.importer.refresh.phase == Phase::Importing {
             if let Some(outcome) = self.importer.outcome.take() {
                 self.importer.refresh.added += outcome.added;
                 self.importer.refresh.failures.extend(outcome.failures);
@@ -301,10 +317,10 @@ impl PackageAuthoringApp {
                     );
                 }
             }
-            self.importer.refresh.importing = false;
+            self.importer.refresh.phase = Phase::Queued;
         }
         let Some((source, items)) = self.importer.refresh.queue.front().cloned() else {
-            self.importer.refresh.active = false;
+            self.importer.refresh.phase = Phase::Idle;
             self.importer.outcome = Some(Outcome {
                 added: self.importer.refresh.added,
                 failures: std::mem::take(&mut self.importer.refresh.failures),
@@ -348,24 +364,30 @@ impl PackageAuthoringApp {
         if !self.importer_blockers().is_empty() {
             return;
         }
-        let deferred = self.select_reimports(source, items);
+        let (reimport, deferred) = self.select_reimports(source, items);
         self.importer.refresh.queue.pop_front();
         if !deferred.is_empty() {
             self.importer.refresh.queue.push_front((source, deferred));
         }
         if !self.importer.selected.is_empty() {
-            self.import_selected(ctx);
-            self.importer.refresh.importing = self.importer.busy();
+            self.import_selected(ctx, &reimport);
+            if self.importer.busy() {
+                self.importer.refresh.phase = Phase::Importing;
+            }
         }
         ctx.request_repaint();
     }
 
-    /// Selects each recipe's source row for one batch, with the saved namespace that keeps its
-    /// identity, and records the recipes no row can take. Returns the recipes that wait for a
-    /// later batch.
-    fn select_reimports(&mut self, source: Source, items: Vec<Item>) -> Vec<Item> {
+    /// Selects each recipe's source row for one batch, and records the recipes no row can take.
+    /// Returns the saved namespace that keeps each selected row's identity, for this batch's
+    /// import, and the recipes that wait for a later batch.
+    fn select_reimports(
+        &mut self,
+        source: Source,
+        items: Vec<Item>,
+    ) -> (BTreeMap<u32, Saved>, Vec<Item>) {
         self.importer.selected.clear();
-        self.importer.reimport.clear();
+        let mut reimport = BTreeMap::new();
         let mut deferred = Vec::new();
         for item in items {
             let found = self
@@ -389,7 +411,7 @@ impl PackageAuthoringApp {
                     // The saved namespace reproduces the saved identity, so the import
                     // updates this recipe and keeps its edits. It brings ornaments only if
                     // the recipe had them.
-                    self.importer.reimport.insert(
+                    reimport.insert(
                         weapon.hash,
                         Saved {
                             namespace: item.namespace.clone(),
@@ -422,7 +444,7 @@ impl PackageAuthoringApp {
                 ),
             }
         }
-        deferred
+        (reimport, deferred)
     }
 }
 

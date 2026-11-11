@@ -80,6 +80,7 @@ use account_workspace::{AccountSourceInfo, AccountSourceKind, WorkspaceDocument}
 
 mod account_validation;
 
+mod appearance;
 mod character_metadata;
 
 use crate::persistence::json_account::inventory;
@@ -126,6 +127,7 @@ const WORKSPACE_REFRESH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Clone, Copy, PartialEq)]
 enum ViewMode {
     Characters,
+    Appearance,
     ProfileInventory,
     CharacterInventory,
     GameSettings,
@@ -290,18 +292,17 @@ enum ProgressionSection {
     Missions,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfirmationDialog {
     OpenParhelion,
-    ReallyUnsafe,
-    ReviewSave,
-    DeleteEquipment,
+    ReallyUnsafe { remember: bool },
+    ReviewSave(SaveAction),
+    DeleteEquipment(PendingEquipmentDelete),
     Reload,
-    RestoreSqliteBackup,
-    ResetSqliteDefaults,
+    RestoreSqliteBackup(PathBuf),
+    ResetSqliteDefaults(crate::persistence::sqlite_account::ResetPlan),
     ResetDefaults,
     Exit,
-    UnsavedAuthoringWork,
+    UnsavedAuthoringWork(String),
 }
 
 #[derive(Clone)]
@@ -310,10 +311,13 @@ struct DocumentHistoryEntry {
     label: String,
 }
 
-#[derive(Clone)]
 struct PendingEquipmentDelete {
+    settings_path: PathBuf,
     character_index: usize,
-    slot: String,
+    character_soid: Option<u64>,
+    slot: &'static str,
+    instance_soid: u64,
+    definition_hash: u64,
     item_name: String,
 }
 
@@ -349,7 +353,6 @@ struct SundialApp {
     preferences: Preferences,
     preferences_load_warning: Option<String>,
     troubleshooting_log_error: Option<String>,
-    remember_plug_selection_mode_after_confirmation: bool,
     show_dummy_items: bool,
     view_mode: ViewMode,
     preferences_tab: PreferencesTab,
@@ -370,13 +373,7 @@ struct SundialApp {
     about_open: bool,
     update_check: UpdateCheck,
     confirmation: Option<ConfirmationDialog>,
-    pending_save_action: Option<SaveAction>,
-    pending_equipment_delete: Option<PendingEquipmentDelete>,
-    pending_sqlite_restore: Option<PathBuf>,
-    pending_sqlite_reset: Option<crate::persistence::sqlite_account::ResetPlan>,
     exit_confirmed: bool,
-    /// Why Parhelion work kept outside its recipe is unsaved, while exiting asks about it.
-    unsaved_authoring_work: Option<String>,
     dirty: bool,
     undo_history: Vec<DocumentHistoryEntry>,
     account_details: account_details::State,
@@ -398,6 +395,9 @@ struct SundialApp {
     package_authoring_busy: bool,
     package_authoring_dirty: bool,
     package_authoring_packages_changed: bool,
+    /// Parhelion changed packages or the account. The account reloads when the catalog of those
+    /// packages lands, so the account view never checks items against another build's catalog.
+    package_authoring_account_changed: bool,
     destiny_symbol_font_install: Option<PathBuf>,
     destiny_symbol_font_error: Option<String>,
 }
@@ -468,7 +468,6 @@ impl SundialApp {
             preferences,
             preferences_load_warning: None,
             troubleshooting_log_error: None,
-            remember_plug_selection_mode_after_confirmation: false,
             show_dummy_items: false,
             view_mode: ViewMode::Characters,
             preferences_tab: PreferencesTab::default(),
@@ -489,12 +488,7 @@ impl SundialApp {
             about_open: false,
             update_check: UpdateCheck::default(),
             confirmation: None,
-            pending_save_action: None,
-            pending_equipment_delete: None,
-            pending_sqlite_restore: None,
-            pending_sqlite_reset: None,
             exit_confirmed: false,
-            unsaved_authoring_work: None,
             dirty: false,
             undo_history: Vec::new(),
             account_details: account_details::State::default(),
@@ -529,6 +523,7 @@ impl SundialApp {
             package_authoring_busy: false,
             package_authoring_dirty: false,
             package_authoring_packages_changed: false,
+            package_authoring_account_changed: false,
             destiny_symbol_font_install: None,
             destiny_symbol_font_error: None,
         };
@@ -554,13 +549,27 @@ impl SundialApp {
         self.destiny_symbol_font_install = Some(self.install_path.clone());
     }
 
-    fn request_equipment_delete(&mut self, character_index: usize, slot: &str, item_name: &str) {
-        self.pending_equipment_delete = Some(PendingEquipmentDelete {
-            character_index,
-            slot: slot.to_owned(),
-            item_name: item_name.to_owned(),
-        });
-        self.confirmation = Some(ConfirmationDialog::DeleteEquipment);
+    fn request_equipment_delete(
+        &mut self,
+        character_index: usize,
+        item: &equipment::EquippedItemSnapshot,
+        item_name: &str,
+    ) {
+        let Some((instance_soid, definition_hash)) = item.instance_soid.zip(item.definition_hash)
+        else {
+            return;
+        };
+        self.confirmation = Some(ConfirmationDialog::DeleteEquipment(
+            PendingEquipmentDelete {
+                settings_path: self.settings_path.clone(),
+                character_index,
+                character_soid: account::character_soid(&self.document, character_index),
+                slot: item.slot,
+                instance_soid,
+                definition_hash,
+                item_name: item_name.to_owned(),
+            },
+        ));
     }
 
     fn select_view(&mut self, view: ViewMode) {
@@ -776,10 +785,8 @@ impl SundialApp {
         self.package_authoring_busy = update.busy;
         self.package_authoring_dirty = update.dirty;
         self.package_authoring_packages_changed |= update.packages_changed;
-        if update.account_changed {
-            self.workspace_refresh_pending = true;
-            self.next_workspace_refresh_poll = Instant::now();
-        }
+        // Installs, removals and recovery rewrite the account as well as packages.
+        self.package_authoring_account_changed |= update.account_changed || update.packages_changed;
         let preference_save_error = update.preferences_changed.and_then(|preferences| {
             self.preferences.show_parhelion_experimental_options =
                 preferences.show_parhelion_experimental_options;
@@ -807,6 +814,7 @@ impl SundialApp {
         } else {
             self.manifest.resume_package_access();
             self.set_status("Closed Parhelion", false);
+            self.refresh_account_after_authoring();
         }
         if let Some(error) = preference_save_error {
             self.set_status(
@@ -825,10 +833,18 @@ fn preserve_inactive_json_account_domains(defaults: &mut Value, source: &Value) 
             server.remove("entitlements");
         }
     }
+    let source_state = source.get("state").and_then(Value::as_object);
+    // Defaults without a state object still receive the source's account data.
+    if source_state.is_some()
+        && let Some(defaults) = defaults.as_object_mut()
+    {
+        defaults
+            .entry("state")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    }
     let Some(default_state) = defaults.get_mut("state").and_then(Value::as_object_mut) else {
         return;
     };
-    let source_state = source.get("state").and_then(Value::as_object);
     for key in ["account", "characters", "unlocks", "investment"] {
         if let Some(value) = source_state.and_then(|state| state.get(key)) {
             default_state.insert(key.to_owned(), value.clone());
@@ -884,6 +900,7 @@ impl SundialApp {
                     ViewMode::Characters
                         | ViewMode::ProfileInventory
                         | ViewMode::CharacterInventory
+                        | ViewMode::Appearance
                         | ViewMode::GameSettings
                         | ViewMode::Progression
                 )
@@ -915,6 +932,7 @@ impl SundialApp {
                         });
                 }
                 ViewMode::ProfileInventory => self.draw_profile_inventory_page(ui),
+                ViewMode::Appearance => self.draw_appearance_page(ui),
                 ViewMode::CharacterInventory => self.draw_character_inventory_page(ui),
                 ViewMode::GameSettings => {
                     // Read the launch copy before the Dawn borrow below takes the same inspection.
@@ -924,6 +942,7 @@ impl SundialApp {
                             launch.and_then(|copy| copy.version.as_deref()),
                             launch.is_some_and(|copy| copy.dawn),
                         ).with_trace_logging(launch.is_some_and(|copy| copy.trace_logging))
+                        .with_settings_schema(game_settings::schema_version(&self.document))
                     };
                     let dawn = self.runtime_choice.inspection.copies.iter_mut()
                         .find(|copy| copy.settings_path == self.settings_path)
@@ -1013,15 +1032,9 @@ impl SundialApp {
                 .title_bar_icon
                 .get_or_insert_with(|| load_linux_title_bar_texture(ctx))
                 .clone();
-            if draw_linux_title_bar(ui, &title_bar_icon) {
-                if let Some(message) = self.package_authoring_exit_blocker() {
-                    self.set_status(message, true);
-                } else if self.has_unsaved_changes() {
-                    self.confirmation = Some(ConfirmationDialog::Exit);
-                } else if self.confirm_authoring_work_saved() {
-                    self.exit_confirmed = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+            if draw_linux_title_bar(ui, &title_bar_icon) && self.confirm_close() {
+                self.exit_confirmed = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
         self.ensure_destiny_symbol_font(ctx);
@@ -1032,17 +1045,7 @@ impl SundialApp {
             UpdateStatus::Available(release) => Some(release.version.clone()),
             _ => None,
         };
-        if ctx.input(|input| input.viewport().close_requested()) && !self.exit_confirmed {
-            if let Some(message) = self.package_authoring_exit_blocker() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.set_status(message, true);
-            } else if self.has_unsaved_changes() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.confirmation = Some(ConfirmationDialog::Exit);
-            } else if !self.confirm_authoring_work_saved() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            }
-        }
+        self.handle_native_close_request(ctx);
 
         self.refresh_after_focus_if_needed(ctx, ctx.input(|input| input.focused));
         available_update
@@ -1069,7 +1072,7 @@ impl SundialApp {
             self.hash_inspection.open_with_context(hash, context);
         }
         if self.hash_inspection.is_open() {
-            let mut inspector_document = self.document.progression_view(self.selected_character);
+            let mut inspector_document = self.take_progression_view();
             let inspector_changed = inspector::draw_catalog_hash_window(
                 ctx,
                 &self.manifest,
@@ -1090,6 +1093,8 @@ impl SundialApp {
                 }
                 self.record_edit("Progression Updated in Inspector");
                 self.set_status("Progression state updated. Click Save to write it", false);
+            } else {
+                self.keep_progression_view(inspector_document);
             }
         }
 

@@ -73,11 +73,7 @@ pub(crate) fn snapshot(db: &Connection) -> Result<Snapshot, String> {
         let mut stmt = db
             .prepare(&format!("SELECT * FROM {}", quote(name)))
             .map_err(err)?;
-        let columns = stmt
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let columns = stmt.column_names().map(str::to_owned).collect::<Vec<_>>();
         let order = (1..=columns.len())
             .map(|i| i.to_string())
             .collect::<Vec<_>>()

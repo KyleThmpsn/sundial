@@ -868,7 +868,8 @@ pub(super) fn raw_patch_range(
 ///
 /// Structural recipe/spec validation remains with the public compiler wrappers. Loading Sundial's
 /// catalog is skipped when no spec selects a presentation donor or changes a catalog-validated
-/// stat, perk, trait, socket, translation selector, plug metadata field or raw payload range.
+/// stat, perk, trait, socket, private perk, translation selector, plug metadata field or raw
+/// payload range.
 #[cfg(test)]
 pub(crate) fn validate_weapon_clone_specs_against_catalog<'a>(
     install_directory: &Path,
@@ -894,6 +895,8 @@ pub(crate) fn validate_catalog_with_progress<'a>(
                 || spec.overrides.base_sandbox_perks.is_some()
                 || spec.overrides.trait_indices.is_some()
                 || !spec.overrides.socket_columns.is_empty()
+                // A private perk's stats check against its source plug and the installed donor.
+                || !spec.overrides.socket_plug_variants.is_empty()
                 || spec.overrides.weapon_pattern_index.is_some()
                 || spec.overrides.stat_group_index.is_some()
                 || spec.overrides.custom_stat_group.is_some()
@@ -1264,7 +1267,7 @@ pub(super) fn validate_authored_payloads(
     let authored_version = weapon_version_array(definition)?;
     let display_source = if spec.text.inventory_hint.is_some() {
         read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET)?
-            == LOCALIZATION_DONOR_TABLE_INDEX as u32
+            == crate::package_profile::localization_table() as u32
             && read_u32(strings, ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET + 4)?
                 == spec.identity.inventory_hint_hash
     } else {
@@ -1289,14 +1292,15 @@ pub(super) fn validate_authored_payloads(
         ),
         (
             "name",
-            read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)? == LOCALIZATION_DONOR_TABLE_INDEX as u32
+            read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)?
+                == crate::package_profile::localization_table() as u32
                 && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET + 4)? == spec.identity.name_hash,
         ),
         (
             "type",
             spec.text.type_name.as_ref().is_none_or(|_| {
                 read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET).ok()
-                    == Some(LOCALIZATION_DONOR_TABLE_INDEX as u32)
+                    == Some(crate::package_profile::localization_table() as u32)
                     && read_u32(strings, ITEM_TYPE_REFERENCE_OFFSET + 4).ok()
                         == Some(spec.identity.type_hash)
             }),
@@ -1304,7 +1308,7 @@ pub(super) fn validate_authored_payloads(
         (
             "flavor",
             read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET)?
-                == LOCALIZATION_DONOR_TABLE_INDEX as u32
+                == crate::package_profile::localization_table() as u32
                 && read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET + 4)?
                     == spec.identity.flavor_hash,
         ),

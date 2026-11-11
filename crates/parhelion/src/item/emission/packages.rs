@@ -96,6 +96,15 @@ impl<'a> Packages<'a> {
         )
     }
 
+    /// An overlay that replaces tables of package `id` and adds no entries.
+    pub(super) fn tables(
+        &mut self,
+        id: u16,
+        replacements: Vec<ReplacementSpec>,
+    ) -> AuthoringResult<Ticket> {
+        self.overlay(id, replacements, Vec::new(), Vec::new())
+    }
+
     pub(super) fn standalone(
         &mut self,
         package: crate::asset_packages::AssetPackage,
@@ -412,6 +421,16 @@ impl Job {
             };
             return crate::ExtendedOverlayArtifact::reuse(&path, tags);
         }
+        // A family build's later pass asks again for most packages of the pass before.
+        let key = crate::turn_cache::keeps_packages().then(|| self.key(&profile));
+        let reused = key.as_ref().and_then(crate::turn_cache::package);
+        if let Some(artifact) = &reused
+            && !crate::turn_cache::verifies_packages()
+        {
+            report(&format!("Reusing Unchanged Package: {}", profile.file_name));
+            self.verify(artifact)?;
+            return Ok(artifact.clone());
+        }
         let mut current = profile.file_name.to_owned();
         let mut progress = |stage: &str| {
             current = format!("{stage}: {}", profile.file_name);
@@ -455,6 +474,23 @@ impl Job {
             ),
         }
         .map_err(|error| error.context(current))?;
+        self.verify(&artifact)?;
+        if let Some(earlier) = reused
+            && earlier.bytes() != artifact.bytes()
+        {
+            return Err(validation(format!(
+                "{} built differently from the copy an earlier pass kept, so package reuse misses an input",
+                profile.file_name
+            )));
+        }
+        if let Some(key) = key {
+            crate::turn_cache::keep_package(key, &artifact);
+        }
+        Ok(artifact)
+    }
+
+    /// Whether the package kept its planned entry table and complete resource groups.
+    fn verify(&self, artifact: &crate::ExtendedOverlayArtifact) -> AuthoringResult<()> {
         let valid = match self.check {
             Check::Host(count) => artifact.plan.final_entry_count == count,
             Check::Overlay(count) => {
@@ -472,7 +508,7 @@ impl Job {
                     && artifact.plan.appended_tags.len() == count
             }
             Check::Private { start, count } => {
-                super::validate_private_runtime(Some(&artifact), start, count)?;
+                super::validate_private_runtime(Some(artifact), start, count)?;
                 true
             }
         };
@@ -482,6 +518,64 @@ impl Job {
                 self.id
             )));
         }
-        Ok(artifact)
+        Ok(())
+    }
+
+    /// A digest of everything the package's build reads besides the source packages, which stay
+    /// the same for the whole turn: its profile, the layout the member builds in, and every entry
+    /// and reference it writes.
+    fn key(&self, profile: &crate::package_profile::AuthoredPackage) -> crate::turn_cache::Hash {
+        use sha2::{Digest, Sha256};
+        let mut digest = Sha256::new();
+        let mut field = |bytes: &[u8]| {
+            digest.update((bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
+        };
+        field(b"parhelion-package-job");
+        field(
+            format!(
+                "{profile:?}/{:?}/{:?}/{:?}",
+                crate::package_profile::host(),
+                crate::package_profile::member(),
+                crate::package_profile::window()
+            )
+            .as_bytes(),
+        );
+        fn tags(field: &mut dyn FnMut(&[u8]), tags: &[NewTagSpec]) {
+            for tag in tags {
+                field(format!("{:?}/{:?}", tag.template_tag, tag.storage).as_bytes());
+                field(&tag.payload);
+            }
+        }
+        match &self.kind {
+            Kind::Overlay {
+                replacements,
+                tags: appended,
+                references,
+            } => {
+                field(b"overlay");
+                for replacement in replacements {
+                    field(&replacement.tag.0.to_le_bytes());
+                    field(&replacement.payload);
+                }
+                tags(&mut field, appended);
+                field(format!("{references:?}").as_bytes());
+            }
+            Kind::Standalone(package) => {
+                field(b"standalone");
+                tags(&mut field, &package.tags);
+                field(format!("{:?}", package.references).as_bytes());
+            }
+            Kind::Named {
+                tags: appended,
+                named,
+                references,
+            } => {
+                field(b"named");
+                tags(&mut field, appended);
+                field(format!("{named:?}/{references:?}").as_bytes());
+            }
+        }
+        digest.finalize().into()
     }
 }

@@ -10,6 +10,8 @@ pub(super) struct Prepared {
     pub states: Value,
     pub layers: Value,
     pub report: Value,
+    /// The source descriptor each private descriptor stands for.
+    pub sources: BTreeMap<usize, usize>,
 }
 
 impl Default for Prepared {
@@ -21,18 +23,28 @@ impl Default for Prepared {
             states: json!({"status":"native"}),
             layers: Value::Null,
             report: Value::Null,
+            sources: BTreeMap::new(),
         }
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::d1_roi::native::animation) struct Choice {
     pub(in crate::d1_roi::native::animation) descriptor: usize,
-    pub(in crate::d1_roi::native::animation) tag: u32,
+    /// The bound clip, or none for an unbound descriptor.
+    pub(in crate::d1_roi::native::animation) tag: Option<u32>,
     pub(in crate::d1_roi::native::animation) weight: u32,
 }
+
+impl Choice {
+    pub(in crate::d1_roi::native::animation) fn clip(&self) -> Result<u32> {
+        self.tag
+            .context("Conditional action contains an unbound descriptor")
+    }
+}
+
+#[derive(Clone)]
 pub(in crate::d1_roi::native::animation) struct Action {
-    pub(in crate::d1_roi::native::animation) conditional: bool,
     pub(in crate::d1_roi::native::animation) index: usize,
     pub(in crate::d1_roi::native::animation) choices: Vec<Choice>,
 }
@@ -45,7 +57,6 @@ pub(in crate::d1_roi::native::animation) fn action(
     fixed: &BTreeMap<u8, Vec<u8>>,
 ) -> Result<Action> {
     let at = states.pointer(node + 8)?;
-    let conditional = states.u64(node)? == 2;
     let (choice, index) = match states.u64(node)? {
         1 => (at, 0),
         2 => {
@@ -109,11 +120,13 @@ pub(in crate::d1_roi::native::animation) fn action(
             bank.bytes::<16>(d)? == [0; 16],
             "Conditional descriptor has inline tracks"
         );
-        let index = descriptor_index(bank, d)?
-            .context("Conditional action contains an unbound descriptor")?;
+        let tag = match descriptor_index(bank, d)? {
+            Some(index) => Some(bank.u32(*clips.get(index).context("Conditional clip")?)?),
+            None => None,
+        };
         choices.push(Choice {
             descriptor,
-            tag: bank.u32(*clips.get(index).context("Conditional clip")?)?,
+            tag,
             weight: weight.to_bits(),
         });
     }
@@ -121,11 +134,7 @@ pub(in crate::d1_roi::native::animation) fn action(
         !choices.is_empty() && previous == 1.,
         "Conditional choices do not cover the interval"
     );
-    Ok(Action {
-        conditional,
-        index,
-        choices,
-    })
+    Ok(Action { index, choices })
 }
 
 pub(in crate::d1_roi::native::animation) fn names(
@@ -150,8 +159,22 @@ pub(in crate::d1_roi::native::animation) fn names(
     Ok(result)
 }
 
-fn rows(p: &Payload, field: usize, stride: usize, class: u32) -> Result<Vec<u8>> {
+pub(super) fn rows(p: &Payload, field: usize, stride: usize, class: u32) -> Result<Vec<u8>> {
     Ok(p.0[p.array_range(field, stride, Some(class))?].to_vec())
+}
+
+/// A private clip name for source clip `tag`, for a source name another clip already carries.
+pub(super) fn private_name(tag: u32, occupied: impl Fn(u32) -> bool) -> Result<u32> {
+    (0..=u16::MAX)
+        .map(|salt| {
+            format!("parhelion.d1.first_person.{tag:08X}.{salt}")
+                .bytes()
+                .fold(0x811C9DC5u32, |h, b| {
+                    h.wrapping_mul(16777619) ^ u32::from(b)
+                })
+        })
+        .find(|name| ![0, u32::MAX, 0x811C9DC5].contains(name) && !occupied(*name))
+        .context("No private source clip name")
 }
 
 struct Tables {
@@ -172,6 +195,7 @@ pub(super) fn prepare(
     mapping: &controls::Mapping,
     prepared_bank: &Payload,
     library: &event::Library,
+    unbound: &BTreeSet<u32>,
 ) -> Result<Prepared> {
     let (profile, binding) = character::profile(source, runtime, native, rig)?;
     let parent = u32::try_from(binding["parent"].as_u64().context("Native profile")?)?;
@@ -205,15 +229,19 @@ pub(super) fn prepare(
         let Some(&target) = native_names.get(&name) else {
             continue;
         };
-        if from.states.u64(node)? != 2 && to.states.u64(target)? != 2 {
+        // Complete unconditional pairs are replaced in place. A source route with an unbound
+        // choice instead needs a private descriptor for that choice.
+        if from.states.u64(node)? != 2 && to.states.u64(target)? != 2 && !unbound.contains(&name) {
             continue;
         }
         let attempt = (|| -> Result<()> {
             let plan = selection::plan(&from, &to, node, target, profile, parent)?;
             let mut next = builder.clone();
+            if let Some(selector) = &plan.selector {
+                next.selectors.insert(name, selector.clone());
+            }
             let mut descriptors = Vec::new();
-            for (s, n) in plan.choices {
-                ensure!(s.conditional || n.conditional, "Action is unconditional");
+            for (choice, s, n) in plan.choices {
                 ensure!(
                     n.choices.len() == 1
                         || s.choices
@@ -225,56 +253,60 @@ pub(super) fn prepare(
                 let mut clips = Vec::new();
                 for (index, s) in s.choices.iter().enumerate() {
                     let n = &n.choices[if n.choices.len() == 1 { 0 } else { index }];
+                    let Some(tag) = s.tag else {
+                        clips.push((s, n, None));
+                        continue;
+                    };
                     ensure!(
-                        source.reference(s.tag)? == SOURCE_CLIP,
+                        source.reference(tag)? == SOURCE_CLIP,
                         "Conditional source is not a clip"
                     );
-                    let original = source.read(s.tag)?;
+                    let original = source.read(tag)?;
                     library.validate_source(source, &original)?;
-                    let template = native.tag(n.tag, Some(0x80808F49))?;
-                    let direct = convert_events(
-                        &original,
-                        Some((&template, &mapping.bone_map)),
-                        Some(library),
-                    );
-                    let (payload, mut report) = if let Err(error) = direct {
-                        if original.u64(0x30)? == 0 {
-                            return Err(error);
-                        }
-                        let mut compatible = None;
-                        for row in to.bank.array(8, 4, Some(0x80808F48))? {
-                            let tag = to.bank.u32(row)?;
-                            let witness = native.tag(tag, Some(0x80808F49))?;
-                            if witness.u64(0x30)? == 0
-                                || witness.u8(0x181)? != original.u8(0x165)?
-                            {
-                                continue;
-                            }
-                            if let Ok((payload, mut report)) = convert_events(
-                                &original,
-                                Some((&witness, &mapping.bone_map)),
-                                Some(library),
-                            ) {
-                                report["constraint_template"] = json!(tag);
-                                compatible = Some((payload, report));
-                                break;
-                            }
-                        }
-                        compatible.ok_or(error)?
+                    let template = native.tag(n.clip()?, Some(0x80808F49))?;
+                    // A choice whose native clip binds no hand constraint keeps the source's on
+                    // another clip's witness before it would drop it.
+                    let unbound = original.u64(0x30)? != 0 && template.u64(0x30)? == 0;
+                    let witnessed = if unbound {
+                        super::witnessed(native, &to.bank, &original, &mapping.bone_map, library)?
                     } else {
-                        direct?
+                        None
+                    };
+                    let (payload, mut report) = if let Some(converted) = witnessed {
+                        converted
+                    } else {
+                        match convert_events(
+                            &original,
+                            Some((&template, &mapping.bone_map)),
+                            Some(library),
+                        ) {
+                            Ok(converted) => converted,
+                            Err(error) if original.u64(0x30)? != 0 => super::witnessed(
+                                native,
+                                &to.bank,
+                                &original,
+                                &mapping.bone_map,
+                                library,
+                            )?
+                            .ok_or(error)?,
+                            Err(error) => return Err(error),
+                        }
                     };
                     let (payload, slots) = mapping.apply(&original, &payload)?;
                     report["control_mapping"] = slots;
-                    clips.push((s, n, payload, report));
+                    clips.push((s, n, Some((payload, report))));
                 }
-                next.add(name, n.index, &from.bank, &to.bank, &clips, graph)?;
-                descriptors.push(json!({"native_choice":n.index,"source_descriptors":s.choices.iter().map(|c|c.descriptor).collect::<Vec<_>>(),
-                "native_descriptors":n.choices.iter().map(|c|c.descriptor).collect::<Vec<_>>()}));
+                next.add(name, choice, &from.bank, &to.bank, &clips, graph)?;
+                descriptors.push(json!({"choice":choice,"native_choice":n.index,"source_descriptors":s.choices.iter().map(|c|c.descriptor).collect::<Vec<_>>(),
+                "native_descriptors":n.choices.iter().map(|c|c.descriptor).collect::<Vec<_>>(),
+                "unbound_choices":s.choices.iter().filter(|c|c.tag.is_none()).count()}));
             }
             builder = next;
-            accepted
-                .push(json!({"action":name,"source_contexts":plan.contexts,"choices":descriptors}));
+            accepted.push(
+                json!({"action":name,"source_contexts":plan.contexts,"choices":descriptors,
+                "selector":if plan.selector.is_some() {"translated_source"} else {"native"},
+                "declared_profiles":plan.declared}),
+            );
             Ok(())
         })();
         if let Err(error) = attempt {
@@ -295,7 +327,11 @@ struct Builder {
     original_layers: Payload,
     clips: BTreeMap<u32, (Payload, Value)>,
     routes: BTreeMap<u32, BTreeMap<usize, Vec<(usize, u32)>>>,
+    /// Translated source selectors by action name.
+    selectors: BTreeMap<u32, state::Selector>,
     native_names: BTreeSet<u32>,
+    /// The source descriptor each appended descriptor stands for.
+    sources: BTreeMap<usize, usize>,
 }
 
 impl Builder {
@@ -332,7 +368,9 @@ impl Builder {
             layers,
             clips: BTreeMap::new(),
             routes: BTreeMap::new(),
+            selectors: BTreeMap::new(),
             native_names,
+            sources: BTreeMap::new(),
         })
     }
 
@@ -342,7 +380,7 @@ impl Builder {
         choice: usize,
         source: &Payload,
         native: &Payload,
-        clips: &[(&Choice, &Choice, Payload, Value)],
+        clips: &[WeightedClip<'_>],
         graph: &Path,
     ) -> Result<()> {
         // Validate and build a complete weighted action before committing any of its routes.
@@ -358,8 +396,30 @@ impl Builder {
         let sd = source.array(0x68, 32, Some(0x80800577))?;
         let nd = native.array(0x68, 32, Some(0x80809002))?;
         let mut route = Vec::new();
+        let mut sources = self.sources.clone();
         let mut additions: Vec<(u32, Payload, Value)> = Vec::new();
-        for (s, n, payload, report) in clips {
+        for (s, n, converted) in clips {
+            let sr = *sd.get(s.descriptor).context("Source descriptor")?;
+            let nr = *nd.get(n.descriptor).context("Native descriptor")?;
+            let alias = *self
+                .original_layers
+                .array(40, 2, Some(0x80800006))?
+                .get(n.descriptor)
+                .context("Original pose descriptor")?;
+            let Some((payload, report)) = converted else {
+                // An unbound source choice plays no clip. It keeps the unbound descriptor form,
+                // which both eras validate identically, and its source identity.
+                let mut descriptor = [0; 32];
+                descriptor[16..20].copy_from_slice(&source.u32(sr + 16)?.to_le_bytes());
+                descriptor[20..24].copy_from_slice(&0xFF7F_FFFFu32.to_le_bytes());
+                descriptor[24..26].copy_from_slice(&u16::MAX.to_le_bytes());
+                route.push((descriptors.len() / 32, s.weight));
+                sources.insert(descriptors.len() / 32, s.descriptor);
+                descriptors.extend(descriptor);
+                aliases.extend(self.original_layers.u16(alias)?.to_le_bytes());
+                continue;
+            };
+            let tag = s.clip()?;
             let mut payload = payload.clone();
             let source_name = payload.u32(0x120)?;
             let occupied = |name| {
@@ -367,44 +427,33 @@ impl Builder {
                     || self
                         .clips
                         .iter()
-                        .any(|(&tag, (p, _))| tag != s.tag && p.u32(0x120).ok() == Some(name))
+                        .any(|(&other, (p, _))| other != tag && p.u32(0x120).ok() == Some(name))
                     || additions
                         .iter()
-                        .any(|(tag, p, _)| *tag != s.tag && p.u32(0x120).ok() == Some(name))
+                        .any(|(other, p, _)| *other != tag && p.u32(0x120).ok() == Some(name))
             };
             let mut clip_name = source_name;
             if occupied(clip_name) {
-                clip_name = (0..=u16::MAX)
-                    .map(|salt| {
-                        format!("parhelion.d1.first_person.{:08X}.{salt}", s.tag)
-                            .bytes()
-                            .fold(0x811C9DC5u32, |h, b| {
-                                h.wrapping_mul(16777619) ^ u32::from(b)
-                            })
-                    })
-                    .find(|name| ![0, u32::MAX, 0x811C9DC5].contains(name) && !occupied(*name))
-                    .context("No private source clip name")?;
+                clip_name = private_name(tag, occupied)?;
                 put(&mut payload.0, 0x120, &clip_name.to_le_bytes());
             }
-            let sr = *sd.get(s.descriptor).context("Source descriptor")?;
-            let nr = *nd.get(n.descriptor).context("Native descriptor")?;
             ensure!(
                 source.bytes::<6>(sr + 26)? == native.bytes::<6>(nr + 26)?,
                 "Descriptor playback flags differ"
             );
             // Source tag words are temporary relocation symbols, never installed references.
-            let slot = if let Some((previous, _)) = self.clips.get(&s.tag) {
+            let slot = if let Some((previous, _)) = self.clips.get(&tag) {
                 ensure!(
                     previous.0 == payload.0,
                     "Shared source clip converted differently"
                 );
                 tags.chunks_exact(4)
-                    .position(|b| b == s.tag.to_le_bytes())
+                    .position(|b| b == tag.to_le_bytes())
                     .context("Extra clip bank slot")?
-            } else if let Some(slot) = tags.chunks_exact(4).position(|b| b == s.tag.to_le_bytes()) {
+            } else if let Some(slot) = tags.chunks_exact(4).position(|b| b == tag.to_le_bytes()) {
                 let (_, previous, _) = additions
                     .iter()
-                    .find(|(tag, _, _)| *tag == s.tag)
+                    .find(|(other, _, _)| *other == tag)
                     .context("Source clip symbol collides with a native tag")?;
                 ensure!(
                     previous.0 == payload.0,
@@ -413,10 +462,10 @@ impl Builder {
                 slot
             } else {
                 let slot = tags.len() / 4;
-                tags.extend(s.tag.to_le_bytes());
+                tags.extend(tag.to_le_bytes());
                 auxiliary.extend(u32::MAX.to_le_bytes());
-                let file = format!("animation/first-person-source-{:08X}.bin", s.tag);
-                additions.push((s.tag,payload.clone(),json!({"source":s.tag,"template":n.tag,"file":file,"frames":payload.u16(0x13C)?,"source_name":source_name,"emitted_name":clip_name,"report":report})));
+                let file = format!("animation/first-person-source-{tag:08X}.bin");
+                additions.push((tag,payload.clone(),json!({"source":tag,"template":n.clip()?,"file":file,"frames":payload.u16(0x13C)?,"source_name":source_name,"emitted_name":clip_name,"report":report})));
                 slot
             };
             let mut descriptor = native.bytes::<32>(nr)?;
@@ -425,13 +474,9 @@ impl Builder {
                 .copy_from_slice(&(f32::from(payload.u16(0x13C)? - 1) / 30.).to_le_bytes());
             descriptor[24..26].copy_from_slice(&u16::try_from(slot)?.to_le_bytes());
             route.push((descriptors.len() / 32, s.weight));
+            sources.insert(descriptors.len() / 32, s.descriptor);
             descriptors.extend(descriptor);
-            let row = *self
-                .original_layers
-                .array(40, 2, Some(0x80800006))?
-                .get(n.descriptor)
-                .context("Original pose descriptor")?;
-            aliases.extend(self.original_layers.u16(row)?.to_le_bytes());
+            aliases.extend(self.original_layers.u16(alias)?.to_le_bytes());
         }
         append(&mut bank.0, 8, 0x80808F48, &tags, 4)?;
         append(&mut bank.0, 24, 0x80800007, &auxiliary, 4)?;
@@ -444,7 +489,7 @@ impl Builder {
         }
         let mut routes = self.routes.clone();
         routes.entry(name).or_default().insert(choice, route);
-        state::replace_selected_choices(&self.states, &routes)?;
+        state::replace_routes(&self.states, &routes, &self.selectors)?;
         for (tag, payload, report) in additions {
             fs::write(
                 graph.join(report["file"].as_str().context("Source clip file")?),
@@ -455,17 +500,18 @@ impl Builder {
         self.bank = bank;
         self.layers = layers;
         self.routes = routes;
+        self.sources = sources;
         Ok(())
     }
 
     fn finish(self, graph: &Path, tables: &Tables, report: Value) -> Result<Prepared> {
-        if self.clips.is_empty() {
+        if self.routes.is_empty() {
             return Ok(Prepared {
                 report,
                 ..Prepared::default()
             });
         }
-        let states = state::replace_selected_choices(&self.states, &self.routes)?;
+        let states = state::replace_routes(&self.states, &self.routes, &self.selectors)?;
         let mut files = BTreeMap::new();
         for (key, payload) in [
             ("states_template", &self.states),
@@ -488,6 +534,9 @@ impl Builder {
             states: json!({"status":"source_states","parameters":tables.dictionary_tag,"states":tables.state_tag,"policy":"private named native routes with selected source clips"}),
             layers: json!({"owner":self.layer_owner,"tag":self.layer_tag,"template_file":template_file,"file":file}),
             report,
+            sources: self.sources,
         })
     }
 }
+
+type WeightedClip<'a> = (&'a Choice, &'a Choice, Option<(Payload, Value)>);

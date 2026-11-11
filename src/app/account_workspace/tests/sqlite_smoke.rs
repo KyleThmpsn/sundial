@@ -111,8 +111,12 @@ fn mixed_save(case: &str) {
     save_changed_sources(&mut repeat, &reopened, &settings, false, true).unwrap();
     assert_eq!(snapshot::read(&database).unwrap(), before_repeat);
     if let Some(path) = crate::test_support::artifacts(&format!("sqlite-smoke-{case}.sqlite3")) {
-        db.backup(rusqlite::MAIN_DB, std::path::Path::new(&path), None)
-            .unwrap();
+        db.backup(
+            rusqlite::MAIN_DB,
+            std::path::Path::new(&path),
+            rusqlite::backup::NO_PROGRESS,
+        )
+        .unwrap();
     }
 }
 

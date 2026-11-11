@@ -1,4 +1,4 @@
-//! Mode-three health responses on the checked zero-damage profile family.
+//! Health responses on the checked zero-damage profile family.
 use super::*;
 use crate::package_payload::{native_array_at, u64_at, write_bytes};
 
@@ -80,15 +80,19 @@ pub fn read_healing_profile(
     fixed::read_profile(manager, tag, healing_profile)
 }
 
-/// Preserve mode three, both source flags and the two source Float32 operands.
+/// Write the response mode, both flags and the two Float32 operands. Consumer `B84960` walks
+/// regions the same way for modes 0 to 3 as Rise of Iron `6EBA00`, including the mode 1 and 2
+/// checks of a region's value against one. Modes 4 and 5 are native-only forms.
 /// This family has no damage amount. Region capacity and unit conversion remain native.
 pub fn set_health_response(
     payload: &mut [u8],
     shape: Profile,
+    mode: u8,
     amounts: [u32; 2],
 ) -> Result<(), String> {
     let tag = u32_at(payload, shape.root)?;
     if healing_profile(tag, payload)? != shape
+        || mode > 3
         || amounts
             .iter()
             .any(|&bits| !f32::from_bits(bits).is_finite() || f32::from_bits(bits) < 0.0)
@@ -99,7 +103,7 @@ pub fn set_health_response(
             "The health response needs a qualified profile and finite positive contribution".into(),
         );
     }
-    write_bytes(payload, 0x22C, &[3, 1, 1, 0])?;
+    write_bytes(payload, 0x22C, &[mode, 1, 1, 0])?;
     write_bytes(payload, 0x230, &amounts[0].to_le_bytes())?;
     write_bytes(payload, 0x234, &amounts[1].to_le_bytes())
 }

@@ -13,6 +13,10 @@ pub(crate) struct Lens {
     /// long-range sights whose eye sits inside their sight box. The source shows such a sight's
     /// aimed view through the aperture alone.
     pub enclosed: bool,
+    /// The aperture outline in view tangents from the source eye, as in [`Framing::window`], when
+    /// the sight has a rear-to-front axis. The source reticle's stencil test keeps its artwork
+    /// inside this window. Empty without an axis.
+    pub window: Vec<[f32; 3]>,
     /// The aimed view an enclosed sight with an angular override shows.
     pub framing: Option<Framing>,
 }
@@ -50,40 +54,48 @@ impl Framing {
         if !lens.enclosed || !(angle > 0. && angle < std::f32::consts::PI) {
             return None;
         }
-        let axis: [f32; 3] = std::array::from_fn(|a| front[a] - rear[a]);
-        let length = axis.iter().map(|v| v * v).sum::<f32>().sqrt();
-        let eye = (0..3)
-            .map(|a| (lens.center[a] - rear[a]) * axis[a])
-            .sum::<f32>()
-            / length;
-        if !(eye.is_finite() && eye > 0.) {
-            return None;
-        }
-        let offset: [f32; 3] = std::array::from_fn(|a| lens.aim[a] - lens.center[a]);
-        let origin = lens
-            .axes
-            .map(|axis| (0..3).map(|a| axis[a] * offset[a]).sum::<f32>());
-        let edges = if lens.outline.is_empty() {
-            let [x, y] = lens.radii;
-            vec![[-1., 0., x], [1., 0., x], [0., -1., y], [0., 1., y]]
-        } else {
-            lens.outline.clone()
-        };
-        // Aperture axes run along model +Y and +Z. With the source forward along +X and +Z up,
-        // +Y points to the left of the view.
-        let window = edges
-            .into_iter()
-            .map(|[a, b, c]| [-a * eye, b * eye, a * origin[0] + b * origin[1] + c])
-            .collect();
+        let (eye, forward, window) = sighted(lens, rear, front)?;
         Some(Self {
             tangent: (angle * 0.5).tan(),
             window,
             eye,
             origin: rear,
-            forward: axis.map(|v| v / length),
+            forward,
             axes: lens.axes,
         })
     }
+}
+
+/// The aperture as the source eye at `rear` sees it along the axis to `front`: the eye's distance
+/// to the aperture along the axis, the unit axis, and the outline in view tangents with screen X
+/// to the right and Y up.
+fn sighted(lens: &Lens, rear: [f32; 3], front: [f32; 3]) -> Option<(f32, [f32; 3], Vec<[f32; 3]>)> {
+    let axis: [f32; 3] = std::array::from_fn(|a| front[a] - rear[a]);
+    let length = axis.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let eye = (0..3)
+        .map(|a| (lens.center[a] - rear[a]) * axis[a])
+        .sum::<f32>()
+        / length;
+    if !(eye.is_finite() && eye > 0.) {
+        return None;
+    }
+    let offset: [f32; 3] = std::array::from_fn(|a| lens.aim[a] - lens.center[a]);
+    let origin = lens
+        .axes
+        .map(|axis| (0..3).map(|a| axis[a] * offset[a]).sum::<f32>());
+    let edges = if lens.outline.is_empty() {
+        let [x, y] = lens.radii;
+        vec![[-1., 0., x], [1., 0., x], [0., -1., y], [0., 1., y]]
+    } else {
+        lens.outline.clone()
+    };
+    // Aperture axes run along model +Y and +Z. With the source forward along +X and +Z up,
+    // +Y points to the left of the view.
+    let window = edges
+        .into_iter()
+        .map(|[a, b, c]| [-a * eye, b * eye, a * origin[0] + b * origin[1] + c])
+        .collect();
+    Some((eye, axis.map(|v| v / length), window))
 }
 
 /// Model-space positions of a draw's vertices, in their local skeleton's rest pose when posed.
@@ -126,6 +138,7 @@ impl Lens {
             artwork: self.artwork,
             outline: self.outline.clone(),
             enclosed: self.enclosed,
+            window: self.window.clone(),
             framing: self.framing.clone(),
         }
     }
@@ -301,8 +314,13 @@ pub(super) fn read(
         artwork,
         outline,
         enclosed,
+        window: Vec::new(),
         framing: None,
     };
+    lens.window = sight_axis
+        .and_then(|[rear, front]| sighted(&lens, rear, front))
+        .map(|(_, _, window)| window)
+        .unwrap_or_default();
     lens.framing = sight.and_then(|([rear, front], angle)| Framing::new(&lens, angle, rear, front));
     Ok(Some(lens))
 }

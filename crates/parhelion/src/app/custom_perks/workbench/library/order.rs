@@ -58,14 +58,20 @@ impl Workbench {
                 },
             );
         }
-        changed |= ui
-            .checkbox(
-                self.show_imported_perks
-                    .get_or_insert(cfg!(feature = "d2-model-importer")),
-                "Show Imported Perks",
-            )
-            .on_hover_text("Include perks imported from saved item recipes.")
-            .changed();
+        ui.horizontal_wrapped(|ui| {
+            changed |= ui
+                .checkbox(
+                    self.show_imported_perks
+                        .get_or_insert(cfg!(feature = "d2-model-importer")),
+                    "Show Imported Perks",
+                )
+                .on_hover_text("Include perks imported from saved item recipes.")
+                .changed();
+            changed |= ui
+                .checkbox(&mut self.show_ornaments, "Show Ornaments")
+                .on_hover_text("Include ornaments, which change how an item looks.")
+                .changed();
+        });
         if changed || before != self.library_order {
             self.reveal_document = true;
         }
@@ -83,7 +89,9 @@ impl Workbench {
         pickers::name_combo(ui, "perk-library-order", "Sort Custom Perks");
     }
 
-    pub(super) fn library_rows(&self) -> Vec<PerkSource> {
+    /// The rows the list shows, in order. Ornaments are known by their template plug, which the
+    /// catalog reads, so without one they stay listed.
+    pub(super) fn library_rows(&self, catalog: Option<&InvestmentCatalog>) -> Vec<PerkSource> {
         let saved = self
             .entries
             .iter()
@@ -117,6 +125,15 @@ impl Workbench {
                 self.show_imported_perks
                     .unwrap_or(cfg!(feature = "d2-model-importer"))
                     || !self.imported_perks.contains(&recipe.id)
+            })
+            .filter(|(_, recipe, _)| {
+                self.show_ornaments
+                    || !catalog.is_some_and(|catalog| {
+                        recipe
+                            .template_plug
+                            .parse_u32()
+                            .is_ok_and(|hash| catalog.is_ornament(hash))
+                    })
             })
             .map(|(source, recipe, modified)| {
                 (

@@ -101,8 +101,10 @@ fn bank_rows(
             0x808026D1 => (0x80804520, 8),
             0x80802988 => (0x80804189, 1),
             0x808029F6 => (0x80804187, 1),
-            0x8080236B => (0x80804183, 16),
-            0x8080216B => (0x80804181, 16),
+            // Both refresh routines send recipient +8 to the query and +C to the activation
+            // entity. Native 4183 and 4181 write those two fields.
+            0x8080216B => (0x80804183, 16),
+            0x8080236B => (0x80804181, 16),
             _ => panic!("Unexpected source Radiance property {class:08X}"),
         };
         assert_eq!(native.u32(body + 4).unwrap(), target);

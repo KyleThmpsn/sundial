@@ -15,6 +15,7 @@ mod null_glow;
 pub mod particle;
 mod parts;
 mod procedural;
+pub(crate) use controller::constants::broadcast as lower_constants;
 pub(crate) use procedural::lower_program;
 mod reflection;
 pub mod resources;
@@ -266,7 +267,6 @@ fn apply_with_progress(
         refs: refs.to_owned(),
         bindings: load(&bindings.join("bindings.json"))?,
         bindings_root: bindings.to_owned(),
-        variable: None,
         contracts: if family.starts_with("source-") {
             Some(super::contracts::Catalog::read(refs)?)
         } else {
@@ -328,22 +328,8 @@ pub(super) fn refresh_optics(
     )
 }
 
-/// Partition source art regions in a copied graph without recompiling materials.
-pub fn restore_art_regions(prepared: &Path, directory: &Path) -> Result<Value> {
-    let report = load(&crate::d2_mot::profile::source(prepared)?.join("report.json"))?;
-    let mut graph = Graph {
-        root: directory.to_owned(),
-        manifest: load(&directory.join("asset-graph.json"))?,
-    };
-    let draws = Draws::read(&graph)?;
-    parts::separate(&mut graph, &draws, &report, prepared)?;
-    write_json(&directory.join("asset-graph.json"), &graph.manifest)?;
-    Ok(graph.manifest["source_art_regions"].clone())
-}
-
 struct Effect {
     contracts: Option<super::contracts::Catalog>,
-    variable: Option<String>,
     graph: Graph,
     draws: Draws,
     source: Source,

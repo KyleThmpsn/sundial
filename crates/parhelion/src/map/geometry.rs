@@ -24,6 +24,7 @@ use crate::{
 mod cache;
 mod sharing;
 
+pub(crate) use cache::newest as newest_conversion;
 pub(super) use sharing::Textures;
 
 use super::{
@@ -58,9 +59,9 @@ pub(super) struct Geometry {
     loads: Option<Vec<usize>>,
     /// An exclusive lock on the map's cache folder, held until the stage has read its payloads.
     /// The conversion clears the folder, so a second stage of the same map in another process
-    /// waits here rather than removing files the first is still reading.
+    /// waits here rather than removing files the first is still reading or publishing a
+    /// conversion of its own meanwhile.
     _folder_lock: Option<std::fs::File>,
-    _generation: Option<parhelion_import::cache::Generation>,
 }
 
 /// One conversion of a map's level. A campaign map's areas each place the pieces and collision
@@ -68,6 +69,9 @@ pub(super) struct Geometry {
 struct Shared {
     kept: bool,
     folder: PathBuf,
+    /// Keeps `folder`, when it is a published conversion, from being set aside while any area
+    /// still reads it.
+    _hold: Option<parhelion_import::d2_mot::service::Hold>,
     nodes: Vec<Value>,
     pieces: Vec<Piece>,
     props: Vec<parhelion_import::halo_reach::level::native::Prop>,
@@ -85,8 +89,14 @@ struct Shared {
     /// The stock decorator placement every area's decorator rows copy, when the level's
     /// decorators draw as Destiny's instanced decorators.
     decorator_placement: Option<chain::Decorators>,
+    /// The decorator records' ambient visibility buffer and each record's row in it, which each
+    /// area's occlusion record maps for the records it places.
+    decorator_occlusion: Option<parhelion_import::halo_reach::level::native::DecoratorOcclusion>,
     /// The symbol of the atmosphere volume the map's atmosphere names.
     atmosphere: Option<String>,
+    /// The symbol of the second atmosphere volume, for the level's interiors, the map's
+    /// atmosphere names at `+0x94`.
+    interior_atmosphere: Option<String>,
     /// The symbol of the distance lookup the map's atmosphere names.
     atmosphere_lookup: Option<String>,
     /// The symbol of the open image the map's atmosphere names at `+0x9C`.
@@ -102,6 +112,10 @@ struct Shared {
     light: Option<[f32; 3]>,
     /// The native sun the level asks for, which every area's environment sets.
     native_sun: Option<parhelion_import::halo_reach::level::native::NativeSun>,
+    /// The automatic exposure bounds the level asks for, which every area's environment sets.
+    native_exposure: Option<parhelion_import::halo_reach::level::native::NativeExposure>,
+    /// The map's display curve, shared by every area's environment volume.
+    color_grade: Option<String>,
     /// The nodes no area's chain reaches, which every area loads.
     everywhere: BTreeSet<usize>,
     source: MapSource,
@@ -128,10 +142,18 @@ impl Shared {
             .chain(self.sky.iter().map(|object| object.reference.as_str()))
             .chain(area.ambience.as_deref())
             .chain(area.decorators.iter().map(String::as_str))
+            .chain(
+                self.decorator_occlusion
+                    .as_ref()
+                    .map(|occlusion| occlusion.buffer.as_str()),
+            )
             .chain(self.atmosphere.as_deref())
+            .chain(self.interior_atmosphere.as_deref())
             .chain(self.atmosphere_lookup.as_deref())
             .chain(self.atmosphere_image.as_deref())
+            .chain(self.color_grade.as_deref())
             .chain(self.cubemaps.iter().map(|volume| volume.texture.as_str()))
+            .chain(gel_symbols(&self.lights))
             .collect()
     }
 
@@ -183,34 +205,70 @@ impl Shared {
     }
 }
 
+/// The distinct gel texture symbols of `lights`, in the order they first appear, which the chain's
+/// lights name by index.
+fn gel_symbols(
+    lights: &[parhelion_import::halo_reach::level::native::lights::MapLight],
+) -> Vec<&str> {
+    let mut symbols = Vec::new();
+    for gel in lights
+        .iter()
+        .filter_map(|light| light.cone.as_ref()?.gel.as_deref())
+    {
+        if !symbols.contains(&gel) {
+            symbols.push(gel);
+        }
+    }
+    symbols
+}
+
 /// The chain's lights for converted `lights` of map `name`, each with an occlusion identifier of
-/// its own.
+/// its own and a spot's gel named by its index among [`gel_symbols`].
 fn map_lights(
     lights: &[parhelion_import::halo_reach::level::native::lights::MapLight],
     name: &str,
 ) -> Vec<chain::Light> {
+    let gels = gel_symbols(lights);
     lights
         .iter()
         .enumerate()
         .map(|(index, light)| chain::Light {
             position: light.position,
+            start: light.start,
             range: light.range,
             color: light.color,
+            cone: light.cone.as_ref().map(|cone| chain::LightCone {
+                forward: cone.forward,
+                up: cone.up,
+                inner: cone.inner,
+                outer: cone.outer,
+                exponent: cone.exponent,
+                gel: cone
+                    .gel
+                    .as_deref()
+                    .and_then(|gel| gels.iter().position(|other| *other == gel)),
+            }),
             identity: fnv1a64(&format!("parhelion/map/{name}/light/{index}")) as u32 | 1,
         })
         .collect()
 }
 
-/// The chain's environment for a level that asks for native sun `sun`, with the sun off in
-/// `interiors`. A level without baked light asks for none and keeps the global defaults.
+/// The chain's environment for a level that asks for native sun `sun` and automatic exposure
+/// bounds `exposure`, with the sun off in `interiors`, and the sky reflection blended to the
+/// atmosphere's interior volume inside them with `interior_sky`. A level without baked light asks
+/// for none and keeps the global defaults.
 fn map_environment(
     sun: Option<parhelion_import::halo_reach::level::native::NativeSun>,
+    exposure: Option<parhelion_import::halo_reach::level::native::NativeExposure>,
+    interior_sky: bool,
     interiors: &[parhelion_import::halo_reach::level::native::Interior],
 ) -> Option<chain::Environment> {
     let sun = sun?;
     Some(chain::Environment {
         sun_intensity: sun.intensity,
         sun_color: sun.color,
+        exposure: exposure.map(|exposure| [exposure.minimum, exposure.maximum]),
+        interior_sky,
         interiors: interiors
             .iter()
             .map(|interior| (interior.minimum, interior.maximum))
@@ -305,10 +363,9 @@ impl Geometry {
         let atmosphere_image = chain.atmosphere_image()?;
         let occlusion_probes = chain.occlusion_probes()?;
         let cubemaps = chain.cubemaps();
-        let maps = sundial::package_authoring::parhelion_data_directory()
-            .ok_or_else(|| invalid("Could not locate Parhelion's data folder"))?
-            .join("cache")
-            .join("maps");
+        let data = sundial::package_authoring::parhelion_data_directory()
+            .ok_or_else(|| invalid("Could not locate Parhelion's data folder"))?;
+        let maps = data.join("cache").join("maps");
         std::fs::create_dir_all(&maps)
             .map_err(|error| invalid(format!("Could not create {}: {error}", maps.display())))?;
         let lock_path = maps.join(format!("{name}.lock"));
@@ -323,10 +380,7 @@ impl Geometry {
             .lock()
             .map_err(|error| invalid(format!("Could not lock {}: {error}", lock_path.display())))?;
         let folder = maps.join(name);
-        let decoder = source
-            .audio_decoder
-            .clone()
-            .or_else(|| parhelion_import::tools::located(parhelion_import::tools::Tool::Vgmstream));
+        let decoder = source.decoder();
         let mission_audio = decoder
             .clone()
             .filter(|_| mission_recordings)
@@ -352,7 +406,7 @@ impl Geometry {
                         chain::decorators(
                             manager,
                             TagHash(templates.table),
-                            &[TagHash(templates.surface), TagHash(templates.depth)],
+                            &[TagHash(templates.surface)],
                         )
                         .map(|placement| (templates, placement))
                         .map_err(|error| error.to_string())
@@ -396,6 +450,11 @@ impl Geometry {
             occlusion_probes,
             cubemaps,
             decorators,
+            fog: parhelion_import::halo_reach::level::native::FogAdjustment {
+                density: source.fog.density,
+                distance: source.fog.distance,
+                brightness: source.fog.brightness,
+            },
         };
         let cached = crate::mod_family::build::map_state(name).map_err(invalid)?;
         let kept = cached.is_some();
@@ -403,12 +462,7 @@ impl Geometry {
             None
         } else {
             report("Checking Converted Area Cache");
-            match cache::Cache::open(
-                &maps.join("../map-conversions").join(name),
-                source,
-                &templates,
-                manager,
-            ) {
+            match cache::Cache::open(&data, name, source, &templates, manager) {
                 Ok(cache) => cache,
                 Err(error) if parhelion_import::cancellation::is_cancelled(&error) => {
                     return Err(invalid(error.to_string()));
@@ -417,9 +471,12 @@ impl Geometry {
             }
         };
         remove_finished_work_folders(&maps, name, conversion_cache.is_some());
-        let folder = conversion_cache
+        // A conversion read again is read where it was published. A new one is written in the
+        // work folder and read from wherever publishing moves it.
+        let mut folder = conversion_cache
             .as_ref()
-            .map_or(folder, |cache| cache.folder().to_owned());
+            .and_then(cache::Cache::folder)
+            .map_or(folder, Path::to_path_buf);
         let converted: parhelion_import::halo_reach::level::native::Converted =
             if let Some(cached) = cached {
                 report("Reusing Verified Map Geometry");
@@ -433,7 +490,7 @@ impl Geometry {
                     report("Reusing Verified Area Conversion");
                     converted
                 } else {
-                    if conversion_cache.is_none() && folder.exists() {
+                    if folder.exists() {
                         std::fs::remove_dir_all(&folder).map_err(|error| {
                             invalid(format!("Could not clear {}: {error}", folder.display()))
                         })?;
@@ -451,13 +508,16 @@ impl Geometry {
                         report,
                     )
                     .map_err(|error| invalid(format!("Map {name} geometry: {error:#}")))?;
-                    if let Some(cache) = &conversion_cache {
+                    if let Some(cache) = &mut conversion_cache {
                         report("Saving Verified Area Conversion");
-                        if let Err(error) = cache.publish(&converted, manager) {
-                            if parhelion_import::cancellation::is_cancelled(&error) {
+                        match cache.publish(&converted, &folder, manager) {
+                            Ok(published) => folder = published,
+                            Err(error) if parhelion_import::cancellation::is_cancelled(&error) => {
                                 return Err(invalid(error.to_string()));
                             }
-                            report(&format!("Area Cache Unavailable / {error:#}"));
+                            Err(error) => {
+                                report(&format!("Area Cache Unavailable / {error:#}"));
+                            }
                         }
                     }
                     converted
@@ -468,6 +528,11 @@ impl Geometry {
                 crate::mod_family::build::remember_map(
                     name,
                     serde_json::to_value(&converted).map_err(|e| invalid(e.to_string()))?,
+                    conversion_cache
+                        .as_ref()
+                        .and_then(cache::Cache::folder)
+                        .map(|conversion| conversion.join(cache::LINKS))
+                        .as_deref(),
                 )
                 .map_err(invalid)?;
                 converted
@@ -476,6 +541,8 @@ impl Geometry {
         chain.set_lights(map_lights(&converted.lights, name));
         chain.set_environment(map_environment(
             converted.native_sun,
+            converted.native_exposure,
+            converted.interior_atmosphere.is_some(),
             converted
                 .areas
                 .first()
@@ -496,6 +563,7 @@ impl Geometry {
         let mut shared = Shared {
             kept,
             folder,
+            _hold: conversion_cache.as_mut().and_then(cache::Cache::take_hold),
             nodes: converted.nodes,
             pieces: converted.pieces,
             props: converted.props,
@@ -508,7 +576,9 @@ impl Geometry {
             visibility: converted.visibility,
             decorators: converted.decorators,
             decorator_placement,
+            decorator_occlusion: converted.decorator_occlusion,
             atmosphere: converted.atmosphere,
+            interior_atmosphere: converted.interior_atmosphere,
             atmosphere_lookup: converted.atmosphere_lookup,
             atmosphere_image: converted.atmosphere_image,
             occlusion: converted.occlusion,
@@ -517,6 +587,8 @@ impl Geometry {
             lights: converted.lights,
             light: converted.light,
             native_sun: converted.native_sun,
+            native_exposure: converted.native_exposure,
+            color_grade: converted.color_grade,
             everywhere: BTreeSet::new(),
             source: source.clone(),
             donor,
@@ -529,14 +601,7 @@ impl Geometry {
                 .collect();
         }
         report("Reading Source Spawns, Objectives and Death Boundaries");
-        Self::assemble(
-            chain,
-            Arc::new(shared),
-            0,
-            name,
-            Some(folder_lock),
-            conversion_cache.map(cache::Cache::lease),
-        )
+        Self::assemble(chain, Arc::new(shared), 0, name, Some(folder_lock))
     }
 
     /// Connected area `index` of the map whose first area is `self`, named `name` and placed by
@@ -562,10 +627,12 @@ impl Geometry {
         chain.set_lights(map_lights(&self.shared.lights, name));
         chain.set_environment(map_environment(
             self.shared.native_sun,
+            self.shared.native_exposure,
+            self.shared.interior_atmosphere.is_some(),
             &self.shared.areas[index].interiors,
         ));
         chain.set_decorators(self.shared.decorator_placement.clone());
-        Self::assemble(chain, self.shared.clone(), index, name, None, None)
+        Self::assemble(chain, self.shared.clone(), index, name, None)
     }
 
     /// Area `index` of `shared`, or the whole level when it has no connected areas, with the
@@ -576,7 +643,6 @@ impl Geometry {
         index: usize,
         name: &str,
         folder_lock: Option<std::fs::File>,
-        generation: Option<parhelion_import::cache::Generation>,
     ) -> AuthoringResult<Self> {
         let (pieces, props, spawns, world, statics, ambience, visibility, loads) =
             match shared.areas.get(index) {
@@ -644,7 +710,6 @@ impl Geometry {
             loads,
             shared,
             _folder_lock: folder_lock,
-            _generation: generation,
         })
     }
 
@@ -701,6 +766,11 @@ impl Geometry {
     pub(super) fn chain_entries(&self) -> usize {
         self.chain.entries()
     }
+
+    /// The packages of the donor world records this area's chain copies.
+    pub(super) fn donor_packages(&self) -> impl Iterator<Item = u16> {
+        self.chain.donor_packages()
+    }
     pub(super) fn own_containers(
         &mut self,
         directory: &Path,
@@ -750,7 +820,7 @@ impl Geometry {
     }
 
     /// The area's entries from `first`, its graph's entries from `resource_offset` across `ids`,
-    /// with its occlusion record assigning probe `clusters[c]` to its spatial tome's cluster `c`.
+    /// with the planned probes and cluster assignments in its occlusion record.
     pub(super) fn split_tags_at(
         &self,
         first: TagHash,
@@ -758,9 +828,9 @@ impl Geometry {
         resource_offset: usize,
         name: &str,
         textures: &mut Textures,
-        clusters: Option<&[u16]>,
+        lighting: Option<&super::lighting::Plan>,
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
-        self.tags_with(first, name, textures, clusters, |index| {
+        self.tags_with(first, name, textures, lighting, |index| {
             super::plan::entry_tag(ids, resource_offset + index)
         })
     }
@@ -797,9 +867,22 @@ impl Geometry {
         first: TagHash,
         name: &str,
         textures: &mut Textures,
-        clusters: Option<&[u16]>,
+        lighting: Option<&super::lighting::Plan>,
         entry: impl Fn(usize) -> AuthoringResult<TagHash>,
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash, Vec<NewTagReferenceOverride>)> {
+        let probes = lighting.map_or_else(
+            || {
+                std::borrow::Cow::Owned(
+                    self.shared
+                        .occlusion
+                        .iter()
+                        .copied()
+                        .map(super::lighting::Probe::from)
+                        .collect::<Vec<_>>(),
+                )
+            },
+            |plan| std::borrow::Cow::Borrowed(plan.probes.as_slice()),
+        );
         let base = self.chain.entries();
         if base > crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
             return Err(invalid("The map root chain exceeds one package"));
@@ -956,6 +1039,19 @@ impl Geometry {
             .iter()
             .map(|record| tag(record))
             .collect::<AuthoringResult<Vec<_>>>()?;
+        // Adjacent resident areas can still draw their decorators after the active selector
+        // changes. Each area loads the shared buffer and maps every identity it contains.
+        let decorator_occlusion = match &self.shared.decorator_occlusion {
+            Some(occlusion) => Some((
+                tag(&occlusion.buffer)?,
+                occlusion
+                    .records
+                    .iter()
+                    .map(|&(_, identity, offset)| (identity, offset))
+                    .collect::<Vec<_>>(),
+            )),
+            _ => None,
+        };
         let loads = self
             .loads
             .clone()
@@ -991,6 +1087,12 @@ impl Geometry {
             .collect::<AuthoringResult<Vec<_>>>()?;
         let sounds = self.ambience.as_deref().map(tag).transpose()?;
         let atmosphere = self.shared.atmosphere.as_deref().map(tag).transpose()?;
+        let interior_atmosphere = self
+            .shared
+            .interior_atmosphere
+            .as_deref()
+            .map(tag)
+            .transpose()?;
         let lookup = self
             .shared
             .atmosphere_lookup
@@ -1011,6 +1113,17 @@ impl Geometry {
             .map(|(index, volume)| {
                 Ok(chain::Cubemap {
                     texture: tag(&volume.texture)?,
+                    grid: volume
+                        .grid
+                        .as_ref()
+                        .map(|grid| -> AuthoringResult<_> {
+                            Ok(chain::CubemapGrid {
+                                texture: tag(&grid.texture)?,
+                                dimensions: grid.dimensions,
+                                strength: grid.strength,
+                            })
+                        })
+                        .transpose()?,
                     center: volume.center,
                     extents: volume.extents,
                     capture: volume.capture,
@@ -1018,23 +1131,41 @@ impl Geometry {
                 })
             })
             .collect::<AuthoringResult<Vec<_>>>()?;
+        let gels = gel_symbols(&self.shared.lights)
+            .into_iter()
+            .map(&tag)
+            .collect::<AuthoringResult<Vec<_>>>()?;
         let (mut tags, root) = self.chain.tags(
             first,
-            statics,
-            &pieces,
-            &props,
-            &decorators,
-            &self.spawns,
-            &world,
-            &sky,
-            sounds,
-            atmosphere,
-            lookup,
-            image,
-            &self.shared.occlusion,
-            clusters,
-            &cubemaps,
-            &loads,
+            &chain::Inputs {
+                placements: chain::Placements {
+                    statics,
+                    props: &props,
+                    decorators: &decorators,
+                },
+                pieces: &pieces,
+                spawns: &self.spawns,
+                world,
+                sky: &sky,
+                sounds,
+                atmosphere: chain::Atmosphere {
+                    volume: atmosphere,
+                    interior: interior_atmosphere,
+                    lookup,
+                    image,
+                },
+                occlusion: chain::Occlusion {
+                    probes: &probes,
+                    clusters: lighting.map(|plan| plan.clusters.as_slice()),
+                    decorators: decorator_occlusion
+                        .as_ref()
+                        .map(|(buffer, rows)| (*buffer, rows.as_slice())),
+                },
+                cubemaps: &cubemaps,
+                gels: &gels,
+                color_grade: self.shared.color_grade.as_deref().map(tag).transpose()?,
+                content: &loads,
+            },
         )?;
         tags.extend(content);
         Ok((tags, root, references))

@@ -3,15 +3,16 @@
 //! A source weapon lists its sockets, each of a socket type. A mod socket type names the slot it
 //! fills, such as a barrel or a chip, the mods every weapon's socket of that type accepts and the
 //! glyph the slot shows. A weapon's socket can also accept mods made for that weapon alone. A mod
-//! carries stat deltas on the source scale, scripted behavior, or both. A delta goes through the
-//! effect match the weapon's own scores use, or moves a stat Shadowkeep shares by identity as far
-//! through the donor's range as it moves the source score through the source range. A mod becomes
+//! carries stat deltas on the source scale, scripted behavior, or both. A delta adds its own value
+//! to the native stat its source stat becomes, and the curves of the weapon it is on give it its
+//! effect, as they give a stock mod's. So one mod is the same plug on every weapon. A mod becomes
 //! a private plug when one of its deltas has a native effect, and the others are reported.
 //! Scripted chip behavior has no stored program in the item data, so a chip is carried only where
 //! a Shadowkeep perk performs what its description states, with that perk's effects. Every choice
 //! wears its slot's glyph. Everything else is reported.
 mod icon;
 use super::*;
+pub(crate) use icon::inventory_icon;
 use std::sync::Arc;
 
 /// Item definitions by identity, with the definition tag at row +0x10.
@@ -61,10 +62,6 @@ const REUSABLE_CHOICES: usize = 4;
 /// The most choices a column holds: the rows one 64-bit ownership mask covers, also the largest
 /// Shadowkeep randomized set.
 const ROLL_POOL: usize = 64;
-/// Source scores run from 0 to 100. Weapons score 10 in most stats, and mods raise them to 100 at
-/// most. A native group without a display maximum is taken to run to 100 as well.
-const SOURCE_MAXIMUM: i64 = 100;
-const NATIVE_MAXIMUM: i32 = 100;
 
 /// FNV-1 of an identifier. Both games name slots and plug categories this way.
 const fn fnv1(name: &str) -> u32 {
@@ -415,47 +412,18 @@ fn stat_of(value: &Value) -> u32 {
         .unwrap_or_default()
 }
 
-/// What a mod's deltas are measured against: the source weapon's scores, stat curves and matched
-/// effects, the donor's values and the source stats the import holds at fixed outputs.
+/// What a mod's deltas can reach: the native stats by identity, the stats the authored weapon
+/// carries and the source stats the import holds at fixed outputs.
 struct Effects<'a> {
-    donor: u32,
-    curves: Option<(Payload, usize)>,
-    base: &'a [Value],
-    matched: Vec<Value>,
-    omitted: Vec<Value>,
     definitions: &'a BTreeMap<u32, u16>,
-    values: BTreeMap<u16, i32>,
-    maximum: i32,
+    carried: BTreeSet<u16>,
     held: BTreeSet<u32>,
 }
 
 /// The donor's investment values by stat definition index, with the values the import gives the
-/// weapon in their place.
+/// weapon in their place. A mod's delta reaches only these stats.
 fn values(native: &mut Reader, donor: u32, gameplay: &Value) -> Result<BTreeMap<u16, i32>> {
-    use sundial::package_authoring::investment_schema::{
-        ITEM_INVESTMENT_STAT_POINTER_OFFSET, ITEM_INVESTMENT_STAT_RESOURCE_CLASS,
-        ITEM_INVESTMENT_STAT_ROW_CLASS, ITEM_INVESTMENT_STAT_ROW_SIZE,
-    };
-    let tag = crate::tiger::shadowkeep::item_tag(native, donor)?;
-    let item = native.tag(tag, Some(NATIVE_ITEM))?;
-    let mut values = BTreeMap::new();
-    if let Some(resource) = optional(
-        &item,
-        ITEM_INVESTMENT_STAT_POINTER_OFFSET,
-        ITEM_INVESTMENT_STAT_RESOURCE_CLASS,
-    )? && item.bytes::<16>(resource)? != [0; 16]
-    {
-        for row in item.array(
-            resource,
-            ITEM_INVESTMENT_STAT_ROW_SIZE,
-            Some(ITEM_INVESTMENT_STAT_ROW_CLASS),
-        )? {
-            values.insert(
-                u16::from(item.u8(row)?),
-                i32::from_le_bytes(item.bytes(row + 4)?),
-            );
-        }
-    }
+    let mut values = crate::tiger::shadowkeep::investment_stats(native, donor)?;
     for row in gameplay["investment_stats"]
         .as_array()
         .into_iter()
@@ -493,122 +461,12 @@ fn held(gameplay: &Value) -> BTreeSet<u32> {
         .collect()
 }
 
-/// The change that moves the donor's `value` as far through the native range as `delta` moves the
-/// source score `base` through the source range: a rise by its share of the room above the
-/// score, a fall by its share of the score.
-fn relative(base: i64, delta: i64, value: i32, maximum: i32) -> i32 {
-    let (share, room) = if delta > 0 {
-        if base >= SOURCE_MAXIMUM {
-            return 0;
-        }
-        (
-            delta as f64 / (SOURCE_MAXIMUM - base) as f64,
-            maximum - value,
-        )
-    } else {
-        if base <= 0 {
-            return 0;
-        }
-        (delta as f64 / base as f64, value)
-    };
-    (share.clamp(-1., 1.) * f64::from(room.max(0))).round() as i32
-}
-
 impl Effects<'_> {
-    fn score(&self, stat: u32) -> Option<i64> {
-        self.base
-            .iter()
-            .find(|row| row["hash"].as_u64() == Some(u64::from(stat)) && row["literal"] == true)
-            .and_then(|row| row["value"].as_i64())
-    }
-
-    /// The matched donor values with every effect-matched delta added to the weapon's scores,
-    /// and the reasons for stats left unmatched. None without curves or such a delta.
-    fn moved(&self, native: &mut Reader, deltas: &[&Value]) -> Option<(Vec<Value>, Vec<Value>)> {
-        let (curves, group) = self.curves.as_ref()?;
-        let mut shifted = self.base.to_vec();
-        let mut moved = false;
-        for delta in deltas {
-            let stat = stat_of(&delta["hash"]);
-            if delta["literal"] != true || !translator::translates(stat) {
-                continue;
-            }
-            if let Some(row) = shifted
-                .iter_mut()
-                .find(|row| row["hash"].as_u64() == Some(u64::from(stat)))
-            {
-                row["value"] = json!(
-                    row["value"].as_i64().unwrap_or_default()
-                        + delta["value"].as_i64().unwrap_or_default()
-                );
-                moved = true;
-            }
-        }
-        moved.then(|| {
-            let (_, after, omitted) =
-                translator::matched(native, self.donor, curves, *group, &shifted);
-            (after, omitted)
-        })
-    }
-
-    /// The donor value matched at the weapon's score plus the delta, less the one matched at its
-    /// own score.
-    fn matched_change(
-        &self,
-        stat: u32,
-        (moved, omitted): &(Vec<Value>, Vec<Value>),
-    ) -> std::result::Result<(u16, i32), String> {
-        let find = |rows: &[Value]| {
-            rows.iter()
-                .find(|row| row["stat"].as_u64() == Some(u64::from(stat)))
-                .cloned()
-        };
-        let (Some(before), Some(after)) = (find(&self.matched), find(moved)) else {
-            return Err(find(omitted)
-                .or_else(|| find(&self.omitted))
-                .and_then(|row| row["reason"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| "The effect could not be matched".into()));
-        };
-        let target = stat_of(&after["native"]);
-        let index = *self
-            .definitions
-            .get(&target)
-            .ok_or_else(|| format!("Native stat {target:08X} has no definition"))?;
-        let change = after["matched"].as_i64().unwrap_or_default()
-            - before["matched"].as_i64().unwrap_or_default();
-        match i32::try_from(change) {
-            Ok(0) => Err("The matched native value does not change".into()),
-            Ok(change) => Ok((index, change)),
-            Err(error) => Err(error.to_string()),
-        }
-    }
-
-    /// The change [`relative`] gives the stat Shadowkeep shares by identity.
-    fn relative_change(&self, stat: u32, delta: &Value) -> std::result::Result<(u16, i32), String> {
-        let index = *self
-            .definitions
-            .get(&stat)
-            .ok_or_else(|| "Shadowkeep has no stat with this identity".to_owned())?;
-        let value = *self
-            .values
-            .get(&index)
-            .ok_or_else(|| "The donor carries no value for this stat".to_owned())?;
-        let base = self
-            .score(stat)
-            .ok_or_else(|| "The source weapon has no score for this stat".to_owned())?;
-        let delta = delta["value"].as_i64().unwrap_or_default();
-        match relative(base, delta, value, self.maximum) {
-            0 => Err("The donor's value has no room to move".into()),
-            change => Ok((index, change)),
-        }
-    }
-
-    fn contribution(
-        &self,
-        stat: u32,
-        delta: &Value,
-        moved: Option<&(Vec<Value>, Vec<Value>)>,
-    ) -> std::result::Result<(u16, i32), String> {
+    /// A delta's own value on the native stat its source stat becomes: the stat Shadowkeep
+    /// matches it to by effect, such as Range, which changed identity, else the one of its
+    /// identity. The weapon's base scores are matched by effect, but a mod is not, since a fixed
+    /// bonus reads as a Shadowkeep mod's does on every weapon.
+    fn contribution(&self, stat: u32, delta: &Value) -> std::result::Result<(u16, i32), String> {
         if delta["literal"] != true {
             return Err("The delta is not a literal value".into());
         }
@@ -618,32 +476,32 @@ impl Effects<'_> {
                     .into(),
             );
         }
-        let matched = match moved {
-            Some(moved) if translator::translates(stat) => self.matched_change(stat, moved),
-            _ => Err("The games' curves are not matched for this stat".into()),
-        };
-        matched.or_else(|reason| {
-            self.relative_change(stat, delta)
-                .map_err(|other| format!("{reason}. {other}"))
-        })
+        let native = translator::native(stat).unwrap_or(stat);
+        let index = *self
+            .definitions
+            .get(&native)
+            .ok_or_else(|| "Shadowkeep has no stat with this identity".to_owned())?;
+        if !self.carried.contains(&index) {
+            return Err("The donor carries no value for this stat".into());
+        }
+        let value = delta["value"].as_i64().unwrap_or_default();
+        i32::try_from(value)
+            .map(|value| (index, value))
+            .map_err(|error| error.to_string())
     }
 
     /// Each nonzero delta's native contribution, summed by native stat, and why each other delta
-    /// has none. A stat both games match by effect contributes the change in its matched donor
-    /// value. A stat Shadowkeep shares by identity without a matched effect moves by
-    /// [`relative`]. Stats the import holds at fixed outputs and stats without a native
-    /// counterpart are left off.
-    fn contributions(&self, native: &mut Reader, deltas: &[Value]) -> (Vec<Value>, Vec<Value>) {
-        let deltas = deltas
-            .iter()
-            .filter(|delta| delta["value"].as_i64().is_some_and(|value| value != 0))
-            .collect::<Vec<_>>();
-        let moved = self.moved(native, &deltas);
+    /// has none. Stats the import holds at fixed outputs and stats without a native counterpart
+    /// on the donor are left off.
+    fn contributions(&self, deltas: &[Value]) -> (Vec<Value>, Vec<Value>) {
         let mut rows = BTreeMap::<u16, i32>::new();
         let mut dropped = Vec::new();
-        for delta in deltas {
+        for delta in deltas
+            .iter()
+            .filter(|delta| delta["value"].as_i64().is_some_and(|value| value != 0))
+        {
             let stat = stat_of(&delta["hash"]);
-            match self.contribution(stat, delta, moved.as_ref()) {
+            match self.contribution(stat, delta) {
                 Ok((index, change)) => *rows.entry(index).or_default() += change,
                 Err(reason) => dropped.push(
                     json!({"stat":format!("{stat:08X}"),"value":delta["value"],"reason":reason}),
@@ -700,7 +558,7 @@ fn choose(
         )));
     }
     let deltas = catalog.deltas(r, ordinal)?;
-    let (stats, dropped) = effects.contributions(native, &deltas);
+    let (stats, dropped) = effects.contributions(&deltas);
     let icon =
         glyph.map(|png| json!({"source":"image","name":named.name,"image":{"png_base64":png}}));
     let Some(counterpart) = counterpart else {
@@ -1129,34 +987,12 @@ pub fn author_perks(
         .context("Source weapon identity")?;
     let definition = catalog.definition(r, ordinal)?;
     let weapon = sockets(&definition)?;
-    let base = stats(r, &definition)?;
     let donor = hash(graph, "native_item")?;
-    let root = hash(
-        graph["source_assembly"]
-            .as_array()
-            .and_then(|parts| parts.first())
-            .context("Empty source gameplay assembly")?,
-        "entity",
-    )?;
-    let curves = curves(r, root)?;
     let definitions = crate::tiger::shadowkeep::stat_definitions(native)?;
-    let (_, matched, omitted) = match &curves {
-        Some((p, group)) => translator::matched(native, donor, p, *group, &base),
-        None => (BTreeMap::new(), Vec::new(), Vec::new()),
-    };
     let gameplay = &graph["source_gameplay"];
     let effects = Effects {
-        donor,
-        curves,
-        base: &base,
-        matched,
-        omitted,
         definitions: &definitions,
-        values: values(native, donor, gameplay)?,
-        maximum: gameplay["display_group"]["maximum_value"]
-            .as_i64()
-            .and_then(|maximum| i32::try_from(maximum).ok())
-            .unwrap_or(NATIVE_MAXIMUM),
+        carried: values(native, donor, gameplay)?.into_keys().collect(),
         held: held(gameplay),
     };
     let mut survey = Vec::new();

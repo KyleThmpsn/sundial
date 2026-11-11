@@ -11,6 +11,8 @@ use crate::{AuthoringResult, error::invalid};
 use parhelion_import::halo_reach::level::native::cluster_at;
 use std::collections::{BTreeMap, VecDeque};
 
+mod gradient;
+
 const MARGIN: f32 = 16.;
 const MIN_WIDTH: f32 = 4.;
 const MAX_CELLS: usize = 512;
@@ -25,6 +27,7 @@ pub(super) struct Cell {
     pub bounds: Bounds,
     /// Index in the source probe array, before the native record's default probe is inserted.
     pub probe: usize,
+    pub gradient: [[f32; 2]; 3],
 }
 
 #[derive(Clone, Copy, Default)]
@@ -114,11 +117,10 @@ impl<'a> Source<'a> {
         }
     }
 
-    /// The probe a region of `samples` takes: of the samples standing in the structure cluster
-    /// most of them stand in, the one at the first quartile of squared visibility. A dynamic
-    /// object can stand anywhere in the region. A region that reaches through a doorway or under
-    /// a window keeps the room's light, as Reach lit an object from the floor below it, rather
-    /// than the brighter light at the region's mean.
+    /// The probe a region of `samples` takes: among the samples in its majority structure
+    /// cluster, the one nearest their mean squared visibility. Squared visibility is diffuse
+    /// energy, so this minimizes the group's total squared lighting error. Restricting the
+    /// candidates to one structure cluster keeps a doorway's other room out of that average.
     fn pick(&self, samples: &[usize]) -> usize {
         let mut counts = BTreeMap::<Option<usize>, usize>::new();
         for &index in samples {
@@ -134,17 +136,25 @@ impl<'a> Source<'a> {
             })
             .map(|(cluster, _)| cluster)
             .expect("A lighting region has at least one probe");
-        let mut members = samples
+        let members = samples
             .iter()
             .copied()
             .filter(|&index| self.clusters[index] == majority)
             .collect::<Vec<_>>();
-        members.sort_by(|&a, &b| {
-            light(self.probes[a])
-                .total_cmp(&light(self.probes[b]))
-                .then(a.cmp(&b))
-        });
-        members[(members.len() - 1) / 4]
+        let mean = members
+            .iter()
+            .map(|&index| light(self.probes[index]))
+            .sum::<f64>()
+            / members.len() as f64;
+        members
+            .into_iter()
+            .min_by(|&a, &b| {
+                (light(self.probes[a]) - mean)
+                    .abs()
+                    .total_cmp(&(light(self.probes[b]) - mean).abs())
+                    .then(a.cmp(&b))
+            })
+            .expect("A lighting region has a majority structure cluster")
     }
 }
 
@@ -174,6 +184,7 @@ impl Leaf {
             cell: Cell {
                 bounds,
                 probe: source.pick(&samples),
+                gradient: [[0.; 2]; 3],
             },
             samples,
             error,
@@ -437,6 +448,7 @@ pub(super) fn cells(
         cells[index] = leaves[index].cell;
         *cells.last_mut().unwrap() = leaves.last().unwrap().cell;
     }
+    gradient::fit(&mut cells, &source);
     Ok(order(&cells)
         .into_iter()
         .map(|index| cells[index])

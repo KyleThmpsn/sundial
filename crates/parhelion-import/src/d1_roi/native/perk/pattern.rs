@@ -7,8 +7,10 @@ use sundial::package_authoring::{
         NativeAssetResourcePatch,
     },
 };
+pub(crate) mod closure;
 mod connected;
 mod dynamic;
+pub(crate) mod effect;
 mod nested;
 mod network;
 mod sequence;
@@ -303,7 +305,10 @@ pub(super) fn armor_attachment_inner(
     ancestors: &mut Vec<u32>,
 ) -> Result<()> {
     match p.u8(at + 2)? {
-        1 | 2 => Ok(()),
+        // Target 3 is the event's other combatant at context-summary `+14` in both builds,
+        // independently of a weapon, so an armor action reaches its victim as a weapon's does.
+        // The closure translates the graph whole on either host.
+        1..=3 => Ok(()),
         0 => {
             // Stock armor uses the action owner for player component modifiers too.
             // A checked host stays in the same graph as its player modifier bank.
@@ -318,7 +323,25 @@ pub(super) fn armor_attachment_inner(
                     return Host::Armor.validate_action_inner(source, child, ancestors);
                 }
             }
-            let rows = if matches!(owners.len(), 2 | 3) {
+            let rows = if owners.len() > 3 {
+                // A graph the closure translates whole may own several modifier banks, and
+                // every row of each must address a player component.
+                let mut rows = Vec::new();
+                for row in &owners {
+                    let tag = graph.u32(*row)?;
+                    let owner = source.read(tag)?;
+                    match owner.u32(owner.pointer(24)? - 4)? {
+                        0x808020DE => rows.extend(modifier_owner(source, &graph, tag)?),
+                        // A nested controller's child runs on the same armor host.
+                        0x80802A94 => {
+                            let (_, _, child) = nested::wrapper(&owner, tag)?;
+                            Host::Armor.validate_action_inner(source, child, ancestors)?;
+                        }
+                        _ => {}
+                    }
+                }
+                rows
+            } else if matches!(owners.len(), 2 | 3) {
                 let owner = source.read(graph.u32(owners[0])?)?;
                 let class = owner.u32(owner.pointer(24)? - 4)?;
                 ensure!(
@@ -326,9 +349,13 @@ pub(super) fn armor_attachment_inner(
                         && (owners.len() == 2 || class == 0x80802698),
                     "Source armor attachment needs another host contract"
                 );
-                status::modifier_bank(source, &graph)?
-                    .context("Source armor host has no modifier bank")?
-                    .1
+                match status::modifier_bank(source, &graph)? {
+                    Some((_, rows)) => rows,
+                    // A graph the closure translates whole, such as a status beside a channel
+                    // bank or a sequence, has no player modifier to check here.
+                    None if closure_form(source, p, at)? => Vec::new(),
+                    None => anyhow::bail!("Source armor host has no modifier bank"),
+                }
             } else {
                 modifiers(source, tag)?
             };
@@ -346,6 +373,9 @@ pub(super) fn armor_attachment_inner(
     }
 }
 
+/// The Duration identity a timed status publishes at `+A4`. Every Duration flag bit at `+A0`
+/// has the same consumer in both builds, as the status translator records, and none changes
+/// where the identity is published. Demotion's victim status uses 5 and Better Already's 19.
 fn status_key(owner: &Payload, tag: u32) -> Result<u32> {
     let settings = owner.pointer(24)?;
     let live = owner.pointer(16)?;
@@ -353,7 +383,7 @@ fn status_key(owner: &Payload, tag: u32) -> Result<u32> {
     ensure!(
         owner.u32(settings - 4)? == 0x80802698
             && owner.u32(live - 4)? == 0x80802A75
-            && owner.u32(duration + 0xA0)? == 9,
+            && owner.u32(duration + 0xA0)? & !0x1F == 0,
         "Source attachment cleanup key needs a qualified timed status"
     );
     status::pair(owner, tag, live + 0x50, duration, 0x8080255D, 0x8080223C)?;
@@ -402,6 +432,7 @@ pub(super) fn read(
     at: usize,
     ancestors: &mut Vec<u32>,
     omitted_feedback: &mut usize,
+    folder: Option<&Path>,
 ) -> Result<Vec<(Action, NativeAssetPatch)>> {
     if (p.u32(at - 4)?, p.u8(at)?) == (0x80802B8D, 1) {
         return dynamic::read(source, native, p, at);
@@ -446,13 +477,14 @@ pub(super) fn read(
             "Source attachment cleanup key needs a qualified timed status"
         );
     }
-    if owner.u32(owner.pointer(24)? - 4)? == 0x80802A94 {
+    if nested::controller_index(source, &source_graph)?.is_some() {
         if p.u8(at + 2)? == 1 {
             // A player attachment cannot supply an owning weapon to the child.
             // Apply the same player-host restrictions used by an armor action.
             Host::Armor.validate_action(source, nested::source_action(source, &source_graph)?)?;
         }
-        let (tag, program, omitted) = nested::read(source, native, &source_graph, ancestors)?;
+        let (tag, program, omitted) =
+            nested::read(source, native, &source_graph, folder, ancestors)?;
         *omitted_feedback = omitted_feedback
             .checked_add(omitted)
             .context("Nested feedback record count overflow")?;
@@ -506,14 +538,14 @@ pub(super) fn read(
             edit,
         )]);
     }
-    let (tag, patches) = if source_owners.len() == 2
+    if source_owners.len() == 2
         && source.reference(owner.u32(owner.pointer(24)? - 4)?).ok() == Some(0x80800000)
         && source.read(owner.u32(owner.pointer(24)? - 4)?)?.u32(16)? == 0x80800362
     {
-        network::modifier(source, native, &source_graph)?
-    } else {
-        modifier_patch(native, &modifiers(source, source_tag)?)?
-    };
+        let edit = network::modifier(source, native, &source_graph)?;
+        return Ok(vec![(attachment(p, at, edit.source_graph, None)?, edit)]);
+    }
+    let (tag, patches) = modifier_patch(native, &modifiers(source, source_tag)?)?;
     let action = attachment(p, at, tag, None)?;
     Ok(vec![(
         action,
@@ -529,6 +561,163 @@ pub(super) fn read(
     )])
 }
 
+/// Whether an attach effect takes the [`closure`] route: every attachment to the event's other
+/// combatant, attachments of other targets whose graph has more owners than the dedicated
+/// one-, two- and three-owner forms, status pairs led by the shared framework network, a status
+/// beside a sequence alone, and three-owner graphs not led by a timed status, which is the only
+/// three-owner dedicated form.
+/// Eliksni Immunity's status follows the framework network, as Touch of Malice's status and
+/// Duration host do, and Devil's Touch's status follows two other owners.
+pub(super) fn closure_form(source: &Source, p: &Payload, at: usize) -> Result<bool> {
+    if p.u32(at - 4)? != 0x80802953 || p.u8(at)? != 0 {
+        return Ok(false);
+    }
+    if p.u8(at + 2)? == 3 {
+        return Ok(true);
+    }
+    let tag = p.u32(at + 16)?;
+    if source.reference(tag)? != 0x80800734 {
+        return Ok(false);
+    }
+    let graph = source.read(tag)?;
+    let owners = graph
+        .array(32, 12, Some(0x80800715))?
+        .into_iter()
+        .map(|row| graph.u32(row))
+        .collect::<Result<Vec<_>>>()?;
+    if owners.len() > 3 {
+        return Ok(true);
+    }
+    let class = |tag: u32| -> Result<u32> {
+        let owner = source.read(tag)?;
+        owner.u32(owner.pointer(24)? - 4)
+    };
+    match owners.as_slice() {
+        [0x80AA_CEA6, status] => Ok(class(*status)? == 0x8080_2698),
+        // A status beside a sequence, or beside a channel bank that inherits nothing, has no
+        // dedicated form. The sound form keeps a network as its third owner, and the conditional
+        // form's bank inherits the channel the status count reads.
+        [status, companion] => {
+            if class(*status)? != 0x8080_2698 {
+                return Ok(false);
+            }
+            match class(*companion)? {
+                0x8080_0610 => Ok(true),
+                // The conditional form's bank inherits the channel its count reads, so only a
+                // bank that inherits nothing leaves the dedicated route.
+                0x8080_08F6 => {
+                    let bank = source.read(*companion)?;
+                    Ok(bank.u64(bank.pointer(24)? + 0x108)? == 0)
+                }
+                _ => Ok(false),
+            }
+        }
+        [leader, _, _] => Ok(class(*leader)? != 0x8080_2698),
+        _ => Ok(false),
+    }
+}
+
+/// A direct effect's source profile translated whole into an imported group, with the stock
+/// profile the group's private profile replaces on the action.
+pub(super) fn profile(
+    source: &Source,
+    native: &mut Reader,
+    tag: u32,
+    folder: &std::path::Path,
+) -> Result<(u32, closure::Group)> {
+    Ok((
+        crate::d1_roi::native::damage_profile::TEMPLATE,
+        closure::prepare_profile(source, native, tag, folder)?,
+    ))
+}
+
+/// An attachment translated whole: source attach effect 0 with retained byte 1, naming an entity
+/// graph. The [`closure`] module translates the graph whatever its owner families, the shared
+/// effect translator taking network, status, sequence, modifier, receiver, channel, context and
+/// category owners, as subclass abilities use them. Its translated group replaces native graph
+/// [`closure::TEMPLATE`] on the action. A graph the closure cannot translate refuses the talent
+/// with the closure's reason. A cleanup key follows the ordinary attachment rule: it must be the
+/// Duration identity of a timed status the graph owns.
+/// The attach action, its group, and the separate attachment of a detached modifier bank: an
+/// unconnected bank whose presence alone leaves the graph's owner families without a template.
+/// It attaches to the same target with the same empty keys, so both share the action's
+/// lifetime, which a graph retired by a status key could not keep.
+pub(super) type Closure = (Action, closure::Group, Option<(Action, NativeAssetPatch)>);
+
+pub(super) fn closure(
+    source: &Source,
+    native: &mut Reader,
+    p: &Payload,
+    at: usize,
+    folder: &std::path::Path,
+) -> Result<Option<Closure>> {
+    if !closure_form(source, p, at)? {
+        return Ok(None);
+    }
+    ensure!(
+        p.u8(at + 1)? == 1
+            && p.bytes::<5>(at + 3)? == [0; 5]
+            && p.u32(at + 20)? == 0
+            && p.u32(at + 28)? == 0x811C9DC5
+            && p.bytes::<16>(at + 32)? == [0; 16],
+        "Source attachment needs retained-state, removal or lane translation"
+    );
+    let tag = p.u32(at + 16)?;
+    ensure!(
+        source.reference(tag)? == 0x80800734,
+        "Source attachment is not a pattern"
+    );
+    let key = p.u32(at + 24)?;
+    if key != 0x811C9DC5 {
+        let graph = source.read(tag)?;
+        let mut statuses = Vec::new();
+        for row in graph.array(32, 12, Some(0x80800715))? {
+            let owner_tag = graph.u32(row)?;
+            let owner = source.read(owner_tag)?;
+            if owner.u32(owner.pointer(24)? - 4)? == 0x80802698 {
+                statuses.push(status_key(&owner, owner_tag)?);
+            }
+        }
+        ensure!(
+            statuses.contains(&key),
+            "Source attachment cleanup key needs a qualified timed status"
+        );
+    }
+    let detached = if key == 0x811C9DC5 {
+        crate::d1_roi::effect::detachable_modifier(source, native, tag)?
+    } else {
+        None
+    };
+    let bank = match detached {
+        Some(bank) => {
+            let graph = source.read(tag)?;
+            let (envelope, patches) =
+                modifier_patch(native, &modifier_owner(source, &graph, bank)?)?;
+            Some((
+                attachment(p, at, envelope, None)?,
+                NativeAssetPatch {
+                    action_index: 0,
+                    source_graph: envelope,
+                    patches,
+                    appends: Vec::new(),
+                    remove_owners: Vec::new(),
+                    components: Vec::new(),
+                    programs: Vec::new(),
+                },
+            ))
+        }
+        None => None,
+    };
+    // A status whose HUD identity has no native row takes a private HUD entry through the
+    // group's own HUD bindings, since an action bound to an imported group carries none.
+    let group = closure::prepare(source, native, tag, folder, detached)?;
+    Ok(Some((
+        attachment(p, at, closure::TEMPLATE, None)?,
+        group,
+        bank,
+    )))
+}
+
 fn attachment(
     p: &Payload,
     at: usize,
@@ -541,14 +730,78 @@ fn attachment(
             hud_status,
             ..Asset::default()
         },
+        // Both builds store the same target selector: the event's other combatant is 3.
         mode: match p.u8(at + 2)? {
             0 => AttachmentTarget::ThisItem,
             1 => AttachmentTarget::Player,
-            _ => AttachmentTarget::TriggeringWeapon,
+            2 => AttachmentTarget::TriggeringWeapon,
+            3 => AttachmentTarget::OtherCombatant,
+            target => anyhow::bail!("Source attachment target {target} is unqualified"),
         },
         keys: [p.u32(at + 24)?, p.u32(at + 28)?],
         float_bits: [0; 4],
     })
+}
+
+/// Stock graphs holding one constant modifier bank and nothing else, which feedback can create
+/// unchanged. `80FEF842` is the only stock bank whose one row adds -100 to component 14 input 4,
+/// the row of the machine gun feedback graph `80A7472D` behind Incendiary, Lightning, Chasm and
+/// Negative Rounds.
+const FEEDBACK_MODIFIERS: [u32; 1] = [0x80FE_F842];
+
+/// The stock graph whose sole modifier bank holds exactly the rows of source modifier graph
+/// `tag`, for feedback, which creates a graph without retaining it and so cannot take a private
+/// patched copy bound to an action.
+pub(super) fn stock_modifier_graph(source: &Source, native: &mut Reader, tag: u32) -> Result<u32> {
+    stock_modifier_graph_in(source, native, tag, &FEEDBACK_MODIFIERS)
+}
+
+/// The first of `candidates` whose sole modifier bank holds exactly the rows of source modifier
+/// graph `tag`.
+pub(super) fn stock_modifier_graph_in(
+    source: &Source,
+    native: &mut Reader,
+    tag: u32,
+    candidates: &[u32],
+) -> Result<u32> {
+    let rows = modifiers(source, tag)?;
+    for &stock in candidates {
+        let graph = native.tag(stock, Some(0x80809C0F))?;
+        let owners = graph.array(16, 12, Some(0x80809C04))?;
+        let [owner] = owners.as_slice() else {
+            continue;
+        };
+        if graph.bytes::<32>(32)? != [0; 32] {
+            continue;
+        }
+        let target = native.tag(graph.u32(*owner)?, Some(0x80809C36))?;
+        let settings = target.pointer(24)?;
+        if target.u32(settings - 4)? != 0x80803AFE
+            || target.u64(settings + 0x78)? != 0
+            || target.u64(settings + 0x90)? != 0
+            || target.u64(settings + 0x98)? != 1
+        {
+            continue;
+        }
+        let native_rows = target.array(settings + 88, 88, Some(0x80803B06))?;
+        let mut equal = native_rows.len() == rows.len();
+        for (row, &at) in rows.iter().zip(&native_rows) {
+            let instance = usize::try_from(target.u64(at + 8)?)?;
+            equal &= target.u64(at + 32)? == 0
+                && target.u64(at + 64)? == 1
+                && target.f32(instance + 64)? == 1.0
+                && target.u8(instance + 68)? == 1
+                && target.f32(at + 40)? == row.amount
+                && target.u8(at + 44)? == row.operation
+                && target.u16(at + 72)? == row.ability
+                && target.u16(at + 74)? == row.input
+                && target.u8(at + 76)? == row.component;
+        }
+        if equal {
+            return Ok(stock);
+        }
+    }
+    anyhow::bail!("Source feedback modifier graph {tag:08X} has no stock graph with its rows")
 }
 
 fn modifier_patch(

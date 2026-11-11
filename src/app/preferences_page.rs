@@ -245,7 +245,6 @@ impl SundialApp {
         ctx.set_theme(self.preferences.color_theme.egui_theme());
         self.plug_selection_mode = self.preferences.default_plug_selection_mode;
         self.troubleshooting_log_error = None;
-        self.remember_plug_selection_mode_after_confirmation = false;
     }
 
     pub(super) fn draw_interface_preferences(
@@ -368,8 +367,7 @@ impl SundialApp {
             if requested_mode == PlugSelectionMode::AnyPlug
                 && !self.preferences.really_unsafe_warning_acknowledged
             {
-                self.remember_plug_selection_mode_after_confirmation = true;
-                self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
+                self.confirmation = Some(ConfirmationDialog::ReallyUnsafe { remember: true });
             } else {
                 self.preferences.default_plug_selection_mode = requested_mode;
                 self.plug_selection_mode = requested_mode;

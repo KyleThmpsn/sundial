@@ -39,7 +39,7 @@ fn entries(
         }
         let weighted = p.array(
             at + if modern { 16 } else { 0 },
-            8,
+            if modern { 8 } else { 12 },
             Some(if modern { 0x8080290C } else { 0x80803737 }),
         )?;
         let [weighted] = weighted.as_slice() else {

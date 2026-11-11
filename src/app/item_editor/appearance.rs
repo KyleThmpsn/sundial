@@ -35,7 +35,25 @@ pub(crate) fn saved(
     hash: u64,
     plugs: Option<&serde_json::Value>,
 ) -> Option<Appearance> {
+    saved_for_class(catalog, hash, plugs, None)
+}
+
+/// Character composition picks the class row before socket ornaments and dyes are applied.
+pub(crate) fn saved_for_class(
+    catalog: &Catalog,
+    hash: u64,
+    plugs: Option<&serde_json::Value>,
+    class: Option<u8>,
+) -> Option<Appearance> {
     let mut loadout = item_loadout(catalog, hash)?;
+    if let Some(class) = class {
+        loadout.arrangement = catalog
+            .item_package_metadata(hash)?
+            .art_arrangements
+            .iter()
+            .find(|r| r.character_class == -1 || r.character_class == class as i8)?
+            .arrangement;
+    }
     match plugs {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::Array(plugs)) => {

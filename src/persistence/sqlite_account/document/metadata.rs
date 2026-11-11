@@ -45,10 +45,13 @@ pub(super) fn characters(
     snapshot: &SqliteAccountSnapshot,
 ) -> Result<BTreeMap<EntityId, CharacterPersistence>, SqliteAccountError> {
     let error = |error| SqliteAccountError::sqlite("read character metadata from", error);
-    let query = if snapshot.schema == super::super::Schema::V3 {
-        "SELECT slot, next_inventory_serial, appearance_header_valid, race, gender FROM characters ORDER BY slot"
+    // Schema 4 gave every character a header and dropped the validity column.
+    let query = if snapshot.schema.has_appearance_validity() {
+        "SELECT slot, next_inventory_serial, appearance_header_valid, race, gender, appearance_header FROM characters ORDER BY slot"
+    } else if snapshot.schema.has_appearance() {
+        "SELECT slot, next_inventory_serial, 1, race, gender, appearance_header FROM characters ORDER BY slot"
     } else {
-        "SELECT slot, next_inventory_serial, 0, race, gender FROM characters ORDER BY slot"
+        "SELECT slot, next_inventory_serial, 0, race, gender, NULL FROM characters ORDER BY slot"
     };
     let mut statement = connection.prepare(query).map_err(error)?;
     let rows = statement
@@ -57,6 +60,9 @@ pub(super) fn characters(
                 row.get::<_, usize>(0)?,
                 CharacterPersistence {
                     next_inventory_serial: row.get(1)?,
+                    appearance_header: row
+                        .get::<_, Option<Vec<u8>>>(5)?
+                        .map(|b| b.try_into().expect("validated 36-byte appearance header")),
                     appearance_identity: if row.get::<_, bool>(2)? {
                         Some((row.get(3)?, row.get(4)?))
                     } else {

@@ -18,6 +18,9 @@ pub use stamp::{package_files_stamp, package_stamp};
 /// built from.
 type Indexes = BTreeMap<(PathBuf, bool), (String, Weak<PackageManager>)>;
 
+/// Every record of one class with its payload, in [`Reader::classes`] order.
+pub(crate) type Survey = Arc<Vec<(u32, Arc<Payload>)>>;
+
 /// One package index per folder and era while any reader holds it. Building an index reads
 /// every package header, about five seconds for either game, and one import opens readers for
 /// each stage, so readers of an unchanged folder share the index instead. The cache holds no
@@ -210,6 +213,33 @@ impl Reader {
             .iter()
             .map(|(t, _)| t.0)
             .collect()
+    }
+    /// Every record of `class` with its payload, read once per package index and shared by every
+    /// reader of that index. Survey reads are not recorded in the export. A class larger than the
+    /// payload cache, such as the 40,876 acoustic settings records (`80808E68`) of Shadowkeep,
+    /// would otherwise be read and written to `raw` again on every pass. Callers record the
+    /// records they use through [`Reader::tag`].
+    pub(crate) fn survey(&self, class: u32) -> Result<Survey> {
+        static SURVEYS: Mutex<Vec<(u32, Weak<PackageManager>, Survey)>> = Mutex::new(Vec::new());
+        let mut surveys = crate::cancellation::mutex(&SURVEYS)?;
+        surveys.retain(|(_, index, _)| index.strong_count() > 0);
+        if let Some((.., records)) = surveys.iter().find(|(kept, index, _)| {
+            *kept == class
+                && index
+                    .upgrade()
+                    .is_some_and(|index| Arc::ptr_eq(&index, &self.manager))
+        }) {
+            return Ok(Arc::clone(records));
+        }
+        let mut reader = self.shared_discovery();
+        let records = Arc::new(
+            self.classes(class)
+                .into_iter()
+                .map(|tag| Ok((tag, reader.tag(tag, Some(class))?)))
+                .collect::<Result<Vec<_>>>()?,
+        );
+        surveys.push((class, Arc::downgrade(&self.manager), Arc::clone(&records)));
+        Ok(records)
     }
     pub fn finish(&self) -> Result<()> {
         write_json(

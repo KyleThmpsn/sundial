@@ -189,19 +189,22 @@ fn find_obsolete_artifacts(
     target: &Path,
     incoming: &[ArtifactMetadata],
 ) -> Result<Vec<ArtifactMetadata>, InstallError> {
+    fn native(artifact: &ArtifactMetadata) -> &str {
+        crate::mod_family::native_name(&artifact.file_name)
+    }
     let mut obsolete = Vec::new();
     for profile in all_authored_packages_in(&[target]) {
         // A required output retires only when the incoming set holds its id under another name,
         // as packages an earlier build named `w64_parhelion_assets_<id>_0.pkg` do.
         let renamed = incoming.iter().any(|artifact| {
-            artifact.file_name != profile.file_name
-                && authored_package_for_file_name(&artifact.file_name)
+            native(artifact) != profile.file_name
+                && authored_package_for_file_name(native(artifact))
                     .is_some_and(|incoming| incoming.package_id == profile.package_id)
         });
         if (profile.required_output && !renamed)
             || incoming
                 .iter()
-                .any(|artifact| artifact.file_name == profile.file_name)
+                .any(|artifact| native(artifact) == profile.file_name)
         {
             continue;
         }
@@ -273,6 +276,10 @@ pub(super) fn validate_manifest_and_staged_files(
     let authored_grants = manifest_grants(&manifest.project);
     let source_artifacts = validate_source_artifact_records(manifest.source_artifacts)?;
     let artifacts = validate_artifact_records(manifest.artifacts)?;
+    validate_source_coverage(
+        &source_artifacts,
+        artifacts.iter().map(|artifact| artifact.file_name.as_str()),
+    )?;
     check_layout(target_packages_directory, &artifacts)?;
     let selected_recipe_files = manifest.selected_recipe_files;
     let selected_map_files = manifest.selected_map_files;
@@ -282,7 +289,7 @@ pub(super) fn validate_manifest_and_staged_files(
         ));
     }
     let staged_artifacts = staged::packages(&artifacts, &manifest.mods);
-    validate_direct_package_set(staged_run_directory, &staged_artifacts)?;
+    validate_direct_package_set(staged_run_directory, &staged_artifacts, &manifest.mods)?;
     let packages = validate_staged_packages(
         staged_run_directory,
         &artifacts,
@@ -296,6 +303,7 @@ pub(super) fn validate_manifest_and_staged_files(
         target_packages_directory,
         &manifest.mods,
     )?;
+    // Map diagnostics and mission controllers belong to members whose files are all staged.
     let map_diagnostics = validate_map_diagnostics(staged_run_directory, manifest.map_diagnostics)?;
     let mission_scripts = validate_mission_scripts(
         staged_run_directory,
@@ -327,7 +335,10 @@ fn validate_map_diagnostics(
     let Some(mut metadata) = metadata else {
         return Ok(None);
     };
-    let path = directory.join(map_diagnostics::FILE_NAME);
+    if crate::mod_family::native_name(&metadata.file_name) != map_diagnostics::FILE_NAME {
+        return Err(InstallError::validation("Invalid map diagnostics artifact"));
+    }
+    let path = directory.join(&metadata.file_name);
     mod_content::checked_path(directory, &path).map_err(InstallError::validation)?;
     let length = fs::metadata(&path)
         .map_err(|error| InstallError::validation(error.to_string()))?
@@ -363,7 +374,7 @@ fn validate_mission_scripts(
         ));
     }
     for script in &scripts {
-        if mission_script::path(&script.file_name).is_none()
+        if mission_script::path(crate::mod_family::native_name(&script.file_name)).is_none()
             || script.byte_length == 0
             || script.byte_length > mission_script::BYTE_LIMIT
         {
@@ -396,7 +407,7 @@ fn validate_merge_data(
     use sundial::package_authoring::mod_content::{merge::sidecar::Sidecar, plaintext};
     let mut validated = Vec::with_capacity(merge_data.len());
     for mut data in merge_data {
-        validate_plain_file_name(&data.file_name)?;
+        validate_staged_file_name(&data.file_name)?;
         if !is_sha256(&data.sha256) {
             return Err(InstallError::validation(format!(
                 "Merge data {} has an invalid SHA-256 digest",
@@ -450,9 +461,10 @@ fn validate_merge_data(
 /// Sunrise before 0.6, which aren't known to load a records package. The mod loader refuses the
 /// appended layout when its patches are checked.
 fn check_layout(target: &Path, artifacts: &[ArtifactMetadata]) -> Result<(), InstallError> {
-    let mod_layout = artifacts
-        .iter()
-        .any(|artifact| crate::package_profile::is_records_package(&artifact.file_name));
+    let mod_layout = artifacts.iter().any(|artifact| {
+        let name = crate::mod_family::native_name(&artifact.file_name);
+        crate::package_profile::is_records_package(name)
+    });
     if mod_layout && !uses_mod_loader(target) {
         return Err(InstallError::validation(
             "This build was made for Sunrise 0.6's mod folder, which this runtime doesn't load. Build it again to install it here",
@@ -682,7 +694,7 @@ pub(super) fn validate_artifact_records(
     let mut by_name = BTreeMap::new();
     let mut case_folded_names = BTreeSet::new();
     for mut artifact in artifacts {
-        validate_plain_file_name(&artifact.file_name)?;
+        validate_staged_file_name(&artifact.file_name)?;
         let folded = artifact.file_name.to_ascii_lowercase();
         if !case_folded_names.insert(folded) {
             return Err(InstallError::validation(format!(
@@ -700,21 +712,59 @@ pub(super) fn validate_artifact_records(
         by_name.insert(artifact.file_name.clone(), artifact);
     }
 
-    let profiles =
-        authored_packages_for_file_names(by_name.keys().map(String::as_str)).map_err(|error| {
-            InstallError::validation(format!("The manifest artifact set is invalid: {error}"))
-        })?;
-    profiles
+    let names = by_name.keys().cloned().collect::<Vec<_>>();
+    let ordered = staged_packages(names.iter().map(String::as_str)).map_err(|error| {
+        InstallError::validation(format!("The manifest artifact set is invalid: {error}"))
+    })?;
+    ordered
         .into_iter()
-        .map(|profile| {
-            by_name.remove(profile.file_name).ok_or_else(|| {
-                InstallError::validation(format!(
-                    "The manifest is missing authored package {}",
-                    profile.file_name
-                ))
+        .map(|(_, name)| {
+            by_name.remove(name).ok_or_else(|| {
+                InstallError::validation(format!("The manifest is missing authored package {name}"))
             })
         })
         .collect()
+}
+
+/// Each staged package's profile in installation order, read from its native name. A family
+/// member may patch a stock package once, so one patch name can appear once per member, while a
+/// new package's id belongs to one member. The required outputs are those of the whole build.
+pub(super) fn staged_packages<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<(AuthoredPackage, &'a str)>, String> {
+    let mut members = BTreeMap::<&str, BTreeSet<u16>>::new();
+    let mut added = BTreeSet::new();
+    let mut by_native = BTreeMap::<&str, Vec<&str>>::new();
+    for name in names {
+        let (member, native) = crate::mod_family::split(name);
+        let profile = authored_package_for_file_name(native)
+            .ok_or_else(|| format!("Unrecognized authored package {name:?}"))?;
+        let ids = members.entry(member).or_default();
+        if !ids.insert(profile.package_id) {
+            return Err(format!(
+                "Authored package {name:?} repeats package id {:04X} within its mod",
+                profile.package_id
+            ));
+        }
+        if !profile.stock_overlay && !added.insert(profile.package_id) {
+            return Err(format!(
+                "Authored package {name:?} shares package id {:04X} with another mod's package",
+                profile.package_id
+            ));
+        }
+        by_native.entry(native).or_default().push(name);
+    }
+    let profiles = authored_packages_for_file_names(by_native.keys().copied())?;
+    Ok(profiles
+        .into_iter()
+        .flat_map(|profile| {
+            by_native
+                .get(profile.file_name)
+                .into_iter()
+                .flatten()
+                .map(move |&name| (profile, name))
+        })
+        .collect())
 }
 
 pub(super) fn parse_canonical_source_artifact_file_name(file_name: &str) -> Option<(u16, u16)> {
@@ -763,13 +813,59 @@ pub(super) fn validate_source_artifact_records(
         }
         by_name.insert(artifact.file_name.clone(), artifact);
     }
-    if packages_with_latest != CANONICAL_PACKAGE_IDS.into_iter().collect() {
+    let required =
+        CANONICAL_PACKAGE_IDS
+            .into_iter()
+            .filter(|id| !crate::package_profile::RENDERING_PACKAGE_IDS.contains(id))
+            .chain(by_name.keys().filter_map(|name| {
+                parse_canonical_source_artifact_file_name(name).map(|(id, _)| id)
+            }))
+            .collect::<BTreeSet<_>>();
+    if packages_with_latest != required {
         return Err(InstallError::validation(
             "The manifest must include the required latest stock patch for every affected package id"
                 .to_owned(),
         ));
     }
     Ok(by_name.into_values().collect())
+}
+
+/// Every emitted stock overlay needs the source generation that the receipt will guard.
+pub(super) fn validate_source_coverage<'a>(
+    sources: &[ArtifactMetadata],
+    outputs: impl IntoIterator<Item = &'a str>,
+) -> Result<(), InstallError> {
+    let ids = sources
+        .iter()
+        .filter_map(|artifact| parse_canonical_source_artifact_file_name(&artifact.file_name))
+        .map(|(id, _)| id)
+        .collect::<BTreeSet<_>>();
+    for name in outputs {
+        let native = crate::mod_family::split(name).1;
+        if let Some(profile) = authored_package_for_file_name(native)
+            && profile.stock_overlay
+            && !ids.contains(&profile.package_id)
+        {
+            return Err(InstallError::validation(format!(
+                "Authored package {name} has no recorded stock source chain"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A staged file is a plain name, or `<member id>/<plain name>` for a family member other than
+/// the main mod. The manifest's family check confirms that the member is staged.
+pub(super) fn validate_staged_file_name(file_name: &str) -> Result<(), InstallError> {
+    use sundial::package_authoring::mod_content;
+    let (member, native) = crate::mod_family::split(file_name);
+    if file_name.contains('/') && (member == mod_content::ID || !mod_content::is_family_id(member))
+    {
+        return Err(InstallError::validation(format!(
+            "Manifest artifact name {file_name:?} names no family member's folder",
+        )));
+    }
+    validate_plain_file_name(native)
 }
 
 pub(super) fn validate_plain_file_name(file_name: &str) -> Result<(), InstallError> {
@@ -787,24 +883,26 @@ pub(super) fn validate_plain_file_name(file_name: &str) -> Result<(), InstallErr
     Ok(())
 }
 
+/// The run's package files match the manifest's: the main mod's in the run itself, and each
+/// other member of `mods` in the folder named for it. A kept member stages none.
 pub(super) fn validate_direct_package_set(
     staged_run_directory: &Path,
     artifacts: &[ArtifactMetadata],
+    mods: &[crate::mod_family::Member],
 ) -> Result<(), InstallError> {
-    let mut package_names = Vec::new();
-    let entries = fs::read_dir(staged_run_directory).map_err(|error| {
-        InstallError::validation(format!(
-            "Could not inspect staging run {}: {error}",
-            staged_run_directory.display()
-        ))
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            InstallError::validation(format!("Could not inspect a staged entry: {error}"))
-        })?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if has_pkg_extension(Path::new(&name)) {
-            package_names.push(name);
+    use sundial::package_authoring::mod_content;
+    let mut package_names = package_files(staged_run_directory)?;
+    for member in mods.iter().filter(|m| m.manifest.id != mod_content::ID) {
+        let id = &member.manifest.id;
+        let folder = staged_run_directory.join(id);
+        mod_content::checked_path(staged_run_directory, &folder)
+            .map_err(InstallError::validation)?;
+        if folder.is_dir() {
+            package_names.extend(
+                package_files(&folder)?
+                    .iter()
+                    .map(|name| crate::mod_family::staged_name(id, name)),
+            );
         }
     }
     package_names.sort();
@@ -822,6 +920,27 @@ pub(super) fn validate_direct_package_set(
     Ok(())
 }
 
+/// The names of the package files directly in `directory`.
+fn package_files(directory: &Path) -> Result<Vec<String>, InstallError> {
+    let entries = fs::read_dir(directory).map_err(|error| {
+        InstallError::validation(format!(
+            "Could not inspect staging run {}: {error}",
+            directory.display()
+        ))
+    })?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            InstallError::validation(format!("Could not inspect a staged entry: {error}"))
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if has_pkg_extension(Path::new(&name)) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
 pub(super) fn verify_source_artifacts(
     target_packages_directory: &Path,
     artifacts: &[ArtifactMetadata],
@@ -830,7 +949,20 @@ pub(super) fn verify_source_artifacts(
         .iter()
         .map(|artifact| artifact.file_name.clone())
         .collect::<BTreeSet<_>>();
-    let actual_names = discover_target_source_artifact_names(target_packages_directory)?;
+    let recorded_packages = artifacts
+        .iter()
+        .filter_map(|artifact| parse_canonical_source_artifact_file_name(&artifact.file_name))
+        .map(|(id, _)| id)
+        .collect::<BTreeSet<_>>();
+    let actual_names = discover_target_source_artifact_names(target_packages_directory)?
+        .into_iter()
+        .filter(|name| {
+            parse_canonical_source_artifact_file_name(name).is_none_or(|(id, _)| {
+                !crate::package_profile::RENDERING_PACKAGE_IDS.contains(&id)
+                    || recorded_packages.contains(&id)
+            })
+        })
+        .collect::<BTreeSet<_>>();
     if actual_names != expected_names {
         let missing = expected_names
             .difference(&actual_names)
@@ -854,23 +986,34 @@ pub(super) fn verify_source_artifacts(
             }
         )));
     }
-    for artifact in artifacts {
-        let path = target_packages_directory.join(&artifact.file_name);
-        reject_symlink(&path, "stock source artifact")?;
-        let digest = digest_file(&path).map_err(|error| {
-            InstallError::validation(format!(
+    let paths = artifacts
+        .iter()
+        .map(|artifact| {
+            let path = target_packages_directory.join(&artifact.file_name);
+            reject_symlink(&path, "stock source artifact")?;
+            Ok(path)
+        })
+        .collect::<Result<Vec<_>, InstallError>>()?;
+    let borrowed = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    // A Shadowkeep install's stock packages hold about 8 GB, so they hash on several threads, as
+    // a build's own check of them does. One file at a time took several times as long.
+    crate::artifact::digest_files(&borrowed, |index, digest| {
+        let artifact = &artifacts[index];
+        let digest = digest.map_err(|error| {
+            format!(
                 "Could not verify stock source artifact {}: {error}",
-                path.display()
-            ))
+                paths[index].display()
+            )
         })?;
         if digest.byte_length != artifact.byte_length || digest.sha256 != artifact.sha256 {
-            return Err(InstallError::validation(format!(
+            return Err(format!(
                 "Stock source artifact {} changed since this staged build was authored",
                 artifact.file_name
-            )));
+            ));
         }
-    }
-    Ok(())
+        Ok(())
+    })
+    .map_err(InstallError::validation)
 }
 
 pub(super) fn discover_target_source_artifact_names(
@@ -926,21 +1069,18 @@ pub(super) fn validate_staged_packages(
     target_packages_directory: &Path,
     mods: &[crate::mod_family::Member],
 ) -> Result<Vec<package::Checked>, InstallError> {
-    let profiles = authored_packages_for_file_names(
-        artifacts.iter().map(|artifact| artifact.file_name.as_str()),
-    )
-    .map_err(InstallError::validation)?;
+    let profiles = staged_packages(artifacts.iter().map(|artifact| artifact.file_name.as_str()))
+        .map_err(InstallError::validation)?;
     let jobs = profiles
         .into_iter()
-        .map(|profile| {
+        .map(|(profile, name)| {
             artifacts
                 .iter()
-                .find(|artifact| artifact.file_name == profile.file_name)
+                .find(|artifact| artifact.file_name == name)
                 .map(|artifact| (profile, artifact))
                 .ok_or_else(|| {
                     InstallError::validation(format!(
-                        "Staged package {} has no manifest record",
-                        profile.file_name
+                        "Staged package {name} has no manifest record"
                     ))
                 })
         })
@@ -950,7 +1090,7 @@ pub(super) fn validate_staged_packages(
             mods,
             staged_run_directory,
             target_packages_directory,
-            profile.file_name,
+            &artifact.file_name,
         )
         .map_err(InstallError::validation)?;
         reject_symlink(&path, "staged artifact")?;

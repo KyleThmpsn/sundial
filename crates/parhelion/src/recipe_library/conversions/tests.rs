@@ -193,7 +193,7 @@ fn a_sweep_of_every_item_sees_saves_made_while_it_read() {
     snapshot(&staged, &data.path().join("elsewhere"));
 
     let aside = library
-        .set_aside_with(None, &[], Status::default(), || {
+        .set_aside_with(None, &[], None, Status::default(), || {
             snapshot(
                 &library.root.join("saved.parhelion.json"),
                 &saved.join("graph"),
@@ -214,6 +214,71 @@ fn a_sweep_of_every_item_sees_saves_made_while_it_read() {
     );
     assert_eq!(report.folders, 3);
     assert_eq!(report.bytes, 1 + 17 + 1);
+}
+
+/// Keeping each recipe's newest backups could go wrong when counting folders drops a recipe's
+/// only copy, since a reimport of many items makes a backup for each, when an older copy stays
+/// while a newer one goes, when a folder that holds more than recipes loses its files, or when an
+/// emptied folder stays behind.
+#[test]
+fn a_sweep_keeps_each_recipes_newest_backups() {
+    let data = tempfile::tempdir().unwrap();
+    let library = RecipeLibrary::open(data.path().join("recipes")).unwrap();
+    let item = data.path().join("models/Item Name/0000ABCD");
+    fs::create_dir_all(&item).unwrap();
+    let item = item.canonicalize().unwrap();
+    let backups = data.path().join("backups/recipes");
+    // Made oldest first, each copy naming a conversion of its own.
+    snapshot(
+        &backups.join("recipe-backup-b/b.parhelion.json"),
+        &conversion(&item, "candidate-9", 1).join("graph"),
+    );
+    for n in 0..4 {
+        snapshot(
+            &backups.join(format!("recipe-backup-{n}/a.parhelion.json")),
+            &conversion(&item, &format!("candidate-{n}"), 1).join("graph"),
+        );
+    }
+    let mixed = backups.join("recipe-backup-mixed");
+    snapshot(
+        &mixed.join("a.parhelion.json"),
+        &conversion(&item, "candidate-5", 1).join("graph"),
+    );
+    fs::write(mixed.join("notes.txt"), b"kept by hand").unwrap();
+
+    let report = library
+        .set_aside_with(None, &[], Some(3), Status::default(), || {})
+        .unwrap()
+        .remove();
+
+    assert_eq!(
+        remaining(&item),
+        BTreeSet::from(
+            [
+                "candidate-1",
+                "candidate-2",
+                "candidate-3",
+                "candidate-5",
+                "candidate-9"
+            ]
+            .map(String::from)
+        )
+    );
+    assert_eq!(
+        remaining(&backups),
+        BTreeSet::from(
+            [
+                "recipe-backup-1",
+                "recipe-backup-2",
+                "recipe-backup-3",
+                "recipe-backup-b",
+                "recipe-backup-mixed",
+            ]
+            .map(String::from)
+        )
+    );
+    assert_eq!(remaining(&mixed).len(), 2);
+    assert_eq!(report.backups, 1);
 }
 
 #[cfg(unix)]

@@ -182,6 +182,7 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
         .map(|tag| hash(&tag.payload))
         .collect::<Vec<_>>();
     let verified = RefCell::new(BTreeMap::new());
+    let provenance = RefCell::new(BTreeMap::new());
     let make_pending = |moved: bool| Pending {
         key: hash(b"persisted imported graph"),
         state: hash(if moved { b"moved" } else { b"seed" }),
@@ -195,7 +196,11 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
         animation: BTreeMap::new(),
         assignments: vec![],
         verified: &verified,
+        provenance: &provenance,
         import_root: Some(output.join("inputs")),
+        ordinal: None,
+        status_start: 0,
+        attachments: vec![],
         identity: None,
         timings: RefCell::new(Timings::default()),
         returns: false,
@@ -227,6 +232,7 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
                 placed: &mut placed,
                 impacts: &mut impacts,
                 particle_symbols: &mut symbols,
+                hud_statuses: &mut vec![],
             },
             &[],
             &animation,
@@ -262,6 +268,7 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
                 placed: &mut placed,
                 impacts: &mut impacts,
                 particle_symbols: &mut symbols,
+                hud_statuses: &mut vec![],
             },
             &mut assignments,
             &mut animation,
@@ -347,6 +354,7 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
                     placed: &mut rejected_placed,
                     impacts: &mut impacts,
                     particle_symbols: &mut symbols,
+                    hud_statuses: &mut vec![],
                 },
                 &mut assignments,
                 &mut shared
@@ -373,6 +381,7 @@ fn imported_fragment_reopens_across_packages_and_rejects_changed_inputs() {
                     placed: &mut rejected_placed,
                     impacts: &mut impacts,
                     particle_symbols: &mut symbols,
+                    hud_statuses: &mut vec![],
                 },
                 &mut assignments,
                 &mut shared

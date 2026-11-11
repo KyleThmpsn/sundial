@@ -239,20 +239,6 @@ impl Carrier {
     }
 }
 
-fn poses(payload: &Payload) -> Result<Vec<Pose>> {
-    payload
-        .array(payload.pointer(24)? + 0x90, 32, Some(0x80809F75))?
-        .into_iter()
-        .map(|at| {
-            let mut values = [0.; 8];
-            for (i, value) in values.iter_mut().enumerate() {
-                *value = payload.f32(at + i * 4)?;
-            }
-            Pose::checked(values)
-        })
-        .collect()
-}
-
 pub(super) fn names(payload: &Payload) -> Result<Vec<(u32, i32)>> {
     payload
         .array(payload.pointer(24)? + 0x80, 16, Some(0x80808A08))?
@@ -278,8 +264,8 @@ pub(super) fn extend(carrier: &Carrier, weapon: &source::Rig, graph: &Path) -> R
     let first_person = &carrier.skeleton.1;
     let equipment_names = names(equipment)?;
     let first_person_names = names(first_person)?;
-    let mut equipment_bind = poses(equipment)?;
-    let mut first_person_bind = poses(first_person)?;
+    let mut equipment_bind = native_animation::pose::bind(equipment)?;
+    let mut first_person_bind = native_animation::pose::bind(first_person)?;
     let first = first_person_names
         .len()
         .checked_sub(equipment_names.len())

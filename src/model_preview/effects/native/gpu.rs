@@ -32,6 +32,7 @@ pub(in crate::model_preview) fn source(model: &Model, vertex: bool, scope: Scope
         text.push_str(VERTEX);
     } else {
         text.push_str(PIXEL);
+        scope_source(materials, &mut text);
     }
     text.push_str(cube::GLSL);
     text.push_str(layered::GLSL);
@@ -64,6 +65,29 @@ pub(in crate::model_preview) fn source(model: &Model, vertex: bool, scope: Scope
         surface_source(materials, &mut text);
     }
     text
+}
+
+fn scope_source(materials: &[(usize, &Material)], text: &mut String) {
+    text.push_str("vec4 nScopeConstant(int buffer,int row){\n");
+    for &(index, material) in materials {
+        let Some(native) = &material.native else {
+            continue;
+        };
+        for (&slot, rows) in &native.scopes {
+            writeln!(text, "if(uNativeIndex=={index}&&buffer=={slot}){{").unwrap();
+            for (row, value) in rows.iter().enumerate() {
+                let bits = value.map(f32::to_bits);
+                writeln!(
+                    text,
+                    "if(row=={row})return uintBitsToFloat(uvec4({}u,{}u,{}u,{}u));",
+                    bits[0], bits[1], bits[2], bits[3]
+                )
+                .unwrap();
+            }
+            text.push_str("return vec4(0.0);}\n");
+        }
+    }
+    text.push_str("return buffer>=5&&buffer<=7?uNativeDye[clamp(row,0,26)]:vec4(0.0);}\n");
 }
 
 /// The pixel stage's resource reads: sampling, sizes and cube levels of detail.
@@ -602,7 +626,9 @@ fn surface_source(materials: &[(usize, &Material)], text: &mut String) {
             }
         }
         text.push_str("vec3 encoded=o[1].xyz-vec3(0.5);float radius=length(encoded);if(radius<1e-8)return false;albedo=max(o[0].rgb,vec3(0.0));normal=vec4(encoded/radius,1.0-clamp((radius-0.375)*8.0,0.0,1.0));metal=clamp(o[2].x,0.0,1.0);\n");
-        if let Some(power) = native.ambient_power {
+        if native.hair {
+            text.push_str("ambient=1.0;\n");
+        } else if let Some(power) = native.ambient_power {
             writeln!(text, "ambient=nAmbient(o[2].yw,{power:.9});").unwrap();
         } else {
             text.push_str("ambient=clamp(2.0*o[2].y,0.0,1.0)*clamp(o[2].w,0.0,1.0);\n");
@@ -652,6 +678,9 @@ fn pixel_source(materials: &[(usize, &Material)], text: &mut String) {
         };
         writeln!(text, "if(uNativeIndex=={index}){{").unwrap();
         pixel_inputs(text, &native.pixel);
+        if native.modulates() {
+            text.push_str("if(texelFetch(uSceneDepth,ivec2(gl_FragCoord.xy),0).r>=1.0)discard;\n");
+        }
         if native.opaque() {
             if let Some(gain) = &native.base_gain {
                 writeln!(
@@ -663,7 +692,11 @@ fn pixel_source(materials: &[(usize, &Material)], text: &mut String) {
             }
             text.push_str("v[15]=vec4(gearBase,1.0);\n");
         }
-        let exposure = if native.opaque() { "1.0" } else { "uExposure" };
+        let exposure = if native.opaque() || native.modulates() {
+            "1.0"
+        } else {
+            "uExposure"
+        };
         let alpha = if native.intensity {
             "nIntensity(o[2].y)"
         } else if native.opaque() {
@@ -710,11 +743,13 @@ uniform int uNativePresent[12];
 uniform vec4 uNativeDye[27];
 uniform vec3 uNativeDirection;
 uniform float uNativeDistance;
+vec4 nScopeConstant(int buffer,int index);
 vec4 nConstant(int buffer,int index){
     if(buffer==0)return uEffectConstants[clamp(index,0,CONSTANT_ROWS-1)];
-    if(buffer>=5&&buffer<=7)return uNativeDye[clamp(index,0,26)];
+    if(buffer>=4&&buffer<=7)return nScopeConstant(buffer,index);
     if(buffer==2&&index==0)return vec4(0.0,1.0,0.0,0.0);
     if(buffer==8&&index==4)return vec4(0.0,0.0,0.5,0.5);
+    if(buffer==8&&index==7)return vec4(1.0);
     if(buffer==11&&index>=0&&index<4){vec4 row=vec4(0.0);row[index]=1.0;return row;}
     if(buffer==13&&(index==0||index==1))return vec4(1.0);
     if(buffer==12){

@@ -2,7 +2,7 @@
 use rusqlite::{Transaction, params};
 use sundial_account::{CharacterAbilities, DismantleGearClass, ItemInstance, ItemPlugs};
 
-use super::{NativeRow, insert, matching, put};
+use super::{Preserved, insert, put};
 use crate::persistence::sqlite_account::{
     SqliteAccountDocument, SqliteAccountError,
     contract::{EQUIPMENT_LOCATION, EQUIPMENT_SLOTS, INVENTORY_LOCATION},
@@ -13,16 +13,19 @@ pub(super) fn write_document(
     transaction: &Transaction<'_>,
     document: &SqliteAccountDocument,
 ) -> Result<(), SqliteAccountError> {
-    let old_rewards = document.preserved_rows("dismantle_rewards");
-    let old_profile = document.preserved_rows("profile_items");
-    let old_items = document.preserved_rows("items");
-    let old_sockets = document.preserved_rows("sockets");
+    let old_rewards = Preserved::new(document.preserved_rows("dismantle_rewards"), &["position"]);
+    let old_profile = Preserved::new(document.preserved_rows("profile_items"), &["position"]);
+    let old_items = Preserved::new(document.preserved_rows("items"), &["instance_soid"]);
+    let old_sockets = Preserved::new(
+        document.preserved_rows("sockets"),
+        &["instance_soid", "lane"],
+    );
     transaction.execute_batch("DELETE FROM sockets; DELETE FROM items; DELETE FROM profile_items; DELETE FROM dismantle_rewards;")
         .map_err(|error| SqliteAccountError::sqlite("replace account collections in", error))?;
     for (position, reward) in document.profile().dismantle_rewards().iter().enumerate() {
         let mut row = document
             .original_reward_position(reward.id)
-            .map(|p| matching(old_rewards, &[("position", p as i64)]))
+            .map(|p| old_rewards.get(&[p as i64]))
             .unwrap_or_default();
         put(&mut row, "position", sql_count(position)?);
         put(
@@ -66,7 +69,7 @@ pub(super) fn write_document(
         let (soid, serial) = document.profile_persistence(item.id)?;
         let mut row = document
             .original_profile_position(item.id)
-            .map(|p| matching(old_profile, &[("position", p as i64)]))
+            .map(|p| old_profile.get(&[p as i64]))
             .unwrap_or_default();
         row.entry("seen".into())
             .or_insert(snapshot::Cell::Integer(1));
@@ -99,13 +102,27 @@ pub(super) fn write_document(
             )
             .map_err(|error| SqliteAccountError::sqlite("identify character in", error))?;
         let serial = document.next_inventory_serial(character.id)?;
+        if let Some((header, valid)) = document.appearance_for_write(character.id) {
+            let written = if document.schema().has_appearance_validity() {
+                transaction.execute("UPDATE characters SET appearance_header=?, appearance_header_valid=? WHERE slot=?",
+                    params![header,valid,slot])
+            } else {
+                transaction.execute(
+                    "UPDATE characters SET appearance_header=? WHERE slot=?",
+                    params![header, slot],
+                )
+            };
+            written.map_err(|error| {
+                SqliteAccountError::sqlite("write character appearance to", error)
+            })?;
+        }
         transaction.execute("UPDATE characters SET race=?, gender=?, class=?, next_inventory_serial=? WHERE slot=?", params![metadata.race, metadata.gender, metadata.class_type, serial, slot])
             .map_err(|error| SqliteAccountError::sqlite("write characters to", error))?;
         let context = ItemWriter {
             transaction,
             document,
-            old_items,
-            old_sockets,
+            old_items: &old_items,
+            old_sockets: &old_sockets,
             character_slot: slot,
         };
         for (position, name) in EQUIPMENT_SLOTS.into_iter().enumerate() {
@@ -141,8 +158,8 @@ pub(super) fn write_document(
 struct ItemWriter<'a, 'connection> {
     transaction: &'a Transaction<'connection>,
     document: &'a SqliteAccountDocument,
-    old_items: &'a [NativeRow],
-    old_sockets: &'a [NativeRow],
+    old_items: &'a Preserved<'a>,
+    old_sockets: &'a Preserved<'a>,
     character_slot: usize,
 }
 impl ItemWriter<'_, '_> {
@@ -154,7 +171,7 @@ impl ItemWriter<'_, '_> {
         abilities: CharacterAbilities,
     ) -> Result<(), SqliteAccountError> {
         let soid = sql_u64(item.instance_soid.get());
-        let mut row = matching(self.old_items, &[("instance_soid", soid)]);
+        let mut row = self.old_items.get(&[soid]);
         row.entry("seen".into())
             .or_insert(snapshot::Cell::Integer(0));
         let (policy, plugs): (i64, &[Option<sundial_account::DefinitionHash>]) = match &item.plugs {
@@ -187,10 +204,7 @@ impl ItemWriter<'_, '_> {
         insert(self.transaction, "items", row)?;
         for (lane, plug) in plugs.iter().enumerate() {
             if let Some(hash) = plug {
-                let mut row = matching(
-                    self.old_sockets,
-                    &[("instance_soid", soid), ("lane", sql_count(lane)?)],
-                );
+                let mut row = self.old_sockets.get(&[soid, sql_count(lane)?]);
                 put(&mut row, "instance_soid", soid);
                 put(&mut row, "lane", sql_count(lane)?);
                 put(&mut row, "plug_hash", i64::from(hash.get()));

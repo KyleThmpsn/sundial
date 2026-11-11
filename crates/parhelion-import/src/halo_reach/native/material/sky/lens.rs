@@ -22,6 +22,10 @@
 //! additively.
 use super::*;
 
+/// The pixel texture register a reflection binds the scene depth to ([`SceneDepth`]), after its
+/// sprite's.
+const DEPTH_REGISTER: usize = 1;
+
 /// One reflection of a flare: its flags, its sprite (a frame of the flare's bitmap), rotation in
 /// radians, axis offset, radius (world units at the flare's depth, or a screen-relative size with
 /// flag bit 1), brightness, modulation factor, color and tint power.
@@ -117,6 +121,7 @@ fn pixel(
     scale: SkyScale,
     declarations: &str,
     sample: &str,
+    depth: SceneDepth,
 ) -> String {
     let occlusion = if lens.occluded {
         format!(
@@ -137,15 +142,16 @@ out float4 o0:SV_TARGET0) {{
 {occlusion}
 float4 sprite={sample};
 float3 flare={tinted:.9}*pow(max(sprite.g,0.00001),{power:.9})+sprite.rgb*float3({r:.9},{g:.9},{b:.9});
-float3 color=clamp(flare*{brightness:.9}*visibility,0,{white:.9})*{radiance:.9};
-o0=float4(color*{REFERENCE_ILLUMINATION:.9}*frameData[1].z,0);
+float3 color=clamp(flare*{brightness:.9}*visibility,0,{white})*{radiance:.9};
+o0=float4(color*{finish},0);
 }}
 "#,
-        scene = super::super::water::SCENE_DECLARATIONS,
+        scene = depth.declarations(),
         tinted = 1. - reflection.modulation,
         power = reflection.tint_power,
         brightness = reflection.brightness,
-        white = scale.white,
+        white = scale.white(),
+        finish = scale.finish(),
         radiance = scale.radiance,
     )
 }
@@ -170,6 +176,7 @@ pub(in crate::halo_reach) fn surfaces(
     );
     let envelope = (envelope, rigid_envelope(native, envelope)?);
     let (clamped, sampler_class) = sampler_shell(native)?;
+    let depth = SceneDepth::new(native, DEPTH_REGISTER)?;
     let mut report = Vec::new();
     for (reflection, &key) in lens.reflections.iter().zip(keys) {
         let symbol = texture(c, pages, native, g, &reflection.sprite, false, true)?;
@@ -190,7 +197,7 @@ pub(in crate::halo_reach) fn surfaces(
             &vertex(reflection, parallax),
             true,
         )?;
-        let text = pixel(lens, reflection, scale, &declarations, &sample);
+        let text = pixel(lens, reflection, scale, &declarations, &sample, depth);
         program(
             native,
             g,
@@ -210,6 +217,8 @@ pub(in crate::halo_reach) fn surfaces(
             &samplers,
             sampler_class,
             true,
+            Some(depth),
+            None,
         )?;
         report.push(json!({
             "key": format!("{key:08X}"),

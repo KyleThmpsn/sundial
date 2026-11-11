@@ -67,9 +67,16 @@ fn remove_visuals(
         .into_iter()
         .filter(|&row| allocation.u32(row).ok() == Some(0xe3cc5c98))
         .collect::<Vec<_>>();
+    // The conversion to delays edits each event's slot in this allocation. A carrier effect
+    // graph without it, such as one of the tank's, keeps its visual events.
+    if allocations.is_empty() {
+        return Ok(vec![
+            json!({"status":"Carrier visual events kept: the graph has no event allocation","events":nodes.len()}),
+        ]);
+    }
     ensure!(
         allocations.len() == 1,
-        "Vehicle event allocation is absent or ambiguous"
+        "Vehicle event allocation is ambiguous"
     );
     let events = allocations[0];
     ensure!(

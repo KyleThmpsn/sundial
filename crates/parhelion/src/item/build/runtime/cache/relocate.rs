@@ -56,8 +56,20 @@ pub(super) fn fields(manager: &PackageManager, tag: &NewTagSpec) -> Option<Vec<(
         crate::NewTagStorageMode::InheritTemplate => {
             // Loading indexes require a validated membership plan in addition to header fields.
             // `loading` supplies it, while an unsupported index keeps exact-placement reuse.
-            if manager.get_entry(tag.template_tag)?.reference == 0x8080_9EF9 {
+            let entry = manager.get_entry(tag.template_tag)?;
+            if entry.reference == 0x8080_9EF9 {
                 return None;
+            }
+            // A streamed texture header names its large buffer by tag at a fixed field that
+            // native object layouts do not declare, since headers have no reflected layout.
+            if (entry.file_type, entry.file_subtype) == (32, 1) {
+                return Some(
+                    crate::item::custom_runtime::assets::streaming::large_buffer_field(
+                        &tag.payload,
+                    )
+                    .into_iter()
+                    .collect(),
+                );
             }
             sundial::package_authoring::declared_payload_references(
                 manager,
@@ -131,8 +143,14 @@ fn audio_fields(bytes: &[u8]) -> Option<Vec<(usize, u32)>> {
     hirc.then_some(fields)
 }
 
-/// The source ID of each sound object (kind 2) in the HIRC section at `start..end`. Each sound
-/// must stream its one source, and the objects must fill the section exactly.
+/// The Wwise Silence generator. Its sound names a local FxCustom preset where a streamed sound
+/// names its media, so it has no package tag.
+const SILENCE_PLUGIN: u32 = 0x0065_0002;
+
+/// The source ID of each streamed sound object (kind 2) in the HIRC section at `start..end`.
+/// Each other sound must be a generated Silence source with no media, whose preset is a
+/// Silence FxCustom object (kind 19) of the same section. The objects must fill the section
+/// exactly. Offsets below count from the object's kind byte, so the object identity is at +5.
 fn hirc_fields(
     bytes: &[u8],
     (start, end): (usize, usize),
@@ -143,6 +161,7 @@ fn hirc_fields(
     if count > end.saturating_sub(object) / 9 {
         return None;
     }
+    let (mut presets, mut silence) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..count {
         let kind = *bytes.get(object)?;
         let length = word(bytes, object + 1)? as usize;
@@ -150,15 +169,28 @@ fn hirc_fields(
         if length < 4 || next > end {
             return None;
         }
-        if kind == 2 {
+        if kind == 2 && length >= 8 && word(bytes, object + 9)? == SILENCE_PLUGIN {
+            // Mode, media size, flags and inline parameter size are all zero.
+            if length < 22
+                || *bytes.get(object + 13)? != 0
+                || word(bytes, object + 18)? != 0
+                || *bytes.get(object + 22)? != 0
+                || word(bytes, object + 23)? != 0
+            {
+                return None;
+            }
+            presets.insert(word(bytes, object + 14)?);
+        } else if kind == 2 {
             if length < 18 || *bytes.get(object + 13)? != 2 || bytes[object + 22] & !8 != 0 {
                 return None;
             }
             fields.push((object + 14, word(bytes, object + 14)?));
+        } else if kind == 19 && length >= 8 && word(bytes, object + 9)? == SILENCE_PLUGIN {
+            silence.insert(word(bytes, object + 5)?);
         }
         object = next;
     }
-    (object == end).then_some(())
+    (object == end && presets.is_subset(&silence)).then_some(())
 }
 
 pub(super) fn unpack(

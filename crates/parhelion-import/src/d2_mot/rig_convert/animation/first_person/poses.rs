@@ -102,7 +102,7 @@ fn choices(
             };
             let weighted = table.array(
                 at + if modern { 16 } else { 0 },
-                8,
+                if modern { 8 } else { 12 },
                 Some(if modern { 0x8080290C } else { 0x80803737 }),
             )?;
             if weighted.len() != 1 || table.f32(weighted[0] + 4)? != 1.0 {

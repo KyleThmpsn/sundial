@@ -59,6 +59,62 @@ impl Cue {
     }
 }
 
+/// Whether a source cue plays nothing: the `50`-byte envelope without media rows, whose bank,
+/// a version 89 `BKHD` and `HIRC` pair, holds only events without actions. Touch of Malice's
+/// self-damage cues `81657981/82` take this form, one per-event bank each. Stock Shadowkeep has no
+/// cue without media among its 59,352, so such a cue has no native form, and a reference to it
+/// is left out with nothing audible lost.
+pub(super) fn silent(source: &Source, tag: u32) -> Result<bool> {
+    if source.reference(tag)? != 0x8080080A {
+        return Ok(false);
+    }
+    let p = source.read(tag)?;
+    if p.0.len() != 0x50 || p.u64(0x38)? != 0 || p.u64(0x40)? != 0 {
+        return Ok(false);
+    }
+    let bank = p.u32(0x34)?;
+    source_kind(source, bank, 0, 20)?;
+    let bytes = source.read(bank)?.0;
+    let mut at = 0;
+    let mut names = Vec::new();
+    let mut silent = true;
+    while at < bytes.len() {
+        let (name, size) = (
+            bytes.get(at..at + 4).context("Source bank chunk name")?,
+            u32::from_le_bytes(
+                bytes
+                    .get(at + 4..at + 8)
+                    .context("Source bank chunk size")?
+                    .try_into()?,
+            ) as usize,
+        );
+        let body = bytes
+            .get(at + 8..at + 8 + size)
+            .context("Source bank chunk overruns its bank")?;
+        names.push(name.to_vec());
+        if name == b"HIRC" {
+            let count = u32::from_le_bytes(body.get(..4).context("HIRC count")?.try_into()?);
+            let mut object = 4;
+            for _ in 0..count {
+                let kind = *body.get(object).context("HIRC object type")?;
+                let length = u32::from_le_bytes(
+                    body.get(object + 1..object + 5)
+                        .context("HIRC object size")?
+                        .try_into()?,
+                ) as usize;
+                let actions = body.get(object + 9..object + 13).map(|bytes| {
+                    u32::from_le_bytes(bytes.try_into().expect("four-byte action count"))
+                });
+                silent &= kind == 4 && length == 8 && actions == Some(0);
+                object += 5 + length;
+            }
+            silent &= object == body.len();
+        }
+        at += 8 + size;
+    }
+    Ok(silent && names == [b"BKHD".to_vec(), b"HIRC".to_vec()])
+}
+
 fn source_kind(source: &Source, tag: u32, kind: u8, subtype: u8) -> Result<()> {
     let entry = source
         .package(tag)?
@@ -138,6 +194,11 @@ pub(super) struct Prepared {
 }
 
 impl Prepared {
+    /// The graph section and its payload files, for a caller that publishes them later.
+    pub(super) fn into_parts(self) -> (Value, Vec<(String, Vec<u8>)>) {
+        (self.graph, self.files)
+    }
+
     pub(super) fn emit(self, folder: &Path) -> Result<Value> {
         fs::create_dir_all(folder)?;
         for (file, payload) in self.files {
@@ -246,12 +307,17 @@ fn prepare_banks(
             .iter()
             .flat_map(|b| b.objects.iter().copied())
             .collect::<BTreeSet<_>>();
-        for bank in &closure {
+        for (tag, bank) in tags.iter().zip(&closure) {
+            let missing = bank
+                .external_objects()
+                .into_iter()
+                .filter(|id| !owned.contains(id) && !native_objects.contains(id))
+                .map(|id| format!("{id:08X}"))
+                .collect::<Vec<_>>();
             ensure!(
-                bank.external_objects()
-                    .iter()
-                    .all(|id| owned.contains(id) || native_objects.contains(id)),
-                "source bank references unavailable native global objects"
+                missing.is_empty(),
+                "source bank {tag:08X} references unavailable native global objects {}",
+                missing.join(" ")
             );
         }
         let namespace = bank::Namespace::new("source-audio-validation", &closure)?;
@@ -353,14 +419,11 @@ fn plan_route(
     let converted_media = prepare_media(source, &cues, &banks)?;
     let mut settings = BTreeMap::new();
     if route == Route::Graph {
-        let mut profiles = Vec::new();
-        for tag in native
-            .classes(0x80808E68)
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-        {
-            profiles.push((tag, native.tag(tag, Some(0x80808E68))?));
-        }
+        // Every native acoustic settings record is a candidate witness, searched in tag order.
+        // The export records only the witnesses chosen.
+        let survey = native.survey(0x80808E68)?;
+        let mut profiles = survey.iter().collect::<Vec<_>>();
+        profiles.sort_unstable_by_key(|(tag, _)| *tag);
         for cue in cues.values() {
             if settings.contains_key(&cue.settings) {
                 continue;
@@ -379,27 +442,32 @@ fn plan_route(
                 .find(|(_, native)| native.0 == p.0)
                 .or_else(|| {
                     // Original 7E5F80 and 10E6B30 expose +0C to the spatial-limit
-                    // consumers. Every other field still needs a byte-identical witness.
-                    // Exact profiles retain their existing acceptance, including any
-                    // nonfinite native values. Only new finite limits use this route.
-                    p.f32(12)
-                        .ok()
-                        .filter(|limit| limit.is_finite())
-                        .and_then(|_| {
+                    // consumers, and B5A770 and 14A1760 read +14 as the same repeat
+                    // deadline. Both builds store per-cue values at +10 with no consumer
+                    // identified in either, so the source value is carried. The header and
+                    // instance-policy bytes still need a byte-identical witness. Exact
+                    // profiles retain their existing acceptance, including any nonfinite
+                    // native values. Only new finite values use this route.
+                    [12, 16, 20]
+                        .iter()
+                        .all(|&at| p.f32(at).is_ok_and(f32::is_finite))
+                        .then(|| {
                             profiles.iter().find(|(_, native)| {
                                 native.0.len() == 24
                                     && native.0[..12] == p.0[..12]
-                                    && native.0[16..] == p.0[16..]
                                     && native.f32(12).is_ok_and(|limit| limit.is_finite())
                             })
                         })
+                        .flatten()
                 })
                 .context(
-                    "source acoustic settings have no native witness outside the spatial limit",
+                    "source acoustic settings have no native witness for their header and policy",
                 )?;
             // The stock record supplies the native class and unchanged-field witness.
             // The emitted private payload preserves the source limit without clamping.
-            settings.insert(cue.settings, (*tag, Arc::new(p)));
+            let tag = *tag;
+            native.tag(tag, Some(0x80808E68))?;
+            settings.insert(cue.settings, (tag, Arc::new(p)));
         }
     }
     let mut nodes = Vec::new();

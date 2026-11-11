@@ -1,6 +1,10 @@
 //! Activity recipe documents keep their source settings and their own save baseline.
 use super::*;
 
+mod overview;
+#[cfg(test)]
+mod tests;
+
 pub(super) struct Editor {
     pub(super) recipe: crate::map::MapRecipe,
     baseline: crate::map::MapRecipe,
@@ -16,6 +20,61 @@ pub(super) struct Editor {
     image_query: String,
     blank_rows: Option<Result<usize, String>>,
     blank_rows_job: Option<Receiver<Result<usize, String>>>,
+    /// The saved name the overview was read for.
+    overview_name: String,
+    overview: Option<Result<Option<overview::Overview>, String>>,
+    overview_job: Option<Receiver<Result<Option<overview::Overview>, String>>>,
+    overview_texture: Option<egui::TextureHandle>,
+}
+
+/// The source level's own fog, which the map's surfaces and sky draw in place of Destiny's.
+fn draw_fog(ui: &mut egui::Ui, fog: &mut crate::map::Fog) {
+    use crate::map::Fog;
+    ui.strong("Fog");
+    egui::Grid::new("activity-fog")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("Density");
+            named_control(
+                ui.add(
+                    egui::DragValue::new(&mut fog.density)
+                        .range(0..=Fog::MAX_PERCENT)
+                        .clamp_existing_to_range(false)
+                        .suffix("%"),
+                ),
+                "Fog Density",
+            );
+            ui.end_row();
+            ui.label("Start Distance");
+            named_control(
+                ui.add(
+                    egui::DragValue::new(&mut fog.distance)
+                        .range(Fog::DISTANCE)
+                        .clamp_existing_to_range(false)
+                        .suffix(" m"),
+                ),
+                "Fog Start Distance",
+            );
+            ui.end_row();
+            ui.label("Brightness");
+            named_control(
+                ui.add(
+                    egui::DragValue::new(&mut fog.brightness)
+                        .range(0..=Fog::MAX_PERCENT)
+                        .clamp_existing_to_range(false)
+                        .suffix("%"),
+                ),
+                "Fog Brightness",
+            );
+            ui.end_row();
+        });
+    if ui
+        .add_enabled(*fog != Fog::default(), egui::Button::new("Use Source Fog"))
+        .clicked()
+    {
+        *fog = Fog::default();
+    }
+    ui.weak("Takes effect when the map is built. At 0% density the map draws no fog.");
 }
 
 enum Action {
@@ -54,6 +113,10 @@ impl Editor {
             image_query: String::new(),
             blank_rows: None,
             blank_rows_job: None,
+            overview_name: String::new(),
+            overview: None,
+            overview_job: None,
+            overview_texture: None,
         })
     }
 
@@ -137,6 +200,14 @@ impl Editor {
         .on_hover_text(
             "These switches control the source level's ambient sounds and death volumes.",
         );
+        if let Some(source) = &mut self.recipe.source {
+            ui.separator();
+            draw_fog(ui, &mut source.fog);
+        }
+        if self.recipe.source.is_some() {
+            ui.separator();
+            self.draw_overview(ui);
+        }
         ui.separator();
         self.draw_image(ui, packages);
     }

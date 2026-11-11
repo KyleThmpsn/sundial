@@ -111,6 +111,10 @@ impl WeaponRecipe {
         }
         #[cfg(feature = "d2-model-importer")]
         crate::imported::artwork::apply(&mut recipe).map_err(RecipeError::Validation)?;
+        #[cfg(feature = "d2-model-importer")]
+        if restore_assets {
+            super::damage::apply(&mut recipe).map_err(RecipeError::Validation)?;
+        }
         recipe.validate()?;
         let origin = origin.or_else(|| Origin::recipe(&recipe));
         Ok(((recipe, origin, revision), stripped))
@@ -122,6 +126,8 @@ impl WeaponRecipe {
         canonical.canonicalize_investment_stats();
         #[cfg(feature = "d2-model-importer")]
         crate::imported::artwork::apply(&mut canonical).map_err(RecipeError::Validation)?;
+        #[cfg(feature = "d2-model-importer")]
+        super::damage::apply(&mut canonical).map_err(RecipeError::Validation)?;
         Ok(serde_json::to_string_pretty(&canonical)?)
     }
 

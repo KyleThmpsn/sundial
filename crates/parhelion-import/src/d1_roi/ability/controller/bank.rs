@@ -195,8 +195,11 @@ fn read(source: &Source, tag: u32) -> Result<Bank> {
                 resource = Some(tag);
                 let mut native = vec![0; 32];
                 native[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
+                // Recipient +8 feeds the embedded query's action and +C replaces the entity
+                // created on activation, in both refresh routines. 216B carries the query
+                // resource and 236B the activation entity, as 4183 and 4181 do natively.
                 (
-                    if source_class == 0x8080236B {
+                    if source_class == 0x8080216B {
                         0x80804183
                     } else {
                         0x80804181
@@ -235,6 +238,32 @@ pub fn resources(source: &Source, source_bank: u32) -> Result<Vec<u32>> {
     Ok(read(source, source_bank)?
         .rows
         .iter()
+        .filter_map(|row| row.resource)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
+}
+
+/// Resource obligations of complete selected keys, excluding unrelated bank alternatives.
+pub fn selected_resources(
+    source: &Source,
+    source_bank: u32,
+    keys: &BTreeSet<u32>,
+) -> Result<Vec<u32>> {
+    ensure!(
+        !keys.is_empty(),
+        "Selected source resources require property keys"
+    );
+    let bank = read(source, source_bank)?;
+    let present = bank.rows.iter().map(|row| row.key).collect::<BTreeSet<_>>();
+    ensure!(
+        keys.is_subset(&present),
+        "A selected property key is absent from its source bank"
+    );
+    Ok(bank
+        .rows
+        .iter()
+        .filter(|row| keys.contains(&row.key))
         .filter_map(|row| row.resource)
         .collect::<BTreeSet<_>>()
         .into_iter()

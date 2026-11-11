@@ -18,7 +18,7 @@ use crate::{
                 SkyParallax, SkyScale, SkySurface,
                 lens::{self, Lens, Reflection},
                 patchy::{self, Patchy},
-                surfaces, weather,
+                screen_fog, surfaces, weather,
             },
         },
         object::Object as SourceObject,
@@ -86,30 +86,7 @@ const REFERENCE_MODEL: usize = 0x08;
 /// The stride of a sky model's position and attribute streams, layout 139.
 const POSITION_STRIDE: u16 = 8;
 const ATTRIBUTE_STRIDE: u16 = 24;
-/// The scenario's default camera effects. Their flags at `+0x00` mark automatic exposure with bit
-/// 2, the target exposure in stops is at `+0x04`, the range automatic exposure keeps to in stops
-/// at `+0x10`, and the screen brightness it aims for, in stops, at `+0x18`.
-const DEFAULT_CAMERA_FX: usize = 0x6A8;
-const CAMERA_FX_FLAGS: usize = 0x00;
-const CAMERA_FX_EXPOSURE: usize = 0x04;
-const CAMERA_FX_RANGE: usize = 0x10;
-const CAMERA_FX_BRIGHTNESS: usize = 0x18;
-const AUTO_EXPOSURE: u16 = 1 << 2;
-/// The camera effects' inherent bloom (bloom off everything, bright and dark), bloom intensity and
-/// large bloom color, each after a 16-bit flags word whose bit 0 takes the default. Hang 'Em High
-/// sets 0.3, 0.8 and (0.809, 0.597, 0.254), so Reach lays a large amber bloom over its whole image.
-/// Sword Base's large bloom color is near black.
-const CAMERA_FX_INHERENT_BLOOM: usize = 0x38;
-const CAMERA_FX_BLOOM_INTENSITY: usize = 0x48;
-const CAMERA_FX_LARGE_BLOOM: usize = 0x58;
-const CAMERA_FX_USE_DEFAULT: u16 = 1;
-/// The average of the image the large bloom blurs, as a share of the level's average lit level: a
-/// mid gray surface's albedo. The large bloom spreads across much of the screen, so the
-/// translation takes it as one color over the whole image. Its medium and small blooms, white in
-/// Hang 'Em High, brighten the image without tinting it, as the surfaces' radiance scale does.
-const SCENE_AVERAGE: f32 = 0.18;
-/// Reach's screen brightness, in stops, where a scenario names no camera effects.
-const DEFAULT_BRIGHTNESS: f32 = -3.3;
+mod camera;
 
 /// One sky model's share of the sky: the primitives' triangles it draws, in order.
 struct Chunk {
@@ -188,6 +165,143 @@ pub(super) fn sort_layer(cache: &Cache, material: Option<&Material>) -> u8 {
         .and_then(|at| cache.u8(at + SORT_LAYER).ok())
         .filter(|&layer| (1..=3).contains(&layer))
         .unwrap_or(SORT_LAYER_NORMAL)
+}
+
+/// The cell size of the direction grid [`depth_order`] compares a sky's surfaces on, in degrees
+/// of azimuth and elevation around the level's origin, the most samples along a triangle's side,
+/// and the share by which two distances must differ for one surface to lie behind another.
+const COVER_STEP: f32 = 0.5;
+const COVER_SAMPLES: usize = 400;
+const COVER_TIE: f32 = 0.01;
+
+/// The nearest distance of `primitive` from the level's origin in each cell of the
+/// [`COVER_STEP`] direction grid, infinite where it does not cover the cell. Each triangle is
+/// sampled at barycentric steps finer than a cell across its angular span, and each sample takes
+/// its own direction and distance.
+fn cover(primitive: &Primitive) -> Vec<f32> {
+    let width = (360. / COVER_STEP) as usize;
+    let height = (180. / COVER_STEP) as usize;
+    let mut depth = vec![f32::INFINITY; width * height];
+    let angles = |p: [f32; 3]| {
+        let distance = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        let azimuth = p[1].atan2(p[0]).to_degrees();
+        let elevation = (p[2] / distance.max(1e-6))
+            .clamp(-1., 1.)
+            .asin()
+            .to_degrees();
+        (distance, azimuth, elevation)
+    };
+    for face in primitive.indices.chunks_exact(3) {
+        let Some(corners) = face
+            .iter()
+            .map(|&corner| primitive.vertices.get(corner as usize).map(|v| v.position))
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let mut azimuths = corners.iter().map(|&p| angles(p).1).collect::<Vec<_>>();
+        let elevations = corners.iter().map(|&p| angles(p).2).collect::<Vec<_>>();
+        let range = |values: &[f32]| {
+            values.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+                - values.iter().copied().fold(f32::INFINITY, f32::min)
+        };
+        if range(&azimuths) > 180. {
+            for azimuth in &mut azimuths {
+                if *azimuth < 0. {
+                    *azimuth += 360.;
+                }
+            }
+        }
+        let span = range(&azimuths).max(range(&elevations));
+        let steps = ((span / COVER_STEP * 2.) as usize).clamp(2, COVER_SAMPLES);
+        for i in 0..=steps {
+            for j in 0..=steps - i {
+                let (u, v) = (i as f32 / steps as f32, j as f32 / steps as f32);
+                let point: [f32; 3] = std::array::from_fn(|k| {
+                    corners[0][k] * (1. - u - v) + corners[1][k] * u + corners[2][k] * v
+                });
+                let (distance, azimuth, elevation) = angles(point);
+                if distance.is_nan() || distance <= 0. {
+                    continue;
+                }
+                let x = (((azimuth + 180.) / COVER_STEP) as usize) % width;
+                let y = (((elevation + 90.) / COVER_STEP) as usize).min(height - 1);
+                let cell = &mut depth[y * width + x];
+                *cell = cell.min(distance);
+            }
+        }
+    }
+    depth
+}
+
+/// Orders a sky's surfaces, `sorted` with its opaque surfaces first, farthest first, then its
+/// blended layers in Reach's order, so that wherever an opaque surface and another surface cover
+/// the same directions from the level's origin, the one behind draws first, by the majority of
+/// the directions they share. Otherwise the order stays `sorted`'s. `surface` gives an item's
+/// opacity and geometry.
+///
+/// Reach draws a sky's opaque surfaces with depth before its blended layers, so a layer behind an
+/// opaque sky surface is hidden. The native sky stage draws in order without depth between sky
+/// surfaces. Drawn after every opaque surface, ONI: Sword Base's `horizon` band (16 km),
+/// `heavy_clouds` and `large_moon` covered its opaque `fake_rock_forms` (8 km) as a pale band
+/// that stopped where the level's own scenery, which does write depth, stood in front. A
+/// surface's mean distance does not order it: a dome's stars or clouds lie close to the dome
+/// itself, and their mean distances placed them behind it. Two layers that each lie partly
+/// in front of and partly behind one opaque surface cannot be drawn as Reach does in any order.
+/// Where depth edges form a cycle, the earliest remaining surface draws next.
+pub(super) fn depth_order<T>(sorted: Vec<T>, surface: impl Fn(&T) -> (bool, &Primitive)) -> Vec<T> {
+    let count = sorted.len();
+    let opaque = sorted
+        .iter()
+        .map(|item| surface(item).0)
+        .collect::<Vec<_>>();
+    let covers = sorted
+        .iter()
+        .map(|item| cover(surface(item).1))
+        .collect::<Vec<_>>();
+    let mut after = vec![Vec::new(); count];
+    let mut incoming = vec![0usize; count];
+    for x in 0..count {
+        for y in x + 1..count {
+            if !(opaque[x] || opaque[y]) {
+                continue;
+            }
+            let (mut x_behind, mut y_behind) = (0usize, 0usize);
+            for (&dx, &dy) in covers[x].iter().zip(&covers[y]) {
+                if dx.is_finite() && dy.is_finite() && (dx - dy).abs() > COVER_TIE * dx.min(dy) {
+                    if dx > dy {
+                        x_behind += 1;
+                    } else {
+                        y_behind += 1;
+                    }
+                }
+            }
+            let (first, second) = match x_behind.cmp(&y_behind) {
+                std::cmp::Ordering::Greater => (x, y),
+                std::cmp::Ordering::Less => (y, x),
+                std::cmp::Ordering::Equal => continue,
+            };
+            after[first].push(second);
+            incoming[second] += 1;
+        }
+    }
+    let mut drawn = vec![false; count];
+    let mut order = Vec::with_capacity(count);
+    while order.len() < count {
+        let Some(next) = (0..count)
+            .find(|&k| !drawn[k] && incoming[k] == 0)
+            .or_else(|| (0..count).find(|&k| !drawn[k]))
+        else {
+            break;
+        };
+        drawn[next] = true;
+        order.push(next);
+        for &later in &after[next] {
+            incoming[later] = incoming[later].saturating_sub(1);
+        }
+    }
+    let mut items = sorted.into_iter().map(Some).collect::<Vec<_>>();
+    order.into_iter().filter_map(|k| items[k].take()).collect()
 }
 
 /// An object's model (`hlmt`) reference, the model's flags and its sky parallax percent, with the
@@ -606,8 +720,8 @@ fn read_patchy(
 }
 
 /// The patchy fog's sheets over the level's `area` (in the level's meters, moved by `offset`):
-/// [`patchy::SHEETS`] horizontal quads, each carrying its order in the stack in `normal.w`, whose
-/// vertex program sets their heights around the camera. Their corners span the level's height,
+/// [`patchy::SHEETS`] quads, each carrying its far-to-near order in `normal.w`, whose
+/// vertex program places them facing the camera. Their stored corners span the level's height,
 /// which only bounds the object. Returns the band of heights above the reference plane where the
 /// fog's height fade is above zero within the level, or none where it lies outside the level.
 fn sheet_mesh(
@@ -657,6 +771,46 @@ fn sheet_mesh(
 
 /// The key bits of the weather effect's particle fields.
 const WEATHER_KEY: u32 = 0x5200_0000;
+/// The key of the screen fog's sheet ([`screen_fog`]).
+const SCREEN_FOG_KEY: u32 = 0x5300_0000;
+
+/// The screen fog's sheet: one quad whose vertex program fills the view with it, with its stored
+/// corners spanning the level's `area`, moved by `offset` and widened by [`SHEET_MARGIN`], which
+/// only bound the object for culling.
+fn screen_mesh(area: ([f32; 3], [f32; 3]), offset: [f32; 3]) -> Mesh {
+    let (low, high) = area;
+    let mut mesh = Mesh {
+        positions: Vec::new(),
+        attributes: Vec::new(),
+        groups: Vec::new(),
+        weights: Vec::new(),
+        bones: 0,
+    };
+    for (u, v, z) in [
+        (0., 0., low[2]),
+        (1., 0., low[2]),
+        (1., 1., high[2]),
+        (0., 1., high[2]),
+    ] {
+        mesh.positions.push([
+            if u == 0. {
+                low[0] - SHEET_MARGIN
+            } else {
+                high[0] + SHEET_MARGIN
+            } + offset[0],
+            if v == 0. {
+                low[1] - SHEET_MARGIN
+            } else {
+                high[1] + SHEET_MARGIN
+            } + offset[1],
+            z + offset[2],
+        ]);
+        mesh.attributes.push([u, v, 0., 0., 1., 0., 1., 1., 1., 1.]);
+    }
+    mesh.groups
+        .push((SCREEN_FOG_KEY, vec![[0, 1, 2], [0, 2, 3]]));
+    mesh
+}
 /// A fog tag's weather effect reference.
 const FOG_WEATHER: usize = 0xAC;
 /// An effect emitter's properties (`effect::source` offsets): radius, maximum count, rate, life,
@@ -865,88 +1019,39 @@ fn keys(primitive: &Primitive) -> Result<(u32, u32)> {
     Ok((TRANSPARENT_KEY | index, SHAFTS_KEY | index))
 }
 
-/// The light Reach's large bloom adds to every pixel of the level, as a share of its average lit
-/// level: inherent bloom times bloom intensity times the large bloom color, over the image's
-/// average ([`SCENE_AVERAGE`]). It is black where the scenario names no camera effects or any of the
-/// three takes its default. Hang 'Em High's, about (0.035, 0.026, 0.011), is a warm floor that
-/// dominates its shade, whose baked light is a pale lavender, as the level's press screenshots show
-/// warm gray shade.
+/// The average-color floor approximating Reach's large bloom on opaque surfaces. Each source
+/// parameter resolves independently against the global camera effects. This is not spatial blur.
 pub(in crate::halo_reach) fn veil(cache: &Cache) -> Result<[f32; 3]> {
-    let scenario = cache.only("scnr")?.address()?;
-    let Some(effects) = cache.reference(scenario + DEFAULT_CAMERA_FX, Some("cfxs"))? else {
-        return Ok([0.; 3]);
-    };
-    let at = effects.address()?;
-    for field in [
-        CAMERA_FX_INHERENT_BLOOM,
-        CAMERA_FX_BLOOM_INTENSITY,
-        CAMERA_FX_LARGE_BLOOM,
-    ] {
-        if cache.u16(at + field)? & CAMERA_FX_USE_DEFAULT != 0 {
-            return Ok([0.; 3]);
-        }
-    }
-    let inherent = cache.f32(at + CAMERA_FX_INHERENT_BLOOM + 4)?;
-    let intensity = cache.f32(at + CAMERA_FX_BLOOM_INTENSITY + 4)?;
-    let color = cache.floats::<3>(at + CAMERA_FX_LARGE_BLOOM + 4)?;
-    if ![inherent, intensity]
-        .into_iter()
-        .chain(color)
-        .all(|v| v.is_finite() && v >= 0.)
-    {
-        return Ok([0.; 3]);
-    }
-    Ok(color.map(|c| inherent * intensity * c * SCENE_AVERAGE))
+    Ok(camera::read(cache)?.veil)
 }
 
-/// The exposure Reach shows the level at, as a scale, and the screen brightness its automatic
-/// exposure aims for, from the scenario's default camera effects. With automatic exposure the
-/// level settles inside its range, taken at the range's middle.
-fn exposure(cache: &Cache) -> Result<(f32, f32, Value)> {
-    let scenario = cache.only("scnr")?.address()?;
-    let Some(effects) = cache.reference(scenario + DEFAULT_CAMERA_FX, Some("cfxs"))? else {
-        return Ok((1., DEFAULT_BRIGHTNESS.exp2(), json!({"camera_fx": null})));
-    };
-    let at = effects.address()?;
-    let flags = cache.u16(at + CAMERA_FX_FLAGS)?;
-    let target = cache.f32(at + CAMERA_FX_EXPOSURE)?;
-    let [low, high] = cache.floats::<2>(at + CAMERA_FX_RANGE)?;
-    let brightness = cache.f32(at + CAMERA_FX_BRIGHTNESS)?;
-    ensure!(
-        [target, low, high, brightness]
-            .iter()
-            .all(|v| v.is_finite())
-            && low <= high,
-        "Camera effects {} hold an invalid exposure",
-        effects.path
-    );
-    let stops = if flags & AUTO_EXPOSURE != 0 {
-        (low + high) / 2.
-    } else {
-        target.clamp(low, high)
-    };
-    Ok((
-        stops.exp2(),
-        brightness.exp2(),
-        json!({
-            "camera_fx": effects.path,
-            "automatic": flags & AUTO_EXPOSURE != 0,
-            "target_stops": target,
-            "range_stops": [low, high],
-            "screen_brightness_stops": brightness,
-            "exposure_stops": stops,
-        }),
-    ))
+/// The selected camera exposure: whether it is automatic, its manual target and its range, in
+/// stops, which the native exposure bounds translate ([`super::NativeExposure`]).
+pub(super) fn exposure(cache: &Cache) -> Result<(bool, f32, [f32; 2])> {
+    let camera = camera::read(cache)?;
+    Ok((camera.automatic, camera.target, camera.range))
+}
+
+/// The selected camera's preferred self illumination exposure in stops and the share of the main
+/// exposure it follows.
+pub(super) fn self_illumination(cache: &Cache) -> Result<[f32; 2]> {
+    Ok(camera::read(cache)?.self_illumination)
 }
 
 /// Carry the authored camera target through the calibrated native radiance scale. Automatic
 /// exposure still belongs to Shadowkeep. This preserves relative source targets, rather than
 /// claiming to reproduce Reach's view-dependent luminance reduction and adaptation history.
 pub(super) fn radiance(cache: &Cache, level: Option<f32>) -> Result<(f32, Value)> {
-    let (shown, brightness, mut report) = exposure(cache)?;
+    let camera::Camera {
+        shown,
+        brightness,
+        automatic,
+        mut report,
+        ..
+    } = camera::read(cache)?;
     // The existing native calibration used a source automatic target of 0.09 linear light.
     const REFERENCE_BRIGHTNESS: f32 = 0.09;
-    let target = if report["automatic"].as_bool() == Some(false) {
+    let target = if !automatic {
         level.unwrap_or(brightness / shown) * shown
     } else {
         brightness
@@ -959,7 +1064,7 @@ pub(super) fn radiance(cache: &Cache, level: Option<f32>) -> Result<(f32, Value)
     report["native_radiance"] = json!(radiance);
     report["reference_brightness"] = json!(REFERENCE_BRIGHTNESS);
     report["method"] = json!(
-        "Source camera target relative to the native calibration. Native exposure adaptation remains active."
+        "Source camera target relative to the native calibration. With baked lighting, the environment locks manual exposure or bounds native automatic adaptation."
     );
     Ok((radiance, report))
 }
@@ -972,7 +1077,8 @@ pub(super) fn radiance(cache: &Cache, level: Option<f32>) -> Result<(f32, Value)
 /// the sky's surfaces are unlit and need no tangents. `level` is the lightmap's average lit level,
 /// which the level's surfaces' light is a share of, and `fog` the level's fog, which the sky takes
 /// as Reach's does. A sky that follows the camera in Reach, by the first sky active on the
-/// `loaded` BSPs, follows it here ([`parallax`]). That sky's lens flare draws as one more sky
+/// `loaded` BSPs, follows it here ([`parallax`]). The level's fog then draws as a sheet over
+/// every opaque pixel ([`screen_mesh`]). That sky's lens flare draws as one more sky
 /// object at its marker ([`read_lens`]), the patchy fog of fog tag `fog_tag` as soft sheets over
 /// the level's `area` ([`read_patchy`]), and its weather effect's sprite emitters as particle fields
 /// around the camera ([`read_weather`]), all after the sky. Returns the sky objects, in draw order,
@@ -1007,7 +1113,13 @@ pub(super) fn add(
         .flat_map(|(_, colors)| colors.iter().flatten())
         .fold(0f32, |largest, &value| largest.max(value));
     let vertex_color = largest.max(1e-6);
-    let (shown, brightness, _) = exposure(cache)?;
+    let camera::Camera {
+        shown,
+        brightness,
+        automatic,
+        range,
+        ..
+    } = camera::read(cache)?;
     let (radiance, exposure_report) = radiance(cache, level)?;
     // The sky takes its Reach radiance over the average lit level, as the level surfaces do, at its
     // own scale. Without a lightmap, the average lit level is taken where Reach's automatic
@@ -1018,7 +1130,12 @@ pub(super) fn add(
     let scale = SkyScale {
         vertex_color,
         radiance: radiance / level,
-        white: 1. / shown,
+        // An automatic camera's range, or a manual camera's clamped target at both ends.
+        exposure: if automatic {
+            range.map(f32::exp2)
+        } else {
+            [shown; 2]
+        },
     };
     let placeholder = Material {
         decal: None,
@@ -1113,6 +1230,26 @@ pub(super) fn add(
                 .collect::<Result<Vec<_>>>()?
         );
         models.push(model);
+        objects.push(object);
+    }
+    // Reach fogs its opaque scene in one screen pass after lighting, the level, its objects and the
+    // player's weapon alike, so the level's fog draws as a sheet over the scene after the sky.
+    let mut screen_fog_report = json!({"reason": "The level has no fog or no pieces"});
+    if let (Some(fog), Some(area)) = (fog.as_ref(), area) {
+        let surface =
+            screen_fog::surface(native, graph, fog, SCREEN_FOG_KEY, templates.surface, scale)?;
+        let (object, model) = add_model(
+            native,
+            graph,
+            templates,
+            &template,
+            row,
+            "sky-screen-fog",
+            screen_mesh(area, offset),
+            &BTreeMap::from([(SCREEN_FOG_KEY, TRANSPARENT_STAGE)]),
+            objects.len() as f32,
+        )?;
+        screen_fog_report = json!({"surface": surface, "model": model});
         objects.push(object);
     }
     let (lens_found, mut lens_report) = read_lens(cache, pages, loaded, offset)?;
@@ -1219,12 +1356,15 @@ pub(super) fn add(
             "exposure": exposure_report,
             "vertex_color_scale": vertex_color,
             "radiance_scale": scale.radiance,
-            "white": scale.white,
+            "exposure_range": scale.exposure,
+            "exposure": scale.exposure(),
+            "white": scale.white(),
             "sky_radiance": radiance,
             "lit_level": level,
             "fogged": fog.is_some(),
             "parallax": parallax_report,
             "lens_flare": lens_report,
+            "screen_fog": screen_fog_report,
             "patchy_fog": patchy_report,
             "weather": weather_report,
             "templates": {

@@ -14,6 +14,9 @@ fn directory(fixture: &Fixture, id: &str) -> PathBuf {
         .join(id)
 }
 
+/// Splits the staged build into the main mod and two coupled importers, staged as a loader
+/// build stages them: each importer's package in the run folder named for it, under the name
+/// `<member id>/<file>`. A kept or omitted importer stages no file.
 fn split(fixture: &Fixture, kept: &[&str], omit: Option<&str>) {
     let path = fixture.staging.join(MANIFEST_FILE_NAME);
     let mut build: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -23,19 +26,33 @@ fn split(fixture: &Fixture, kept: &[&str], omit: Option<&str>) {
         (D2, "Parhelion Destiny 2: Monument of Triumph", D2_FILE),
         (REACH, "Parhelion Halo: Reach", REACH_FILE),
     ] {
+        let staged = format!("{id}/{file}");
+        let named = |artifact: &serde_json::Value| {
+            artifact["file_name"] == file || artifact["file_name"] == staged.as_str()
+        };
+        let nested = fixture.staging.join(id).join(file);
+        if fixture.staging.join(file).exists() {
+            fs::create_dir_all(nested.parent().unwrap()).unwrap();
+            fs::rename(fixture.staging.join(file), &nested).unwrap();
+        }
+        if (omit == Some(id) || kept.contains(&id)) && nested.exists() {
+            fs::remove_file(&nested).unwrap();
+        }
         if omit == Some(id) {
             build["artifacts"]
                 .as_array_mut()
                 .unwrap()
-                .retain(|artifact| artifact["file_name"] != file);
+                .retain(|artifact| !named(artifact));
             continue;
         }
         let artifact = build["artifacts"]
-            .as_array()
+            .as_array_mut()
             .unwrap()
-            .iter()
-            .find(|artifact| artifact["file_name"] == file)
+            .iter_mut()
+            .find(|artifact| named(artifact))
             .unwrap();
+        artifact["file_name"] = staged.clone().into();
+        let artifact = artifact.clone();
         let mut manifest = serde_json::to_value(mod_content::Manifest::default()).unwrap();
         manifest["id"] = id.into();
         manifest["name"] = name.into();
@@ -66,10 +83,7 @@ fn split(fixture: &Fixture, kept: &[&str], omit: Option<&str>) {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|artifact| {
-            let file = artifact["file_name"].as_str().unwrap();
-            file != REACH_FILE && file != D2_FILE
-        })
+        .filter(|artifact| !artifact["file_name"].as_str().unwrap().contains('/'))
         .map(|artifact| {
             let file = artifact["file_name"].as_str().unwrap();
             let profile = authored_package_for_file_name(file).unwrap();
@@ -178,8 +192,6 @@ fn family_migration_keep_change_retire_and_remove_preserve_both_account_backends
         let modified = fs::metadata(&kept_file).unwrap().modified().unwrap();
         let d2_before = tree(&directory(&fixture, D2));
         split(&fixture, &[REACH, D2], None);
-        fs::remove_file(fixture.staging.join(REACH_FILE)).unwrap();
-        fs::remove_file(fixture.staging.join(D2_FILE)).unwrap();
         let repeated = install_staged_packages(&request(&fixture)).unwrap();
         assert_eq!(handle, same_file::Handle::from_path(&kept_file).unwrap());
         assert_eq!(
@@ -201,7 +213,7 @@ fn family_migration_keep_change_retire_and_remove_preserve_both_account_backends
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .find(|artifact| artifact["file_name"] == REACH_FILE)
+            .find(|artifact| artifact["file_name"] == format!("{REACH}/{REACH_FILE}").as_str())
             .unwrap();
         artifact["byte_length"] = digest.byte_length.into();
         artifact["sha256"] = digest.sha256.into();
@@ -213,7 +225,6 @@ fn family_migration_keep_change_retire_and_remove_preserve_both_account_backends
         let changed = entries(&fixture);
         let retiring = tree(&directory(&fixture, REACH));
         split(&fixture, &[D2], Some(REACH));
-        fs::remove_file(fixture.staging.join(REACH_FILE)).unwrap();
         let removed = install_staged_packages(&request(&fixture)).unwrap();
         assert!(!directory(&fixture, REACH).exists());
         assert_eq!(
@@ -367,8 +378,6 @@ fn a_kept_importer_changed_after_journaling_is_preserved_and_blocks_recovery() {
     split(&fixture, &[], None);
     install_staged_packages(&request(&fixture)).unwrap();
     split(&fixture, &[D2, REACH], None);
-    fs::remove_file(fixture.staging.join(REACH_FILE)).unwrap();
-    fs::remove_file(fixture.staging.join(D2_FILE)).unwrap();
     let path = directory(&fixture, D2).join("packages").join(D2_FILE);
     let failure = backend::install_with_observer(&request(&fixture), &mut |_| {}, &mut |step| {
         if step == "journaled" {
@@ -458,12 +467,14 @@ fn both_backup_layouts_restore_the_complete_previous_family() {
                     let mut record: serde_json::Value = mod_content::read_json(&journal).unwrap();
                     let backup =
                         PathBuf::from(record["context"]["backup_directory"].as_str().unwrap());
-                    for id in [mod_content::ID, D2, REACH] {
+                    for id in [mod_content::ID, REACH] {
                         assert_eq!(
                             tree(&backup.join("mods").join(id)),
                             tree(&directory(&fixture, id))
                         );
                     }
+                    // The unchanged importer stays in place and needs no backup.
+                    assert!(!backup.join("mods").join(D2).exists());
                     if old_layout {
                         fs::rename(
                             backup.join("mods").join(mod_content::ID),

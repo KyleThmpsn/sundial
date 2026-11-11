@@ -163,6 +163,26 @@ fn confirmed_replacement_keeps_account_backup_out_of_retention() {
     assert!(report.backup_directory.is_dir());
 }
 
+/// A review records an account cleanup on every replacement, including one that removes nothing.
+/// Such an install leaves the account as it was, so its backup holds nothing a later backup lacks
+/// and must age out like any other generation.
+#[test]
+fn unchanged_account_cleanup_backup_is_pruned() {
+    let fixture = Fixture::new();
+    let (path, original, _) = account_fixture(&fixture);
+    let review = crate::install::replacement::test_review(&fixture.target, BTreeSet::from([999]));
+    let cleanup = review.account_cleanup().unwrap();
+    assert_eq!(cleanup.cleaned_bytes, cleanup.original_bytes);
+    assert!(review.client_settings().is_none());
+    let mut request = fixture.request();
+    request.confirmed_replacement = Some(review);
+    let report = install_staged_packages(&request).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original);
+    install_staged_packages(&fixture.request()).unwrap();
+    prune_package_backups(&fixture.backups, 1).unwrap();
+    assert!(!report.backup_directory.exists());
+}
+
 #[test]
 fn stale_account_consent_fails_before_package_replacement() {
     let fixture = Fixture::new();

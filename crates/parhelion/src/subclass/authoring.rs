@@ -180,6 +180,8 @@ pub(crate) struct AbilityEntity {
     pub(crate) hud_keys: Vec<u32>,
     /// A private glyph row carrying the ability color and, for a Super, its inherited theme.
     pub(crate) hud_color: Option<super::hud::Row>,
+    /// Artwork of the tile's own, which `hud_color` draws in place of the node icon's.
+    pub(crate) hud_icon: Option<HudIcon>,
     pub(crate) attached: Vec<AttachedHud>,
 }
 
@@ -199,6 +201,13 @@ pub(crate) struct NodeIcon {
     pub(crate) artwork: Option<Icon>,
     pub(crate) color: Option<[u8; 3]>,
     pub(crate) source_row: u16,
+    pub(crate) source_container: TagHash,
+}
+
+/// An ability's HUD artwork, and the stock icon container its own is built from.
+#[derive(Clone)]
+pub(crate) struct HudIcon {
+    pub(crate) artwork: Icon,
     pub(crate) source_container: TagHash,
 }
 
@@ -645,6 +654,11 @@ fn author_entry(
         }
         None => {}
     }
+    // HUD artwork of its own replaces what the icon brings to the tile. The node keeps the icon.
+    if edits.hud_artwork.is_some() {
+        icon_glyph = None;
+        icon_art = Some(super::hud::Art::OwnIcon);
+    }
     let color = edits.color.or(theme);
     let icon = if artwork.is_some() || color.is_some() {
         let source_row = native::node_icon(&record)?;
@@ -674,28 +688,7 @@ fn author_entry(
     {
         None
     } else {
-        // The page scopes each value to the graph it loaded: the ability's entity, or a graph it
-        // spawns. The copy is of the row whose entity a value names, or of the first row with an
-        // entity when only spawned graphs or effect colors change. The build refuses a graph the
-        // entity does not reach.
-        let scopes = edits
-            .ability_values
-            .iter()
-            .filter_map(|value| value.locator.graph_tag.map(|tag| tag.get()))
-            .chain(edits.spawn_swaps.iter().map(|swap| swap.graph))
-            .collect::<BTreeSet<_>>();
-        let mut first = None;
-        let mut named = None;
-        for row in native::equipped_rows(&pool)? {
-            if let Some(source) = (sources.entity_of)(row)? {
-                first.get_or_insert((row, source));
-                if scopes.contains(&source.0) {
-                    named = Some((row, source));
-                    break;
-                }
-            }
-        }
-        match named.or(first) {
+        match entity_source(sources, &pool, edits)? {
             // A node with no entity of its own shows its icon on the Subclass screen alone.
             None if edits.keeps_entity() => None,
             None => {
@@ -714,11 +707,45 @@ fn author_entry(
                             .any(|stock| (stock.key, stock.row) == (*key, row))
                     })
                     .collect::<Vec<_>>();
-                if edits.imported_ability.is_some() && hud_color.is_some() {
-                    return Err(invalid(format!(
-                        "{label}: edit an imported ability's HUD color in its prepared group"
-                    )));
-                }
+                let own_glyph = entity_glyph(sources, source, &hud_keys)?;
+                let color_row = own_glyph
+                    .map(|own| icon_glyph.unwrap_or(own))
+                    .filter(|_| hud_color.is_some() || icon_art.is_some())
+                    .map(|glyph| -> AuthoringResult<_> {
+                        Ok(super::hud::Row {
+                            key: crate::presentation::text_hash(
+                                namespace,
+                                &format!("{key}-hud-color"),
+                            ),
+                            source: glyph,
+                            rgb: hud_color,
+                            theme: if super::hud::is_super(place) {
+                                theme.or(super::hud::row_color(sources.manager, glyph)?)
+                            } else {
+                                None
+                            },
+                            art: icon_art,
+                        })
+                    })
+                    .transpose()?;
+                let hud_glyph = match (icon_glyph, own_glyph) {
+                    (Some(glyph), Some(own)) if glyph != own => Some(glyph),
+                    _ => None,
+                };
+                let hud_glyph = color_row.map(|row| row.key).or(hud_glyph);
+                let hud_icon = edits
+                    .hud_artwork
+                    .clone()
+                    .filter(|_| color_row.is_some())
+                    .map(|artwork| -> AuthoringResult<_> {
+                        Ok(HudIcon {
+                            artwork,
+                            source_container: (sources.icon_container)(native::node_icon(
+                                &record,
+                            )?)?,
+                        })
+                    })
+                    .transpose()?;
                 if let Some(imported) = &edits.imported_ability {
                     Some(AbilityEntity {
                         row,
@@ -731,39 +758,13 @@ fn author_entry(
                         swaps: Vec::new(),
                         bank_values: Vec::new(),
                         damage_type: None,
-                        hud_glyph: None,
+                        hud_glyph,
                         hud_keys,
-                        hud_color: None,
+                        hud_color: color_row,
+                        hud_icon,
                         attached: Vec::new(),
                     })
                 } else {
-                    let own_glyph = entity_glyph(sources, source, &hud_keys)?;
-                    // A row of its own for a color, or for an icon that no glyph row holds.
-                    let color_row = own_glyph
-                        .map(|own| icon_glyph.unwrap_or(own))
-                        .filter(|_| hud_color.is_some() || icon_art.is_some())
-                        .map(|glyph| -> AuthoringResult<_> {
-                            Ok(super::hud::Row {
-                                key: crate::presentation::text_hash(
-                                    namespace,
-                                    &format!("{key}-hud-color"),
-                                ),
-                                source: glyph,
-                                rgb: hud_color,
-                                theme: if super::hud::is_super(place) {
-                                    theme.or(super::hud::row_color(sources.manager, glyph)?)
-                                } else {
-                                    None
-                                },
-                                art: icon_art,
-                            })
-                        })
-                        .transpose()?;
-                    let hud_glyph = match (icon_glyph, own_glyph) {
-                        (Some(glyph), Some(own)) if glyph != own => Some(glyph),
-                        _ => None,
-                    };
-                    let hud_glyph = color_row.map(|row| row.key).or(hud_glyph);
                     let attached = attached::resolve(
                         sources,
                         stock,
@@ -786,6 +787,7 @@ fn author_entry(
                         hud_glyph,
                         hud_keys,
                         hud_color: color_row,
+                        hud_icon,
                         attached,
                     })
                 }
@@ -1301,12 +1303,6 @@ fn resolve_modifiers(
     for entry in authored.iter_mut() {
         let mut modifiers = Vec::with_capacity(entry.requested.len());
         for &(target, effect) in &entry.requested {
-            if imported.contains(&target) {
-                return Err(invalid(format!(
-                    "{}: edit an imported ability's property bank in its prepared group",
-                    entry.label
-                )));
-            }
             let target_label = super::entry_place(target)
                 .map_or_else(|| format!("Subclass entry {target}"), label);
             let row = match rows.get(&target) {
@@ -1323,6 +1319,23 @@ fn resolve_modifiers(
                     entry.label
                 )));
             };
+            if imported.contains(&target) {
+                let ModifierEffect::Key { key } = effect else {
+                    return Err(invalid(format!(
+                        "{}: edit an imported ability's property bank in its prepared group",
+                        entry.label
+                    )));
+                };
+                // Attachment admission checks this key against the actual prepared bank.
+                // Placement retargets the selection record to the imported ability's own row.
+                modifiers.push(ResolvedModifier {
+                    key,
+                    target,
+                    stock_row,
+                    bank_row: None,
+                });
+                continue;
+            }
             let bank = match banks.get(&stock_row) {
                 Some(bank) => bank.clone(),
                 None => {
@@ -1374,6 +1387,7 @@ fn resolve_modifiers(
                         name: parameter,
                         applied: f32::from_bits(value_bits),
                         add,
+                        gate: None,
                     };
                     (key, Some((key, modifier)))
                 }
@@ -1624,4 +1638,33 @@ pub(crate) fn validate_project(sources: &Sources<'_>, lists: usize) -> Authoring
         )));
     }
     Ok(())
+}
+
+fn entity_source(
+    sources: &Sources<'_>,
+    pool: &[u8],
+    edits: &EntryEdits,
+) -> AuthoringResult<Option<(u8, TagHash)>> {
+    // The page scopes each value to the graph it loaded: the ability's entity, or a graph it
+    // spawns. The copy is of the row whose entity a value names, or of the first row with an
+    // entity when only spawned graphs or effect colors change. The build refuses a graph the
+    // entity does not reach.
+    let scopes = edits
+        .ability_values
+        .iter()
+        .filter_map(|value| value.locator.graph_tag.map(|tag| tag.get()))
+        .chain(edits.spawn_swaps.iter().map(|swap| swap.graph))
+        .collect::<BTreeSet<_>>();
+    let mut first = None;
+    let mut named = None;
+    for row in native::equipped_rows(pool)? {
+        if let Some(source) = (sources.entity_of)(row)? {
+            first.get_or_insert((row, source));
+            if scopes.contains(&source.0) {
+                named = Some((row, source));
+                break;
+            }
+        }
+    }
+    Ok(named.or(first))
 }

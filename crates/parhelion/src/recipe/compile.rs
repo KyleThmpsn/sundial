@@ -258,6 +258,7 @@ impl WeaponRecipeOverrides {
                                 })
                                 .collect(),
                             reusable_choices: column.reusable_choices,
+                            hide_perks_in_tooltip: column.hide_perks_in_tooltip,
                         })
                     })
                     .transpose()
@@ -396,6 +397,16 @@ impl WeaponRecipeOverrides {
                 .type_marker_donor
                 .as_ref()
                 .map(|donor| parse_recipe_hash("type marker donor", &donor.item_hash))
+                .transpose()?,
+            content_variant: self
+                .content_variant
+                .as_ref()
+                .map(|variant| {
+                    Ok::<_, RecipeError>(crate::weapon::behavior::ContentVariant {
+                        key: parse_recipe_hash("content variant key", &variant.key)?,
+                        projectile: variant.projectile,
+                    })
+                })
                 .transpose()?,
             behavior_donor: self
                 .behavior_donor
@@ -647,6 +658,18 @@ impl WeaponRecipe {
 
 impl WeaponRecipe {
     pub fn to_spec(&self) -> Result<WeaponCloneSpec, RecipeError> {
+        #[cfg(feature = "d2-model-importer")]
+        if self.overrides.modern_damage_type.is_some()
+            && super::damage::original(&self.overrides).is_some()
+        {
+            let mut recipe = self.clone();
+            super::damage::apply(&mut recipe).map_err(RecipeError::Validation)?;
+            return recipe.compile();
+        }
+        self.compile()
+    }
+
+    fn compile(&self) -> Result<WeaponCloneSpec, RecipeError> {
         if self.kind != ItemKind::Weapon
             && (self
                 .overrides

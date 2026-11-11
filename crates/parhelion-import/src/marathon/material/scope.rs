@@ -2,7 +2,7 @@
 use super::*;
 
 /// The highest `TEXCOORD` index a translated shader names, where a bare `TEXCOORD` is index 0.
-fn highest_texcoord(code: &str) -> Option<u32> {
+pub(super) fn highest_texcoord(code: &str) -> Option<u32> {
     code.match_indices("TEXCOORD")
         .map(|(at, word)| {
             let digits = code[at + word.len()..]

@@ -187,6 +187,11 @@ impl Calibration {
         })
     }
 
+    /// The native to source character height ratio applied to body displacement.
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
     pub fn translate(&self, frames: &[Vec<Pose>], rig: &Rig) -> Result<Vec<Vec<[f32; 8]>>> {
         let mut output = vec![Vec::with_capacity(frames.len()); rig.controls.len()];
         for frame in frames {

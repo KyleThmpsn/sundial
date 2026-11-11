@@ -72,7 +72,29 @@ impl PackageAuthoringApp {
                     "Build from a Temporary Stock Package View",
                 )
                 .changed();
-            if changed {
+            ui.add_space(8.0);
+            let mut layout = ui
+                .checkbox(&mut self.one_mod, "Build Everything in the Parhelion Mod")
+                .changed();
+            hint(
+                ui,
+                "Imported items join the Parhelion mod instead of a mod for each source game. Installing removes the source mods' folders.",
+            );
+            ui.add_space(8.0);
+            layout |= ui
+                .checkbox(
+                    &mut self.source_badges,
+                    "Give Each Source Game Its Own Badge",
+                )
+                .changed();
+            hint(
+                ui,
+                "Imported items in the Parhelion mod take a badge for their source game. Off, they join the Project Sunrise badge. A source game's own mod always keeps its badge.",
+            );
+            if layout {
+                self.save_workbench_preferences();
+            }
+            if changed || layout {
                 self.invalidate_results();
             }
         });

@@ -129,6 +129,10 @@ pub(in crate::halo_reach) fn read(cache: &Cache, at: usize) -> Result<Value> {
                 "relative_offset_source":vector::<3>(cache,part+0x48)?,"relative_orientation_radians":vector::<2>(cache,part+0x54)?,
                 "scale_a":cache.u32(part+0x5c)?,"scale_b":cache.u32(part+0x60)?}))
         }).collect::<Result<Vec<_>>>()?;
+        // A particle system's location index is the 16-bit field at `+0x14`. The Assembly ReachMCC
+        // plugin names `+0x16` the location index, but `+0x16` holds 0 in every one of 3,150
+        // systems across a multiplayer and a campaign cache, while `+0x14` always lies inside the
+        // location table and places each firing effect's casings at `primary_ejection`.
         let particles = cache
             .block(row + 0x34, 0x70)?
             .into_iter()
@@ -140,7 +144,7 @@ pub(in crate::halo_reach) fn read(cache: &Cache, at: usize) -> Result<Value> {
                     .collect::<Result<Vec<_>>>()?;
                 Ok(
                     json!({"offset":system,"tag":cache.reference(system+4,Some("prt3"))?,
-                "location":location(cache.i16(system+0x16)?)?,"coordinates":cache.i16(system+0x18)?,
+                "location":location(cache.i16(system+0x14)?)?,"coordinates":cache.i16(system+0x18)?,
                 "environment":cache.i16(system+0x1a)?,"disposition":cache.i16(system+0x1c)?,
                 "camera":cache.i16(system+0x1e)?,"flags":cache.u32(system+0x24)?,
                 "near_fade_source":[scalar(cache,system+0x34)?,scalar(cache,system+0x38)?],

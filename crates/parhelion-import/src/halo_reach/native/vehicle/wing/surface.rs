@@ -53,6 +53,56 @@ pub(super) struct Plan {
     pub report: Value,
 }
 
+/// A vtol's upright response, per unit of moment of inertia, from its forward flight speed
+/// interpolated row. Reach `5192F4` (MCC U13) turns the body back toward up about the horizontal
+/// axis between body up and world up (`519B98` to `519C79`), at an angular acceleration of
+/// `k * (scale * tilt)^exponent` for a tilt in radians. From `519DD0` it removes roll and pitch rate
+/// at the rotor damping rate per second and leaves yaw rate alone. The stiffness here is that
+/// acceleration at the attitude limit divided by the limit, so a full attitude error torques the
+/// body as Reach does at that tilt. Both source products also carry factors this route reads as
+/// one, an inference: physics state `+0x74`, the flying fraction, a resolved record's `+0x3A0`
+/// and a frame value read as the time step.
+struct Upright {
+    stiffness: f32,
+    damping: f32,
+    report: Value,
+}
+
+fn upright(controls: &Value, limit: f32) -> Result<Option<Upright>> {
+    if controls["kind"] != "vtol" {
+        return Ok(None);
+    }
+    let Some(row) = controls["source"]["speed_interpolated"]
+        .as_array()
+        .and_then(|rows| rows.last())
+    else {
+        return Ok(None);
+    };
+    let exponent = number(row, "upright_acceleration_exponent")?;
+    let scale = number(row, "upright_acceleration_scale")?;
+    let k = number(row, "upright_acceleration_k")?;
+    let damping = number(row, "rotor_damping")?;
+    // A row without a restoring term or rate damping keeps the authored response.
+    if [exponent, scale, k, damping].iter().any(|v| *v <= 0.) {
+        return Ok(None);
+    }
+    let acceleration = k * (scale * limit).powf(exponent);
+    let stiffness = acceleration / limit;
+    ensure!(
+        stiffness.is_finite() && stiffness > 0.,
+        "Invalid source vtol upright response"
+    );
+    let frequency = stiffness.sqrt();
+    Ok(Some(Upright {
+        stiffness,
+        damping,
+        report: json!({"exponent":exponent,"scale":scale,"k":k,"rotor_damping_per_second":damping,
+            "attitude_limit_radians":limit,"angular_acceleration_at_limit":acceleration,
+            "frequency_per_second":frequency,"damping_ratio":damping / (2. * frequency),
+            "axes":["roll","pitch"],"source":"Forward flight speed interpolated row"}),
+    }))
+}
+
 pub(super) fn plan(
     size: [f32; 3],
     controls: &Value,
@@ -67,18 +117,14 @@ pub(super) fn plan(
     let (cruise, _) = super::super::flight::thrust(controls)?;
     let bank = number(&controls["steering"], "left_limit_radians")?;
     let rate = number(&controls["steering"], "rate_radians_per_second")?;
+    // A source without gravity, such as a dropship, holds altitude with no baseline lift. The
+    // contact definition carries the same scale, so its native body is not pulled down either.
     ensure!(
-        [
-            forward,
-            acceleration,
-            deceleration,
-            cruise,
-            gravity,
-            bank,
-            rate
-        ]
-        .iter()
-        .all(|v| v.is_finite() && *v > 0.),
+        [forward, acceleration, deceleration, cruise, bank, rate]
+            .iter()
+            .all(|v| v.is_finite() && *v > 0.)
+            && gravity.is_finite()
+            && gravity >= 0.,
         "Invalid source flight force controls"
     );
     let area = size[0] * size[1] * 0.25;
@@ -103,16 +149,31 @@ pub(super) fn plan(
     // Calibrate each axis against the actual translated moment of inertia.
     // Opposed incidence surfaces brake rotation without requiring a turn input.
     let frequency = rate / bank * 0.3;
-    let frequencies = [frequency * 1.25, frequency, frequency];
+    let mut frequencies = [frequency * 1.25, frequency, frequency];
     let ratio = 1.05;
+    let upright = upright(controls, bank)?;
+    if let Some(upright) = &upright {
+        frequencies[0] = upright.stiffness.sqrt();
+        frequencies[1] = frequencies[0];
+    }
+    // A vtol's stiff upright torque comes from a front and rear pitch pair, as roll comes from a
+    // left and right pair, so it turns the body without a net heave.
+    let pitch_pair = upright.is_some();
     let mut authority = [0.; 3];
     let mut stability = [0.; 3];
     for axis in 0..3 {
         let moment = body.inertia[axis][axis] as f32;
-        let stiffness = moment * frequencies[axis] * frequencies[axis];
-        let angular_damping = 2. * ratio * moment * frequencies[axis];
+        let (stiffness, angular_damping) = match &upright {
+            Some(upright) if axis < 2 => (moment * upright.stiffness, moment * upright.damping),
+            _ => (
+                moment * frequencies[axis] * frequencies[axis],
+                2. * ratio * moment * frequencies[axis],
+            ),
+        };
         let (surface_area, lever, surfaces) = if axis == 0 {
             (area, roll_lever, 2.)
+        } else if axis == 1 && pitch_pair {
+            (attitude_area, turn_lever, 2.)
         } else {
             (attitude_area, turn_lever, 1.)
         };
@@ -158,6 +219,20 @@ pub(super) fn plan(
             lift: Lift::Constant(gain),
             drag: 1.,
             response: Program::ramp([-bank, bank], response)?,
+        });
+    }
+    // Lift ahead of the mass centre turns the nose the other way, so the front surface's response
+    // is reversed.
+    if pitch_pair {
+        surfaces.push(Surface {
+            name: "flight_pitch_front",
+            position: front,
+            orientation: identity,
+            axis: 3,
+            area: attitude_area,
+            lift: Lift::Constant(authority[1]),
+            drag: 1.,
+            response: Program::ramp([-bank, bank], [-1., 1.])?,
         });
     }
     for (name, orientation, coefficient) in [
@@ -254,6 +329,7 @@ pub(super) fn plan(
         report: json!({"reference_speed_metres_per_second":forward,
             "low_speed_compensation":{"minimum_speed_metres_per_second":forward * 0.2,"maximum_lift_gain":25.,"maximum_damping_gain":5.,"speed_source":"Primary body linear speed","zero_flow_force":0.},
             "response_frequency_per_second":frequencies,"target_damping_ratio":ratio,
+            "upright":upright.map(|upright| upright.report),"pitch_surface_pair":pitch_pair,
             "control_lift_coefficients":authority,"damping_lift_gains":stability,
             "source_frame_inertia_kg_metres_squared":body.inertia,
             "neutral_lift_at_mass_center":true,"gameplay_verified":false}),

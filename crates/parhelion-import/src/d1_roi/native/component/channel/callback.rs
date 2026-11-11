@@ -18,18 +18,28 @@ pub(super) fn read(source: &Payload, row: usize, channels: usize) -> Result<Opti
         "Source callback has no channel input"
     );
     let object = source.pointer(row + 96)?;
-    let (source_class, class, size) = match source.u32(object)? {
-        2 => (0x8080072D, 0x808097AE, 16),
-        4 => (0x80800572, 0x808097AC, 32),
-        5 => (0x808004EE, 0x808097AB, 16),
-        _ => anyhow::bail!("Source channel callback kind requires translation"),
+    // Rise of Iron dispatcher 003A7960 and Shadowkeep dispatcher 00599140 number the same seven
+    // kinds and read the same parameter offsets with the same constants. Source sizes come from
+    // the class records. Shadowkeep's kind 1 record is four bytes longer than its single rate, and
+    // the unused tail stays zero.
+    let kind = source.u32(object)?;
+    let (source_class, source_size, class, size) = match kind {
+        1 => (0x80800593, 12, 0x808097AF, 16),
+        2 => (0x8080072D, 16, 0x808097AE, 16),
+        3 => (0x80800857, 24, 0x808097AD, 24),
+        4 => (0x80800572, 32, 0x808097AC, 32),
+        5 => (0x808004EE, 16, 0x808097AB, 16),
+        6 => (0x80800905, 16, 0x808097AA, 16),
+        7 => (0x8080033D, 24, 0x808097A9, 24),
+        _ => anyhow::bail!("Source channel callback kind {kind} requires translation"),
     };
     ensure!(
         object >= 4 && source.u32(object - 4)? == source_class,
         "Source callback class differs"
     );
     let state = source.u32(object + 4)?;
-    let first_float = if size == 32 {
+    // Kinds 3 and 4 clear opposing velocity when the byte at +08 is set.
+    let first_float = if matches!(kind, 3 | 4) {
         ensure!(
             source.u32(object + 8)? <= 1,
             "Source callback Boolean differs"
@@ -41,16 +51,17 @@ pub(super) fn read(source: &Payload, row: usize, channels: usize) -> Result<Opti
     let states = source.array(source.pointer(16)? + 0x70, 16, Some(0x80800090))?;
     ensure!(
         (state == u32::MAX || (state as usize) < states.len())
-            && (first_float..size)
+            && (first_float..source_size)
                 .step_by(4)
                 .all(|at| source.f32(object + at).is_ok_and(f32::is_finite)),
         "Source callback parameters or history index differ"
     );
     let mut bytes = source
         .0
-        .get(object..object + size)
+        .get(object..object + source_size)
         .context("Source callback extent")?
         .to_vec();
+    bytes.resize(size, 0);
     if source_class == 0x808004EE {
         let stiffness = source.f32(object + 8)?;
         let damping = source.f32(object + 12)?;

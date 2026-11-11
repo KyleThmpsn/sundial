@@ -202,6 +202,16 @@ fn implicit(
         } else {
             Role::Irradiance
         }
+    } else if resource.slot == 11
+        && resource.dimension == 3
+        && !resource.integer
+        && code.buffers.contains(&(8, 8))
+        && code.buffers.contains(&(12, 13))
+        && code.buffers.contains(&(13, 2))
+    {
+        // Forward object programs read the screen atmosphere input here. The studio has
+        // no atmospheric contribution and supplies neutral transparent-scope color scales.
+        Role::Scene
     } else if matches!(
         (resource.slot, resource.dimension),
         (15 | 16 | 18, 3) | (17, 5)
@@ -225,6 +235,7 @@ fn implicit(
         }
         let detail = dye.map(|slot| 3 + (7 - slot) * 2);
         match resource.slot {
+            slot @ 3..=5 if code.buffers.contains(&(4, 12)) => Role::Scope(slot),
             3 if resource.integer => Role::Mask,
             0 => Role::Albedo,
             1 => Role::Normal,
@@ -243,7 +254,7 @@ fn implicit(
     Ok(Binding {
         slot: resource.slot,
         role,
-        color: matches!(role, Role::Albedo | Role::Detail),
+        color: matches!(role, Role::Albedo | Role::Detail | Role::Scope(4)),
         cube: None,
         layered: None,
         sampler: None,

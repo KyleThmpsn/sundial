@@ -372,9 +372,14 @@ pub(super) fn build(
         moment > 0. && angular_velocity > 0. && circumference > 0.,
         "Source engine controls must be positive"
     );
+    // Source 511790 and native EB7400 both give each wheel a rim speed of gear
+    // ratio times engine speed. Source 544918 and native EB2000 both advance
+    // engine speed by (torque + ratio * summed wheel reaction force) / moment.
+    // Engine speed is a length rate and torque a force, so both take the length
+    // scale. The moment acts as a mass and the body mass is not rescaled.
     for (field, value) in [
         (0x30, moment),
-        (0x34, angular_velocity * std::f32::consts::TAU),
+        (0x34, angular_velocity * metres),
         (0x44, circumference * metres),
     ] {
         put(&mut w.payload.0, ENGINE + field, &value.to_le_bytes())?;
@@ -423,13 +428,16 @@ pub(super) fn build(
             if index == 0 { ratio < 0. } else { ratio > 0. },
             "Source engine gear order is unsupported"
         );
-        Program::source(&gear["loaded_torque"])?.write(&mut w.payload, at + 8)?;
-        Program::source(&gear["cruising_torque"])?.write(&mut w.payload, at + 0x40)?;
+        Program::source(&gear["loaded_torque"], metres)?.write(&mut w.payload, at + 8)?;
+        Program::source(&gear["cruising_torque"], metres)?.write(&mut w.payload, at + 0x40)?;
+        // Native EA76E0 upshifts once the engine fraction has stayed above +0x70
+        // for +0x74 seconds, and downshifts below +0x78 after +0x7C seconds.
+        // Source 54457C keeps each time before its fraction.
         for (offset, key) in [
-            (0x70, "upshift_seconds"),
-            (0x74, "upshift_scale"),
-            (0x78, "downshift_seconds"),
-            (0x7c, "downshift_scale"),
+            (0x70, "upshift_scale"),
+            (0x74, "upshift_seconds"),
+            (0x78, "downshift_scale"),
+            (0x7c, "downshift_seconds"),
             (0x80, "ratio"),
         ] {
             put(
@@ -589,9 +597,10 @@ pub(super) fn build(
         json!({
             "owner":SYMBOL,"instance_class":0x80803ce6u32,"definition_class":0x80803cefu32,
             "gears":gears.len(),"source":source,"native_cusp_degrees":cusp.to_degrees(),
-            "native_engine_maximum_angular_velocity":angular_velocity * std::f32::consts::TAU,
+            "native_engine_maximum_speed_metres_per_second":angular_velocity * metres,
+            "native_torque_scale":metres,
             "gameplay_verified":false,
-            "limits":["Engine angular-unit scaling and bounded source torque interpretation require a source-runtime and gameplay comparison. The native engine response envelope is retained."]
+            "limits":["Engine speed and torque follow the length scale of the shared source and native engine integration. Drive force still passes through native tire friction, so launch and top speed need a gameplay comparison."]
         })
     )
 }

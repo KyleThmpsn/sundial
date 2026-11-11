@@ -12,6 +12,7 @@ const PRESENTATION: &[&str] = &[
     "optic",
     "sights",
     "optic_item",
+    "heat_capacity",
 ];
 
 pub(super) fn record(entry: &ImportRequest) -> Result<Value> {

@@ -4,6 +4,7 @@
 //! media must be decoded separately. Global buses and game parameters need target validation
 //! by the caller. Unsupported features fail before any converted bank is returned.
 use super::*;
+mod effect;
 mod parameter;
 mod silence;
 
@@ -171,6 +172,10 @@ fn action(
         if matches!(action >> 8, 0x13 | 0x14) {
             dependencies.params.insert(id);
         }
+    } else if matches!(action >> 8, 1..=3 | 6 | 7) {
+        // A stop, pause, resume, mute or unmute acts on its element's instances, so an element
+        // that no bank defines leaves it nothing to act on.
+        w.reference(r.u32()?, Kind::Stopped);
     } else {
         w.object(r)?;
     }
@@ -187,6 +192,14 @@ fn action(
             if action >> 8 != 1 {
                 w.copy(r, 1)?;
             }
+            exceptions(r, w)?;
+        }
+        // Mute and unmute keep only their fade curve before the exceptions. Stock version 113
+        // banks store the same body, as 112 mute and unmute actions across 59,386 banks show.
+        // No Land Beyond's shot event `55D686AA` in bank `80AA3FDE` ends with a mute of
+        // `19A3FA95`.
+        6 | 7 => {
+            w.copy(r, 1)?;
             exceptions(r, w)?;
         }
         8..=11 => {
@@ -282,29 +295,73 @@ fn switch(
     w.u32(group);
     w.copy(r, 4)?;
     w.u8(flag(r)?);
-    children(r, w)?;
+    let count = r.count()?;
+    w.u32(count as u32);
+    let mut members = BTreeSet::new();
+    for _ in 0..count {
+        let child = r.u32()?;
+        members.insert(child);
+        w.reference(child, Kind::Object);
+    }
+    // Each switch value lists the children it plays by ID. As with the parameter rows below, an
+    // entry naming a node the container does not hold leaves with the conversion. Rise of Iron
+    // switch container `170DF364` in Hereafter's weapon bank `80AA81CE` lists `316F602A` under
+    // switch value `FCE565B9` beside its three children and keeps a parameter row for it. None of
+    // the 12,526 readable source banks defines it, so the entry plays nothing.
     let count = r.count()?;
     w.u32(count as u32);
     for _ in 0..count {
         w.copy(r, 4)?;
-        children(r, w)?;
+        let entries = r.count()?;
+        let at = w.bytes.len();
+        w.u32(0);
+        let mut kept = 0u32;
+        for _ in 0..entries {
+            let child = r.u32()?;
+            if members.contains(&child) {
+                w.reference(child, Kind::Object);
+                kept += 1;
+            }
+        }
+        w.bytes[at..at + 4].copy_from_slice(&kept.to_le_bytes());
     }
+    // Switch parameters configure the container's children by ID. A row naming a node the
+    // container does not hold configures nothing and leaves with the conversion. Rise of Iron
+    // switch container `28089B55`, repeated in weapon banks such as `80AA37FE` and `80AA32A9`,
+    // keeps a row for `3873E04F` beside its four children, and no source bank defines it.
     let count = r.count()?;
+    let at = w.bytes.len();
     w.u32(count as u32);
+    let mut kept = 0u32;
     for _ in 0..count {
-        w.object(r)?;
-        w.u8(flags(r, 2)?);
+        let node = r.u32()?;
+        let bits = flags(r, 2)?;
         let mode = r.u32()?;
         ensure!(mode <= 2, "early switch transition mode differs");
+        let fades = r.take(8)?;
+        if !members.contains(&node) {
+            continue;
+        }
+        w.reference(node, Kind::Object);
+        w.u8(bits);
         w.u8(mode as u8);
-        w.copy(r, 8)?;
+        w.bytes.extend_from_slice(fades);
+        kept += 1;
     }
+    w.bytes[at..at + 4].copy_from_slice(&kept.to_le_bytes());
     Ok(())
 }
 
 fn layer(r: &mut Read<'_>, w: &mut Write, dependencies: &mut settings::Dependencies) -> Result<()> {
     parameter::node(r, w, dependencies)?;
-    children(r, w)?;
+    let count = r.count()?;
+    w.u32(count as u32);
+    let mut members = BTreeSet::new();
+    for _ in 0..count {
+        let child = r.u32()?;
+        members.insert(child);
+        w.reference(child, Kind::Object);
+    }
     let count = r.count()?;
     w.u32(count as u32);
     for _ in 0..count {
@@ -314,14 +371,28 @@ fn layer(r: &mut Read<'_>, w: &mut Write, dependencies: &mut settings::Dependenc
         dependencies.params.insert(id);
         w.u32(id);
         w.u8(0); // Game parameter, not a MIDI or modulator source.
-        let children = r.count()?;
-        w.u32(children as u32);
-        for _ in 0..children {
-            w.object(r)?;
+        // A layer's crossfade curves apply to the container's children. An association naming
+        // a node the container does not hold applies to nothing and leaves with the conversion,
+        // its curve still validated. Rise of Iron blend container `2017BE70` in weapon bank
+        // `80AA315E` holds only `3C73E3A0` and associates `0E64E2A5` as well, which no source
+        // bank defines.
+        let associations = r.count()?;
+        let at = w.bytes.len();
+        w.u32(associations as u32);
+        let mut kept = 0u32;
+        for _ in 0..associations {
+            let child = r.u32()?;
             let points = r.count()?;
-            w.u32(points as u32);
-            parameter::curve(r, w, points)?;
+            if members.contains(&child) {
+                w.reference(child, Kind::Object);
+                w.u32(points as u32);
+                parameter::curve(r, w, points)?;
+                kept += 1;
+            } else {
+                parameter::curve(r, &mut Write::default(), points)?;
+            }
         }
+        w.bytes[at..at + 4].copy_from_slice(&kept.to_le_bytes());
     }
     Ok(())
 }
@@ -379,7 +450,8 @@ fn object(
         }
         9 => layer(r, w, dependencies),
         14 => attenuation(r, w, dependencies),
-        19 => silence::preset(r, w),
+        18 => effect::share_set(r, w, dependencies),
+        19 => effect::custom(r, w, dependencies),
         _ => bail!("unsupported early hierarchy object type {kind}"),
     }
 }

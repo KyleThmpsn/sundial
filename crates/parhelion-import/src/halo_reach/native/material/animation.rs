@@ -5,17 +5,17 @@ use crate::halo_reach::effect::property::Property;
 
 // Preserve MCC's division before wrapping the phase. Reciprocal multiplication can round to
 // the other side of a period boundary and select the opposite end of a discontinuous curve.
-pub(super) const CLOCK: &str =
+pub(in crate::halo_reach) const CLOCK: &str =
     "precise float reachPhase(float time,float period) { return time/period; }\n";
 
 #[derive(Default)]
-pub(super) struct Parameters {
+pub(in crate::halo_reach) struct Parameters {
     names: BTreeMap<String, String>,
     pub source: String,
     pub notes: Vec<String>,
 }
 
-pub(super) fn vector(value: [f32; 4]) -> String {
+pub(in crate::halo_reach) fn vector(value: [f32; 4]) -> String {
     format!(
         "float4({:e},{:e},{:e},{:e})",
         value[0], value[1], value[2], value[3]
@@ -187,7 +187,7 @@ pub(super) fn expression(function: &material::Function) -> Result<String> {
 /// Integer loads preserve source table quantization without sampler state or filtered row edges.
 /// Negative phases retain MCC's truncation and signed interpolation fraction. Recover the byte
 /// before applying the source reciprocal, since hardware UNORM division can round differently.
-pub(super) fn periodic(
+pub(in crate::halo_reach) fn periodic(
     native: &mut Reader,
     graph: &mut Graph,
     bindings: &mut Vec<(usize, String)>,

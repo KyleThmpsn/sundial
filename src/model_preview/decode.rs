@@ -261,7 +261,10 @@ fn append_stages(
                         })
                 })
         });
-        let dyed = bytes[part + 0x1A] < 6 && plate.is_some();
+        let plated = effect
+            .and_then(|index| model.effects[index].native.as_ref())
+            .is_some_and(effects::native::Native::plated);
+        let dyed = (bytes[part + 0x1A] < 6 || plated) && plate.is_some();
         if !drawn.insert((
             mesh,
             layout,

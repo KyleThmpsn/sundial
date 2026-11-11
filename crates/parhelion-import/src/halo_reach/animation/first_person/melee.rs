@@ -304,8 +304,11 @@ pub(super) fn prepare(
                     rig.bind.len(),
                     controls,
                 )?;
-                let released_constraints = constraint::release(&mut payload, rig)
-                    .with_context(|| format!("Source strike {name}, native clip {template:08X}"))?;
+                let released_constraints =
+                    animation::constraint::release(&mut payload, controls, &rig.names)
+                        .with_context(|| {
+                            format!("Source strike {name}, native clip {template:08X}")
+                        })?;
                 strikes.push(Strike { state, descriptor, template, marker, payload,
                     hands:translated.hand_slots,
                     report:json!({"state":format!("{state:08X}"),"native_descriptor":descriptor,

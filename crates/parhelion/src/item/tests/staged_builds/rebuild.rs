@@ -28,8 +28,8 @@ fn runtime_reuse_relocates_after_an_earlier_recipe_changes() {
             .unwrap();
     later.name = "Later Runtime".into();
     later.overrides.animation_donor = Some(crate::recipe::WeaponDonorReference {
-        item_hash: 0x02E6_3C72.into(),
-        expected_name: Some("Ancient Gospel".into()),
+        item_hash: 0x31B7_14B4.into(),
+        expected_name: Some("Service Revolver".into()),
     });
     later
         .save_json(output.join("later.parhelion.json"))
@@ -39,8 +39,8 @@ fn runtime_reuse_relocates_after_an_earlier_recipe_changes() {
             .unwrap();
     earlier.name = "Earlier Runtime".into();
     earlier.overrides.animation_donor = Some(crate::recipe::WeaponDonorReference {
-        item_hash: 0x02E6_3C72.into(),
-        expected_name: Some("Ancient Gospel".into()),
+        item_hash: 0x31B7_14B4.into(),
+        expected_name: Some("Service Revolver".into()),
     });
     earlier
         .save_json(output.join("earlier.parhelion.json"))
@@ -166,15 +166,19 @@ fn child(output: &Path, phase: &str) {
         &WeaponProjectSpec { weapons },
         &[],
         crate::branding::Branding::for_packages(&source),
-        &mut |event| progress.push(json!({
+        &mut |event| {
+            progress.push(json!({
             "seconds":event.timestamp.saturating_duration_since(start).as_secs_f64(),
-            "label":event.label,"completed":event.completed,"total":event.total,"activity":format!("{:?}",event.activity)
-        })),
-    ).unwrap();
+            "label":event.label,"completed":event.completed,"total":event.total,
+            "cache_hit":cache_hit(event.activity.as_ref()),"activity":format!("{:?}",event.activity)
+        }))
+        },
+    )
+    .unwrap();
     let seconds = start.elapsed().as_secs_f64();
     let hit = progress
         .iter()
-        .any(|event| event["label"] == "Reusing Runtime for Later Runtime");
+        .any(|event| event["cache_hit"] == "Later Runtime");
     assert_eq!(
         hit,
         phase == "relocated" || phase.starts_with("warm-"),
@@ -195,7 +199,7 @@ fn child(output: &Path, phase: &str) {
     let pattern = catalog
         .weapon_donors()
         .into_iter()
-        .find(|donor| donor.hash == 0x02E6_3C72)
+        .find(|donor| donor.hash == 0x31B7_14B4)
         .and_then(|donor| donor.weapon_pattern_index)
         .expect("The donor must have a native pattern row");
     let donor = load_weapon_runtime_entity_at_pattern_index_with_manager(&stock, pattern).unwrap();
@@ -205,6 +209,17 @@ fn child(output: &Path, phase: &str) {
         Some(donor.weapon_content_group_hash),
     )
     .unwrap();
+    let base = load_weapon_runtime_entity_with_manager(&stock, later.donor_item_hash).unwrap();
+    let base_profile = crate::weapon::animations::profile(
+        &stock,
+        &base.payload,
+        Some(base.weapon_content_group_hash),
+    )
+    .unwrap();
+    assert_ne!(
+        base_profile.keys, donor_profile.keys,
+        "The fixture must request a different animation profile"
+    );
     assert_eq!(
         profile.keys, donor_profile.keys,
         "The selected runtime must still play its animation donor"

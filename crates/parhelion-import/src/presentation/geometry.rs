@@ -2,6 +2,9 @@ use super::*;
 use crate::tiger::payload::Payload;
 use serde_json::json;
 
+mod lighting;
+pub(crate) use lighting::append as append_lighting;
+
 pub(crate) struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub attributes: Vec<[f32; 10]>,
@@ -14,17 +17,44 @@ pub struct Encoded {
     pub streams: [Vec<u8>; 3],
     pub patches: Vec<Value>,
 }
-pub fn encode_with_stages(
+/// Automatic surface shadows with a private alpha-tested technique for each key in `clipped`.
+/// The caller supplies `material-{key}-shadow` alongside its surface. Optional activation groups
+/// retain the same identity on both passes, including vehicle damage-state geometry. With
+/// `prepass`, every opaque surface outside `clipped` also draws in the depth prepass (stage 12)
+/// with the caller's `material-prepass` and those record flags, as stock weapon parts do. Stock
+/// pieces hidden while aiming carry `0x1` there as in their other stages, the rest `0x5`.
+pub(crate) fn encode_with_clipped_shadows(
     mesh: &Mesh,
     native: &Payload,
     native_mesh: usize,
     stages: &std::collections::BTreeMap<u32, u8>,
+    clipped: &std::collections::BTreeSet<u32>,
+    groups: Option<&[u16]>,
+    prepass: Option<u16>,
 ) -> Result<Encoded> {
     ensure!(
-        stages.values().all(|stage| matches!(stage, 0 | 7)),
+        stages.values().all(|stage| matches!(stage, 0 | 7 | 16)),
         "Unsupported surface stage"
     );
-    encode_passes(mesh, native, native_mesh, stages, true, None, None)
+    if let Some(groups) = groups {
+        ensure!(
+            groups.len() == mesh.groups.len()
+                && groups.iter().all(|&group| group <= i16::MAX as u16),
+            "Authored activation groups differ from primitive groups"
+        );
+    }
+    encode_passes(
+        mesh,
+        native,
+        native_mesh,
+        stages,
+        PassOptions {
+            shadows: Some(clipped),
+            groups,
+            prepass,
+            ..PassOptions::default()
+        },
+    )
 }
 
 /// A static mesh's streams. Positions lie on one grid of a step from the origin: the mesh's center
@@ -154,25 +184,6 @@ pub(crate) fn encode_static(mesh: &Mesh, step: f32) -> Result<StaticStreams> {
     })
 }
 
-/// Bind each authored primitive to a declared component activation group.
-pub(crate) fn encode_grouped(
-    mesh: &Mesh,
-    native: &Payload,
-    native_mesh: usize,
-    stages: &std::collections::BTreeMap<u32, u8>,
-    groups: &[u16],
-) -> Result<Encoded> {
-    ensure!(
-        stages.values().all(|stage| matches!(stage, 0 | 7)),
-        "Unsupported surface stage"
-    );
-    ensure!(
-        groups.len() == mesh.groups.len() && groups.iter().all(|&group| group <= i16::MAX as u16),
-        "Authored activation groups differ from primitive groups"
-    );
-    encode_passes(mesh, native, native_mesh, stages, true, Some(groups), None)
-}
-
 /// Keep explicitly supplied surface, decal, shadow, transparent, depth and reticle
 /// records. Source backends own pass selection and material translation.
 pub fn encode_source_passes(
@@ -191,7 +202,15 @@ pub fn encode_source_passes(
             .all(|stage| matches!(stage, 0 | 1 | 3 | 7 | 9 | 12 | 14 | 16)),
         "Unsupported source presentation pass"
     );
-    encode_passes(mesh, native, native_mesh, stages, false, None, None)
+    encode_passes(mesh, native, native_mesh, stages, PassOptions::default())
+}
+
+#[derive(Default)]
+struct PassOptions<'a> {
+    shadows: Option<&'a std::collections::BTreeSet<u32>>,
+    groups: Option<&'a [u16]>,
+    grid: Option<(f32, &'a std::collections::BTreeSet<u32>)>,
+    prepass: Option<u16>,
 }
 
 #[expect(
@@ -203,10 +222,17 @@ fn encode_passes(
     native: &Payload,
     native_mesh: usize,
     stages: &std::collections::BTreeMap<u32, u8>,
-    automatic_shadows: bool,
-    groups: Option<&[u16]>,
-    grid: Option<(f32, &std::collections::BTreeSet<u32>)>,
+    PassOptions {
+        shadows: automatic_shadows,
+        groups,
+        grid,
+        prepass,
+    }: PassOptions<'_>,
 ) -> Result<Encoded> {
+    ensure!(
+        prepass.is_none() || automatic_shadows.is_some(),
+        "An automatic depth prepass follows the automatic surface passes"
+    );
     ensure!(
         !mesh.positions.is_empty() && mesh.positions.len() == mesh.attributes.len(),
         "Missing or mismatched native vertices"
@@ -295,12 +321,14 @@ fn encode_passes(
         attributes.extend([0; 4]);
     }
     let mut records = vec![];
-    let visibility_group =
-        if !automatic_shadows && !stages.is_empty() && stages.values().all(|stage| *stage == 16) {
-            crate::tiger::draws::stage_group(native, native_mesh, 16)?
-        } else {
-            crate::tiger::draws::drawn_group(native, native_mesh)?
-        };
+    let visibility_group = if automatic_shadows.is_none()
+        && !stages.is_empty()
+        && stages.values().all(|stage| *stage == 16)
+    {
+        crate::tiger::draws::stage_group(native, native_mesh, 16)?
+    } else {
+        crate::tiger::draws::drawn_group(native, native_mesh)?
+    };
     let mut patches = vec![
         json!({"offset":0xb0,"symbol":"positions-header"}),
         json!({"offset":0xb4,"symbol":"attributes-header"}),
@@ -315,8 +343,17 @@ fn encode_passes(
             for (group_index, (mat, faces)) in mesh.groups.iter().enumerate() {
                 let surface_stage = usize::from(*stages.get(mat).unwrap_or(&0));
                 let shadowless = grid.is_some_and(|(_, shadowless)| shadowless.contains(mat));
+                // An alpha-tested surface has no vertex-only depth, so it stays out of the prepass.
+                let prepassed = prepass.is_some()
+                    && stage == 12
+                    && surface_stage == 0
+                    && automatic_shadows.is_some_and(|clipped| !clipped.contains(mat));
                 if stage != surface_stage
-                    && !(automatic_shadows && stage == 3 && surface_stage == 0 && !shadowless)
+                    && !prepassed
+                    && !(automatic_shadows.is_some()
+                        && stage == 3
+                        && surface_stage == 0
+                        && !shadowless)
                 {
                     continue;
                 }
@@ -337,6 +374,7 @@ fn encode_passes(
                     &mut rec,
                     24,
                     &(match stage {
+                        12 if prepassed => prepass.unwrap_or(5),
                         1 => 39u16,
                         14 => 0x2004,
                         7 | 9 | 16 => 21,
@@ -352,8 +390,12 @@ fn encode_passes(
                 // The native draw iterator advances by this group length.
                 // Zero leaves it on the first record indefinitely.
                 rec[29] = 1;
-                let symbol = if stage != 3 || !automatic_shadows {
+                let symbol = if prepassed {
+                    "material-prepass".into()
+                } else if stage != 3 || automatic_shadows.is_none() {
                     format!("material-{mat:08X}")
+                } else if automatic_shadows.is_some_and(|clipped| clipped.contains(mat)) {
+                    format!("material-{mat:08X}-shadow")
                 } else {
                     "material-shadow".into()
                 };

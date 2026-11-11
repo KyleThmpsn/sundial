@@ -7,12 +7,12 @@
 //! A static mesh (`808071A7`) names its mesh data (`80807194`), one technique per draw group,
 //! and transparent draws as special meshes. Each solid surface draws in the depth prepass and
 //! shadow stages with the donor's own static depth and shadow techniques, as stock statics do,
-//! then in its own stage with the level's surface. An alpha-tested surface draws in both with
-//! techniques of its own that clip its texels, the shadow one drawing both faces as stock
-//! alpha-tested statics do, and a decorator's in the prepass alone. The instance set
-//! (`8080966D`) holds the transforms,
-//! the statics, one instance group per static and a bounds record (`80809671`) with each
-//! instance's world box, and the group's preheader (`80806EF4`) names the set.
+//! then in its own stage with the level's surface. An alpha-tested surface draws in no depth
+//! prepass, as stock alpha-tested statics do not, and casts through a shadow technique of its own
+//! that clips its texels from both faces, which a decorator's surface leaves out. The instance set
+//! (`8080966D`) holds the transforms, the statics, one instance group per static and a bounds
+//! record (`80809671`) with each instance's world box, and the group's preheader (`80806EF4`)
+//! names the set.
 use super::{Graph, Payload, Reader, put};
 use crate::presentation::{append, geometry::StaticStreams};
 use anyhow::{Context, Result, ensure};
@@ -37,6 +37,7 @@ const BOUNDS_ROW_CLASS: u64 = 0x8080_9673;
 /// transparents and the depth prepass.
 const SURFACE_STAGE: u8 = 0;
 const SHADOW_STAGE: u8 = 3;
+const LIGHT_STAGE: u8 = 4;
 const TRANSPARENT_STAGE: u8 = 7;
 const DEPTH_STAGE: u8 = 12;
 /// The position-only vertex layout of stock static depth and shadow groups, which reads the
@@ -79,14 +80,18 @@ pub struct Templates {
 
 /// One drawn group of a piece: its surface key, the stage its surface draws in, whether it also
 /// draws in the depth prepass and shadow stages, which hold every pixel of its triangles, whether
-/// it is alpha tested, so it draws the depth prepass with its own surface, and whether that alpha
-/// tested surface casts through its own shadow technique ([`casters`]).
+/// it is alpha tested, so it draws in no prepass, and whether that alpha tested surface casts
+/// through its own shadow technique ([`casters`]).
 pub(super) struct Draw {
     pub key: u32,
     pub stage: u8,
     pub solid: bool,
     pub clipped: bool,
     pub casts: bool,
+    /// A source surface retains separately fogged glow after the sky.
+    pub glow: bool,
+    /// An additional analytical source needs a native light-buffer draw.
+    pub light: bool,
 }
 
 /// One instance of the map's statics: its static mesh's symbol, where its geometry's origin sits
@@ -185,6 +190,37 @@ fn buffers(
     Ok(symbols.try_into().unwrap())
 }
 
+fn special(stage: u8, first: u32, count: u32) -> Result<Vec<u8>> {
+    let mut special = vec![0u8; 32];
+    special[0] = stage;
+    put(&mut special, 2, &u16::from(SURFACE_LAYOUT).to_le_bytes())?;
+    special[4] = EVERY_DISTANCE;
+    special[5] = SPECIAL_BYTE;
+    special[6] = TRIANGLE_LIST;
+    for at in [8, 12, 16, 28] {
+        put(&mut special, at, &u32::MAX.to_le_bytes())?;
+    }
+    put(&mut special, 0x14, &first.to_le_bytes())?;
+    put(&mut special, 0x18, &count.to_le_bytes())?;
+    Ok(special)
+}
+
+fn special_materials(draw: &Draw, surface: &str) -> Vec<(u8, String)> {
+    let mut materials = Vec::new();
+    if draw.stage == TRANSPARENT_STAGE {
+        materials.push((TRANSPARENT_STAGE, surface.to_owned()));
+    } else if draw.glow {
+        materials.push((TRANSPARENT_STAGE, format!("{surface}-glow")));
+    }
+    if draw.light {
+        // Shadowkeep's batched static renderer registers only stages 12, 0, 3, 6, 18 and
+        // 20. Its instance constructor registers special meshes from their own stage bytes,
+        // so an additional analytical light needs this path to reach the stage-4 targets.
+        materials.push((LIGHT_STAGE, format!("{surface}-baked")));
+    }
+    materials
+}
+
 /// Adds piece `name`'s static mesh, whose groups `draws` follow `streams.ranges`, and returns its
 /// symbol. A transparent group draws as a special mesh, and every other in its surface's stage
 /// and, when solid, the depth prepass and shadow stages.
@@ -216,20 +252,12 @@ pub(super) fn mesh(
     let mut passes = [Vec::new(), Vec::new(), Vec::new()];
     for (draw, &(first, count)) in draws.iter().zip(&streams.ranges) {
         let surface = format!("material-{:08X}", draw.key);
-        if draw.stage == TRANSPARENT_STAGE {
-            let mut special = vec![0u8; 32];
-            special[0] = TRANSPARENT_STAGE;
-            put(&mut special, 2, &u16::from(SURFACE_LAYOUT).to_le_bytes())?;
-            special[4] = EVERY_DISTANCE;
-            special[5] = SPECIAL_BYTE;
-            special[6] = TRIANGLE_LIST;
-            for at in [8, 12, 16, 28] {
-                put(&mut special, at, &u32::MAX.to_le_bytes())?;
-            }
-            put(&mut special, 0x14, &first.to_le_bytes())?;
-            put(&mut special, 0x18, &count.to_le_bytes())?;
-            specials.push(special);
-            special_techniques.push(surface);
+        let transparent = draw.stage == TRANSPARENT_STAGE;
+        for (stage, material) in special_materials(draw, &surface) {
+            specials.push(special(stage, first, count)?);
+            special_techniques.push(material);
+        }
+        if transparent {
             continue;
         }
         ensure!(
@@ -249,10 +277,11 @@ pub(super) fn mesh(
             passes[1].push((part, SHADOW_STAGE, POSITION_LAYOUT, Ok(templates.shadow)));
         } else if draw.clipped {
             // Distant Shore's alpha-tested static parts draw in their surface and shadow stages
-            // and in no depth prepass. Left out of the prepass here, Paradiso's pine branches drew
-            // from afar and vanished as the camera neared them, while their solid trunks stayed.
-            // The surface's own technique clips the same texels in the prepass as in its stage.
-            passes[0].push((part, DEPTH_STAGE, SURFACE_LAYOUT, Err(surface.clone())));
+            // and in no depth prepass, whose every stock group reads position-only layout 120.
+            // Drawn there with the surface's own technique at layout 139, Paradiso's pines and
+            // ONI: Sword Base's larches wrote whole cards to depth and showed stale color in them.
+            // The surface draws both faces and needs no prepass with stock's state bytes
+            // ([`crate::halo_reach::native::material`]).
             // Its shadow technique clips them in the shadow stage from both faces, as 280 of the
             // 282 alpha-tested shadow groups of Distant Shore's main static group draw. Those read
             // a position and texture coordinate layout (121), and this one reads the surface's.
@@ -528,8 +557,8 @@ pub(super) fn solid(materials: &BTreeMap<u32, super::Material>) -> BTreeSet<u32>
         .collect()
 }
 
-/// The alpha-tested surface keys that are not decals, which draw the depth prepass with their own
-/// surface so it holds only the texels they keep.
+/// The alpha-tested surface keys that are not decals, which draw no depth prepass and cast, if at
+/// all, through a shadow technique that clips their texels.
 pub(super) fn clipped(materials: &BTreeMap<u32, super::Material>) -> BTreeSet<u32> {
     materials
         .iter()

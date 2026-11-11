@@ -8,9 +8,24 @@ pub(super) fn validate(code: &[u8], constants: &[[u32; 4]], inputs: usize) -> Re
     while at < code.len() {
         let opcode = code[at];
         at += 1;
+        // Rise of Iron 003A4110 and Shadowkeep 003B7A80 give equal output bits for each accepted
+        // opcode, through original execution of edge-case lanes and of every stored bank program
+        // that uses one. Their tables share numbering and aliases, so the bytecode is kept.
         let operand = match opcode {
-            0x01 | 0x02 | 0x03 | 0x04 | 0x0F | 0x23 => None,
-            0x22 | 0x34 | 0x35 | 0x37 | 0x38 | 0x3C | 0x3E => {
+            0x01..=0x04
+            | 0x07..=0x10
+            | 0x12
+            | 0x13
+            | 0x15
+            | 0x18
+            | 0x1A
+            | 0x1C
+            | 0x1D
+            | 0x1F
+            | 0x21
+            | 0x23
+            | 0x26..=0x2A => None,
+            0x22 | 0x34 | 0x35 | 0x37 | 0x38 | 0x3A | 0x3C | 0x3E => {
                 let operand = *code.get(at).context("Truncated numeric instruction")?;
                 at += 1;
                 Some(operand)

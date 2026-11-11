@@ -34,6 +34,17 @@ pub(crate) fn spread(payload: &mut Payload, field: usize, cone: f32) -> Result<(
     if cone == 0. {
         return put(&mut payload.0, field, &[0; 8]);
     }
+    spread_form(payload, field, [1, 0, 1, 0], [0., cone, 0.5, 1.])
+}
+
+/// Emit a spread object with stored flag bytes and the four floats after them. Stock objects
+/// hold forms besides the polar cone, such as flags `04 00 01 00` with equal angle bounds.
+pub(crate) fn spread_form(
+    payload: &mut Payload,
+    field: usize,
+    flags: [u8; 4],
+    values: [f32; 4],
+) -> Result<()> {
     let class = 0x80808891u32;
     let at = object(payload, class, 0x60)?;
     let owner = payload.u32(payload.pointer(16)?)?;
@@ -51,8 +62,8 @@ pub(crate) fn spread(payload: &mut Payload, field: usize, cone: f32) -> Result<(
         put(&mut payload.0, row + 12, &class.to_le_bytes())?;
         put(&mut payload.0, row + 16, &u64::try_from(at)?.to_le_bytes())?;
     }
-    put(&mut payload.0, at + 0x48, &[1, 0, 1, 0])?;
-    floats(payload, at + 0x4c, &[0., cone, 0.5, 1.])?;
+    put(&mut payload.0, at + 0x48, &flags)?;
+    floats(payload, at + 0x4c, &values)?;
     relative(payload, field, at)
 }
 

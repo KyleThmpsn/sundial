@@ -1,4 +1,7 @@
-//! Original package shaders through native compilation and independent GPU readback.
+//! Original package shaders translated and compiled as native SM5 programs. Each configured case
+//! must compile and differ from its source program. The source and native bytecode, headers and
+//! translated text are written for an external GPU readback, which this test does not perform, so
+//! it says nothing about what a program renders.
 use anyhow::{Context, Result, ensure};
 use parhelion_import::d2_mot::{
     native::{

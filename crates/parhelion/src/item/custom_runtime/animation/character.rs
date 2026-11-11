@@ -55,14 +55,32 @@ impl Binding {
                 owner.u32(definition - 4)? == 0x80804221,
                 "Unsupported character attachment"
             );
-            let rows = attachment_rows(&owner, definition, content, false)?;
-            ensure!(!rows.is_empty(), "No selected character attachment");
+            let selected = attachment_rows(&owner, definition, content, false)?;
+            ensure!(!selected.is_empty(), "No selected character attachment");
+            for &row in &selected {
+                ensure!(
+                    owner.u32(row + 0x6C)? == self.parent,
+                    "Imported character profile does not fit this weapon's animation donor"
+                );
+            }
+            // The live content group can resolve to another row than the item's pattern names,
+            // including the embedded default before the table. Every row of this weapon's private
+            // owner that holds the donor profile takes the imported one. Rows naming a profile of
+            // their own keep it.
+            let mut rows = selected
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            for row in std::iter::once(definition + 0x4A0).chain(owner.array(
+                definition + 0x588,
+                0xE8,
+                Some(0x80803E72),
+            )?) {
+                if owner.u32(row + 0x6C)? == self.parent {
+                    rows.insert(row);
+                }
+            }
             rows.into_iter()
                 .map(|row| {
-                    ensure!(
-                        owner.u32(row + 0x6C)? == self.parent,
-                        "Imported character profile does not fit this weapon's animation donor"
-                    );
                     let offset = (row + 0x6C)
                         .checked_sub(usize::try_from(binding.resource_offset)?)
                         .context("Character attachment offset underflow")?;

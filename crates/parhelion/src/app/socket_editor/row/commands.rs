@@ -98,7 +98,16 @@ pub(super) fn apply(
                     &choices.inherited,
                     &roll.randomized,
                 ) {
-                    Ok(()) => context.queries.clear(),
+                    Ok((added, left)) => {
+                        context.queries.clear();
+                        if left > 0 {
+                            context.log.push(LogEntry::error(format!(
+                                "Added {added} of {} base plugs to the Randomized Plug Set. A socket rolls from at most {} choices, so {left} stay under Base Weapon Roll. Remove choices to make room for them.",
+                                added + left,
+                                crate::item::MAX_ROLLED_CHOICES
+                            )));
+                        }
+                    }
                     Err(error) => context.log.push(LogEntry::error(error)),
                 }
             }

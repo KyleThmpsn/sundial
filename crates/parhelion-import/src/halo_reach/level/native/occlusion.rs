@@ -4,40 +4,52 @@
 //! takes probes placed and valued from the converted level instead.
 //!
 //! Probes stand [`STANDING`] meters above the level's floors, near its spawn points and inside its
-//! structure clusters: up to a [`SPAWN_SHARE`] of them at spawn points, then the floor points
+//! structure clusters: up to a [`SPAWN_SHARE`] of the coverage budget at spawn points, then floor points
 //! farthest from every probe chosen so far, near the spawn points and the squads' spawn points
-//! until [`NEAR_SPACING`] covers them and across the clusters after. Nightfall's clusters span
+//! until [`NEAR_SPACING`] covers them and across the clusters after. Remaining usable player starts
+//! with a lightmapped floor receive their own samples without displacing this coverage. Their
+//! additional samples do not reweight the environment's brightness, color or interior classification.
+//! Nightfall's clusters span
 //! about 15 by 20 km of backdrop, and probes spread across them left its canyon 76 m from the
 //! nearest. A campaign mission keeps its player starts at its
 //! beginning, so probes near the spawns alone left every later stretch without one, and the
 //! objects there took the donor's open-ground probe, bright even indoors. A point
-//! whose rays meet the back of a face more often than [`INSIDE`] lies inside geometry and is
-//! skipped. Each probe's value is the mean light arriving from [`RAYS`] directions over the whole
-//! sphere: an escaping ray brings the sky ([`sky_light`]), and a
-//! ray that meets a lit face brings that face's baked light times [`ALBEDO`]. Destiny's own probes
-//! hold geometric sky visibility. Destiny's combined ambient program lights a surface by the
-//! square of twice a material value times its ambient visibility, so a dynamic object's shade
-//! takes the square of the visibility it reads. Reach lit its objects from the baked light around
-//! them, lamps included, so the value is the square root of that mean light as a share of the open
-//! probes' typical light, times 0.505, and its square follows Reach's light. Taken without the
-//! root, Breakneck's lamp-lit interiors held about 0.2 and the held weapon drew black there. The
-//! open probes are the [`OPEN_SHARE`] of probes whose rays escape most often: few probes on
-//! Breakneck or Sword Base see open sky in two of every five directions.
+//! whose rays meet the back of a solid face more often than [`INSIDE`] lies inside geometry and is
+//! skipped. Each probe also samples [`RAYS`] directions over the whole sphere: an escaping ray
+//! brings the sky ([`sky_light`]), and a ray that meets a lit face brings that face's baked light
+//! times [`ALBEDO`]. The [`OPEN_SHARE`] of probes whose rays escape most often defines the open
+//! reference population. This rank works even when no probe sees much open sky.
+//! Projected and transmitting layers do not define solid probe geometry. Supported static cutouts
+//! sample their alpha at each hit, including floor and headroom queries ([`coverage`]).
 //!
 //! Reach lit an object from the lightmap of the surface below it
 //! (`c_geometry_sampler::sample_surface_or_air_probe` in the Xbox Reach symbols), and fell back to
 //! its air probes only where no surface lay below. A probe standing on a lightmapped floor
 //! therefore takes that floor point's baked light ([`floor_light`]), sun visibility and interior
-//! darkness included, as a share of the open probes' typical floor light. The ray mean stays for a
-//! probe with no lightmapped floor within [`HEADROOM`] below it, as a share of the open probes'
-//! typical ray mean. Both shares pass through the same square root.
+//! darkness included. The ray mean stays for a probe with no lightmapped floor within
+//! [`HEADROOM`] below it. Both use the same calibration light: the open probes' typical floor
+//! light, or their typical ray mean when no floor is sampled. A probe stores 0.505 times the
+//! square root of its light divided by that calibration. Destiny's diffuse ambient response
+//! squares visibility. The atmosphere uses the same calibration, so its brightness times squared
+//! probe visibility recovers the sampled light at the converted radiance scale.
+//! Separate denominators would change a floor sample's energy by the ratio between the two
+//! references. Visibility clamps and the native normal-dependent response remain approximations.
 //!
 //! A structure cluster whose probes see open sky in fewer than [`INTERIOR_OPEN`] of their rays and
 //! whose floors hold less than [`INTERIOR_LIGHT`] of the open probes' floor light is an interior
 //! ([`Probes::interior`]). A probe stands in the smallest cluster box that holds it
 //! ([`super::cluster_at`]).
-use super::{Interior, bounds, cross, dot, sub, unit};
+//!
+//! Destiny's probes hold no color, so a lit object takes its ambient color from the map's
+//! atmosphere volume ([`super::atmosphere`]). That takes the hue of the open probes' floors, the
+//! lightmap Reach lit an object on open ground by ([`Probes::open_hue`]), and a second volume
+//! takes the hue of the interiors' floors ([`Probes::interior_hue`]). Reach's static programs
+//! add the analytical sun to the lightmap's light as a separate term, and Destiny's sun stands
+//! in for that term.
+use super::{Interior, bounds, coverage, cross, dot, sub, unit};
 use crate::halo_reach::level::{Level, lightmap::Atlas, streaming::Bounds};
+use crate::halo_reach::native::lighting;
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -72,7 +84,7 @@ const CANDIDATE_SPACING: f32 = 2.;
 /// Rays per probe, and per inside test.
 const RAYS: usize = 256;
 const TEST_RAYS: usize = 48;
-/// The share of rays meeting the back of a face beyond which a point lies inside geometry.
+/// The share of rays meeting a solid back face beyond which a point lies inside geometry.
 const INSIDE: f32 = 0.2;
 /// The albedo a lit face reflects its baked light by.
 const ALBEDO: f32 = 0.35;
@@ -93,8 +105,7 @@ const MAX_INTERIORS: usize = 64;
 const INTERIOR_TOUCH: f32 = 0.5;
 const INTERIOR_WASTE: f32 = 0.25;
 /// Destiny's sky visibility on open ground, and the range the map's values keep to.
-pub(super) const OPEN_VISIBILITY: f32 = 0.505;
-const VISIBILITY_RANGE: [f32; 2] = [0.04, 0.8];
+pub(super) const OPEN_VISIBILITY: f32 = lighting::OPEN;
 const LUMINANCE: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 struct Face {
@@ -102,6 +113,15 @@ struct Face {
     edges: [[f32; 3]; 2],
     normal: [f32; 3],
     lightmap: Option<[[f32; 2]; 3]>,
+    /// Index of the cutout's UVs and material, or `u32::MAX` for a solid face.
+    cutout: u32,
+    /// Cutout sheets block covered rays from both sides but do not enclose a solid volume.
+    two_sided: bool,
+}
+
+struct Cutout {
+    material: usize,
+    uv: [[f32; 2]; 3],
 }
 
 struct Hit {
@@ -113,23 +133,46 @@ struct Hit {
 
 /// The level's faces near the probes, binned by cell, and those too large to bin with their
 /// bounds.
-struct Scene {
+struct Scene<'a> {
     faces: Vec<Face>,
     cells: HashMap<[i32; 3], Vec<u32>>,
     large: Vec<(u32, [f32; 3], [f32; 3])>,
+    coverage: &'a [coverage::Coverage],
+    cutouts: Vec<Cutout>,
+    coverage_report: Value,
 }
 
 fn cell(point: [f32; 3]) -> [i32; 3] {
     point.map(|v| (v / CELL).floor() as i32)
 }
 
-impl Scene {
-    fn new(level: &Level, low: [f32; 3], high: [f32; 3]) -> Self {
+impl<'a> Scene<'a> {
+    fn new(
+        level: &Level,
+        coverage: &'a [coverage::Coverage],
+        low: [f32; 3],
+        high: [f32; 3],
+    ) -> Result<Self> {
+        ensure!(
+            coverage.len() == level.materials.len(),
+            "Probe coverage count differs"
+        );
+        let mut material_faces = vec![[0usize; 2]; level.materials.len()];
+        let mut unnamed_faces = 0usize;
         let mut faces = Vec::new();
+        let mut cutouts = Vec::new();
         let mut cells = HashMap::<[i32; 3], Vec<u32>>::new();
         let mut large = Vec::new();
         for primitive in &level.primitives {
+            let selected = primitive.material.map(|index| &coverage[index]);
+            if matches!(selected, Some(coverage::Coverage::Excluded(_))) {
+                material_faces[primitive.material.unwrap()][1] += primitive.indices.len() / 3;
+                continue;
+            }
             let lit = primitive.vertices.iter().all(|v| v.lightmap.is_some());
+            let two_sided = primitive
+                .material
+                .is_some_and(|index| level.materials[index].alpha_mode() == "MASK");
             for corners in primitive.indices.chunks_exact(3) {
                 let vertices = [0, 1, 2].map(|k| &primitive.vertices[corners[k] as usize]);
                 let points = vertices.map(|v| v.position);
@@ -141,12 +184,34 @@ impl Scene {
                 let Some(normal) = unit(cross(edges[0], edges[1])) else {
                     continue;
                 };
-                let index = u32::try_from(faces.len()).unwrap_or(u32::MAX);
+                let index = u32::try_from(faces.len()).context("Too many probe faces")?;
+                let cutout = if matches!(selected, Some(coverage::Coverage::Mask(_))) {
+                    let uv = vertices.map(|vertex| vertex.uv);
+                    ensure!(
+                        uv.iter().flatten().all(|value| value.is_finite()),
+                        "Nonfinite probe mask coordinates"
+                    );
+                    let index = u32::try_from(cutouts.len()).context("Too many probe cutouts")?;
+                    cutouts.push(Cutout {
+                        material: primitive.material.unwrap(),
+                        uv,
+                    });
+                    index
+                } else {
+                    u32::MAX
+                };
+                if let Some(material) = primitive.material {
+                    material_faces[material][0] += 1;
+                } else {
+                    unnamed_faces += 1;
+                }
                 faces.push(Face {
                     origin: points[0],
                     edges,
                     normal,
                     lightmap: lit.then(|| vertices.map(|v| v.lightmap.unwrap_or_default())),
+                    cutout,
+                    two_sided,
                 });
                 let (from, to) = (cell(a), cell(b));
                 let covered = (0..3)
@@ -165,11 +230,39 @@ impl Scene {
                 }
             }
         }
-        Self {
+        let coverage_report = json!({
+            "region": [low, high],
+            "ray_reach": REACH,
+            "unnamed_solid_faces": unnamed_faces,
+            "masked_faces": cutouts.len(),
+            "excluded_source_faces": material_faces.iter().map(|counts| counts[1]).sum::<usize>(),
+            "materials": material_faces.iter().enumerate().filter(|(_, counts)| counts.iter().sum::<usize>() > 0)
+                .map(|(index, counts)| json!({
+                    "index": index, "source": level.materials[index].tag,
+                    "retained_faces": counts[0], "excluded_source_faces": counts[1],
+                    "coverage": coverage[index].report(),
+                })).collect::<Vec<_>>(),
+            "limits": ["Static top-mip coverage without a ray footprint", "Transmitting layers contribute no colored attenuation", "Unsupported or animated cutouts remain solid"],
+        });
+        Ok(Self {
             faces,
             cells,
             large,
+            coverage,
+            cutouts,
+            coverage_report,
+        })
+    }
+
+    fn covered(&self, face: &Face, [u, v]: [f32; 2]) -> bool {
+        if face.cutout == u32::MAX {
+            return true;
         }
+        let cutout = &self.cutouts[face.cutout as usize];
+        let uv = std::array::from_fn(|k| {
+            (1. - u - v) * cutout.uv[0][k] + u * cutout.uv[1][k] + v * cutout.uv[2][k]
+        });
+        self.coverage[cutout.material].covered(uv)
     }
 
     /// The large faces, in order, whose bounds come within `reach` of `point`. No other large
@@ -221,6 +314,7 @@ impl Scene {
                 && distance > 1e-3
                 && distance <= reach
                 && best.as_ref().is_none_or(|hit| distance < hit.distance)
+                && self.covered(face, weights)
             {
                 *best = Some(Hit {
                     distance,
@@ -293,21 +387,28 @@ fn sphere(count: usize) -> Vec<[f32; 3]> {
         .collect()
 }
 
-/// Texel `(x, y)`'s baked light as irradiance over pi, in the atlas's units, where the average lit
-/// texel's is one: the lobe's at [`LOBE_RESPONSE`] plus the ambient light, or the ambient alone.
-/// The atlas decodes the texel as surfaces do ([`Atlas::texel_at`]).
-fn texel(atlas: &Atlas, x: usize, y: usize, ambient_only: bool) -> f32 {
+/// Texel `(x, y)`'s baked light as irradiance over pi per channel, in the atlas's units, where the
+/// average lit texel's luminance is one: the lobe's at [`LOBE_RESPONSE`] plus the ambient light,
+/// or the ambient alone. The atlas decodes the texel as surfaces do ([`Atlas::texel_at`]).
+fn texel_rgb(atlas: &Atlas, x: usize, y: usize, ambient_only: bool) -> [f32; 3] {
     let sample = atlas.texel_at(x, y);
-    (0..3)
-        .map(|k| {
-            let lobe = if ambient_only {
-                0.
-            } else {
-                sample.lobe[k] * LOBE_RESPONSE
-            };
-            (lobe + sample.ambient[k]) * LUMINANCE[k]
-        })
-        .sum::<f32>()
+    std::array::from_fn(|k| {
+        let lobe = if ambient_only {
+            0.
+        } else {
+            sample.lobe[k] * LOBE_RESPONSE
+        };
+        lobe + sample.ambient[k]
+    })
+}
+
+fn luminance(rgb: [f32; 3]) -> f32 {
+    rgb.iter().zip(LUMINANCE).map(|(c, w)| c * w).sum()
+}
+
+/// Texel `(x, y)`'s baked light ([`texel_rgb`]) as a luminance.
+fn texel(atlas: &Atlas, x: usize, y: usize, ambient_only: bool) -> f32 {
+    luminance(texel_rgb(atlas, x, y, ambient_only))
 }
 
 /// The baked light of the texel holding atlas coordinates `uv` ([`texel`]).
@@ -317,25 +418,33 @@ fn texel_light(atlas: &Atlas, uv: [f32; 2], ambient_only: bool) -> f32 {
     texel(atlas, x, y, ambient_only)
 }
 
-/// The baked light at atlas coordinates `uv`, lobe and ambient ([`texel`]), filtered bilinearly
-/// between the four nearest texels as a surface samples them. A surface filters the stored values
-/// before decoding them, and this decodes each texel first, so the result is a mean of light.
-fn filtered_light(atlas: &Atlas, uv: [f32; 2]) -> f32 {
+/// The baked light at atlas coordinates `uv` per channel, lobe and ambient ([`texel_rgb`]),
+/// filtered bilinearly between the four nearest texels as a surface samples them. A surface
+/// filters the stored values before decoding them, and this decodes each texel first, so the
+/// result is a mean of light.
+fn filtered_light(atlas: &Atlas, uv: [f32; 2]) -> [f32; 3] {
     let x = uv[0] * atlas.width as f32 - 0.5;
     let y = uv[1] * atlas.height as f32 - 0.5;
     let (fx, fy) = (x - x.floor(), y - y.floor());
     let index = |value: f32, size: usize| (value.max(0.) as usize).min(size - 1);
     let [x0, x1] = [x.floor(), x.floor() + 1.].map(|v| index(v, atlas.width));
     let [y0, y1] = [y.floor(), y.floor() + 1.].map(|v| index(v, atlas.height));
-    let row = |y: usize| texel(atlas, x0, y, false) * (1. - fx) + texel(atlas, x1, y, false) * fx;
-    row(y0) * (1. - fy) + row(y1) * fy
+    let row = |y: usize| {
+        let (a, b) = (
+            texel_rgb(atlas, x0, y, false),
+            texel_rgb(atlas, x1, y, false),
+        );
+        std::array::from_fn::<f32, 3, _>(|k| a[k] * (1. - fx) + b[k] * fx)
+    };
+    let (a, b) = (row(y0), row(y1));
+    std::array::from_fn(|k| a[k] * (1. - fy) + b[k] * fy)
 }
 
-/// The baked light of the floor below `point`: the lightmap at the point where a downward ray from
-/// `point` first meets a face within [`HEADROOM`], when that face faces up as a floor does and has
-/// lightmap coordinates. `None` where the ray meets nothing, a wall, the back of a face or a face
-/// lit some other way, where Reach took its air probes instead.
-fn floor_light(scene: &Scene, atlas: &Atlas, point: [f32; 3]) -> Option<f32> {
+/// The baked light of the floor below `point`, per channel: the lightmap at the point where a
+/// downward ray from `point` first meets a face within [`HEADROOM`], when that face faces up as a
+/// floor does and has lightmap coordinates. `None` where the ray meets nothing, a wall, the back
+/// of a face or a face lit some other way, where Reach took its air probes instead.
+fn floor_light(scene: &Scene, atlas: &Atlas, point: [f32; 3]) -> Option<[f32; 3]> {
     let hit = scene.cast(point, [0., 0., -1.], HEADROOM, &scene.near(point, HEADROOM))?;
     let face = &scene.faces[hit.face as usize];
     if hit.back || face.normal[2] < FLOOR_FACING {
@@ -362,7 +471,7 @@ fn sky_light(atlas: &Atlas) -> f32 {
 }
 
 /// What a probe sees: the mean light arriving, the share of rays that escape and the share that
-/// meet the back of a face.
+/// meet a solid back face. Two-sided cutouts contribute light without an inside vote.
 struct View {
     light: f32,
     open: f32,
@@ -384,7 +493,7 @@ fn view(
                 light += sky;
                 open += 1;
             }
-            Some(hit) if hit.back => back += 1,
+            Some(hit) if hit.back && !scene.faces[hit.face as usize].two_sided => back += 1,
             Some(hit) => {
                 let face = &scene.faces[hit.face as usize];
                 let baked = match (atlas, face.lightmap) {
@@ -411,20 +520,14 @@ fn view(
     }
 }
 
-/// The mean light arriving at each of `points`, in the level's coordinates, as a probe's value
-/// measures it: in the atlas's units, where the average lit texel's irradiance over pi is one.
-pub(super) fn lights(level: &Level, points: &[[f32; 3]]) -> anyhow::Result<Vec<f32>> {
-    if points.is_empty() {
-        return Ok(Vec::new());
-    }
-    let (low, high) = bounds(points.iter().copied());
-    let scene = Scene::new(level, low, high);
-    let atlas = level.lightmap.as_ref();
-    let sky = atlas.map_or(1., sky_light);
-    let directions = sphere(RAYS);
-    crate::cancellation::parallel_map(points, |&point| {
-        view(&scene, atlas, sky, point, &directions).light
-    })
+/// The sky and local reflection cubes use one reference. Before native visibility clamps and
+/// exponents, multiplying it by a probe's squared visibility recovers that probe's sampled light
+/// in the same radiance units as native sunlight and translated sky surfaces. Native global-light
+/// expressions apply the reference illumination before shading. Cubemap expressions only apply
+/// exposure and their channel scales, so their texture data must carry that factor already.
+pub(super) fn diffuse_reference(open: f32, radiance: f32) -> f32 {
+    open * radiance * crate::halo_reach::native::material::REFERENCE_ILLUMINATION
+        / (OPEN_VISIBILITY * OPEN_VISIBILITY)
 }
 
 /// A level's occlusion probes ([`probes`]).
@@ -432,8 +535,16 @@ pub(super) struct Probes {
     /// Each probe, a position in the map's coordinates and a sky visibility. None when the level
     /// has no spawn points or no floor near them.
     pub probes: Vec<[f32; 4]>,
-    /// The open probes' typical ray mean, which [`OPEN_VISIBILITY`] stands for.
+    /// Floor irradiance samples in native world coordinates, used only for spatial colour.
+    pub colors: Vec<([f32; 3], [f32; 3])>,
+    /// The shared calibration light represented by [`OPEN_VISIBILITY`] in both sampling paths
+    /// and the atmosphere. This is the open-floor reference, or the ray reference without floors.
     pub open_light: Option<f32>,
+    /// The hue of the open probes' mean floor light, over its largest channel: the color of the
+    /// lightmap below an object on open ground, which Reach lit the object by.
+    pub open_hue: Option<[f32; 3]>,
+    /// The hue of the mean floor light of the probes standing in interiors.
+    pub interior_hue: Option<[f32; 3]>,
     /// For each structure cluster [`probes`] was given, the number of probes standing in it when it
     /// is an interior, otherwise `None`. Empty without probes.
     pub interior: Vec<Option<usize>>,
@@ -445,19 +556,25 @@ impl Probes {
     pub(super) fn none(report: Value) -> Self {
         Self {
             probes: Vec::new(),
+            colors: Vec::new(),
             open_light: None,
+            open_hue: None,
+            interior_hue: None,
             interior: Vec::new(),
             report,
         }
     }
 }
 
-/// `count` probes for `level`, each a position in the map's coordinates (the level's moved by
-/// `offset`) and a sky visibility, with the structure clusters that are interiors. `spawns` are
+/// At least `count` probes for `level`, including coverage and usable lightmapped player starts,
+/// each a position in the map's coordinates (the level's moved by `offset`) and a sky visibility,
+/// with the structure clusters that are interiors. `spawns` are
 /// the level's spawn points, `squads` its AI squads' spawn points and `regions` the boxes of its
 /// structure clusters, in its own coordinates.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn probes(
     level: &Level,
+    coverage: &[coverage::Coverage],
     spawns: &[[f32; 3]],
     squads: &[[f32; 3]],
     regions: &[([f32; 3], [f32; 3])],
@@ -494,14 +611,14 @@ pub(super) fn probes(
             .map(|r| r.1[k])
             .fold(f32::NEG_INFINITY, f32::max)
     });
-    let scene = Scene::new(level, low, high);
+    let scene = Scene::new(level, coverage, low, high)?;
     let scene_seconds = started.elapsed().as_secs_f64();
     let atlas = level.lightmap.as_ref();
     let sky = atlas.map_or(1., sky_light);
     // Floor points above upward faces in the region, one per spacing cell.
     let mut thinned = HashMap::<[i32; 3], [f32; 3]>::new();
     for face in &scene.faces {
-        if face.normal[2] < FLOOR_FACING {
+        if face.normal[2] < FLOOR_FACING || !scene.covered(face, [1. / 3.; 2]) {
             continue;
         }
         let middle: [f32; 3] =
@@ -581,9 +698,17 @@ pub(super) fn probes(
     spread(&mut chosen, &candidates, count, 0., &usable, &mut rejected);
     if chosen.is_empty() {
         return Ok(Probes::none(
-            json!({"reason": "No usable floor point near the spawn points", "candidates": candidates.len(), "rejected": rejected}),
+            json!({"reason": "No usable floor point near the spawn points", "candidates": candidates.len(), "rejected": rejected, "coverage": scene.coverage_report}),
         ));
     }
+    // The donor-sized coverage population must not be the entire sample budget. Farthest-point
+    // placement can omit a shaded player start beside brighter ground. Keep the coverage and
+    // add every remaining usable lightmapped start, so the spatial planner can distinguish it.
+    // Calibrate the environment against coverage alone, since dense groups of starts are not
+    // extra evidence for typical illumination or for a whole structure cluster being indoors.
+    let calibration_count = chosen.len();
+    let (spawn_samples, spawn_excluded) =
+        add_spawn_samples(&scene, atlas, standing, usable, &mut chosen)?;
     let placing_seconds = placing.elapsed().as_secs_f64();
     let placed = chosen.len();
     // Fewer usable points than the donor's probes repeat the first ones.
@@ -595,12 +720,16 @@ pub(super) fn probes(
     let views = crate::cancellation::parallel_map(&chosen, |&point| {
         view(&scene, atlas, sky, point, &directions)
     })?;
-    let floors = match atlas {
+    let floor_colors = match atlas {
         Some(atlas) => {
             crate::cancellation::parallel_map(&chosen, |&point| floor_light(&scene, atlas, point))?
         }
         None => vec![None; chosen.len()],
     };
+    let floors = floor_colors
+        .iter()
+        .map(|color| color.map(luminance))
+        .collect::<Vec<_>>();
     let views_seconds = viewing.elapsed().as_secs_f64();
     let median = |mut values: Vec<f32>| {
         if values.is_empty() {
@@ -613,9 +742,10 @@ pub(super) fn probes(
                 .1,
         )
     };
-    let mut by_openness = views.iter().collect::<Vec<_>>();
+    let mut by_openness = views[..calibration_count].iter().collect::<Vec<_>>();
     by_openness.sort_by(|a, b| b.open.total_cmp(&a.open));
-    let open_count = ((views.len() as f32 * OPEN_SHARE).ceil() as usize).clamp(1, views.len());
+    let open_count =
+        ((calibration_count as f32 * OPEN_SHARE).ceil() as usize).clamp(1, calibration_count);
     let least_open = by_openness[open_count - 1].open;
     let reference = median(
         by_openness[..open_count]
@@ -625,29 +755,29 @@ pub(super) fn probes(
     )
     .unwrap_or(1.)
     .max(1e-4);
-    // The floor light's own reference: the typical floor light of the most open of the probes
-    // that stand on a lightmapped floor. The ray mean also takes the sky and an albedo, so the
-    // two measures keep their own references.
+    // The typical floor light of the most open probes with a floor sample. Prefer this as the
+    // common calibration. Ray samples include the sky and reflected surface light, so their
+    // typical value differs, but a single atmosphere cannot undo two different denominators.
     let mut floored = views
         .iter()
         .zip(&floors)
-        .filter_map(|(view, floor)| floor.map(|light| (view.open, light)))
+        .take(calibration_count)
+        .enumerate()
+        .filter_map(|(index, (view, floor))| floor.map(|light| (view.open, light, index)))
         .collect::<Vec<_>>();
-    floored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    floored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.2.cmp(&b.2)));
     let floor_open = ((floored.len() as f32 * OPEN_SHARE).ceil() as usize).min(floored.len());
     let floor_reference =
         median(floored[..floor_open].iter().map(|f| f.1).collect()).map(|light| light.max(1e-4));
-    let share = |view: &View, floor: Option<f32>| match (floor, floor_reference) {
-        (Some(light), Some(open)) => light / open,
-        _ => view.light / reference,
-    };
+    // The open probes' floor light per channel, the color Reach lit an object on open ground with.
+    let open_color = mean_color(floored[..floor_open].iter().map(|f| floor_colors[f.2]));
+    let calibration = floor_reference.unwrap_or(reference);
     let probes = chosen
         .iter()
         .zip(&views)
         .zip(&floors)
         .map(|((point, view), &floor)| {
-            let visibility = (OPEN_VISIBILITY * share(view, floor).sqrt())
-                .clamp(VISIBILITY_RANGE[0], VISIBILITY_RANGE[1]);
+            let visibility = lighting::visibility(floor.unwrap_or(view.light), calibration);
             [
                 point[0] + offset[0],
                 point[1] + offset[1],
@@ -657,9 +787,11 @@ pub(super) fn probes(
         })
         .collect::<Vec<_>>();
     let values = probes.iter().map(|p| p[3]).collect::<Vec<_>>();
-    // The placed probes standing in each structure cluster, the repeats left out.
+    // Only the spatial coverage population classifies a structure cluster. Extra player starts
+    // refine object lighting, but their density must not turn a shaded outdoor corner into an
+    // interior volume that disables sunlight for the entire camera view.
     let mut members = vec![Vec::new(); clusters.len()];
-    for (index, point) in chosen[..placed].iter().enumerate() {
+    for (index, point) in chosen[..calibration_count].iter().enumerate() {
         if let Some(cluster) = super::cluster_at(&clusters, *point) {
             members[cluster].push(index);
         }
@@ -679,19 +811,44 @@ pub(super) fn probes(
             .then_some(standing.len())
         })
         .collect::<Vec<_>>();
+    // Report every sample's region, while the environment's interior color retains the same
+    // spatial coverage population as its classification and outdoor color.
+    let indoors = chosen
+        .iter()
+        .map(|&point| {
+            super::cluster_at(&clusters, point).is_some_and(|cluster| interior[cluster].is_some())
+        })
+        .collect::<Vec<_>>();
+    let interior_color = mean_color(
+        floor_colors
+            .iter()
+            .zip(&indoors)
+            .take(calibration_count)
+            .filter(|(_, indoors)| **indoors)
+            .map(|(color, _)| *color),
+    );
     let report = json!({
         "probes": probes.len(),
         "placed": placed,
         "floor_probes": floors.iter().flatten().count(),
         "floor_reference_light": floor_reference,
+        "calibration_light": calibration,
+        "open_floor_color": open_color,
+        "open_floor_hue": open_color.and_then(hue),
+        "interior_floor_color": interior_color,
+        "interior_floor_hue": interior_color.and_then(hue),
         "clusters": clusters.len(),
         "clusters_with_probes": members.iter().filter(|m| !m.is_empty()).count(),
         "interior_clusters": interior.iter().flatten().count(),
         "spawn_seeds": seeded,
+        "additional_spawn_samples": spawn_samples,
+        "excluded_spawn_samples": spawn_excluded,
+        "calibration_probes": calibration_count,
         "near_spawns": near_spawns,
         "candidates": candidates.len(),
         "rejected": rejected,
         "faces": scene.faces.len(),
+        "coverage": scene.coverage_report,
         "large_faces": scene.large.len(),
         "binned_faces": scene.cells.values().map(Vec::len).sum::<usize>(),
         "seconds": {"scene": scene_seconds, "placing": placing_seconds, "views": views_seconds},
@@ -707,21 +864,53 @@ pub(super) fn probes(
             .iter()
             .zip(&views)
             .zip(&floors)
-            .map(|((probe, view), floor)| json!({
+            .zip(&floor_colors)
+            .zip(&indoors)
+            .map(|((((probe, view), floor), color), indoors)| json!({
                 "position": [probe[0], probe[1], probe[2]],
                 "visibility": probe[3],
                 "light": view.light,
                 "floor": floor,
+                "floor_rgb": color,
                 "open": view.open,
+                "interior": indoors,
             }))
             .collect::<Vec<_>>(),
     });
+    let colors = probes
+        .iter()
+        .zip(&floor_colors)
+        .take(placed)
+        .filter_map(|(probe, color)| Some(([probe[0], probe[1], probe[2]], (*color)?)))
+        .collect();
     Ok(Probes {
         probes,
-        open_light: Some(reference),
+        colors,
+        open_light: Some(calibration),
+        open_hue: open_color.and_then(hue),
+        interior_hue: interior_color.and_then(hue),
         interior,
         report,
     })
+}
+
+/// The mean of the floor colors `colors` that are present, or none without one.
+fn mean_color(colors: impl Iterator<Item = Option<[f32; 3]>>) -> Option<[f32; 3]> {
+    let (mut sum, mut count) = ([0f64; 3], 0usize);
+    for color in colors.flatten() {
+        for (total, value) in sum.iter_mut().zip(color) {
+            *total += f64::from(value);
+        }
+        count += 1;
+    }
+    (count > 0).then(|| sum.map(|s| (s / count as f64) as f32))
+}
+
+/// `color` over its largest channel, or none for a color with no light or a nonfinite channel.
+fn hue(color: [f32; 3]) -> Option<[f32; 3]> {
+    let peak = color.iter().copied().fold(0f32, f32::max);
+    (color.iter().all(|c| c.is_finite() && *c >= 0.) && peak > 1e-6)
+        .then(|| color.map(|c| c / peak))
 }
 
 /// A box's low and high corners.
@@ -845,4 +1034,33 @@ fn spread(
             }
         }
     }
+}
+
+fn add_spawn_samples(
+    scene: &Scene<'_>,
+    atlas: Option<&Atlas>,
+    standing: Vec<[f32; 3]>,
+    usable: impl Fn([f32; 3]) -> bool,
+    chosen: &mut Vec<[f32; 3]>,
+) -> anyhow::Result<(usize, usize)> {
+    let mut spawn_samples = 0usize;
+    let mut spawn_excluded = 0usize;
+    if let Some(atlas) = atlas {
+        for point in standing {
+            if chosen.contains(&point) {
+                continue;
+            }
+            if !usable(point) || floor_light(scene, atlas, point).is_none() {
+                spawn_excluded += 1;
+                continue;
+            }
+            ensure!(
+                chosen.len() + 2 < usize::from(u16::MAX),
+                "The map's lighting samples exceed the native probe index range"
+            );
+            chosen.push(point);
+            spawn_samples += 1;
+        }
+    }
+    Ok((spawn_samples, spawn_excluded))
 }

@@ -1,6 +1,7 @@
 //! Author native effect sequences from an explicit tree and checked event envelopes.
 //! Source adapters supply event bodies and resources after topology is allocated.
 pub(crate) mod input;
+pub(crate) mod light;
 pub(crate) mod particle;
 pub(crate) mod spawn;
 use super::{allocation::Row, payload::Payload};
@@ -19,8 +20,16 @@ pub(crate) enum Kind {
     Serial(Vec<Node>),
     Repeat(Vec<Node>),
     Parallel(Vec<Node>),
+    RepeatParallel(Vec<Node>),
     /// Repeating native scalar gate. Children retire when the input leaves the range.
     Range {
+        input: u32,
+        bounds: [f32; 2],
+        children: Vec<Node>,
+    },
+    /// The same gate with repeat byte `+0x32` clear, so a released gate does not become active
+    /// again, as per-shot stock firing flows such as `80EF09D0` gate their sounds.
+    RangeOnce {
         input: u32,
         bounds: [f32; 2],
         children: Vec<Node>,
@@ -153,8 +162,10 @@ fn flatten<'a>(
     events: &mut Vec<Event<'a>>,
     names: &mut BTreeSet<u32>,
 ) -> Result<(bool, usize)> {
-    ensure!(names.insert(node.name), "Sequence node identities collide");
     if let Kind::Event(class) = node.kind {
+        // Event names key the written definitions. Controls may repeat a name, as the
+        // `1st` and `3rd` groups of stock weapon firing flows do.
+        ensure!(names.insert(node.name), "Sequence event identities collide");
         let index = events.len();
         ensure!(
             index < i16::MAX as usize,
@@ -178,10 +189,14 @@ fn flatten<'a>(
         children: Vec::new(),
     });
     let children = match &node.kind {
-        Kind::Serial(children) | Kind::Repeat(children) | Kind::Parallel(children) => {
-            children.iter().collect::<Vec<_>>()
-        }
+        Kind::Serial(children)
+        | Kind::Repeat(children)
+        | Kind::Parallel(children)
+        | Kind::RepeatParallel(children) => children.iter().collect::<Vec<_>>(),
         Kind::Range {
+            bounds, children, ..
+        }
+        | Kind::RangeOnce {
             bounds, children, ..
         } => {
             ensure!(
@@ -218,12 +233,19 @@ fn event_layout(class: u32) -> Result<(u32, usize, usize, u32)> {
         0x808093cb => (0x808093ca, 0x38, 0x40, 0),
         0x808093c4 => (0x808093c3, 0x80, 0x40, 2),
         0x80806cc6 => (0x80806cc5, 0x128, 0x50, 4),
+        0x80806f49 => (0x80806f48, 0x150, 0xb0, 33),
         0x80806b38 => (0x80806b37, 0x78, 0x60, 6),
+        0x8080658e => (0x8080658d, 0x60, 0x60, 9),
+        0x80803d8d => (0x80803d8c, 0x370, 0x40, 12),
         0x80803f24 => (0x80803f23, 0x40, 0x40, 13),
         0x80808881 => (0x80808880, 0xe0, 0x70, 15),
         0x80803fe9 => (0x80803fe8, 0x88, 0x60, 18),
         0x80804595 => (0x80804594, 0x38, 0x50, 19),
+        0x808066a3 => (0x808066a2, 0x278, 0x70, 21),
         0x80804ab0 => (0x80804aaf, 0x48, 0x40, 38),
+        0x80804ab4 => (0x80804ab3, 0x80, 0x40, 30),
+        0x80804ac4 => (0x80804ac3, 0x1a0, 0x60, 27),
+        0x80804ab9 => (0x80804ab8, 0x520, 0x50, 29),
         _ => anyhow::bail!("Unsupported native authored event {class:08X}"),
     })
 }
@@ -268,11 +290,52 @@ fn event_defaults(envelopes: &[Payload], needed: &BTreeSet<u32>) -> Result<BTree
             defaults.entry(class).or_insert(bytes);
         }
     }
+    let missing = needed
+        .iter()
+        .filter(|class| !defaults.contains_key(class))
+        .map(|class| format!("{class:08X}"))
+        .collect::<Vec<_>>();
     ensure!(
-        defaults.len() == needed.len(),
-        "A requested event has no qualified native instance"
+        missing.is_empty(),
+        "Requested events {} have no qualified native instance",
+        missing.join(" ")
     );
     Ok(defaults)
+}
+
+/// Puts the existing event definition `old` and its instance in the place [`write`] gave the new
+/// event `new`, so an event keeps its own body, arrays and timing under the rebuilt controls. Both
+/// must be one class. The old objects stay where they are, so their internal relative references
+/// stay valid, and they take the new event's parent selector.
+pub(crate) fn adopt(payload: &mut Payload, new: usize, old: usize) -> Result<()> {
+    let instance = payload.pointer(16)?;
+    let definition = payload.pointer(24)?;
+    ensure!(
+        payload.u32(new - 4)? == payload.u32(old - 4)?,
+        "Adopted sequence event class differs"
+    );
+    let new_instance = usize::try_from(payload.u64(new + 8)?)?;
+    let old_instance = usize::try_from(payload.u64(old + 8)?)?;
+    ensure!(
+        payload.u32(new_instance - 4)? == payload.u32(old_instance - 4)?
+            && usize::try_from(payload.u64(old_instance + 8)?)? == old,
+        "Adopted sequence event instance differs"
+    );
+    let rows = payload.array(definition + 0x168, 24, Some(0x808093e6))?;
+    let row = *rows
+        .iter()
+        .find(|&&row| payload.pointer(row + 16).ok() == Some(new))
+        .context("Rebuilt sequence event row")?;
+    let twins = payload.array(instance + 0xb0, 48, Some(0x808093e5))?;
+    let twin = *twins
+        .iter()
+        .find(|&&twin| payload.pointer(twin + 32).ok() == Some(new_instance))
+        .context("Rebuilt sequence event instance row")?;
+    relative(payload, row + 16, old)?;
+    relative(payload, twin + 32, old_instance)?;
+    relative(payload, old_instance + 16, twin)?;
+    let parent = payload.u32(new + 0x14)?;
+    put(&mut payload.0, old + 0x14, &parent.to_le_bytes())
 }
 
 /// Rebuild only the control and event storage. Locator and input declarations
@@ -312,8 +375,8 @@ pub(crate) fn write(
     for (index, control) in controls.iter().enumerate() {
         let (dc, ic, size, kind) = match control.node.kind {
             Kind::Serial(_) | Kind::Repeat(_) => (0x808093d9, 0x808093d8, 0x58, 0),
-            Kind::Parallel(_) => (0x808093d7, 0x808093d6, 0x58, 1),
-            Kind::Range { .. } => (0x808093cd, 0x808093cc, 0x68, 6),
+            Kind::Parallel(_) | Kind::RepeatParallel(_) => (0x808093d7, 0x808093d6, 0x58, 1),
+            Kind::Range { .. } | Kind::RangeOnce { .. } => (0x808093cd, 0x808093cc, 0x68, 6),
             Kind::Weighted(_) => (0x808093d5, 0x808093d4, 0x68, 2),
             Kind::Event(_) => unreachable!(),
         };
@@ -326,18 +389,22 @@ pub(crate) fn write(
         relative(payload, ci[index] + 32, i)?;
         relative(payload, cd[index] + 16, d)?;
         common(payload, d, control.node, control.parent, kind)?;
-        if matches!(control.node.kind, Kind::Repeat(_)) {
+        if matches!(control.node.kind, Kind::Repeat(_) | Kind::RepeatParallel(_)) {
             // 00588020 reaches 00588172 after serial-control retirement.
             // Byte +32 requests another activation through 0058DF80, unless
             // the caller is shutting the parent down.
+            // Parallel controls use the same byte. Original scheduler replay confirms
+            // repeated group activation and retirement for the single-sound fixture.
             payload.0[d + 0x32] = 1;
         }
-        if let Kind::Range { input, bounds, .. } = control.node.kind {
+        if let Kind::Range { input, bounds, .. } | Kind::RangeOnce { input, bounds, .. } =
+            control.node.kind
+        {
             ensure!(
                 u64::from(input) < payload.u64(definition + 0x188)?,
                 "Sequence scalar gate input is undeclared"
             );
-            payload.0[d + 0x32] = 1;
+            payload.0[d + 0x32] = u8::from(matches!(control.node.kind, Kind::Range { .. }));
             put(&mut payload.0, d + 0x58, &bounds[0].to_le_bytes())?;
             put(&mut payload.0, d + 0x5c, &bounds[1].to_le_bytes())?;
             put(&mut payload.0, d + 0x60, &input.to_le_bytes())?;

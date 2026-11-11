@@ -51,7 +51,7 @@ pub(super) fn prepare(
         return Err(invalid("No unused blank destination row is available"));
     }
     let mut plan = Plan::default();
-    let bank = u32::try_from(crate::package_profile::LOCALIZATION_DONOR_TABLE_INDEX)
+    let bank = u32::try_from(crate::package_profile::localization_table())
         .map_err(|_| invalid("Destination localization bank exceeds 32 bits"))?;
     for (label, index) in labels.into_iter().zip(available) {
         if !super::destination_label_valid(label) {

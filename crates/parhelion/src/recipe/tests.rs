@@ -281,5 +281,8 @@ fn name_namespace_normalization_has_explicit_boundaries() {
     );
     assert!(namespace_for_weapon_name(&"a".repeat(55)).is_err());
     assert!(namespace_for_weapon_name("---").is_err());
-    assert!(namespace_for_weapon_name("太陽").is_err());
+    let sun = namespace_for_weapon_name("太陽").unwrap();
+    validate_parhelion_namespace(&sun).unwrap();
+    assert_eq!(namespace_for_weapon_name(" 太陽 ").unwrap(), sun);
+    assert_ne!(namespace_for_weapon_name("月").unwrap(), sun);
 }

@@ -263,6 +263,108 @@ properties! {
         name: "Class Ability Recharge Multiplier",
         evidence: "Multiplies the recharge-rate input by 0.7 for Barricade, 0.5 for Dodge or 0.8 for Rift. Stock applies it while is_arc is true. These are rate multipliers below 1, not faster-recharge bonuses or cooldown durations. A custom effect controls when the modifier applies.",
     },
+    // Rows no stock perk action, subclass node or other Shadowkeep tag applies. Several are the
+    // rows Rise of Iron talents granted. None has been seen working in game.
+    [1] => EventKey {
+        hash: 0x75A7_AA0D,
+        name: "Sentinel Healing Shield",
+        evidence: "Sets enable_heal_shield to 1 in the Sentinel Shield bank. No Shadowkeep content applies this key, and Destiny 1 has no such row. What the shield does with it has not been seen in game.",
+    },
+    [1] => EventKey {
+        hash: 0x9D51_973E,
+        name: "Extra Super Orb",
+        evidence: "Writes or adds 1 to extra_orb in eight stock Super banks. No Shadowkeep content applies this key. Destiny 1 talent grids other than the subclasses' granted it. Requires a Super bank that defines it.",
+    },
+    [1] => EventKey {
+        hash: 0x316B_6AD3,
+        name: "Nova Bomb Tracking",
+        evidence: "Sets the Nova Bomb bank's tracking parameter to 1. No Shadowkeep content applies this key. A Destiny 1 Voidwalker talent grid granted it. Not seen in game.",
+    },
+    [1] => EventKey {
+        hash: 0xD848_7DB0,
+        name: "Death from Above Row",
+        evidence: "Applies a modifier 808041D7 row in the Thundercrash and Blade Barrage banks. No Shadowkeep content applies this key. Destiny 1's Death from Above granted it. Its effect has not been seen in game.",
+    },
+    [1] => EventKey {
+        hash: 0xA4BF_3841,
+        name: "Suncharge Row",
+        evidence: "Applies a modifier 80804478 row in the Hammer of Sol bank. No Shadowkeep content applies this key. Destiny 1's Suncharge granted it. Its effect has not been seen in game.",
+    },
+    [1] => EventKey {
+        hash: 0x1B4F_10AD,
+        name: "Gunfighter Row",
+        evidence: "Applies a numeric input row in the Golden Gun and Burning Maul banks. No Shadowkeep content applies this key. Destiny 1's Gunfighter granted it. Its effect has not been seen in game.",
+    },
+    [1] => EventKey {
+        hash: 0x4D4D_F9E1,
+        name: "Unused Shadowshot Row",
+        evidence: "Sets script parameter 8626D0F0 to 2 in the Shadowshot bank. No content in Shadowkeep or Destiny 1 applies this key. Its effect is unknown.",
+    },
+    [2] => EventKey {
+        hash: 0x46CF_DE16,
+        name: "Burning Knives",
+        evidence: "Sets knife_throw_apply_dot to 1 and adds a contact effect in the Hunter melee bank. No Shadowkeep content applies this key. Destiny 1's Incendiary Blade granted it. Not seen in game.",
+    },
+    [2] => EventKey {
+        hash: 0xD4D0_F628,
+        name: "Blink Strike Rows",
+        evidence: "Adds a melee charge and applies display rows and an attack selection in the Hunter melee bank. No Shadowkeep content applies this key. Destiny 1's Blink Strike granted it. Not seen in game.",
+    },
+    [2] => EventKey {
+        hash: 0xB920_9E45,
+        name: "Gambler's Dagger Charge",
+        evidence: "Adds one charge in the Hunter melee bank. No Shadowkeep content applies this key. Destiny 1's Gambler's Dagger granted it. Not seen in game.",
+    },
+    [2] => EventKey {
+        hash: 0x3CFD_094C,
+        name: "Extended Lunge Range",
+        evidence: "Sets exotic_armor_extended_range to 0.5 and applies a modifier 8080281F row in the Hunter melee bank. No content in Shadowkeep or Destiny 1 applies this key. Not seen in game.",
+    },
+    [2] => EventKey {
+        hash: 0x2DF4_870D,
+        name: "Unused Two-Charge Hunter Melee",
+        evidence: "Sets two charges with a modifier 80804532 row, two numeric input rows and modifier 808043A0 and 8080439D rows in the Hunter melee bank. No content in Shadowkeep or Destiny 1 applies this key. Not seen in game.",
+    },
+    [2] => EventKey {
+        hash: 0x08B7_18FF,
+        name: "Unused Hunter Melee Variant",
+        evidence: "Sets one charge with display rows and an attack selection in the Hunter melee bank. No content in Shadowkeep or Destiny 1 applies this key. Not seen in game.",
+    },
+    [2, 4] => EventKey {
+        hash: 0x3D69_A509,
+        name: "Unused Titan Charge Variant",
+        evidence: "Sets a melee charge and attack selection in the Titan melee bank, and Shoulder Charge with attack and duration rows in the movement bank, parallel to the stock Shoulder Charge key 1864DB62. No content in Shadowkeep or Destiny 1 applies this key. Not seen in game.",
+    },
+    [2] => EventKey {
+        hash: 0xE45F_3BEB,
+        name: "Discharge Rows",
+        evidence: "Applies a gated attack selection and effect entry in the Titan melee bank. No Shadowkeep content applies this key. Destiny 1's Discharge granted it. The gate needs its own key. Not seen in game.",
+    },
+    [2] => EventKey {
+        hash: 0xED65_3725,
+        name: "Flame Shield Rows",
+        evidence: "Applies a modifier 80804509 row and gated numeric and attack rows in the Warlock melee bank. No Shadowkeep content applies this key. Destiny 1's Flame Shield granted it. Not seen in game.",
+    },
+    [4] => EventKey {
+        hash: 0x5C11_438B,
+        name: "Daybreak Air Evade",
+        evidence: "Selects air-evade profile 4D59F309 in the movement bank. The Daybreak bank selects the same profile while the Super runs, under the key Icarus Dash applies. This profile spends all evade energy and recovers in one second. No Shadowkeep content applies this movement-bank key. Not seen in game outside Daybreak.",
+    },
+    [4] => EventKey {
+        hash: 0xE117_216E,
+        name: "Zero-Cost Grounded Evade",
+        evidence: "Selects evade profile BE74F016 in the movement bank, grounded and without an energy cost. Ability owner 80BC3BBC also names that profile. No Shadowkeep content applies this movement-bank key. Not seen in game.",
+    },
+    [4] => EventKey {
+        hash: 0xDC83_ADA2,
+        name: "Dodge Regeneration",
+        evidence: "Sets dodge_regen_enabled to 1 in the movement bank. No content in Shadowkeep or Destiny 1 applies this key. Not seen in game.",
+    },
+    [7] => EventKey {
+        hash: 0x89DB_F837,
+        name: "Unused Class Ability Row",
+        evidence: "Applies a numeric input row in the Barricade, Dodge and Rift banks. No content in Shadowkeep or Destiny 1 applies this key. Its effect is unknown.",
+    },
     [] => EventKey {
         hash: 0xDD7C_D3E0,
         name: "Unused Glide Flag",

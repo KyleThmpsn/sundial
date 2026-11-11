@@ -6,8 +6,6 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub mod bindings;
-
 const PARTICLE_SCOPE: u8 = 0x1A;
 
 #[derive(Clone, Serialize, Deserialize)]

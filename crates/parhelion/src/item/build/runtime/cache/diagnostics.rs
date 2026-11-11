@@ -8,7 +8,6 @@ pub(in crate::item::build::runtime) enum Reason {
     NoDirectory,
     Directory(String),
     Locked(String),
-    CompilerUnavailable,
     Missing,
     CompilerChanged,
     SourceChanged,
@@ -28,7 +27,6 @@ pub(in crate::item::build::runtime) enum Reason {
     UncacheableImport,
     UntrackedReads,
     UnsupportedFragment,
-    ParticleSymbols,
     TooLarge,
     Write(String),
 }
@@ -46,13 +44,12 @@ impl fmt::Display for Reason {
                 f,
                 "[cache-lock] Could not acquire the cache writer lock: {error}"
             ),
-            Self::CompilerUnavailable => write!(
-                f,
-                "[compiler-unavailable] Could not hash the compiler executable"
-            ),
             Self::Missing => write!(f, "[no-fragment] No saved fragment"),
             Self::CompilerChanged => {
-                write!(f, "[compiler-changed] The compiler executable changed")
+                write!(
+                    f,
+                    "[compiler-changed] The runtime compiler revision or Parhelion version changed"
+                )
             }
             Self::SourceChanged => write!(
                 f,
@@ -113,10 +110,6 @@ impl fmt::Display for Reason {
             Self::UnsupportedFragment => write!(
                 f,
                 "[unsupported-fragment] Runtime changes cannot be represented as one complete fragment"
-            ),
-            Self::ParticleSymbols => write!(
-                f,
-                "[particle-symbols] Private perks require imported particle symbols that are not stored in runtime fragments"
             ),
             Self::TooLarge => write!(
                 f,

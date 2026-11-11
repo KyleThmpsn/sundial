@@ -10,8 +10,13 @@
 //! program finds its particles procedurally: layers of vertical cylinders at radii spread over the
 //! emitter's radius, each holding a randomized grid of sprites that falls at the emitter's speed,
 //! with the grid sized so a layer holds its share of the emitter's steady particle count. Layers
-//! behind the scene depth (`t10`) are hidden, as Reach's particles are by depth.
+//! behind the scene depth, which their material binds itself ([`SceneDepth`]), are hidden, as
+//! Reach's particles are by depth.
 use super::*;
+
+/// The pixel texture register an emitter binds the scene depth to ([`SceneDepth`]), after its
+/// sprite's.
+const DEPTH_REGISTER: usize = 1;
 
 /// One emitter of a weather effect. Lengths are in meters and speeds in meters per second.
 #[derive(Clone, Debug)]
@@ -49,7 +54,13 @@ o0=float4(0,0,0,0);o1=float4(0,0,0,0);o2=float4(relative,relative.z+viewData[7].
 "#;
 
 /// The pixel program of field `particles`.
-fn pixel(particles: &Particles, scale: SkyScale, declarations: &str, sampler: &str) -> String {
+fn pixel(
+    particles: &Particles,
+    scale: SkyScale,
+    declarations: &str,
+    sampler: &str,
+    depth: SceneDepth,
+) -> String {
     let [r0, r1] = particles.radii;
     let step = (r1 - r0).max(0.01) / LAYERS as f32;
     // A layer at radius r holds count / LAYERS particles over its height 2 * r1 and its
@@ -73,6 +84,7 @@ cbuffer Frame : register(b13) {{float4 frameData[2];}};
 float weatherHash(float3 p){{p=frac(p*float3(0.1031,0.1030,0.0973));p+=dot(p,p.yxz+33.33);return frac((p.x+p.y)*p.z);}}
 void main(float4 v0:TEXCOORD0,float4 v1:TEXCOORD1,float4 v2:TEXCOORD2,float4 v3:TEXCOORD3,float3 v4:TEXCOORD4,float4 position:SV_POSITION0,uint front:SV_isFrontFace0,
 out float4 o0:SV_TARGET0) {{
+{control}
 float time=frameData[0].x;
 float3 ray=normalize(v2.xyz);
 float3 forward=normalize(float3(viewData[0].w,viewData[1].w,viewData[2].w));
@@ -102,16 +114,18 @@ float a=sprite.a*{alpha_scale:.6}*saturate((sceneDistance-t)*2)*saturate(1-abs(h
 {accumulate}
 }}
 }}
-color=clamp(color,0,{white:.9})*{radiance:.9};
-o0=float4(color*{REFERENCE_ILLUMINATION:.9}*frameData[1].z,{alpha});
+color=clamp(color,0,{white})*{radiance:.9};
+o0=float4(color*{finish},{alpha});
 }}
 "#,
-        scene = super::super::water::SCENE_DECLARATIONS,
+        scene = depth.declarations_with(overlay::DECLARATION),
+        control = overlay::DISCARD,
         width = particles.width,
         height_scale = particles.width * particles.aspect,
         alpha_scale = particles.alpha,
         fall = particles.fall,
-        white = scale.white,
+        white = scale.white(),
+        finish = scale.finish(),
         radiance = scale.radiance,
     )
 }
@@ -144,6 +158,7 @@ pub(in crate::halo_reach) fn surfaces(
         &VERTEX.replace("$SHELL$", &format!("{SHELL:.3}")),
         true,
     )?;
+    let depth = SceneDepth::new(native, DEPTH_REGISTER)?;
     let mut report = Vec::new();
     for (field, &key) in particles.iter().zip(keys) {
         let symbol = texture(c, pages, native, g, &field.sprite, false, true)?;
@@ -153,7 +168,7 @@ pub(in crate::halo_reach) fn surfaces(
             "Texture2D<float4> Map0:register(t0);{}",
             samplers.declarations
         );
-        let text = pixel(field, scale, &declarations, &sampler_name(0));
+        let text = pixel(field, scale, &declarations, &sampler_name(0), depth);
         let shader = format!("sky-weather-pixel-{key:08X}");
         program(native, g, &shader, envelope.1.u32(0x2c8)?, &text, false)?;
         write_material(
@@ -166,6 +181,8 @@ pub(in crate::halo_reach) fn surfaces(
             &samplers,
             sampler_class,
             true,
+            Some(depth),
+            Some(overlay::Kind::Weather),
         )?;
         report.push(json!({
             "key": format!("{key:08X}"),

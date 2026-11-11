@@ -152,7 +152,7 @@ fn sqlite_backup_can_write_and_restore_a_reserved_flat_file() {
         "sqlite3",
         true,
         |path, _| {
-            db.backup(rusqlite::MAIN_DB, path, None)
+            db.backup(rusqlite::MAIN_DB, path, rusqlite::backup::NO_PROGRESS)
                 .map_err(|error| error.to_string())
         },
     )

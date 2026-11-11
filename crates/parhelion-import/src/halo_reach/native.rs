@@ -11,8 +11,12 @@ use crate::{
         reader::{Reader, write_json},
     },
 };
+mod attachment;
+mod firing_effect;
 mod fragment;
 mod inspection;
+mod item;
+pub(super) mod lighting;
 mod marker;
 pub(super) mod material;
 mod optic;
@@ -22,6 +26,7 @@ pub(super) mod seat;
 mod settings;
 mod vehicle;
 pub use seat::DriverPose;
+pub(in crate::halo_reach) use vehicle::{contact_cue, effect_host};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +128,11 @@ pub struct ImportRequest {
     /// Optional framing override for generated inventory artwork.
     #[serde(default)]
     pub icon: Option<crate::artwork::Settings>,
+    /// The rounds a heat-locked weapon's magazine holds in place of the rounds its source fires
+    /// from cold before it overheats, an authored scale for its heat. Its idle refill keeps the
+    /// source's heat loss rate at that scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heat_capacity: Option<u32>,
 }
 
 fn hash(value: &Value, key: &str) -> Result<u32> {
@@ -357,6 +367,33 @@ fn weights(joints: [u16; 4], weights: [f32; 4], first: usize, count: usize) -> R
     Ok(out)
 }
 
+/// The joints of model `index` with the source gun's moving bones on the carrier bones the aim
+/// record names. Bones the aim leaves still keep their mapping.
+fn aimed_gun(
+    skeleton: &Value,
+    index: usize,
+    mut mapping: Vec<u8>,
+    mut report: Vec<Value>,
+) -> Result<(Vec<u8>, Vec<Value>)> {
+    let aim = &skeleton["aim"];
+    if aim["model"].as_u64() != Some(index as u64) {
+        return Ok((mapping, report));
+    }
+    let bones = aim["mapping"].as_array().context("Gun aim mapping")?;
+    ensure!(
+        bones.len() == mapping.len() && bones.len() == report.len(),
+        "Gun aim mapping differs from its model"
+    );
+    for (bone, native) in bones.iter().enumerate() {
+        if let Some(native) = native.as_u64() {
+            mapping[bone] = u8::try_from(native)?;
+            report[bone]["native_index"] = json!(native);
+            report[bone]["method"] = json!("Carrier aim chain");
+        }
+    }
+    Ok((mapping, report))
+}
+
 struct Assembly {
     mesh: Mesh,
     materials: BTreeMap<u32, crate::halo_reach::material::Material>,
@@ -390,6 +427,7 @@ fn assemble(
     let mut reports = Vec::new();
     let mut palette = Vec::new();
     let mut placement = Vec::new();
+    let mut mappings: Vec<Vec<u8>> = Vec::new();
     let mut groups = Vec::new();
     for (model_index, placed) in scene.models.iter().enumerate() {
         let model = &placed.model;
@@ -406,7 +444,22 @@ fn assemble(
             rig::IDENTITY
         };
         placement.push(transform);
-        let (mapping, report) = retarget(model, skeleton, aliases)?;
+        // An appended source rig covers the root model only. An attached object
+        // rides rigidly on the bone that carries its parent marker.
+        let (mapping, report) = match &placed.parent {
+            Some(parent) if skeleton["source_bone_first"].is_u64() => {
+                let carried = *mappings[parent.model]
+                    .get(parent.bone.unwrap_or(0))
+                    .context("Attachment parent bone is outside its model rig")?;
+                let report: Vec<Value> = model.bones.iter()
+                    .map(|bone| json!({"source":bone.name,"native_index":carried,"method":"Rigid source attachment"})).collect();
+                (vec![carried; model.bones.len()], report)
+            }
+            _ => retarget(model, skeleton, aliases)?,
+        };
+        // A source driver's gun rides the carrier's own aim chain (`vehicle::aim_presentation`).
+        let (mapping, report) = aimed_gun(skeleton, model_index, mapping, report)?;
+        mappings.push(mapping.clone());
         let first = palette.len();
         palette.extend(mapping);
         ensure!(
@@ -509,6 +562,54 @@ fn runtime_models(native: &mut Reader, entity: u32, kind: u16) -> Result<Vec<Val
         "Native runtime has no direct render model"
     );
     Ok(models)
+}
+
+/// Whether a converted projectile section is an explosive round that draws nothing in flight: its
+/// source has no render model, its flight effects did not translate, and its source detonation
+/// qualified. The detonation receipt names its source only once the source damage qualified, so a
+/// plain bullet never counts.
+fn unseen_explosive(section: &Value) -> bool {
+    let conversion = &section["conversion"];
+    conversion["presentation"] == "source_effects"
+        && conversion["effects"]["status"] != "translated"
+        && conversion["detonation"]["source"].is_object()
+}
+
+/// A converted section, unless it is an explosive round that draws nothing in flight. A round
+/// whose source flight effects did not translate keeps only the carrier's presentation, and the
+/// effect-only carrier draws none, so the Scorpion's shell flew unseen. The barrel then keeps the
+/// selected carrier's own round. The Wraith's mortar translates its plasma effects and is kept,
+/// detonating through its private graph. A dropped section's files leave the graph, so a later
+/// conversion can take its folder, as a Scorpion gunner's round takes the one its dropped shell
+/// wrote.
+fn detonating(section: Option<Value>, graph: &Path) -> Result<Option<Value>> {
+    let Some(section) = section else {
+        return Ok(None);
+    };
+    if !unseen_explosive(&section) {
+        return Ok(Some(section));
+    }
+    let folders = section["nodes"]
+        .as_array()
+        .context("Projectile section nodes")?
+        .iter()
+        .map(|node| {
+            node["file"]
+                .as_str()
+                .and_then(|file| file.split_once('/'))
+                .map(|(folder, _)| folder.to_owned())
+                .context("Projectile node file")
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let [folder] = <[String; 1]>::try_from(folders.into_iter().collect::<Vec<_>>())
+        .ok()
+        .context("Projectile section spans several folders")?;
+    ensure!(
+        folder == "projectile" || folder.starts_with("projectile-barrel-"),
+        "Dropped projectile section names an unexpected folder"
+    );
+    fs::remove_dir_all(graph.join(folder))?;
+    Ok(None)
 }
 
 fn carrier(
@@ -618,11 +719,56 @@ fn carrier_models(
     } else if let Some(entity) = entry.runtime_entity {
         runtime_models(native, entity, 15)?
     } else {
-        template["models"]
+        let sights = sight_parts(native, template)?;
+        let models = template["models"]
             .as_array()
             .context("Native models")?
-            .clone()
+            .iter()
+            .filter(|model| {
+                model["entity"]
+                    .as_str()
+                    .is_none_or(|entity| !sights.contains(entity))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        ensure!(
+            !models.is_empty(),
+            "Native donor has no part outside its sight region"
+        );
+        models
     })
+}
+
+/// Entities of the donor's sight parts: parts placed by a plug selector other than the body's,
+/// whose entity holds a native optic. The import's own optic takes over that whole selector
+/// region, so the game never creates these parts and none of them may carry the body, however
+/// many vertices its model draws.
+fn sight_parts(native: &mut Reader, template: &Value) -> Result<BTreeSet<String>> {
+    let mut sights = BTreeSet::new();
+    for parent in template["parents"]
+        .as_array()
+        .context("Native art parents")?
+    {
+        if parent["placement"]["selector"]
+            .as_u64()
+            .is_none_or(|selector| selector == 0)
+        {
+            continue;
+        }
+        let entity_text = parent["entity"].as_str().context("Native parent entity")?;
+        let entity_tag = u32::from_str_radix(entity_text, 16)?;
+        if entity_tag == u32::MAX {
+            continue;
+        }
+        let entity = native.tag(entity_tag, Some(0x80809c0f))?;
+        for row in entity.array(16, 12, Some(0x80809c04))? {
+            let owner = native.tag(entity.u32(row)?, Some(0x80809c36))?;
+            if owner.u32(owner.pointer(24)? - 4)? == 0x8080393b {
+                sights.insert(entity_text.to_owned());
+            }
+        }
+    }
+    Ok(sights)
 }
 
 fn validate_material_overrides(
@@ -682,8 +828,9 @@ fn source_motion(
     projectile: bool,
     bones: &mut Value,
 ) -> Result<Option<super::animation::native::Bundle>> {
+    // Attached objects ride on the root model's appended bones without their own clips.
     let source_rig = entry.bone_aliases.is_empty()
-        && scene.models.len() == 1
+        && scene.models[0].parent.is_none()
         && scene.models[0].animation.is_some();
     if projectile
         || entry.runtime_entity.is_none()
@@ -776,6 +923,7 @@ pub(super) fn build(
     root: &Path,
     projectile: bool,
     weapon_skeleton: Option<&Value>,
+    vehicle_projectiles: [Option<&Value>; 2],
 ) -> Result<Value> {
     let inventory_scene;
     let scene = if !projectile
@@ -817,6 +965,10 @@ pub(super) fn build(
     {
         bones["fallback_bone"] = json!(root);
     }
+    if !projectile && motion.is_some() {
+        vehicle::aim_presentation(native, cache, scene, entry, root, &mut bones)
+            .context("Vehicle gun presentation")?;
+    }
     let Assembly {
         mut mesh,
         materials,
@@ -827,12 +979,40 @@ pub(super) fn build(
     let inspection_fit = inspection::fit(&mut mesh, &header, entry, projectile)?;
     let optic = prepare_optic(entry, scene, projectile, &mut mesh, &materials)?;
     let lenses = optic.as_ref().map(|o| o.lenses.clone()).unwrap_or_default();
-    let stages = material_stages(&materials, &lenses);
-    let encoded = if scene.damage.is_some() {
-        geometry::encode_grouped(&mesh, &header, row, &stages, &groups)?
-    } else {
-        geometry::encode_with_stages(&mesh, &header, row, &stages)?
-    };
+    let mut stages = material_stages(&materials, &lenses);
+    // Reach shows a zoomed weapon's HUD scope in place of the weapon. Its body draws the
+    // overlay and its surfaces read aim visibility to disappear as the overlay appears.
+    let screen_scope = optic
+        .as_ref()
+        .map(|optic| optic.screen_scope(cache, &scene.object.tag))
+        .transpose()?
+        .unwrap_or(false);
+    if screen_scope {
+        ensure!(
+            scene.damage.is_none(),
+            "A screen scope needs an undamaged weapon mesh"
+        );
+        optic::scope_quad(&mut mesh, &mut stages)?;
+    }
+    let clipped = materials
+        .iter()
+        .filter(|(_, material)| material::clipped_caster(material))
+        .map(|(&key, _)| key)
+        .collect();
+    // A held weapon's opaque surfaces also draw in the depth prepass, as stock weapon parts do.
+    // A screen-scoped weapon's surfaces discard at full aim, which a vertex-only prepass cannot,
+    // so its prepass takes the flags of stock pieces hidden while aiming.
+    let held = !projectile && entry.recipe["kind"] == "weapon";
+    let prepass = held.then_some(if screen_scope { 0x1 } else { 0x5 });
+    let encoded = geometry::encode_with_clipped_shadows(
+        &mesh,
+        &header,
+        row,
+        &stages,
+        &clipped,
+        scene.damage.is_some().then_some(groups.as_slice()),
+        prepass,
+    )?;
     fs::create_dir_all(root)?;
     let mut g = Graph::new(root.to_path_buf(), Vec::new());
     buffers(native, &mut g, &header, row, &encoded)?;
@@ -851,6 +1031,8 @@ pub(super) fn build(
             native,
             &mut g,
             &scene.models[0].model,
+            (&bones, &palette),
+            &marker::muzzle(&scene.object.gameplay),
             &mut entity,
             &mut patches,
         )?
@@ -883,10 +1065,17 @@ pub(super) fn build(
     {
         live_display |= mapping.ammunition_place(cache)?.is_some();
     }
-    let objects = if live_display {
-        crate::presentation::channel::inherit(native, &mut g, &[0x32CC5402])?
-    } else {
+    let mut requested = Vec::new();
+    if live_display {
+        requested.push(0x32CC5402);
+    }
+    if screen_scope {
+        requested.push(crate::tiger::channel::inherited::AIM_VISIBILITY);
+    }
+    let objects = if requested.is_empty() {
         BTreeMap::new()
+    } else {
+        crate::presentation::channel::inherit(native, &mut g, &requested)?
     };
     ensure!(
         entry.paint.is_empty() || entry.recipe["kind"] == "sparrow",
@@ -923,14 +1112,26 @@ pub(super) fn build(
             lightmap: None,
             vertex_data: None,
             statics: false,
+            paired_faces: &Default::default(),
             prefix: "",
+            prepass: held,
         },
     )?;
     let instance_layout = g.seal_instances()?;
     let vehicle = if !projectile {
         entry
             .runtime_entity
-            .map(|_| vehicle::build(native, &mut g, scene, &bones, entry, cache, pages))
+            .map(|_| {
+                vehicle::build(
+                    native,
+                    &mut g,
+                    scene,
+                    &bones,
+                    entry,
+                    (cache, pages),
+                    vehicle_projectiles,
+                )
+            })
             .transpose()?
             .flatten()
     } else {
@@ -984,6 +1185,7 @@ pub(super) fn build(
                 prepared,
                 item,
                 entry.optic_item,
+                &objects,
                 optic::Source {
                     cache,
                     pages,
@@ -1002,6 +1204,7 @@ pub(super) fn build(
         graph["kept_parts"] = json!([kept]);
         graph["optic"] = report;
     }
+    graph["runtime_markers"] = marker::runtime_rows(graph.get("optic"))?;
     motion_report(&mut graph, motion, vehicle.is_none());
     if entry.recipe["kind"] == "sparrow" {
         graph["kind"] = json!("sparrow");
@@ -1032,6 +1235,7 @@ pub(super) fn build(
     }
     bind_materials(&graph, root)?;
     write_json(&root.join("asset-graph.json"), &graph)?;
+    crate::graph::check_particle_bindings(root)?;
     crate::graph::record_converter_revision(root)?;
     Ok(graph)
 }
@@ -1137,7 +1341,7 @@ fn bind_materials(graph: &Value, root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn projectile_count(barrel: &Value, behavior: &Value) -> Result<i64> {
+pub(super) fn projectile_count(barrel: &Value, behavior: &Value) -> Result<i64> {
     let mut count = barrel["projectiles_per_shot"]
         .as_i64()
         .context("Source projectile count")?;
@@ -1174,7 +1378,12 @@ fn projectile_count(barrel: &Value, behavior: &Value) -> Result<i64> {
     Ok(count)
 }
 
-fn recipe(entry: &ImportRequest, scene: &Scene, behavior: &Value) -> Result<(Value, Value)> {
+fn recipe(
+    native: &mut Reader,
+    entry: &ImportRequest,
+    scene: &Scene,
+    behavior: &Value,
+) -> Result<(Value, Value)> {
     let mut recipe = entry.recipe.clone();
     if recipe["kind"] == "sparrow" {
         if recipe["overrides"].is_null() {
@@ -1185,30 +1394,109 @@ fn recipe(entry: &ImportRequest, scene: &Scene, behavior: &Value) -> Result<(Val
     let Some(barrels) = scene.object.gameplay["barrels"].as_array() else {
         return Ok((recipe, json!({"status":"Native vehicle behavior retained"})));
     };
-    if barrels.len() != 1 {
+    // A weapon's reload translates whatever its barrels, so its receipt always names the source
+    // the build accepts reload inputs from. A charged pair's weapon fires its tap barrel, and the
+    // charged release perk fires the other. A Spew-Charge pair's weapon fires its charged barrel.
+    let pair = super::firing::charged_pair(&scene.object.gameplay);
+    if barrels.len() != 1 && pair.is_none() {
         return Ok((
             recipe,
-            json!({"status":"Source barrel selection needs explicit controller translation"}),
+            json!({"status":"Source barrel selection needs explicit controller translation",
+                "source":"halo_reach"}),
         ));
     }
-    let count = projectile_count(&barrels[0], behavior)?;
-    if recipe["overrides"]["barrel"]["pellets"].is_number() {
-        return Ok((
-            recipe,
-            json!({"source_projectiles_per_shot":count,"status":"Explicit recipe pellet count retained"}),
-        ));
-    }
+    let count = projectile_count(&barrels[pair.map_or(0, |pair| pair.fired())], behavior)?;
     if recipe["overrides"].is_null() {
         recipe["overrides"] = json!({});
     }
-    if recipe["overrides"]["barrel"].is_null() {
-        recipe["overrides"]["barrel"] = json!({});
+    let mut gameplay = if recipe["overrides"]["barrel"]["pellets"].is_number() {
+        json!({"source_projectiles_per_shot":count,"status":"Explicit recipe pellet count retained"})
+    } else {
+        if recipe["overrides"]["barrel"].is_null() {
+            recipe["overrides"]["barrel"] = json!({});
+        }
+        recipe["overrides"]["barrel"]["pellets"] = json!(count);
+        json!({"source_projectiles_per_shot":count,"native":"Permanent Barrel pellet count",
+            "limits":["Native spread shape and angle, burst timing, damage and handling are retained unless the recipe explicitly edits them."]})
+    };
+    let donor = hash(&entry.recipe["donor"], "item_hash")?;
+    let receipts =
+        super::firing::translate(native, donor, &scene.object.gameplay, entry.heat_capacity)?;
+    let firing = &receipts["firing"];
+    // Existing authored values win when an import is refreshed.
+    if firing["display_group"].is_object()
+        && recipe["overrides"]["custom_stat_group"].is_null()
+        && recipe["overrides"]["stat_group_index"].is_null()
+    {
+        recipe["overrides"]["custom_stat_group"] = firing["display_group"].clone();
     }
-    recipe["overrides"]["barrel"]["pellets"] = json!(count);
-    Ok((
-        recipe,
-        json!({"source_projectiles_per_shot":count,"native":"Permanent Barrel pellet count","limits":["Native spread shape and angle, burst timing, ammunition, damage and handling are retained unless the recipe explicitly edits them."]}),
-    ))
+    gameplay["source"] = json!("halo_reach");
+    if let Some(inputs) = firing.get("inputs") {
+        gameplay["inputs"] = inputs.clone();
+    }
+    for (key, receipt) in receipts {
+        gameplay[key] = receipt;
+    }
+    Ok((recipe, gameplay))
+}
+
+/// The source reload times as literal native Reload Time (input 1, rounds remaining) and Empty
+/// Reload Time (input 2), when the first-person translation read them and the donor's stat
+/// translator writes those inputs. A source reload lasts as long as its animation, so the native
+/// reload takes the source clip's time and its sound lines up with the translated motion. Reload
+/// perks still scale the base value. Investment bonuses do not resample it. A heat vent that
+/// already holds a Reload input keeps it.
+fn reload(
+    native: &mut Reader,
+    donor: u32,
+    animation: Option<&Value>,
+    gameplay: &mut Value,
+) -> Result<()> {
+    if gameplay["source"] != "halo_reach" {
+        gameplay["reload"] =
+            json!({"status":"native","reason":"The source has no weapon firing translation"});
+        return Ok(());
+    }
+    let seconds = animation.map(|a| &a["first_person"]["reload_seconds"]);
+    let Some(seconds) = seconds.filter(|s| s.is_object()) else {
+        gameplay["reload"] =
+            json!({"status":"native","reason":"The source first-person reload was not translated"});
+        return Ok(());
+    };
+    let routes = crate::tiger::shadowkeep::translator_routes(native, donor)?;
+    let mut inputs = Vec::new();
+    let mut omitted = Vec::new();
+    for (state, input) in [("reload_full", 1), ("reload_empty", 2)] {
+        let Some(value) = seconds[state].as_f64() else {
+            omitted.push(format!("The source has no single {state} clip"));
+            continue;
+        };
+        let held = gameplay["inputs"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["component"] == 3 && row["input"] == input)
+        });
+        if held {
+            omitted.push(format!("Reload input {input} holds the source heat vent"));
+            continue;
+        }
+        if !routes.contains(&(3, input)) {
+            omitted.push(format!(
+                "The donor's stat translator does not write Reload input {input}"
+            ));
+            continue;
+        }
+        inputs.push(json!({"component":3,"input":input,"value":value}));
+    }
+    if !gameplay["inputs"].is_array() {
+        gameplay["inputs"] = json!([]);
+    }
+    gameplay["inputs"]
+        .as_array_mut()
+        .context("Source gameplay inputs")?
+        .extend(inputs.iter().cloned());
+    gameplay["reload"] = json!({"status":if inputs.is_empty() { "native" } else { "translated" },
+        "seconds":seconds,"inputs":inputs,"omitted":omitted});
+    Ok(())
 }
 
 fn select_projectile(recipe: &mut Value, projectile: &Value) -> Result<()> {
@@ -1269,7 +1557,8 @@ fn validate_requests(entries: &mut [ImportRequest]) -> Result<()> {
 
 /// Convert an explicit batch to pinned native graphs and editable Parhelion recipes.
 /// Each entry supplies a normal recipe so donor behavior and private identity stay visible.
-#[allow(clippy::cognitive_complexity)]
+/// The batch is prepared in a temporary folder beside `output` and moves there only once every
+/// entry is written and every source input still verifies.
 pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) -> Result<Value> {
     let maps = maps.canonicalize()?;
     let native_packages = native_packages.canonicalize()?;
@@ -1278,6 +1567,35 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
         native_packages.parent().context("Native install root")?,
     )?;
     ensure!(!output.exists(), "Reach import output already exists");
+    let entries = read_plan(plan)?;
+    fs::create_dir_all(output.parent().context("Output parent")?)?;
+    let temporary = tempfile::Builder::new()
+        .prefix("reach-native-")
+        .tempdir_in(output.parent().unwrap())?;
+    let mut native = Reader::new(&native_packages, &temporary.path().join("native"), false)?;
+    let mut pages = resource::Pages::default();
+    let batch = item::Batch {
+        maps: &maps,
+        native_packages: &native_packages,
+        output: &output,
+        temporary: temporary.path(),
+    };
+    let mut items = Vec::new();
+    for entry in entries {
+        eprintln!("Translating {}", entry.slug);
+        items.push(item::prepare(&batch, &mut native, &mut pages, entry)?);
+    }
+    native.finish()?;
+    pages.verify_inputs()?;
+    let report = json!({"source":"halo_reach","source_build":"Jun 21 2023 15:35:31","reach_revision":REVISION,"inputs":pages.inputs,"resources":pages.resources,"items":items,"gameplay_verified":false});
+    write_json(&temporary.path().join("report.json"), &report)?;
+    ensure!(!output.exists(), "Reach output appeared concurrently");
+    fs::rename(temporary.path(), &output)?;
+    Ok(report)
+}
+
+/// The plan's entries with their scale defaults, checked as a batch.
+fn read_plan(plan: &Path) -> Result<Vec<ImportRequest>> {
     let mut requests: Vec<Value> = serde_json::from_slice(&fs::read(plan)?)?;
     for request in &mut requests {
         scale::request_defaults(request)?;
@@ -1288,280 +1606,5 @@ pub fn prepare(plan: &Path, maps: &Path, native_packages: &Path, output: &Path) 
         .collect::<std::result::Result<_, _>>()?;
     ensure!(!entries.is_empty(), "Reach import plan is empty");
     validate_requests(&mut entries)?;
-    fs::create_dir_all(output.parent().context("Output parent")?)?;
-    let temporary = tempfile::Builder::new()
-        .prefix("reach-native-")
-        .tempdir_in(output.parent().unwrap())?;
-    let mut native = Reader::new(&native_packages, &temporary.path().join("native"), false)?;
-    let mut pages = resource::Pages::default();
-    let mut items = Vec::new();
-    for mut entry in entries {
-        eprintln!("Translating {}", entry.slug);
-        let root = temporary.path().join(&entry.slug);
-        let source = root.join("source");
-        fs::create_dir_all(&source)?;
-        let path = source_path(&maps, &entry.source.cache)?;
-        pages.record(&path)?;
-        let cache = cache::Cache::open(&path)?;
-        let mut scene = scene(&cache, &mut pages, &entry.source)?;
-        if entry.character.is_none()
-            && (scene.object.tag.group != "vehi" || entry.driver_pose.is_none())
-        {
-            entry.character = super::animation::character::defaults(
-                &cache,
-                &scene,
-                &mut native,
-                hash(&entry.recipe["donor"], "item_hash")?,
-            )?;
-        }
-        gltf::write(&cache, &mut pages, &scene, &source)?;
-        write_json(&source.join("source.json"), &serde_json::to_value(&scene)?)?;
-        let behavior = behavior::read(&cache, &scene)?;
-        if entry.source.audio.is_none()
-            && matches!(scene.object.tag.group.as_str(), "weap" | "vehi")
-        {
-            entry.source.audio = super::audio::defaults(&maps, &behavior)?;
-        }
-        if let Some(audio) = &mut entry.source.audio
-            && audio.bank.as_os_str().is_empty()
-        {
-            let discovered = super::audio::defaults(&maps, &behavior)?
-                .context("Previously imported source audio is no longer available")?;
-            audio.bank = discovered.bank;
-            audio.additional_banks = discovered.additional_banks;
-            audio.decoder = discovered.decoder;
-        }
-        let (mut recipe, mut gameplay) = recipe(&entry, &scene, &behavior)?;
-        let hud = super::hud::prepare(&cache, &mut pages, &scene, &mut recipe, &source)?;
-        write_json(&source.join("behavior.json"), &behavior)?;
-        let projectiles = super::projectile::export(&cache, &mut pages, &behavior, &source)?;
-        let mut projectile_import = super::projectile::select(&mut entry, &behavior, &projectiles)?;
-        super::animation::export(&cache, &mut pages, &behavior, &scene, &source)?;
-        if entry.first_person.is_none() && entry.character.is_none() {
-            entry.first_person = super::animation::first_person::defaults(
-                &cache,
-                &scene,
-                &mut native,
-                hash(&entry.recipe["donor"], "item_hash")?,
-                &source,
-            )?;
-            if let Some(options) = &mut entry.first_person {
-                options.handling_audio = entry.source.audio.is_some();
-            }
-        }
-        if scene.object.tag.group == "weap"
-            && (entry.first_person.is_some()
-                || scene.object.gameplay["zoom_levels"]
-                    .as_u64()
-                    .is_some_and(|levels| levels > 0))
-        {
-            gameplay["aim"] = super::hud::scope::aim(&cache, &scene.object.tag)?;
-        }
-        let source_audio = entry
-            .source
-            .audio
-            .as_ref()
-            .map(|options| {
-                super::audio::export(options, &behavior, &mut pages, &source.join("audio"))
-            })
-            .transpose()?;
-        super::damage::expand(&cache, &mut pages, &mut scene, &entry.source)?;
-        if let Some(damage) = &scene.damage {
-            write_json(
-                &source.join("damage-geometry.json"),
-                &serde_json::to_value(damage)?,
-            )?;
-        }
-        let scene = scale::scene(scene, entry.scale)?;
-        let animation = entry
-            .first_person
-            .as_ref()
-            .map(|options| {
-                super::animation::first_person::prepare(
-                    &cache,
-                    &scene,
-                    &mut native,
-                    hash(&entry.recipe["donor"], "item_hash")?,
-                    options,
-                    &entry.bone_aliases,
-                    &root.join("graph"),
-                    entry.source.audio.is_some(),
-                )
-            })
-            .transpose()?;
-        let mut graph = build(
-            &cache,
-            &mut pages,
-            &mut native,
-            &scene,
-            &entry,
-            &root.join("graph"),
-            false,
-            animation
-                .as_ref()
-                .and_then(|a| a.get("equipment_skeleton"))
-                .filter(|s| !s.is_null()),
-        )
-        .with_context(|| format!("Native Reach import {}", entry.slug))?;
-        if let Some(audio) = source_audio {
-            graph["source_audio"] = json!({
-                "decoded_samples":audio["samples"].as_array().map_or(0, Vec::len),
-                "unavailable":audio["unavailable"],
-                "playback":"Decoded recordings are source evidence. The audio routes describe native playback coverage."
-            });
-        }
-        inspection::build(
-            &cache,
-            &mut pages,
-            &mut native,
-            &scene,
-            &entry,
-            &root.join("graph"),
-            &mut graph,
-        )?;
-        graph["source_gameplay"] = gameplay;
-        graph["source_scale"] =
-            json!({"length":entry.scale,"mass":1.,"inertia":entry.scale * entry.scale});
-        graph["import_settings"] = settings::record(&entry)?;
-        graph["source_hud"] = hud;
-        if let Some(animation) = animation {
-            graph["animation"] = animation;
-        }
-        if entry.character.is_some() {
-            let character = super::animation::character::prepare(
-                &cache,
-                &mut pages,
-                &mut native,
-                &entry,
-                &mut graph,
-                &mut recipe,
-                &root.join("graph"),
-            )?;
-            if !graph["animation"].is_object() {
-                graph["animation"] = json!({});
-            }
-            graph["animation"]["character"] = character;
-        }
-        if entry.projectile_entity.is_some() {
-            graph["projectile"] = super::projectile::native(
-                &cache,
-                &mut pages,
-                &mut native,
-                &behavior,
-                &projectiles,
-                &entry,
-                &root.join("graph"),
-            )?;
-            select_projectile(&mut recipe, &graph["projectile"])?;
-            projectile_import["status"] = json!("imported");
-        }
-        graph["projectile_import"] = projectile_import;
-        if let Some(audio) = &entry.source.audio
-            && entry.runtime_entity.is_none()
-        {
-            let template = crate::tiger::shadowkeep::extract(
-                &mut native,
-                hash(&entry.recipe["donor"], "item_hash")?,
-            )?;
-            graph["audio"] = match super::audio::native(
-                &mut native,
-                hash(&template, "item_tag")?,
-                &behavior,
-                &source.join("audio"),
-                &root.join("graph"),
-                audio,
-            ) {
-                Ok(audio) => audio,
-                Err(error) if audio.firing.is_some() || audio.require_firing => {
-                    return Err(error)
-                        .with_context(|| format!("Requested firing audio for {}", entry.slug));
-                }
-                Err(error) => json!({"status":"source_only","reason":format!("{error:#}")}),
-            };
-            if audio.firing.is_some() || audio.require_firing {
-                ensure!(
-                    graph["audio"]["authoring_schema"] == 3,
-                    "Requested firing audio was not linked for {}: {}",
-                    entry.slug,
-                    graph["audio"]
-                );
-            }
-        }
-        if entry
-            .first_person
-            .as_ref()
-            .is_some_and(|options| !options.melee.is_empty())
-        {
-            graph["melee"] = super::melee::prepare(
-                &mut native,
-                &behavior,
-                &mut graph,
-                &mut recipe,
-                &root.join("graph"),
-                entry.source.audio.is_some(),
-            )?;
-        }
-        if entry
-            .first_person
-            .as_ref()
-            .is_some_and(|options| !options.actions.is_empty() && !options.handling_audio)
-        {
-            graph["handling_audio"] = json!({"status":"source_only","reason":"Handling audio is switched off in the import plan, the donor's cues remain on every clip"});
-        }
-        if entry
-            .first_person
-            .as_ref()
-            .is_some_and(|options| !options.actions.is_empty() && options.handling_audio)
-        {
-            graph["handling_audio"] = super::audio::clips::prepare(
-                &mut native,
-                &behavior,
-                &mut graph,
-                &root.join("graph"),
-            )
-            .with_context(|| format!("Handling audio for {}", entry.slug))?;
-        }
-        if let Some(sword) = super::melee::slam::prepare(
-            &mut native,
-            &scene,
-            &behavior,
-            &recipe,
-            &root.join("graph"),
-            entry.source.audio.is_some(),
-        )? {
-            graph["sword"] = sword;
-        }
-        report::behavior(&mut graph);
-        write_json(&root.join("graph/asset-graph.json"), &graph)?;
-        crate::graph::record_converter_revision(&root.join("graph"))?;
-        crate::artwork::prepare(
-            &root.join("graph"),
-            &native_packages,
-            entry.icon.unwrap_or_else(|| {
-                if recipe["kind"] == "weapon" && scene.object.gameplay["weapon_class"] == "sword" {
-                    crate::artwork::Settings::sword()
-                } else {
-                    crate::artwork::Settings::for_recipe(&recipe)
-                }
-            }),
-        )?;
-        crate::artwork::apply(&mut recipe, &root.join("graph"))?;
-        report::compact(&root.join("graph/asset-graph.json"))?;
-        let item = hash(&entry.recipe["identity"], "item_hash")?;
-        let mut reference = crate::GraphReference::new(&root.join("graph"), item)?;
-        reference.directory = output.join(&entry.slug).join("graph");
-        if recipe.get("overrides").is_none() {
-            recipe["overrides"] = json!({});
-        }
-        recipe["overrides"]["imported_graph"] = serde_json::to_value(reference)?;
-        write_json(&root.join("weapon.parhelion.json"), &recipe)?;
-        items.push(json!({"slug":entry.slug,"source":entry.source,"recipe":output.join(&entry.slug).join("weapon.parhelion.json"),"vertices":graph["vertices"],"triangles":graph["triangles"],"native_skinning":graph["native_skinning"],"retained_native_behavior":graph["retained_native_behavior"],"limits":graph["limits"]}));
-    }
-    native.finish()?;
-    pages.verify_inputs()?;
-    let report = json!({"source":"halo_reach","source_build":"Jun 21 2023 15:35:31","reach_revision":REVISION,"inputs":pages.inputs,"resources":pages.resources,"items":items,"gameplay_verified":false});
-    write_json(&temporary.path().join("report.json"), &report)?;
-    ensure!(!output.exists(), "Reach output appeared concurrently");
-    fs::rename(temporary.path(), &output)?;
-    Ok(report)
+    Ok(entries)
 }

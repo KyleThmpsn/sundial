@@ -336,6 +336,8 @@ fn owned_inventory(directory: &Path) -> Result<Vec<PathBuf>, String> {
         }
         if name == "recipes" && metadata.is_dir() {
             collect_recipes(&path, &mut files)?;
+        } else if metadata.is_dir() && member_folder(name) {
+            collect_member(&path, &mut files)?;
         } else if metadata.is_file() && owned_file_name(name) {
             if name != LEASE_FILE {
                 files.push(path);
@@ -363,6 +365,34 @@ fn owned_file_name(name: &str) -> bool {
         || name
             .strip_suffix(".merge")
             .is_some_and(|stem| authored_package_for_file_name(&format!("{stem}.pkg")).is_some())
+}
+
+/// A family member's folder of a run, where its files sit when it isn't the main mod.
+fn member_folder(name: &str) -> bool {
+    sundial::package_authoring::mod_content::Importer::from_id(name).is_some()
+}
+
+fn collect_member(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if redirected(&metadata)
+            || !metadata.is_file()
+            || matches!(name, LEASE_FILE | COMPLETE_FILE | MANIFEST_FILE_NAME)
+            || !owned_file_name(name)
+        {
+            return Err(format!(
+                "Staged member folder contains an unrecognized file: {}",
+                path.display()
+            ));
+        }
+        files.push(path);
+    }
+    Ok(())
 }
 
 fn collect_recipes(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -398,6 +428,17 @@ fn remove_owned_run(root: &Path, directory: &Path, lease: File) -> Result<(), St
     let recipes = directory.join("recipes");
     if recipes.try_exists().map_err(|error| error.to_string())? {
         fs::remove_dir(&recipes).map_err(|error| error.to_string())?;
+    }
+    for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(member_folder)
+            && fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+        {
+            fs::remove_dir(&path).map_err(|error| error.to_string())?;
+        }
     }
     // The root lock excludes both new readers and other cleaners across this gap.
     drop(lease);

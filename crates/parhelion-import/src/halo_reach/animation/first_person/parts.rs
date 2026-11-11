@@ -1,6 +1,6 @@
 //! Add missing source joints to both ends of the equipment and first-person link.
 use super::*;
-use crate::tiger::animation::pose::Pose;
+use crate::tiger::animation::pose;
 use std::sync::Arc;
 
 pub(super) struct Owner {
@@ -19,20 +19,6 @@ pub(super) struct Prepared {
     pub rig: animation::control::Rig,
 }
 
-fn poses(payload: &Payload) -> Result<Vec<Pose>> {
-    payload
-        .array(payload.pointer(24)? + 0x90, 32, Some(0x80809F75))?
-        .into_iter()
-        .map(|at| {
-            let mut values = [0.; 8];
-            for (i, value) in values.iter_mut().enumerate() {
-                *value = payload.f32(at + i * 4)?;
-            }
-            Pose::checked(values)
-        })
-        .collect()
-}
-
 pub(super) fn prepare(
     source: &source::Source,
     scene: &Scene,
@@ -47,7 +33,7 @@ pub(super) fn prepare(
     let (equipment_tag, equipment) = &carrier.equipment_skeleton;
     let definition = equipment.pointer(24)?;
     let hierarchy = equipment.array(definition + 0x80, 16, Some(0x80808A08))?;
-    let mut equipment_bind = poses(equipment)?;
+    let mut equipment_bind = pose::bind(equipment)?;
     let first = carrier
         .rig
         .bind

@@ -95,68 +95,164 @@ impl Default for Speed {
     }
 }
 type Pending = (Selection, mpsc::Receiver<Result<Model, String>>);
+type DecodedAudio = Result<(tempfile::NamedTempFile, std::time::Duration), String>;
 
+/// The shared viewer, grouped by how long each part lives. Each group has one reset, the only
+/// place its fields are cleared. Fields directly on the viewer last for the app session: the GL
+/// resources, the view the reader chose, the read in flight and a save being written.
 #[derive(Default)]
 struct Preview {
-    open: bool,
-    owner: Option<egui::Id>,
-    selection: Option<Selection>,
-    pending: Option<Pending>,
-    model: Option<Arc<Model>>,
+    /// The native window and the request that drives it, replaced by [`Preview::close`].
+    window: Window,
+    /// The selection on show and what was read and drawn for it, replaced by
+    /// [`Preview::show_selection`].
+    shown: Shown,
+    /// One sound clip's decode and playback, ended by [`Audio::reset`].
+    audio: Audio,
+    /// Uploads, linked programs and exports on the app's one GL context. Never reset: it
+    /// replaces a model's GL objects when the next model is drawn.
     gpu: model_preview::gpu::Shared,
-    error: Option<String>,
+    /// Kept across selections of the same model, and restored by [`Preview::reset_view`].
     camera: Camera,
     auto_rotate: bool,
+    /// The orbit's last step, cleared whenever the orbit holds so it never jumps.
     rotation_tick: Option<f64>,
+    /// Lighting and background, restored by Reset Lighting. Its Particle Study belongs to the
+    /// selection, so [`Preview::show_selection`] turns it off.
     scene: Scene,
-    texture: Option<egui::TextureHandle>,
-    asset_textures: BTreeMap<u32, egui::TextureHandle>,
-    rendered: Option<(Camera, Scene, [usize; 2], render::Style)>,
     /// The style drawn this frame: the chosen one, or Textured for an object without a mesh.
     style: render::Style,
     /// The style the reader picked, kept while an object without a mesh is shown.
     chosen_style: render::Style,
-    playing: bool,
-    seconds: f32,
-    last_tick: Option<std::time::Instant>,
-    rendered_seconds: Option<f32>,
-    software: image_job::Job,
-    fps: fps::Counter,
-    software_frames: u64,
-    preserve_camera: bool,
-    request: Option<window::Request>,
-    source_selection: Option<Selection>,
-    navigation: Vec<(u32, String)>,
-    /// Whether the Details window is open beside the viewer.
-    details_open: bool,
-    details_focus_requested: bool,
-    /// The model the Details window last saw, so a new one repaints it.
-    details_shown: Option<usize>,
-    /// The entry the Assets and Effects browser shows, and its filter.
-    asset_entry: Option<details::Entry>,
+    speed: Speed,
+    /// The Assets and Effects browser's filter.
     asset_query: String,
-    focus_requested: bool,
+    /// The read in flight. It outlives its selection: a newer read waits for it, so two never
+    /// overlap, and a closed viewer still drains it.
+    pending: Option<Pending>,
+    /// A save still being written. Baking a model's materials takes seconds, so it runs off
+    /// the paint thread and reports to [`Shown::status`].
+    saving: Option<mpsc::Receiver<String>>,
+}
+
+/// The native window, from open to close.
+#[derive(Default)]
+struct Window {
+    open: bool,
+    /// The launcher whose requests the viewer follows.
+    owner: Option<egui::Id>,
+    /// The viewport that opened the viewer, for its options and package pauses.
     source_viewport: Option<egui::ViewportId>,
+    focus_requested: bool,
     paused: bool,
+    request: Option<window::Request>,
+    source: Source,
+    details: Details,
+}
+
+/// The request's own selection and the resources opened from it, which Back returns through.
+/// A request for another selection replaces it.
+#[derive(Default)]
+struct Source {
+    selection: Option<Selection>,
+    navigation: Vec<(u32, String)>,
+}
+
+/// The Details window beside the viewer, replaced when it closes.
+#[derive(Default)]
+struct Details {
+    open: bool,
+    focus_requested: bool,
+    /// The model the Details window last saw, so a new one repaints it.
+    shown: Option<usize>,
+}
+
+/// One selection's state. Nothing here survives a change of selection or a close.
+#[derive(Default)]
+struct Shown {
+    selection: Option<Selection>,
+    /// A clip the viewer picked instead of the object's default animation.
+    clip: Option<u32>,
+    model: Option<Arc<Model>>,
+    error: Option<String>,
     /// Shared with the reader thread, for its progress and to stop it when nobody is waiting.
+    /// Stopped only by [`Shown::stop_load`].
     load: Option<model_preview::Load>,
     load_started: Option<std::time::Instant>,
     load_time: Option<std::time::Duration>,
-    speed: Speed,
-    /// A clip the viewer picked instead of the object's default animation.
-    clip: Option<u32>,
-    /// Result of the last save, shown until the next one.
+    /// What was drawn of the loaded model, dropped with it by [`Shown::unload`].
+    frames: Frames,
+    /// The FPS overlay, counted across every model this selection reads.
+    fps: fps::Counter,
+    software_frames: u64,
+    /// The entry the Assets and Effects browser shows.
+    asset_entry: Option<details::Entry>,
+    /// Images the browser uploaded, by tag.
+    asset_textures: BTreeMap<u32, egui::TextureHandle>,
+    /// Result of the last save, shown until another save starts or the selection changes.
     status: Option<String>,
-    /// A save still being written. Baking a model's materials takes seconds, so it runs off
-    /// the paint thread and reports here.
-    saving: Option<mpsc::Receiver<String>>,
-    audio_pending:
-        Option<mpsc::Receiver<Result<(tempfile::NamedTempFile, std::time::Duration), String>>>,
-    audio_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+/// The loaded model's playback clock and the software image drawn of it.
+#[derive(Default)]
+struct Frames {
+    playing: bool,
+    seconds: f32,
+    last_tick: Option<std::time::Instant>,
+    texture: Option<egui::TextureHandle>,
+    software: image_job::Job,
+    /// What the software image shows.
+    rendered: Option<(Camera, Scene, [usize; 2], render::Style)>,
+    rendered_seconds: Option<f32>,
+}
+
+impl Shown {
+    /// Stops this selection's read. Its receiver stays in [`Preview::pending`] to drain.
+    fn stop_load(&mut self) {
+        if let Some(load) = self.load.take() {
+            load.stop();
+        }
+    }
+
+    /// Drops the model and what was drawn of it, so the same selection is read again, as when
+    /// another clip is picked.
+    fn unload(&mut self) {
+        self.model = None;
+        self.frames = Frames::default();
+    }
+}
+
+/// One sound clip being decoded or played.
+#[derive(Default)]
+struct Audio {
+    pending: Option<mpsc::Receiver<DecodedAudio>>,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The decoded file, retained while the system player reads it.
     playback: Option<tempfile::NamedTempFile>,
-    audio_ends: Option<std::time::Instant>,
-    audio_tag: Option<u32>,
-    audio_status: Option<String>,
+    ends: Option<std::time::Instant>,
+    tag: Option<u32>,
+    status: Option<String>,
+}
+
+impl Audio {
+    /// Cancels the decode, stops the clip and clears its message.
+    fn reset(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(windows)]
+        if self.playback.is_some() {
+            // SAFETY: A null sound name stops the process's asynchronous PlaySound clip.
+            unsafe {
+                windows_sys::Win32::Media::Audio::PlaySoundW(
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    0,
+                );
+            }
+        }
+        *self = Self::default();
+    }
 }
 
 /// Opens a preview and follows subsequent selections while the window remains open.
@@ -431,49 +527,52 @@ fn preview_kind(model: &Model) -> &'static str {
 }
 
 impl Preview {
+    /// Puts `selection` on show, or nothing when the window closes. The previous selection's
+    /// read is stopped, its sound silenced and its model, images, clock, clip, browser entry
+    /// and save message dropped. The view the reader chose stays.
+    fn show_selection(&mut self, selection: Option<Selection>) {
+        // Nobody is waiting on the previous object any more.
+        self.shown.stop_load();
+        self.shown = Shown {
+            selection,
+            ..Shown::default()
+        };
+        self.audio.reset();
+        self.scene.particle_study = false;
+        self.hold_clocks();
+    }
+
+    /// Returns the camera to its starting view, with the orbit starting again from there.
+    fn reset_view(&mut self) {
+        self.camera = Camera::default();
+        self.rotation_tick = None;
+    }
+
+    /// Holds the playback clock and the orbit while the canvas is not drawn, so neither jumps
+    /// when it is drawn again.
+    fn hold_clocks(&mut self) {
+        self.shown.frames.last_tick = None;
+        self.rotation_tick = None;
+    }
+
     fn sync_with_access(
         &mut self,
         ctx: &egui::Context,
         selection: Selection,
         access: Option<Arc<crate::catalog::PackageInspectionAccess>>,
+        preserve_camera: bool,
     ) {
-        if self.selection.as_ref() != Some(&selection) {
-            let keep_camera = self.preserve_camera
-                || self.selection.as_ref().is_some_and(|old| {
+        if self.shown.selection.as_ref() != Some(&selection) {
+            let keep_camera = preserve_camera
+                || self.shown.selection.as_ref().is_some_and(|old| {
                     old.0 == selection.0
                         && matches!((&old.1, &selection.1),
                     (Target::Weapon(a, _), Target::Weapon(b, _)) if a.arrangement == b.arrangement)
                 });
-            // Nobody is waiting on the previous object any more.
-            if let Some(load) = self.load.take() {
-                load.stop();
-            }
-            self.load_started = None;
-            self.load_time = None;
-            self.status = None;
-            self.stop_audio();
-            self.audio_pending = None;
-            self.audio_status = None;
-            self.clip = None;
-            self.asset_entry = None;
-            self.selection = Some(selection.clone());
-            self.model = None;
-            self.error = None;
-            self.texture = None;
-            self.software = image_job::Job::default();
-            self.fps = fps::Counter::default();
-            self.software_frames = 0;
-            self.asset_textures.clear();
-            self.rendered = None;
-            self.rotation_tick = None;
+            self.show_selection(Some(selection.clone()));
             if !keep_camera {
-                self.camera = Camera::default();
+                self.reset_view();
             }
-            self.playing = false;
-            self.scene.particle_study = false;
-            self.seconds = 0.0;
-            self.last_tick = None;
-            self.rendered_seconds = None;
         }
         if let Some((source, receiver)) = &self.pending {
             let result = match receiver.try_recv() {
@@ -485,33 +584,35 @@ impl Preview {
             };
             if let Some(result) = result {
                 if *source == selection {
-                    self.load_time = self.load_started.take().map(|start| start.elapsed());
+                    let shown = &mut self.shown;
+                    shown.load_time = shown.load_started.take().map(|start| start.elapsed());
                     match result {
                         Ok(model) => {
-                            self.playing = model.has_animation()
+                            shown.frames.playing = model.has_animation()
                                 || model.has_cloth()
                                 || model.has_shader_animation();
-                            self.last_tick = None;
-                            self.model = Some(Arc::new(model));
+                            shown.frames.last_tick = None;
+                            shown.model = Some(Arc::new(model));
                         }
                         // A load the viewer already abandoned is not an error worth showing.
                         Err(error) if error == model_preview::CANCELLED => {}
-                        Err(error) => self.error = Some(error),
+                        Err(error) => shown.error = Some(error),
                     }
                 }
-                self.load = None;
+                // The read has ended, so there is nothing left to stop.
+                self.shown.load = None;
                 self.pending = None;
             }
         }
-        if self.pending.is_none() && self.model.is_none() && self.error.is_none() {
+        if self.pending.is_none() && self.shown.model.is_none() && self.shown.error.is_none() {
             let (sender, receiver) = mpsc::channel();
             self.pending = Some((selection.clone(), receiver));
             let repaint = ctx.clone();
             let repaint_viewport = ctx.viewport_id();
             let progress = model_preview::Load::default();
-            let clip = self.clip;
-            self.load = Some(progress.clone());
-            self.load_started = Some(std::time::Instant::now());
+            let clip = self.shown.clip;
+            self.shown.load = Some(progress.clone());
+            self.shown.load_started = Some(std::time::Instant::now());
             let read = model_preview::PackageRead::start();
             std::thread::spawn(move || {
                 let _read = read;
@@ -553,7 +654,7 @@ impl Preview {
     /// The wait, showing what the reader is doing and offering a way out of it: a small block
     /// in the middle of the space the model will take, not a strip across the top.
     fn draw_loading(&mut self, ui: &mut egui::Ui) {
-        let stage = self.load.as_ref().map(model_preview::Load::stage);
+        let stage = self.shown.load.as_ref().map(model_preview::Load::stage);
         let stage = stage.unwrap_or_default();
         let message = if stage.message.is_empty() {
             "Loading"
@@ -592,10 +693,8 @@ impl Preview {
             ui.small_button("Cancel").clicked()
         });
         if cancel {
-            if let Some(load) = self.load.take() {
-                load.stop();
-            }
-            self.error = Some("Loading cancelled.".into());
+            self.shown.stop_load();
+            self.shown.error = Some("Loading cancelled.".into());
         }
     }
 
@@ -612,7 +711,7 @@ impl Preview {
             model.clone(),
             self.camera,
             self.scene,
-            self.seconds,
+            self.shown.frames.seconds,
             self.style,
         );
         let captured = (model_preview::gpu::available() && self.gpu.fallback(&model).is_none())
@@ -654,7 +753,7 @@ impl Preview {
         else {
             return;
         };
-        let (model, seconds) = (model.clone(), self.seconds);
+        let (model, seconds) = (model.clone(), self.shown.frames.seconds);
         let mut baker = (model_preview::gpu::available() && self.gpu.fallback(&model).is_none())
             .then(|| self.gpu.baker(ctx.clone(), model.clone()));
         let message = if model.triangle_effects.iter().any(Option::is_some) {
@@ -669,7 +768,7 @@ impl Preview {
     }
 
     fn save_audio(&mut self, ctx: &egui::Context, tag: u32, decoded: bool) {
-        let Some(selection) = self.selection.clone() else {
+        let Some(selection) = self.shown.selection.clone() else {
             return;
         };
         let Some(path) = rfd::FileDialog::new()
@@ -686,6 +785,7 @@ impl Preview {
             return;
         };
         let access = self
+            .window
             .request
             .as_ref()
             .and_then(|request| request.access.clone());
@@ -702,20 +802,24 @@ impl Preview {
     }
 
     fn play_audio(&mut self, ctx: &egui::Context, tag: u32) {
-        let Some(selection) = self.selection.clone() else {
+        let Some(selection) = self.shown.selection.clone() else {
             return;
         };
-        self.stop_audio();
+        self.audio.reset();
         let access = self
+            .window
             .request
             .as_ref()
             .and_then(|request| request.access.clone());
         let (sender, receiver) = mpsc::channel();
-        self.audio_pending = Some(receiver);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.audio_cancel = Some(Arc::clone(&cancel));
-        self.audio_tag = Some(tag);
-        self.audio_status = Some("Decoding audio".into());
+        self.audio = Audio {
+            pending: Some(receiver),
+            cancel: Some(Arc::clone(&cancel)),
+            tag: Some(tag),
+            status: Some("Decoding audio".into()),
+            ..Audio::default()
+        };
         let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
         let read = model_preview::PackageRead::start();
         std::thread::spawn(move || {
@@ -744,73 +848,53 @@ impl Preview {
         });
     }
 
-    fn stop_audio(&mut self) {
-        if let Some(cancel) = self.audio_cancel.take() {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        self.audio_pending = None;
-        #[cfg(windows)]
-        if self.playback.is_some() {
-            // SAFETY: A null sound name stops the process's asynchronous PlaySound clip.
-            unsafe {
-                windows_sys::Win32::Media::Audio::PlaySoundW(
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                    0,
-                );
-            }
-        }
-        self.playback = None;
-        self.audio_ends = None;
-        self.audio_tag = None;
-    }
-
     fn poll_audio(&mut self, ctx: &egui::Context) {
-        if let Some(receiver) = &self.audio_pending {
+        let audio = &mut self.audio;
+        if let Some(receiver) = &audio.pending {
             match receiver.try_recv() {
                 Ok(Ok((file, duration))) => {
                     #[cfg(windows)]
                     {
                         match play_wave(file.path()) {
                             Ok(()) => {
-                                self.playback = Some(file);
-                                self.audio_ends = Some(std::time::Instant::now() + duration);
-                                self.audio_status = Some("Playing audio".into());
+                                audio.playback = Some(file);
+                                audio.ends = Some(std::time::Instant::now() + duration);
+                                audio.status = Some("Playing audio".into());
                             }
-                            Err(error) => self.audio_status = Some(error),
+                            Err(error) => audio.status = Some(error),
                         }
                     }
                     #[cfg(not(windows))]
                     {
                         drop(file);
                         let _ = duration;
-                        self.audio_status = Some("Audio playback is unavailable here".into());
+                        audio.status = Some("Audio playback is unavailable here".into());
                     }
-                    self.audio_pending = None;
+                    audio.pending = None;
                 }
                 Ok(Err(error)) => {
-                    self.audio_status = Some(error);
-                    self.audio_pending = None;
+                    audio.status = Some(error);
+                    audio.pending = None;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.audio_status = Some("Audio decoding stopped unexpectedly".into());
-                    self.audio_pending = None;
+                    audio.status = Some("Audio decoding stopped unexpectedly".into());
+                    audio.pending = None;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
             }
         }
-        if let Some(end) = self.audio_ends {
+        if let Some(end) = audio.ends {
             if std::time::Instant::now() >= end {
-                self.stop_audio();
-                self.audio_status = None;
+                audio.reset();
             } else {
                 ctx.request_repaint_after(end.saturating_duration_since(std::time::Instant::now()));
             }
         }
-        if self.audio_pending.is_none() {
-            self.audio_cancel = None;
+        // A finished decode has nothing left to cancel.
+        if audio.pending.is_none() {
+            audio.cancel = None;
         }
     }
 
@@ -824,7 +908,8 @@ impl Preview {
     ) {
         let (sender, receiver) = mpsc::channel();
         self.saving = Some(receiver);
-        self.status = None;
+        // No outcome yet for the save just started.
+        self.shown.status = None;
         let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
         std::thread::spawn(move || {
             let outcome = encode().and_then(|bytes| {
@@ -845,11 +930,11 @@ impl Preview {
         };
         match receiver.try_recv() {
             Ok(message) => {
-                self.status = Some(message);
+                self.shown.status = Some(message);
                 self.saving = None;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.status = Some("The save stopped before it finished.".into());
+                self.shown.status = Some("The save stopped before it finished.".into());
                 self.saving = None;
             }
             Err(mpsc::TryRecvError::Empty) => {
@@ -863,10 +948,10 @@ impl Preview {
             self.gpu.service(ui);
         }
         ui.horizontal(|ui| {
-            if !self.navigation.is_empty() && ui.button("Back").clicked() {
-                self.navigation.pop();
+            if !self.window.source.navigation.is_empty() && ui.button("Back").clicked() {
+                self.window.source.navigation.pop();
             }
-            let kind = self.model.as_deref().map(preview_kind);
+            let kind = self.shown.model.as_deref().map(preview_kind);
             // The kind goes in first at the right, so a long truncated name cannot push it out.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(kind) = kind {
@@ -878,23 +963,23 @@ impl Preview {
             });
         });
         ui.add_space(4.0);
-        if let Some(error) = self.error.clone() {
-            self.rotation_tick = None;
+        if let Some(error) = self.shown.error.clone() {
+            self.hold_clocks();
             self.draw_centered(ui, |ui| {
                 ui.add(egui::Label::new(error).wrap());
                 ui.add_space(4.0);
                 ui.small_button("Retry").clicked()
             })
-            .then(|| self.error = None);
+            .then(|| self.shown.error = None);
             return;
         }
-        let Some(model) = self.model.clone() else {
-            self.rotation_tick = None;
+        let Some(model) = self.shown.model.clone() else {
+            self.hold_clocks();
             self.draw_loading(ui);
             return;
         };
         if model.triangles.is_empty() && model.particle_sources.is_empty() {
-            self.rotation_tick = None;
+            self.hold_clocks();
             self.draw_assets(ui, &model);
             return;
         }
@@ -946,17 +1031,17 @@ impl Preview {
                 self.style = self.chosen_style;
             }
             if ui.button("Reset View").clicked() {
-                self.camera = Camera::default();
-                self.rotation_tick = None;
+                self.reset_view();
             }
             // The menus sit at the right, Details outermost.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let details = ui
-                    .add(egui::Button::new("Details").selected(self.details_open))
+                    .add(egui::Button::new("Details").selected(self.window.details.open))
                     .on_hover_text("Open in a separate window");
                 if details.clicked() {
-                    self.details_open = !self.details_open;
-                    self.details_focus_requested = self.details_open;
+                    let window = &mut self.window.details;
+                    window.open = !window.open;
+                    window.focus_requested = window.open;
                     // The host frame shows the window, so it has to run.
                     ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                 }
@@ -986,11 +1071,11 @@ impl Preview {
                     self.draw_rotation_option(ui);
                     if !model.particle_sources.is_empty() || model.has_particle_material_study() {
                         if ui.checkbox(&mut self.scene.particle_study, "Particle Study").changed() {
-                            self.playing = self.scene.particle_study
+                            self.shown.frames.playing = self.scene.particle_study
                                 || model.has_animation()
                                 || model.has_cloth()
                                 || model.has_shader_animation();
-                            self.last_tick = None;
+                            self.shown.frames.last_tick = None;
                         }
                         if model.particle_simulation().is_some() {
                             ui.small("Stored particle programs drive count, placement, age and motion in a fixed studio scene. Live attachments and engine scheduling are unavailable.");
@@ -1103,13 +1188,14 @@ impl Preview {
             });
             let now = std::time::Instant::now();
             // Playback holds while the viewer is in the background, as the orbit does.
-            let moving = self.playing && rotation::animating(ui.ctx());
+            let frames = &mut self.shown.frames;
+            let moving = frames.playing && rotation::animating(ui.ctx());
             if moving {
-                if let Some(last) = self.last_tick {
-                    self.seconds += now.duration_since(last).as_secs_f32() * self.speed.0;
+                if let Some(last) = frames.last_tick {
+                    frames.seconds += now.duration_since(last).as_secs_f32() * self.speed.0;
                     if !model.has_shader_animation() && model.rigs.len() <= 1 {
-                        self.seconds = if duration > 0.0 {
-                            self.seconds.rem_euclid(duration)
+                        frames.seconds = if duration > 0.0 {
+                            frames.seconds.rem_euclid(duration)
                         } else {
                             0.0
                         };
@@ -1118,9 +1204,9 @@ impl Preview {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
             }
-            self.last_tick = moving.then_some(now);
+            frames.last_tick = moving.then_some(now);
             let timeline_end = if model.has_shader_animation() || model.rigs.len() > 1 {
-                self.seconds.max(60.0)
+                frames.seconds.max(60.0)
             } else {
                 duration
             };
@@ -1129,13 +1215,17 @@ impl Preview {
             ui.horizontal(|ui| {
                 ui.spacing_mut().interact_size.y = 22.0;
                 if ui
-                    .button(if self.playing { "Pause" } else { "Play" })
+                    .button(if self.shown.frames.playing {
+                        "Pause"
+                    } else {
+                        "Play"
+                    })
                     .clicked()
                 {
-                    self.playing = !self.playing;
+                    self.shown.frames.playing = !self.shown.frames.playing;
                 }
                 if ui.button("Restart").clicked() {
-                    self.seconds = 0.0;
+                    self.shown.frames.seconds = 0.0;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if model.has_shader_animation() {
@@ -1167,7 +1257,7 @@ impl Preview {
                     }
                     if model.clips.len() > 1 || (!model.has_animation() && !model.clips.is_empty())
                     {
-                        let playing = self.clip.or(model.active_clip().map(|a| a.tag));
+                        let playing = self.shown.clip.or(model.active_clip().map(|a| a.tag));
                         let selected = model
                             .clips
                             .iter()
@@ -1184,11 +1274,8 @@ impl Preview {
                                         && Some(clip.tag) != playing
                                     {
                                         // Clips are read with the object, so pick one and reload.
-                                        self.clip = Some(clip.tag);
-                                        self.model = None;
-                                        self.texture = None;
-                                        self.rendered = None;
-                                        self.seconds = 0.0;
+                                        self.shown.clip = Some(clip.tag);
+                                        self.shown.unload();
                                     }
                                 }
                             });
@@ -1203,14 +1290,14 @@ impl Preview {
                     .on_hover_text("Playback speed");
                     ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(60.0);
                     let response = ui.add(
-                        egui::Slider::new(&mut self.seconds, 0.0..=timeline_end)
+                        egui::Slider::new(&mut self.shown.frames.seconds, 0.0..=timeline_end)
                             // Rounding the running clock must not look like a user edit.
                             .clamping(egui::SliderClamping::Edits)
                             .suffix(" s")
                             .fixed_decimals(2),
                     );
                     if response.dragged() || response.changed() {
-                        self.playing = false;
+                        self.shown.frames.playing = false;
                     }
                 });
             });
@@ -1259,13 +1346,13 @@ impl Preview {
                     camera: self.camera,
                     scene: self.scene,
                     style: self.style,
-                    seconds: self.seconds,
+                    seconds: self.shown.frames.seconds,
                     pose: None,
                     animate: true,
                     dyes: None,
                 },
             );
-            if !self.gpu.drawn(model) && self.texture.is_none() {
+            if !self.gpu.drawn(model) && self.shown.frames.texture.is_none() {
                 let spinner = egui::Rect::from_min_size(
                     rect.left_bottom() + egui::vec2(10.0, -26.0),
                     egui::vec2(16.0, 16.0),
@@ -1295,7 +1382,8 @@ impl Preview {
     ) {
         let pixels = render_size(size, ui.ctx().pixels_per_point());
         // Limit software rendering to 30 FPS even when the surrounding app repaints faster.
-        let seconds = (self.seconds * 30.0).floor() / 30.0;
+        let frames = &mut self.shown.frames;
+        let seconds = (frames.seconds * 30.0).floor() / 30.0;
         let request = image_job::Key {
             model: Arc::as_ptr(model) as usize,
             camera: self.camera,
@@ -1306,26 +1394,26 @@ impl Preview {
             overrides: Vec::new(),
             orbit,
         };
-        if let Some((rendered, image)) = self.software.update(ui.ctx(), model.clone(), request) {
-            self.software_frames = self.software_frames.saturating_add(1);
-            if let Some(texture) = &mut self.texture {
+        if let Some((rendered, image)) = frames.software.update(ui.ctx(), model.clone(), request) {
+            self.shown.software_frames = self.shown.software_frames.saturating_add(1);
+            if let Some(texture) = &mut frames.texture {
                 texture.set(image, egui::TextureOptions::LINEAR);
             } else {
-                self.texture = Some(ui.ctx().load_texture(
+                frames.texture = Some(ui.ctx().load_texture(
                     "object-model-preview",
                     image,
                     egui::TextureOptions::LINEAR,
                 ));
             }
-            self.rendered = Some((
+            frames.rendered = Some((
                 rendered.camera,
                 rendered.scene,
                 rendered.size,
                 rendered.style,
             ));
-            self.rendered_seconds = Some(rendered.seconds);
+            frames.rendered_seconds = Some(rendered.seconds);
         }
-        if let Some(texture) = &self.texture {
+        if let Some(texture) = &frames.texture {
             ui.painter().image(
                 texture.id(),
                 rect,
@@ -1337,21 +1425,18 @@ impl Preview {
 
     fn draw_fps(&mut self, ui: &egui::Ui, rect: egui::Rect) {
         let source = self
+            .window
             .source_viewport
             .unwrap_or_else(|| ui.ctx().viewport_id());
         let enabled = options::get(ui.ctx(), source).show_fps;
-        self.fps.draw(
-            ui,
-            rect,
-            enabled,
-            if enabled {
-                self.gpu
-                    .completed_frames()
-                    .saturating_add(self.software_frames)
-            } else {
-                0
-            },
-        );
+        let frames = if enabled {
+            self.gpu
+                .completed_frames()
+                .saturating_add(self.shown.software_frames)
+        } else {
+            0
+        };
+        self.shown.fps.draw(ui, rect, enabled, frames);
     }
 
     /// Short notes over the canvas, bottom left: a save or sound in progress, what the drawing
@@ -1361,7 +1446,7 @@ impl Preview {
         let font = egui::FontId::proportional(11.5);
         let color = ui.visuals().weak_text_color();
         let mut lines: Vec<String> = Vec::new();
-        if let Some(model) = &self.model
+        if let Some(model) = &self.shown.model
             && let Some(reason) = self.gpu.fallback(model)
         {
             lines.push(reason);
@@ -1369,7 +1454,7 @@ impl Preview {
         if self.saving.is_some() {
             lines.push("Saving…".into());
         }
-        lines.extend(self.status.iter().chain(&self.audio_status).cloned());
+        lines.extend(self.shown.status.iter().chain(&self.audio.status).cloned());
         if self.scene.particle_study {
             lines.push(
                 if model.particle_simulation().is_some() {
@@ -1402,14 +1487,14 @@ impl Preview {
     }
 
     fn browse(&mut self, tag: u32, name: Option<&str>) {
-        if self
-            .navigation
+        let navigation = &mut self.window.source.navigation;
+        if navigation
             .last()
             .is_some_and(|(current, _)| *current == tag)
         {
             return;
         }
-        self.navigation.push((
+        navigation.push((
             tag,
             name.map(str::to_owned)
                 .unwrap_or_else(|| format!("0x{tag:08X}")),
@@ -1424,7 +1509,7 @@ impl Preview {
         rgba: &[u8],
         label: &str,
     ) {
-        let handle = self.asset_textures.entry(tag).or_insert_with(|| {
+        let handle = self.shown.asset_textures.entry(tag).or_insert_with(|| {
             let image = egui::ColorImage::from_rgba_unmultiplied(size, rgba);
             ui.ctx().load_texture(
                 format!("asset-{tag:08X}"),
@@ -1441,7 +1526,7 @@ impl Preview {
     }
 
     fn draw_asset_gradient(&mut self, ui: &mut egui::Ui, tag: u32, size: [usize; 2], rgba: &[u8]) {
-        let handle = self.asset_textures.entry(tag).or_insert_with(|| {
+        let handle = self.shown.asset_textures.entry(tag).or_insert_with(|| {
             let image = egui::ColorImage::from_rgba_unmultiplied(size, rgba);
             ui.ctx().load_texture(
                 format!("asset-{tag:08X}"),

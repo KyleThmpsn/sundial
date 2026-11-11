@@ -260,44 +260,7 @@ fn convert_events(
     }
     ensure!(!streams.is_empty(), "Source clip contains no tracks");
     streams.extend(channel::convert(source, &mut native, usize::from(frames))?);
-    if source.u64(0x30)? != 0 {
-        let (template, bones) =
-            binding.context("Source constraints need a native binding witness")?;
-        streams.extend(constraint::convert(source, &mut native, template, bones)?);
-    } else {
-        ensure!(
-            source.u64(0x38)? == 0
-                && source.u64(0x40)? == 0
-                && source.u32(0x120)? == 0
-                && source.u32(0x124)? == 0,
-            "Source constraint streams have no bindings"
-        );
-    }
-    if source.u64(0x58)? != 0 {
-        let at = source.pointer(0x58)?;
-        let counts = [
-            source.u16(at + 2)?,
-            source.u16(at + 4)?,
-            source.u16(at + 6)?,
-        ];
-        ensure!(
-            counts.iter().all(|v| *v <= u16::from(bones)),
-            "Source auxiliary transforms exceed the palette"
-        );
-        if matches!(source.u16(at)?, 2 | 3) {
-            ensure!(
-                source.u16(at + 0x10)? == frames,
-                "Source auxiliary transforms have another frame count"
-            );
-        }
-        streams.push(codec(
-            source,
-            &mut native,
-            0x58,
-            0x60,
-            counts.map(usize::from),
-        )?);
-    }
+    convert_auxiliary(source, &mut native, binding, (frames, bones), &mut streams)?;
     for (index, tracks) in maps.iter().enumerate() {
         if tracks.is_empty() {
             continue;
@@ -515,4 +478,55 @@ pub(super) fn prepare_first_person(
     graph: &Path,
 ) -> Result<Value> {
     first_person::prepare(source, runtime, native, native_rig, graph)
+}
+
+fn convert_auxiliary(
+    source: &Payload,
+    native: &mut Vec<u8>,
+    binding: Option<(&Payload, &[u16])>,
+    (frames, bones): (u16, u8),
+    streams: &mut Vec<Value>,
+) -> Result<()> {
+    if source.u64(0x30)? != 0 {
+        let (template, bones) =
+            binding.context("Source constraints need a native binding witness")?;
+        if template.u64(0x30)? == 0 {
+            // The native clip binds no hand constraint, and the caller found no clip of its bank
+            // whose bindings admit the source rows. The header keeps the constraint fields empty,
+            // so the action plays its unconstrained keyframes, and the source stream stays
+            // unreferenced in the moved block, as the byte-wide track maps do.
+            streams.push(json!({"field":0x30,"bindings":0,
+                "binding_rows":"dropped_native_action_has_no_constraint"}));
+        } else {
+            streams.extend(constraint::convert(source, native, template, bones)?);
+        }
+    } else {
+        ensure!(
+            source.u64(0x38)? == 0
+                && source.u64(0x40)? == 0
+                && source.u32(0x120)? == 0
+                && source.u32(0x124)? == 0,
+            "Source constraint streams have no bindings"
+        );
+    }
+    if source.u64(0x58)? != 0 {
+        let at = source.pointer(0x58)?;
+        let counts = [
+            source.u16(at + 2)?,
+            source.u16(at + 4)?,
+            source.u16(at + 6)?,
+        ];
+        ensure!(
+            counts.iter().all(|v| *v <= u16::from(bones)),
+            "Source auxiliary transforms exceed the palette"
+        );
+        if matches!(source.u16(at)?, 2 | 3) {
+            ensure!(
+                source.u16(at + 0x10)? == frames,
+                "Source auxiliary transforms have another frame count"
+            );
+        }
+        streams.push(codec(source, native, 0x58, 0x60, counts.map(usize::from))?);
+    }
+    Ok(())
 }

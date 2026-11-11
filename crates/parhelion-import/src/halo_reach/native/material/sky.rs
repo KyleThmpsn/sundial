@@ -7,10 +7,11 @@
 //! state adds premultiplied color. The programs are written here: one rigid vertex program over
 //! layout 139 and a pixel program per surface and stage.
 //!
-//! The transparent stage takes `REFERENCE_ILLUMINATION * cb13[1].z`, the level's own finish, not
-//! the stock `z * w`. With `w = x^(-2/3)` the stock factor drew the sky `4w` times as bright as the
-//! level beside it, 5.6 times on Breakneck and 2.7 times on Paradiso, and a large bright sky also
-//! weighs on automatic exposure.
+//! The transparent stage takes the level's own finish, `REFERENCE_ILLUMINATION * cb13[1].z`, not
+//! the stock `z * w`, held to the source camera's exposure range ([`SkyScale::exposure`]). With
+//! `w = x^(-2/3)` the stock factor drew the sky `4w` times as bright as the level beside it, 5.6
+//! times on Breakneck and 2.7 times on Paradiso, and a large bright sky also weighs on automatic
+//! exposure.
 //!
 //! A Reach sky mesh is lit by its per-vertex color stream (lighting policy 0), and its surfaces
 //! use the shader's per-vertex color entry point. The pixel programs below follow that entry
@@ -28,7 +29,9 @@
 use super::*;
 
 pub(in crate::halo_reach) mod lens;
+mod overlay;
 pub(in crate::halo_reach) mod patchy;
+pub(in crate::halo_reach) mod screen_fog;
 pub(in crate::halo_reach) mod weather;
 
 /// The vertex program of every sky surface. It reads the rigid model's axes and position at rows
@@ -90,7 +93,6 @@ fn sky_vertex(parallax: Option<SkyParallax>) -> String {
 const SKINNING_SCOPE: u32 = 1 << 7;
 const RIGID_MODEL_SCOPE: u32 = 1 << 2;
 /// Reach's detail multiplier, `2^2.2`, and its square, as its compiled programs write them.
-const REACH_DETAIL: f32 = 4.594_79;
 const REACH_DETAIL_SQUARED: f32 = 21.112_095;
 /// The farthest the opaque sky's fog reaches, in meters: Reach's screen fog reads a table that
 /// `calculate_screen_fog_LUT_constants` (`82605080` in the Xbox `halo3_tag_play` build) sizes to
@@ -98,12 +100,13 @@ const REACH_DETAIL_SQUARED: f32 = 21.112_095;
 /// with no such limit.
 const FOG_TABLE_DISTANCE: f32 = 10_000. * 3.048;
 /// The level surface sample slots [`super::albedo`] reads each albedo map from.
-const ALBEDO_SLOTS: [(&str, usize); 5] = [
+const ALBEDO_SLOTS: [(&str, usize); 6] = [
     ("base_map", 0),
     ("detail_map", 5),
     ("detail_map2", DETAIL2_SLOT),
     ("detail_map3", DETAIL3_SLOT),
     ("color_mask_map", COLOR_MASK_SLOT),
+    ("change_color_map", 9),
 ];
 /// One sky surface and the keys of its transparent and light-shaft materials, which take the
 /// symbols `material-{key:08X}` a sky model's draws name.
@@ -113,16 +116,48 @@ pub(in crate::halo_reach) struct SkySurface<'a> {
     pub shafts: u32,
 }
 
-/// How the sky's colors reach Destiny's radiance: the scale its vertex colors are stored over,
-/// the factor from Reach's radiance before exposure to Destiny's scene radiance, and the Reach
-/// radiance Reach's final composite shows as white, where each channel stops. The large bloom's
-/// floor, which the level's opaque surfaces add, is small beside the sky's own light and is left
-/// out, so layered sky surfaces do not add it more than once.
+/// How the sky's colors reach Destiny's radiance: the scale its vertex colors are stored over, the
+/// factor from Reach's radiance before exposure to Destiny's scene radiance, and the source
+/// camera's exposure range as scales, `2^stops`, from least to most. The large bloom's floor,
+/// which the level's opaque surfaces add, is small beside the sky's own light and is left out, so
+/// layered sky surfaces do not add it more than once.
 #[derive(Clone, Copy)]
 pub(in crate::halo_reach) struct SkyScale {
     pub vertex_color: f32,
     pub radiance: f32,
-    pub white: f32,
+    pub exposure: [f32; 2],
+}
+
+impl SkyScale {
+    /// HLSL for the Reach exposure `2^s` the sky shows at: the frame's, held to the source camera's
+    /// range. The translated frame shows Reach radiance at `radiance * REFERENCE_ILLUMINATION *
+    /// cb13[1].z`, the factor that maps `s` onto Shadowkeep's exposure
+    /// ([`crate::halo_reach::level::native::NativeExposure`]). Shadowkeep's automatic exposure may
+    /// fall below Reach's least exposure, as it keeps the stock lower bound: at Reach's own floor a
+    /// Forge World or Reflection level washed out. Reach never exposes below it, and its sky and
+    /// fog in-scatter, which stay below white there while sunlit ground clips, drew several times
+    /// darker at the frame's exposure alone. They keep Reach's floor instead.
+    pub fn exposure(&self) -> String {
+        format!(
+            "clamp({:.9}*{REFERENCE_ILLUMINATION:.9}*frameData[1].z,{:.9},{:.9})",
+            self.radiance, self.exposure[0], self.exposure[1]
+        )
+    }
+
+    /// HLSL for the Reach radiance Reach's final composite shows as white at [`SkyScale::exposure`],
+    /// where each channel of a sky color stops: Reach saturates each channel where its radiance
+    /// times its exposure reaches one. A white taken once, at the middle of Forge World's automatic
+    /// range (1 stop, 0.5), held its horizon in-scatter of (0.207, 0.502, 0.893) to
+    /// (0.207, 0.5, 0.5) and drew the sky teal.
+    pub fn white(&self) -> String {
+        format!("(1.0/max({},0.000001))", self.exposure())
+    }
+
+    /// HLSL for the factor the transparent stage takes a sky color in Destiny's radiance, Reach's
+    /// radiance times [`SkyScale::radiance`], by, so it shows at [`SkyScale::exposure`].
+    pub fn finish(&self) -> String {
+        format!("({}/{:.9})", self.exposure(), self.radiance)
+    }
 }
 
 /// The two stages a sky surface draws in.
@@ -133,9 +168,8 @@ enum Stage {
 }
 
 /// The texture roles a surface's albedo and self illumination read, by their Reach options. The
-/// albedo reads the maps the level surfaces' albedo ([`super::albedo`]) reads for its option, and
-/// `two_detail_overlay`, which only sky shaders use, its overlay as well.
-fn roles(material: &Material, notes: &mut Vec<String>) -> Vec<&'static str> {
+/// albedo reads the maps the level surfaces' albedo ([`super::albedo`]) reads for its option.
+fn roles(material: &Material) -> Result<Vec<&'static str>> {
     let mut roles = Vec::new();
     match material.options.get("albedo").map(String::as_str) {
         Some("constant_color") => {}
@@ -153,39 +187,44 @@ fn roles(material: &Material, notes: &mut Vec<String>) -> Vec<&'static str> {
         Some("three_detail_blend") => {
             roles.extend(["base_map", "detail_map", "detail_map2", "detail_map3"]);
         }
+        Some(
+            "two_change_color" | "four_change_color" | "four_change_color_applying_to_specular",
+        ) => roles.extend(["base_map", "detail_map", "change_color_map"]),
         Some("color_mask") => roles.extend(["base_map", "detail_map", "color_mask_map"]),
         Some("simple") | None => roles.push("base_map"),
         Some("default") => roles.extend(["base_map", "detail_map"]),
-        Some(other) if other.contains("detail") => {
-            notes.push(format!("Albedo {other} draws as its base and detail maps"));
-            roles.extend(["base_map", "detail_map"]);
-        }
-        Some(other) => {
-            notes.push(format!(
-                "Albedo {other} draws as its base map times albedo_color"
-            ));
-            roles.push("base_map");
-        }
+        Some(other) => anyhow::bail!("Unsupported sky albedo mode {other}"),
     }
     match material
         .options
         .get("self_illumination")
         .map(String::as_str)
     {
-        Some("off") | None | Some("from_diffuse" | "from_albedo") => {}
-        Some("simple" | "3_channel_self_illum" | "multilayer_additive") => {
+        Some("off" | "none") | None | Some("from_diffuse" | "from_albedo") => {}
+        Some(
+            "simple"
+            | "3_channel_self_illum"
+            | "multilayer_additive"
+            | "simple_with_alpha_mask"
+            | "change_color"
+            | "scope_blur"
+            | "times_diffuse"
+            | "self_illum_times_diffuse",
+        ) => {
             roles.push("self_illum_map");
         }
-        Some("illum_detail") => roles.extend(["self_illum_map", "self_illum_detail_map"]),
+        Some("illum_detail" | "change_color_detail") => {
+            roles.extend(["self_illum_map", "self_illum_detail_map"])
+        }
         Some("plasma") => roles.extend(["alpha_mask_map", "noise_map_a", "noise_map_b"]),
-        Some(other) => {
-            notes.push(format!(
-                "Self illumination {other} draws as simple self illumination"
-            ));
-            roles.push("self_illum_map");
+        Some("meter") => roles.push("meter_map"),
+        Some("palettized_plasma" | "palettized_plasma_change_color") => {
+            roles.extend(["alpha_mask_map", "noise_map_a", "noise_map_b", "palette"])
         }
+        Some("palettized_depth_fade") => roles.extend(["alpha_mask_map", "noise_map_a", "palette"]),
+        Some(other) => anyhow::bail!("Unsupported sky self-illumination mode {other}"),
     }
-    roles
+    Ok(roles)
 }
 
 /// The albedo and self illumination of a surface, following the per-vertex color entry point of
@@ -198,14 +237,13 @@ fn shading(
     surface: &super::surface::Surface<'_>,
     samples: &BTreeMap<&str, String>,
     notes: &mut Vec<String>,
-) -> (String, String, bool) {
+) -> Result<(String, String, bool)> {
     let sample = |role: &str| {
         samples
             .get(role)
             .cloned()
             .unwrap_or_else(|| "float4(1,1,1,1)".to_owned())
     };
-    let value = |name: &str, default: [f32; 4]| surface.value(name, default);
     let albedo = match material.options.get("albedo").map(String::as_str) {
         Some("two_detail_overlay") => format!(
             "float4(({base}).rgb*lerp({d1},{d2},({base}).a).rgb*({ov}).rgb*{REACH_DETAIL_SQUARED:.6},({ov}).a*lerp({d1},{d2},({base}).a).a)",
@@ -222,77 +260,27 @@ fn shading(
             super::albedo(material, &slots, surface, None)
         }
     };
-    let intensity = format!("({}).x", value("self_illum_intensity", [1.; 4]));
-    let color = format!("({}).rgb", value("self_illum_color", [1.; 4]));
-    let mut lit = true;
-    let self_illumination = match material
-        .options
-        .get("self_illumination")
-        .map(String::as_str)
-    {
-        Some("off") | None => "float3(0,0,0)".to_owned(),
-        Some("from_diffuse" | "from_albedo") => {
-            lit = false;
-            format!("albedo.rgb*{}*{intensity}", color)
-        }
-        Some("multilayer_additive") => {
-            match samples
-                .get("self_illum_map")
-                .and_then(|sample| super::surface::sample_parts(sample))
-            {
-                Some((map, sampler, uv)) => {
-                    let scalar =
-                        |name: &str, default: f32| format!("({}).x", value(name, [default; 4]));
-                    format!(
-                        "multilayerIllumination({map},{sampler},{uv},({transform}).xy,skyToCamera,skyTangent,skyBitangent,{depth},{aspect},clamp({layers},1,64),{darken},{contrast})*{color}*{intensity}",
-                        transform = value("self_illum_map", [1., 1., 0., 0.]),
-                        depth = scalar("layer_depth", 1.),
-                        aspect = scalar("texcoord_aspect_ratio", 1.),
-                        layers = scalar("layers_of_4", 1.),
-                        darken = scalar("depth_darken", 1.),
-                        contrast = scalar("layer_contrast", 1.),
-                    )
-                }
-                None => "float3(0,0,0)".to_owned(),
-            }
-        }
-        Some("3_channel_self_illum") => {
-            let map = sample("self_illum_map");
-            let terms = ["channel_a", "channel_b", "channel_c"]
-                .into_iter()
-                .zip(["r", "g", "b"])
-                .map(|(name, lane)| {
-                    let channel = value(name, [0.; 4]);
-                    format!("({map}).{lane}*({channel}).rgb*({channel}).a")
-                })
-                .collect::<Vec<_>>()
-                .join("+");
-            format!("({terms})*{intensity}")
-        }
-        Some("illum_detail") => format!(
-            "({map}).rgb*({detail}).rgb*{}*{intensity}*{REACH_DETAIL:.6}",
-            color,
-            map = sample("self_illum_map"),
-            detail = sample("self_illum_detail_map"),
-        ),
-        Some("plasma") => {
-            let [medium, sharp, wide] =
-                ["color_medium", "color_sharp", "color_wide"].map(|name| value(name, [0.; 4]));
-            let [thin_medium, thin_sharp, thin_wide] =
-                ["thinness_medium", "thinness_sharp", "thinness_wide"]
-                    .map(|name| format!("({}).x", value(name, [1.; 4])));
-            format!(
-                "plasma(({mask}).a,({a}).r,({b}).r,({medium}).rgb,({medium}).a,({sharp}).rgb,({sharp}).a,({wide}).rgb,({wide}).a,{thin_medium},{thin_sharp},{thin_wide})*{intensity}",
-                mask = sample("alpha_mask_map"),
-                a = sample("noise_map_a"),
-                b = sample("noise_map_b")
-            )
-        }
-        Some(_) => {
-            // Recorded by `roles`.
-            format!("({}).rgb*{}*{intensity}", sample("self_illum_map"), color)
-        }
-    };
+    let slots = [
+        ("alpha_mask_map", 3),
+        ("self_illum_map", 4),
+        ("meter_map", 4),
+        ("noise_map_a", 6),
+        ("noise_map_b", 7),
+        ("palette", 8),
+        ("self_illum_detail_map", super::ILLUM_DETAIL_SLOT),
+    ]
+    .into_iter()
+    .filter_map(|(role, slot)| samples.get(role).map(|s| (slot, s.clone())))
+    .collect();
+    super::support::emission(material, &slots, notes, false)?;
+    let lit = !matches!(
+        material
+            .options
+            .get("self_illumination")
+            .map(String::as_str),
+        Some("from_diffuse" | "from_albedo")
+    );
+    let self_illumination = surface.emission(&slots, "albedo", &super::emission::SKY);
     if material
         .options
         .get("alpha_test")
@@ -300,29 +288,25 @@ fn shading(
     {
         notes.push("Alpha test clips at half coverage".to_owned());
     }
-    (albedo, self_illumination, lit)
+    Ok((albedo, self_illumination, lit))
 }
-
-/// Reach's plasma self illumination: three bands of the difference of two noise samples, each
-/// a power of it, colored and weighted, under the alpha mask.
-const PLASMA: &str = "float3 plasma(float mask,float a,float b,float3 medium,float mediumWeight,float3 sharp,float sharpWeight,float3 wide,float wideWeight,float thinMedium,float thinSharp,float thinWide){float d=max(1-abs(a-b),0);float m=pow(d,thinMedium);float s=pow(d,thinSharp);float w=pow(d,thinWide);return (medium*mediumWeight*(m-s)+sharp*sharpWeight*s+wide*wideWeight*(w-m))*mask;}";
 
 /// A sky surface's color in Destiny's radiance before exposure, from its lit albedo `lit` and its
 /// self illumination, fogged as Reach fogs it by the extinction and inscatter in `fog` and then
-/// clamped where Reach's final composite shows white. Opaque, blended and premultiplied surfaces
-/// take both, and additive ones only the extinction (`BLEND_FOG_INSCATTER_SCALE` in
-/// `shared\blend.fx`). A multiplying surface keeps Reach's unfogged and unexposed product.
+/// clamped where Reach's final composite shows white ([`SkyScale::white`]). Opaque, blended and
+/// premultiplied surfaces take both, and additive ones only the extinction
+/// (`BLEND_FOG_INSCATTER_SCALE` in `shared\blend.fx`). A multiplying surface keeps Reach's unfogged
+/// and unexposed product.
 fn color(material: &Material, scale: SkyScale) -> String {
-    let SkyScale {
-        white, radiance, ..
-    } = scale;
+    let white = scale.white();
+    let radiance = scale.radiance;
     match material.options.get("blend_mode").map(String::as_str) {
         Some("additive") => {
-            format!("float3 color=clamp((lit+selfIllumination)*fog.a,0,{white:.9})*{radiance:.9};")
+            format!("float3 color=clamp((lit+selfIllumination)*fog.a,0,{white})*{radiance:.9};")
         }
         Some("multiply") => "float3 color=max(lit+selfIllumination,0);".to_owned(),
         _ => format!(
-            "float3 color=clamp((lit+selfIllumination)*fog.a+fog.rgb,0,{white:.9})*{radiance:.9};"
+            "float3 color=clamp((lit+selfIllumination)*fog.a+fog.rgb,0,{white})*{radiance:.9};"
         ),
     }
 }
@@ -350,12 +334,11 @@ fn fog_line(material: &Material, fog: Option<&Fog>) -> String {
 /// How a sky surface's color reaches the frame: opaque surfaces replace what is behind them,
 /// blended ones cover it by their alpha, additive ones add to it, and multiplying ones darken it
 /// by their mean color, the nearest a premultiplied blend comes to a product. The transparent
-/// stage scales by the frame's exposure as the level's transparent surfaces do,
-/// [`REFERENCE_ILLUMINATION`] times `cb13[1].z`, and the light-shaft stage does not, as the stock
-/// light-shaft program does not.
-fn output(material: &Material, stage: Stage) -> String {
+/// stage shows the color at Reach's exposure ([`SkyScale::finish`]), and the light-shaft stage
+/// takes it unexposed, as the stock light-shaft program does.
+fn output(material: &Material, stage: Stage, scale: SkyScale) -> String {
     let exposure = match stage {
-        Stage::Transparent => format!("*{REFERENCE_ILLUMINATION:.9}*frameData[1].z"),
+        Stage::Transparent => format!("*{}", scale.finish()),
         Stage::Shafts => String::new(),
     };
     let coverage = if material.alpha_mode() == "MASK" {
@@ -404,9 +387,107 @@ fn sampler_shell(native: &mut Reader) -> Result<([u8; 16], u32)> {
 const RASTERIZER_STATE: usize = 0x22;
 const BOTH_FACES: u8 = 0x81;
 
+/// The scene depth a sky surface binds itself, at pixel texture `register`, with its projection
+/// vector in row 0 of the surface's own constants (`b0`).
+///
+/// Shadowkeep's transparent scope binds the scene depth at `t10` and its projection vector at
+/// `b2[0]`, but a sky draw does not reliably receive them. On the revision 82 Lone Wolf
+/// (`m70_bonus`), the screen fog and patchy fog sheets drew the level clear from one view and
+/// thick ground fog after the camera turned a little, from the same place. Converted refracting
+/// water reading the same `t10` drew patches that changed as the player moved, and then failed a
+/// size check across Paradiso's lake. A surface therefore loads both from the deferred extern
+/// itself: the pair the scope program pushes (`3F 03 07` and `3D 03 00`), bound to this surface's
+/// register and row. Transparent materials of later builds bind depth this way in place of the
+/// scope's, such as an Ace of Spades ornament and Marathon's camos. That the sky stage then
+/// receives this view's depth is inferred, not yet observed in game.
+#[derive(Clone, Copy)]
+pub(in crate::halo_reach) struct SceneDepth {
+    pub register: usize,
+}
+
+impl SceneDepth {
+    /// Checks that the build's transparent scope binds the scene depth and its projection vector
+    /// from these extern fields, which establishes what the surface pushes.
+    pub fn new(native: &mut Reader, register: usize) -> Result<Self> {
+        let programs = crate::tiger::shader::globals::scope_programs(native, false, "transparent")?;
+        ensure!(
+            !programs.is_empty()
+                && programs.iter().all(|program| {
+                    [SCOPE_SCENE_DEPTH, SCOPE_DEPTH_PROJECTION]
+                        .iter()
+                        .all(|binding| {
+                            program
+                                .windows(binding.len())
+                                .filter(|window| window == binding)
+                                .count()
+                                == 1
+                        })
+                }),
+            "The native transparent scope does not bind the scene depth from the deferred extern"
+        );
+        ensure!(
+            register < 0x20,
+            "Scene depth register {register} cannot be bound"
+        );
+        Ok(Self { register })
+    }
+
+    /// The pixel program declarations: the depth texture, the projection vector in row 0 of
+    /// `b0`, the view constants and the [`functions`](Self::functions).
+    pub fn declarations(&self) -> String {
+        self.declarations_with("")
+    }
+
+    fn declarations_with(&self, extra: &str) -> String {
+        format!(
+            "{}cbuffer SkyDepth:register(b0){{float4 skyDepth[1];{extra}}};cbuffer View:register(b12){{float4 viewData[14];}};{}",
+            self.texture(),
+            Self::functions("skyDepth[0]")
+        )
+    }
+
+    /// The depth texture's declaration.
+    pub fn texture(&self) -> String {
+        format!("Texture2D<float4> SceneDepth:register(t{});", self.register)
+    }
+
+    /// `reachSceneDepth` and `reachSceneDepthAt`, which convert a stored depth and the depth at a
+    /// screen coordinate to a view depth in meters with the declared projection vector
+    /// `projection`.
+    pub fn functions(projection: &str) -> String {
+        format!(
+            "float reachSceneDepth(float depth){{return 1/max(depth*{projection}.y+{projection}.x,0.000001);}}\
+float reachSceneDepthAt(float2 uv){{uint width,height;SceneDepth.GetDimensions(width,height);int2 size=int2(width,height);return reachSceneDepth(SceneDepth.Load(int3(clamp(int2(saturate(uv)*float2(size)),int2(0,0),size-1),0)).x);}}"
+        )
+    }
+
+    /// The expression that binds them: the extern's depth texture to the register and its
+    /// projection vector to row `row` of the surface's own constants.
+    pub fn binding(&self, row: u8) -> Vec<u8> {
+        vec![
+            0x3f,
+            3,
+            7,
+            0x47,
+            0x20 | self.register as u8,
+            0x3d,
+            3,
+            0,
+            0x43,
+            row,
+        ]
+    }
+}
+
+/// The transparent scope's bindings of the deferred extern's scene depth texture (field 7) to
+/// `t10` and of its depth projection vector (field 0) to `b2[0]`.
+const SCOPE_SCENE_DEPTH: &[u8] = &[0x3f, 3, 7, 0x47, 0x2a];
+const SCOPE_DEPTH_PROJECTION: &[u8] = &[0x3d, 3, 0, 0x43, 0];
+
 /// Adds sky surface `material-{key}`, a fresh copy of `envelope` naming vertex program `vertex`,
-/// pixel program `shader`, the textures of `bindings` at their registers and `samplers`. A
-/// surface whose programs place its triangles on screen themselves draws `both_faces`.
+/// pixel program `shader`, the textures of `bindings` at their registers, `samplers` and, with
+/// `depth`, the scene depth. A surface whose programs place its triangles on screen themselves
+/// draws `both_faces`.
 #[allow(clippy::too_many_arguments)]
 fn write_material(
     g: &mut Graph,
@@ -418,6 +499,8 @@ fn write_material(
     samplers: &Samplers,
     sampler_class: u32,
     both_faces: bool,
+    depth: Option<SceneDepth>,
+    overlay: Option<overlay::Kind>,
 ) -> Result<()> {
     let mut bytes = fresh_surface(envelope)?;
     if both_faces {
@@ -436,12 +519,34 @@ fn write_material(
         &samplers.table,
         16,
     )?;
-    let expression = if bindings.is_empty() {
+    let mut expression = if bindings.is_empty() {
         vec![]
     } else {
         samplers.expression.clone()
     };
-    append(&mut bytes, 0x318, 0x80800090, &[], 16)?;
+    if let Some(depth) = depth {
+        ensure!(
+            bindings.iter().all(|(slot, _)| *slot != depth.register),
+            "Sky surface {key:08X} binds a texture at its scene depth register"
+        );
+        expression.extend(depth.binding(0));
+        // The projection vector's row, which native writable storage needs present.
+        bytes[0x33c] = 0x10;
+        put(&mut bytes, 0x338, &0u32.to_le_bytes())?;
+        put(&mut bytes, 0x348, &0u32.to_le_bytes())?;
+    }
+    let output = if let Some(kind) = overlay {
+        ensure!(
+            depth.is_some(),
+            "Controlled sky surface has no depth binding"
+        );
+        overlay::bind(&mut bytes, &mut expression, kind)?
+    } else if depth.is_some() {
+        vec![0; 16]
+    } else {
+        vec![]
+    };
+    append(&mut bytes, 0x318, 0x80800090, &output, 16)?;
     put(&mut bytes, 0x34c, &u32::MAX.to_le_bytes())?;
     append(&mut bytes, 0x2e8, 0x80800009, &expression, 1)?;
     let mut patches = vec![
@@ -495,8 +600,11 @@ pub(in crate::halo_reach) fn surfaces(
             && scale.vertex_color > 0.
             && scale.radiance.is_finite()
             && scale.radiance > 0.
-            && scale.white.is_finite()
-            && scale.white > 0.,
+            && scale
+                .exposure
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.)
+            && scale.exposure[0] <= scale.exposure[1],
         "Invalid sky color scale"
     );
     let envelopes = envelopes.map(|tag| {
@@ -550,7 +658,9 @@ pub(in crate::halo_reach) fn surfaces(
         lightmap: None,
         vertex_data: None,
         statics: false,
+        paired_faces: &Default::default(),
         prefix: "",
+        prepass: false,
     };
     let mut report = Vec::new();
     for sky in surfaces {
@@ -565,15 +675,35 @@ pub(in crate::halo_reach) fn surfaces(
         let mut bindings = Vec::new();
         let mut modes = vec![[WRAP, WRAP, ANISOTROPIC]];
         let mut samples = BTreeMap::new();
-        for role in roles(material, &mut notes) {
+        for role in roles(material).with_context(|| format!("Sky surface {:?}", material.tag))? {
             let Some(mapping) = material.mapping(&[role]) else {
-                notes.push(format!("{role} has no bitmap and reads as white"));
+                notes.push(format!("{role} has no bitmap. Albedo uses its default and emission requiring this texture contributes zero"));
                 continue;
             };
             let register = bindings.len();
             bindings.push((
                 register,
-                texture(c, pages, native, g, mapping, false, true)?,
+                texture(
+                    c,
+                    pages,
+                    native,
+                    g,
+                    mapping,
+                    false,
+                    !matches!(
+                        role,
+                        "meter_map"
+                            | "noise_map_a"
+                            | "noise_map_b"
+                            | "alpha_mask_map"
+                            | "change_color_map"
+                            | "color_mask_map"
+                    ) && !(role == "self_illum_map"
+                        && material
+                            .options
+                            .get("self_illumination")
+                            .is_some_and(|m| m == "3_channel_self_illum")),
+                )?,
             ));
             let index = sampler_index(&mut modes, sampler_modes(mapping)?);
             samples.insert(
@@ -601,7 +731,8 @@ pub(in crate::halo_reach) fn surfaces(
             bindings.len()
         );
         let samplers = samplers(native, g, clamped, &modes)?;
-        let (albedo, self_illumination, lit) = shading(material, &surface, &samples, &mut notes);
+        let (albedo, self_illumination, lit) = shading(material, &surface, &samples, &mut notes)
+            .with_context(|| format!("Sky surface {:?}", material.tag))?;
         let lighting = if lit {
             "vertexColor*albedo.rgb"
         } else {
@@ -635,13 +766,13 @@ pub(in crate::halo_reach) fn surfaces(
             (Stage::Transparent, sky.transparent, &envelopes[0]),
             (Stage::Shafts, sky.shafts, &envelopes[1]),
         ] {
-            let finish = output(material, stage);
+            let finish = output(material, stage, scale);
             let text = format!(
                 r#"
 {declarations}
 {sampler_declarations}
 cbuffer Frame : register(b13) {{float4 frameData[2];}};
-{PLASMA}
+
 {multilayer_functions}
 {fog_functions}
 {clock_function}
@@ -678,6 +809,8 @@ float3 lit={lighting};
                 &samplers,
                 sampler_class,
                 false,
+                None,
+                None,
             )?;
             report.push(json!({
                 "key": format!("{key:08X}"),

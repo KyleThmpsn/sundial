@@ -624,7 +624,12 @@ impl PackageAuthoringApp {
             });
         }
         if edits.imported_ability.is_some() {
-            ui.weak("This prepared ability includes its own icon, colors and attached abilities.");
+            if let Some(color) = self.draw_ability_color(ui, edits.color) {
+                let mut updated = changed.unwrap_or_else(|| edits.clone());
+                updated.color = color;
+                changed = Some(updated);
+            }
+            ui.weak("Artwork and attached abilities are included with this import.");
             return changed;
         }
         let (icon, reset) = field(ui, "Icon", edits.icon.is_some(), |ui| {

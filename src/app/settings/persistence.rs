@@ -1,7 +1,13 @@
 //! Verified settings saves, source-change checks, and recovery backups.
 use super::{backups_path, prepare_settings};
 pub(in crate::app) use crate::persistence::json_document::load_workspace_json;
-use crate::{game_settings, persistence::json_account::ensure_schema_v8_preferences, storage};
+use crate::{
+    game_settings,
+    persistence::{
+        json_account::ensure_schema_v8_preferences, json_document::parse_workspace_json,
+    },
+    storage,
+};
 use serde_json::Value;
 use std::{
     fs, io,
@@ -215,6 +221,90 @@ fn save_json_with_writer(
         compacted: prepared.compacted,
         durability_warning,
     })
+}
+
+/// The folder Sundial keeps this settings file's automatic backups in, when it has any.
+pub(in crate::app) fn settings_backup_directory(settings: &Path) -> Option<PathBuf> {
+    let root = backups_path()?;
+    crate::backups::source_directory(&root, settings)
+        .ok()
+        .filter(|directory| directory.is_dir())
+        .or_else(|| root.is_dir().then_some(root))
+}
+
+/// Checks that `backup` reads as a settings document with a schema version, the minimum a
+/// startup load needs before it validates the rest.
+pub(in crate::app) fn validate_settings_backup(
+    settings: &Path,
+    backup: &Path,
+) -> Result<(), String> {
+    read_settings_backup(settings, backup).map(|_| ())
+}
+
+/// Reads `backup` once and returns the bytes [`validate_settings_backup`] accepted, so a restore
+/// writes exactly what was checked even if the file changes afterwards.
+fn read_settings_backup(settings: &Path, backup: &Path) -> Result<Vec<u8>, String> {
+    if crate::system::paths::paths_equal(settings, backup) {
+        return Err("Choose a backup, not the settings file itself".into());
+    }
+    let bytes = fs::read(backup)
+        .map_err(|error| format!("Could not read {}: {error}", backup.display()))?;
+    let document = parse_workspace_json(backup, &bytes)?;
+    game_settings::schema_version(&document).ok_or("The backup has no settings schema version")?;
+    Ok(bytes)
+}
+
+/// Replaces a settings file that cannot be loaded with a chosen backup. The current file is first
+/// copied into Sundial's backups, outside automatic retention, and verified. The replacement
+/// then goes ahead only while the game is closed and the file still holds the bytes that were
+/// kept. Returns where the replaced file was kept.
+pub(in crate::app) fn restore_settings_backup(
+    settings: &Path,
+    backup: &Path,
+) -> Result<PathBuf, String> {
+    let settings = fs::canonicalize(settings)
+        .map_err(|error| format!("Could not resolve {}: {error}", settings.display()))?;
+    let restored = read_settings_backup(&settings, backup)?;
+    let _lock = lock_settings(&settings)?;
+    let check_game_closed = || require_game_closed(super::super::platform::destiny_is_running());
+    check_game_closed()?;
+    let original = fs::read(&settings)
+        .map_err(|error| format!("Could not read {}: {error}", settings.display()))?;
+    let root = backups_path().ok_or("Could not locate the local backup folder")?;
+    let kept = crate::backups::create(
+        &root,
+        &settings,
+        "settings-replaced",
+        "json",
+        false,
+        |_, file| {
+            io::Write::write_all(&mut *file, &original)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| error.to_string())
+        },
+    )?;
+    if fs::read(&kept).map_err(|error| error.to_string())? != original {
+        return Err(format!(
+            "The copy of the current settings at {} did not verify. Nothing was replaced",
+            kept.display()
+        ));
+    }
+    check_game_closed()?;
+    storage::replace_file_if_unchanged(&settings, &restored, &original).map_err(|error| {
+        format!(
+            "Could not replace {}: {error}. The current file is kept at {}",
+            settings.display(),
+            kept.display()
+        )
+    })?;
+    if fs::read(&settings).map_err(|error| error.to_string())? != restored {
+        return Err(format!(
+            "{} did not verify after the restore. The previous file is kept at {}",
+            settings.display(),
+            kept.display()
+        ));
+    }
+    Ok(kept)
 }
 
 pub(in crate::app) fn require_game_closed(running: Result<bool, String>) -> Result<(), String> {

@@ -221,7 +221,7 @@ fn buffer_limit(stage: u32, slot: usize) -> usize {
 
 pub(super) fn arity(code: u16) -> Option<usize> {
     Some(match code {
-        0 | 1 | 14..=17 | 29 | 30 | 41 | 49 | 51 | 52 | 56 | 57 => 3,
+        0 | 1 | 14..=17 | 29 | 30 | 36 | 37 | 41 | 49 | 51 | 52 | 56 | 57 => 3,
         13 | 31 => 1,
         32 | 60 | 61 | 79 | 80 | 85 => 3,
         18 | 21 | 62 => 0,

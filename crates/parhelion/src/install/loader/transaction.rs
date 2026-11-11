@@ -12,6 +12,10 @@ pub(super) struct Record {
     legacy: Vec<ArtifactMetadata>,
     original: Option<Folder>,
     incoming: Option<Folder>,
+    /// Whether the main mod's installed folder already held the staged generation, so the
+    /// operation leaves it in place.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    kept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     family: BTreeMap<String, Change>,
     token: String,
@@ -85,7 +89,7 @@ impl Record {
             id: mod_content::ID,
             original: self.original.as_ref(),
             incoming: self.incoming.as_ref(),
-            kept: false,
+            kept: self.kept,
         })
         .chain(self.family.iter().map(|(id, change)| Member {
             id,
@@ -116,6 +120,19 @@ impl Record {
             ));
         }
         Ok(())
+    }
+    /// Whether the operation publishes a family, whose members may include no main mod, rather
+    /// than only removing folders.
+    pub(super) fn publishes(&self) -> bool {
+        self.members().any(|member| member.incoming.is_some())
+    }
+    /// The members the operation leaves in place because they already held the staged
+    /// generation.
+    pub(super) fn kept(&self) -> BTreeSet<String> {
+        self.members()
+            .filter(|member| member.kept)
+            .map(|member| member.id.to_owned())
+            .collect()
     }
     fn install(&self) -> &Path {
         self.context
@@ -164,7 +181,7 @@ impl Record {
     /// Studio and other editors do not take Parhelion's lock. Recheck their packages before
     /// publishing and before recording success. Removal and rollback never depend on them.
     fn verify_coexistence(&self, published: bool) -> Result<(), InstallError> {
-        if self.incoming.is_none() {
+        if !self.publishes() {
             return Ok(());
         }
         let mut sources = Vec::new();
@@ -191,7 +208,7 @@ impl Record {
                 receipt,
                 kept: member.kept,
             });
-            for artifact in artifacts(member.incoming.unwrap()) {
+            for artifact in member_artifacts(member.id, member.incoming.unwrap()) {
                 let path = directory.join(package_path(&artifact)?);
                 sources.push((artifact, path));
             }
@@ -250,6 +267,29 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
         .ok_or_else(|| InstallError::validation("Missing game root"))?;
     let mods = mod_content::runtime_directory(install).join("mods");
     mod_content::checked_path(install, &mods).map_err(InstallError::validation)?;
+    original_family.remove(mod_content::ID);
+    // A member whose installed folder already holds its staged generation stays in place: it is
+    // neither copied nor backed up, and its files keep their identities.
+    let publishing = incoming
+        .map(|sources| staged_members(members, sources))
+        .transpose()?
+        .unwrap_or_default();
+    let mut kept = BTreeSet::new();
+    for member in &publishing {
+        let id = &member.manifest.id;
+        let installed = if id == mod_content::ID {
+            original.is_some()
+        } else {
+            original_family.contains_key(id)
+        };
+        if installed && unchanged(install, member)? {
+            kept.insert(id.clone());
+        } else if member.kept {
+            return Err(InstallError::validation(
+                "A kept importer changed after staging",
+            ));
+        }
+    }
     let root = resolve_path_for_comparison(backup_root).map_err(failure)?;
     if path_is_within(&root, target)
         || path_is_within(&root, &mod_content::runtime_directory(install))
@@ -284,7 +324,9 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
                 "The resolved mod backup escaped its selected location",
             ));
         }
-        if let Some(folder) = &original {
+        if let Some(folder) = &original
+            && !kept.contains(mod_content::ID)
+        {
             fs::create_dir_all(backup.join("mods")).map_err(failure)?;
             copy_folder(
                 &mod_content::directory(install),
@@ -292,12 +334,8 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
                 folder,
             )?;
         }
-        original_family.remove(mod_content::ID);
         for (id, folder) in &original_family {
-            if !members
-                .iter()
-                .any(|member| member.manifest.id == *id && member.kept)
-            {
+            if !kept.contains(id) {
                 let destination = backup.join("mods").join(id);
                 fs::create_dir_all(destination.parent().unwrap()).map_err(failure)?;
                 copy_folder(
@@ -334,6 +372,7 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
             legacy,
             original,
             incoming: None,
+            kept: false,
             family: original_family
                 .into_iter()
                 .map(|(id, original)| {
@@ -360,125 +399,48 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
                 client_settings: None,
             },
         };
-        if let Some(sources) = incoming {
-            let main = members.iter().find(|m| m.manifest.id == mod_content::ID);
-            let staging = record.temporary("stage");
-            create_private_directory(&staging).map_err(failure)?;
-            fs::create_dir(staging.join("packages")).map_err(failure)?;
-            fs::create_dir(staging.join("patches")).map_err(failure)?;
-            let mut receipt = mod_content::Receipt {
-                schema: 1,
-                mod_id: mod_content::ID.into(),
-                artifacts: vec![],
-                content: None,
-            };
-            for (artifact, source) in sources {
-                if main.is_some_and(|main| {
-                    !main
-                        .receipt
-                        .artifacts
-                        .iter()
-                        .any(|a| a.path.rsplit('/').next() == Some(artifact.file_name.as_str()))
-                }) {
-                    continue;
+        for member in &publishing {
+            let id = &member.manifest.id;
+            let main = id == mod_content::ID;
+            if kept.contains(id) {
+                if main {
+                    record.incoming = record.original.clone();
+                    record.kept = true;
+                } else {
+                    let change = record
+                        .family
+                        .get_mut(id)
+                        .expect("a kept member is installed");
+                    change.incoming = change.original.clone();
+                    change.kept = true;
                 }
-                let path =
-                    if let Some(path) = mod_content::mission_script::path(&artifact.file_name) {
-                        let parent = staging.join(&path).parent().unwrap().to_owned();
-                        fs::create_dir_all(&parent).map_err(failure)?;
-                        mod_content::checked_path(&staging, &parent)
-                            .map_err(InstallError::validation)?;
-                        path
-                    } else if artifact.file_name == mod_content::map_diagnostics::FILE_NAME {
-                        artifact.file_name.clone()
-                    } else {
-                        package_path(artifact)?
-                    };
-                let copied = copy_file_create_new(source, &staging.join(&path)).map_err(failure)?;
-                if TransactionDigest::from(artifact) != copied {
-                    return Err(InstallError::validation(
-                        "Package changed while staging its mod folder",
-                    ));
-                }
-                receipt.artifacts.push(mod_content::Artifact {
-                    path,
-                    byte_length: copied.byte_length,
-                    sha256: copied.sha256,
-                });
+                continue;
             }
-            receipt.validate().map_err(InstallError::validation)?;
-            write_json(
-                &staging.join(mod_content::MANIFEST),
-                &main.map_or_else(mod_content::Manifest::default, |m| m.manifest.clone()),
-            )?;
-            write_json(&staging.join(mod_content::RECEIPT), &receipt)?;
-            record.incoming = Some(snapshot_folder(&staging)?);
-            sync_backup_directories(&staging, &mods).map_err(InstallError::validation)?;
-            for member in members.iter().filter(|m| m.manifest.id != mod_content::ID) {
-                let id = &member.manifest.id;
+            let staging = if main {
+                record.temporary("stage")
+            } else {
+                let staging = mods.join(format!(".{id}-stage-{}", record.token));
+                unjournaled.0.push(staging.clone());
+                staging
+            };
+            let folder = stage_member(member, incoming.unwrap_or_default(), &staging, &mods)?;
+            if main {
+                record.incoming = Some(folder);
+            } else {
                 let change = record.family.entry(id.clone()).or_insert(Change {
                     original: None,
                     incoming: None,
                     kept: false,
                 });
-                if member.kept {
-                    let directory = mod_content::member_directory(install, id);
-                    let installed_manifest: mod_content::Manifest =
-                        mod_content::read_json(&directory.join(mod_content::MANIFEST))
-                            .map_err(failure)?;
-                    let installed_receipt: mod_content::Receipt =
-                        mod_content::read_json(&directory.join(mod_content::RECEIPT))
-                            .map_err(failure)?;
-                    if installed_manifest != member.manifest
-                        || installed_receipt != member.receipt
-                        || change.original.is_none()
-                    {
-                        return Err(InstallError::validation(
-                            "A kept importer changed after staging",
-                        ));
-                    }
-                    change.incoming = change.original.clone();
-                    change.kept = true;
-                    continue;
-                }
-                let staging = mods.join(format!(".{id}-stage-{}", record.token));
-                unjournaled.0.push(staging.clone());
-                create_private_directory(&staging).map_err(failure)?;
-                fs::create_dir(staging.join("packages")).map_err(failure)?;
-                for artifact in &member.receipt.artifacts {
-                    let name = artifact.path.rsplit('/').next().unwrap();
-                    let source = &sources
-                        .iter()
-                        .find(|(a, _)| a.file_name == name)
-                        .ok_or_else(|| {
-                            InstallError::validation(format!("Missing importer artifact {name}"))
-                        })?
-                        .1;
-                    let expected = TransactionDigest {
-                        byte_length: artifact.byte_length,
-                        sha256: artifact.sha256.to_ascii_uppercase(),
-                    };
-                    if expected
-                        != copy_file_create_new(source, &staging.join(&artifact.path))
-                            .map_err(failure)?
-                    {
-                        return Err(InstallError::validation(
-                            "Importer content changed during staging",
-                        ));
-                    }
-                }
-                write_json(&staging.join(mod_content::MANIFEST), &member.manifest)?;
-                write_json(&staging.join(mod_content::RECEIPT), &member.receipt)?;
-                change.incoming = Some(snapshot_folder(&staging)?);
-                sync_backup_directories(&staging, &mods).map_err(InstallError::validation)?;
+                change.incoming = Some(folder);
             }
         }
         // Account recovery uses the existing account journal contract. Its package rows serve only
         // as evidence that an account edit belongs to a nonempty content operation.
         let involved = record
-            .incoming
-            .as_ref()
-            .or(record.original.as_ref())
+            .members()
+            .find_map(|member| member.incoming)
+            .or_else(|| record.members().find_map(|member| member.original))
             .map(artifacts)
             .unwrap_or_else(|| record.legacy.clone());
         record.context.artifacts = involved
@@ -505,6 +467,115 @@ pub(super) fn prepare(plan: Plan<'_>) -> Result<Transaction, InstallError> {
     })
 }
 
+/// The members a publication stages: the staged family, which may have no main mod, or the main
+/// mod alone for a build without a family, its receipt drawn from `sources` in their order.
+fn staged_members(
+    members: &[crate::mod_family::Member],
+    sources: &[(ArtifactMetadata, PathBuf)],
+) -> Result<Vec<crate::mod_family::Member>, InstallError> {
+    if !members.is_empty() {
+        return Ok(members.to_vec());
+    }
+    let mut receipt = mod_content::Receipt {
+        schema: 1,
+        mod_id: mod_content::ID.into(),
+        artifacts: vec![],
+        content: None,
+        coupled: Default::default(),
+    };
+    for (artifact, _) in sources {
+        receipt.artifacts.push(mod_content::Artifact {
+            path: installed_path(artifact)?,
+            byte_length: artifact.byte_length,
+            sha256: artifact.sha256.clone(),
+        });
+    }
+    receipt.validate().map_err(InstallError::validation)?;
+    Ok(vec![crate::mod_family::Member {
+        manifest: mod_content::Manifest::default(),
+        receipt,
+        kept: false,
+    }])
+}
+
+/// A staged artifact's path in its member's folder.
+fn installed_path(artifact: &ArtifactMetadata) -> Result<String, InstallError> {
+    let name = crate::mod_family::native_name(&artifact.file_name);
+    if let Some(path) = mod_content::mission_script::path(name) {
+        Ok(path)
+    } else if name == mod_content::map_diagnostics::FILE_NAME {
+        Ok(name.to_owned())
+    } else {
+        package_path(artifact)
+    }
+}
+
+/// Whether a member's installed folder already holds its staged generation: the same loader
+/// manifest and the same receipt files and bytes. Reading the installed family verified the
+/// folder against that receipt, and commit checks the folder again before anything changes.
+pub(super) fn unchanged(
+    install: &Path,
+    member: &crate::mod_family::Member,
+) -> Result<bool, InstallError> {
+    let directory = mod_content::member_directory(install, &member.manifest.id);
+    let manifest: mod_content::Manifest =
+        mod_content::read_json(&directory.join(mod_content::MANIFEST)).map_err(failure)?;
+    let receipt: mod_content::Receipt =
+        mod_content::read_json(&directory.join(mod_content::RECEIPT)).map_err(failure)?;
+    Ok(manifest == member.manifest && crate::mod_family::same_receipt(&receipt, &member.receipt))
+}
+
+/// Copies one member's staged files, found by member-qualified name in `sources`, to their
+/// receipt paths in `staging`, checking each against the receipt, then writes the member's
+/// manifest and receipt. Returns the staged folder's inventory.
+fn stage_member(
+    member: &crate::mod_family::Member,
+    sources: &[(ArtifactMetadata, PathBuf)],
+    staging: &Path,
+    mods: &Path,
+) -> Result<Folder, InstallError> {
+    create_private_directory(staging).map_err(failure)?;
+    // The main mod's folder always holds both package folders. Another member's holds those its
+    // files need.
+    if member.manifest.id == mod_content::ID {
+        fs::create_dir(staging.join("packages")).map_err(failure)?;
+        fs::create_dir(staging.join("patches")).map_err(failure)?;
+    }
+    for artifact in &member.receipt.artifacts {
+        let native = artifact.path.rsplit('/').next().unwrap_or(&artifact.path);
+        let name = crate::mod_family::staged_name(&member.manifest.id, native);
+        let source = &sources
+            .iter()
+            .find(|(a, _)| a.file_name == name)
+            .ok_or_else(|| InstallError::validation(format!("Missing staged artifact {name}")))?
+            .1;
+        let path = staging.join(&artifact.path);
+        let parent = path
+            .parent()
+            .ok_or_else(|| InstallError::validation("Mod artifact has no folder"))?;
+        fs::create_dir_all(parent).map_err(failure)?;
+        mod_content::checked_path(staging, parent).map_err(InstallError::validation)?;
+        let expected = TransactionDigest {
+            byte_length: artifact.byte_length,
+            sha256: artifact.sha256.to_ascii_uppercase(),
+        };
+        if expected != copy_file_create_new(source, &path).map_err(failure)? {
+            return Err(InstallError::validation(
+                "Package changed while staging its mod folder",
+            ));
+        }
+    }
+    member
+        .receipt
+        .validate()
+        .map_err(InstallError::validation)?;
+    write_json(&staging.join(mod_content::MANIFEST), &member.manifest)?;
+    write_json(&staging.join(mod_content::RECEIPT), &member.receipt)?;
+    let folder = snapshot_folder(staging)?;
+    sync_backup_directories(staging, mods).map_err(InstallError::validation)?;
+    Ok(folder)
+}
+
 pub(super) fn commit(
     transaction: &mut Transaction,
     check: GameRunningCheck,
@@ -529,7 +600,7 @@ pub(super) fn commit(
         }
     }
     verify_source_artifacts(&record.context.target_packages_directory, &record.stock)?;
-    if record.incoming.is_some() {
+    if record.publishes() {
         mod_content::ensure_resolved_environment(record.install())
             .map_err(InstallError::validation)?;
     }
@@ -839,6 +910,11 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
         ));
     }
     mod_content::checked_path(&root, backup).map_err(InstallError::validation)?;
+    if record.kept && (record.original.is_none() || record.original != record.incoming) {
+        return Err(InstallError::validation(
+            "Invalid managed family recovery record",
+        ));
+    }
     for (id, change) in &record.family {
         if id == mod_content::ID
             || !mod_content::is_family_id(id)
@@ -902,6 +978,17 @@ fn validate_record(record: &Record, target: &Path, backup_root: &Path) -> Result
         ));
     }
     validate_source_artifact_records(record.stock.clone())?;
+    validate_source_coverage(
+        &record.stock,
+        record
+            .members()
+            .flat_map(|member| member.original.into_iter().chain(member.incoming))
+            .flat_map(|folder| folder.files.keys())
+            .filter_map(|path| {
+                path.strip_prefix("packages/")
+                    .or_else(|| path.strip_prefix("patches/"))
+            }),
+    )?;
     account::validate_account_record(&record.context, target)
 }
 

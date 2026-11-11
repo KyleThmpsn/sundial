@@ -36,6 +36,10 @@ pub struct AuthoredGrantReport {
     pub backup_path: Option<PathBuf>,
     pub added: Vec<AuthoredGrantOutcome>,
     pub full: Vec<AuthoredGrantOutcome>,
-    /// Characters that now have the item equipped.
+    /// Characters that now have the item equipped. Only a copy this grant added is equipped, so
+    /// a repeat install leaves every character's equipment as it was.
     pub equipped: Vec<AuthoredGrantOutcome>,
+    /// Characters whose ability choices started over at the subclass defaults when it was
+    /// equipped, on accounts that keep those choices on the character.
+    pub abilities_reset: Vec<AuthoredGrantOutcome>,
 }

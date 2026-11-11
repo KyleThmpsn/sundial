@@ -3,7 +3,6 @@ use crate::persistence::sqlite_account::ResetPlan;
 
 impl SundialApp {
     pub(in crate::app) fn request_sqlite_defaults_reset(&mut self) {
-        self.pending_sqlite_reset = None;
         if self.document.uses_json_account() {
             self.set_status("The active account uses settings.json. Use Reset to Sunrise Defaults for this installation", true);
             return;
@@ -25,17 +24,13 @@ impl SundialApp {
             });
         match result {
             Ok(plan) => {
-                self.pending_sqlite_reset = Some(plan);
-                self.confirmation = Some(ConfirmationDialog::ResetSqliteDefaults);
+                self.confirmation = Some(ConfirmationDialog::ResetSqliteDefaults(plan));
             }
             Err(error) => self.set_status(format!("Account reset unavailable: {error}"), true),
         }
     }
 
-    pub(in crate::app) fn reset_sqlite_to_sunrise_defaults(&mut self) {
-        let Some(plan) = self.pending_sqlite_reset.take() else {
-            return;
-        };
+    pub(in crate::app) fn reset_sqlite_to_sunrise_defaults(&mut self, plan: ResetPlan) {
         if self.document.uses_json_account()
             || plan.path() != self.document.source_info().database_path
         {

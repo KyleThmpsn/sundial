@@ -48,6 +48,23 @@ pub fn info(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Respo
     )
 }
 
+/// Compact information that is shown only while its glyph is hovered.
+pub(crate) fn hover_info(
+    ui: &mut egui::Ui,
+    label: &str,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new(egui_phosphor::regular::INFO).size(16.0))
+            .frame(false)
+            .min_size(egui::vec2(28.0, 28.0)),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response
+        .on_hover_cursor(egui::CursorIcon::Help)
+        .on_hover_text(text)
+}
+
 /// Information with a source link and optional expandable license text.
 pub fn info_link(
     ui: &mut egui::Ui,

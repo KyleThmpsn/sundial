@@ -7,12 +7,135 @@ use crate::{
     presentation::{Graph, append, put},
     tiger::{allocation::Row, reader::Reader},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 // Keep both mutable channel bindings in the instance span copied by the loader.
 // Their definitions and the numeric programs remain in the resource's schema.
 const DEFINITION: usize = INSTANCE + 0x368;
+
+/// Reach's human plane update (MCC U13 513134) turns at this fixed rate, in radians per second.
+const PLANE_TURN_RATE: f32 = 2.094_395;
+
+/// The share of its maximum roll a human plane banks to at full sideways speed (513900).
+const PLANE_BANK_SHARE: f32 = 0.25;
+
+/// The source flight kinds this route translates.
+pub(super) const KINDS: [&str; 4] = ["alien_fighter", "space_fighter", "human_plane", "vtol"];
+
+/// The native base gravity the authored lift is calibrated against, in metres per second squared.
+pub(super) const GRAVITY: f32 = 12.713999;
+
+/// The flight control set this route reads, from a source flight row. An alien fighter row
+/// already holds it, its steering limits being its bank. A space fighter's steering limits are
+/// zero and its bank follows a spring of its own, so its maximum bank sets the limit and that
+/// spring's rate limit the rate. A human plane banks to a quarter of its maximum roll at full
+/// sideways speed and turns at Reach's fixed plane rate. Neither records a cruising throttle, so
+/// full forward input requests full forward speed. Their reverse speeds are magnitudes.
+pub(super) fn controls(source: &Value, gravity_scale: f32, metres: f32) -> Result<Value> {
+    let kind = source["kind"].as_str().context("Source flight kind")?;
+    if kind == "alien_fighter" {
+        return Ok(source.clone());
+    }
+    if kind == "vtol" {
+        return vtol(source, gravity_scale, metres);
+    }
+    let (bank, rate) = match kind {
+        "space_fighter" => (
+            number(source, "maximum_bank_radians")?,
+            number(source, "bank_rate_limit_radians_per_second")?,
+        ),
+        "human_plane" => (
+            number(source, "maximum_roll_radians")? * PLANE_BANK_SHARE,
+            PLANE_TURN_RATE,
+        ),
+        _ => bail!("Source flight kind {kind} has no flight translation"),
+    };
+    let mut result = source.clone();
+    result["steering"] = json!({"left_limit_radians":bank,"right_limit_radians":-bank,
+        "rate_radians_per_second":rate});
+    result["reverse_source_units_per_second"] = json!(-number(
+        source,
+        "reverse_magnitude_source_units_per_second"
+    )?);
+    result["cruising_throttle"] = json!(1.);
+    result["flight_adapter"] = json!({"bank_limit_radians":bank,"turn_rate_radians_per_second":rate,
+        "cruising_throttle":1.,"source_kind":kind});
+    Ok(result)
+}
+
+/// A vtol flies its forward flight speed interpolated row, which the interpolation blend reaches
+/// under full forward throttle. Its maximum forward acceleration is the thrust, and its speed is
+/// where the drag coefficient and constant deceleration remove that acceleration, so releasing the
+/// stick slows it by that deceleration alone. It tilts lift symmetrically, so reverse matches
+/// forward. Reach holds its body level and rises on a vertical input this route does not have.
+/// The route climbs and banks by attitude, so the attitude limit is the tilt at which lift holding
+/// the vehicle's weight also supplies the maximum left acceleration. The source turn rate is kept.
+/// The row's upright torque and rotor damping set the roll and pitch response of the flight
+/// surfaces (`wing::surface`).
+///
+/// Vertical input stays untranslated because Shadowkeep's flight route has no force it could
+/// drive. Flight motion `00EB6440` applies thrust only along the body's forward axis (scratch
+/// `+0x10`). Surface force `00EA3270`, summed by `00EA35E0` over the body's linear velocity and
+/// angular velocity crossed with each lever, gives lift along the surface normal's part
+/// perpendicular to the local flow and drag against that flow. Lift therefore does no work and
+/// only turns the existing velocity, drag only removes it, and both are zero at rest. Gravity is the
+/// contact definition's fixed `+0xD4` scale. No unit numeric getter (`80803C23` methods 51 to 61)
+/// reports primary fire, and the boost analog at unit `+0x214` reaches only the throttle expression
+/// at flight `+0x210` as its input zero (`00EB2954`), not a bank channel a surface could read.
+fn vtol(source: &Value, gravity_scale: f32, metres: f32) -> Result<Value> {
+    let rows = source["speed_interpolated"]
+        .as_array()
+        .context("Source vtol speed interpolated parameters")?;
+    ensure!(
+        (1..=2).contains(&rows.len()),
+        "Source vtol speed interpolated parameters differ from their hover and forward flight rows"
+    );
+    let row = rows.last().context("Source vtol forward flight row")?;
+    let thrust = number(
+        row,
+        "maximum_forward_acceleration_source_units_per_second_squared",
+    )?;
+    let side = number(
+        row,
+        "maximum_left_acceleration_source_units_per_second_squared",
+    )?;
+    let linear = number(row, "constant_deceleration")?;
+    let quadratic = number(row, "drag_coefficient")?;
+    ensure!(
+        thrust > 0. && side > 0. && linear > 0. && quadratic >= 0. && gravity_scale >= 0.,
+        "Source vtol handling is outside the flight domain"
+    );
+    let linear_speed = thrust / linear;
+    let speed = if (quadratic * linear_speed).powi(2) <= linear {
+        linear_speed
+    } else {
+        (thrust / (quadratic * quadratic)).cbrt()
+    };
+    let weight = GRAVITY / metres * gravity_scale;
+    let bank = side.atan2(weight).min(std::f32::consts::FRAC_PI_2 * 0.999);
+    let rate = number(&source["turning"], "rate_radians_per_second")?;
+    let deceleration = speed * linear.max((quadratic * speed).powi(2));
+    Ok(json!({
+        "kind":"vtol",
+        "steering":{"left_limit_radians":bank,"right_limit_radians":-bank,"rate_radians_per_second":rate},
+        "forward_source_units_per_second":speed,
+        "reverse_source_units_per_second":-speed,
+        "acceleration_source_units_per_second_squared":thrust,
+        "deceleration_source_units_per_second_squared":deceleration,
+        "cruising_throttle":1.,
+        "flight_adapter":{"source_kind":"vtol","speed_interpolated_row":rows.len() - 1,
+            "source_weight_source_units_per_second_squared":weight,"bank_limit_radians":bank,
+            "turn_rate_radians_per_second":rate,"cruising_throttle":1.,
+            "translated":["Upright magic angular acceleration as roll and pitch restoring stiffness",
+                "Rotor damping as roll and pitch rate damping"],
+            "untranslated":["Vertical input through trigger to throttle, retained lift and descent to boost",
+                "Altitude lock","Hover speed interpolated row and interpolation blend",
+                "Tilted lift on the lift markers","Landing and takeoff states"],
+            "vertical_input_limit":"The native flight route thrusts only along the body's forward axis and its surfaces only turn or slow the existing velocity, with no force at rest. No bank input reports primary fire, and boost reaches only the throttle. Altitude changes come from pitch and thrust."},
+        "source":source,
+    }))
+}
 
 pub(super) fn thrust(source: &Value) -> Result<(f32, f32)> {
     let cruise = number(source, "cruising_throttle")?;

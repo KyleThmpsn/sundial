@@ -134,6 +134,7 @@ pub mod investment_schema {
         ITEM_INVESTMENT_STAT_ROW_CLASS, ITEM_INVESTMENT_STAT_ROW_SIZE,
         ITEM_LINKED_PLUG_BLOCK_CLASS, ITEM_LINKED_PLUG_INDEX_OFFSET, ITEM_MAX_STACK_SIZE_OFFSET,
         ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET, ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET,
+        ITEM_ORDINARY_SOCKET_HIDE_PERKS_IN_TOOLTIP_OFFSET,
         ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS, ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE,
         ITEM_ORDINARY_SOCKET_PLUG_MEMBER_WEIGHT_OFFSET, ITEM_ORDINARY_SOCKET_POINTER_OFFSET,
         ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET,
@@ -240,7 +241,7 @@ pub mod ability_materials {
 
 pub mod ability_movement {
     pub use crate::ability::movement::{
-        MovementValue, PARAMETER_RESET, RowLane, Unit, discover, parameter_lane, row_lane,
+        MovementValue, PARAMETER_RESET, RowLane, Unit, discover, evade, parameter_lane, row_lane,
         row_lanes, validate_bank_context,
     };
 }
@@ -289,18 +290,18 @@ pub mod ability_bank {
     pub use crate::ability::bank::{
         AbilityTarget, CHARGE_DEFINITION_CLASS, CHARGE_INSTANCE_CLASS, CHARGE_ROWS,
         CLASS_ABILITY_CHARGE_KEY, CLASS_ABILITY_SLOT, ChargeRow, DEFINITION_ROW_CLASS,
-        FixedModifier, FixedRow, FixedSelection, FixedWitness, GRENADE_SLOT, GroupEntry,
-        GroupModifier, HandlerIndex, INSTANCE_ROW_CLASS, JUMP_SLOT, MELEE_CHARGE_KEY,
-        MELEE_DAMAGE_PROFILE, MELEE_SLOT, MOVEMENT_SLOT, Modifier, PARAMETER_NAMES,
-        PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
+        EVADE_PROFILE, FIXED_WORDS, FixedModifier, FixedRow, FixedSelection, FixedWitness,
+        GRENADE_SLOT, GroupEntry, GroupModifier, HandlerIndex, INSTANCE_ROW_CLASS, JUMP_SLOT,
+        MELEE_CHARGE_KEY, MELEE_DAMAGE_PROFILE, MELEE_SLOT, MOVEMENT_SLOT, Modifier,
+        PARAMETER_NAMES, PARAMETER_ROW_CLASS, Parameter, ParameterKind, ParameterName, PropertyRow,
         SCRIPT_DEFINITION_CLASS, SCRIPT_INSTANCE_CLASS, SLOT_BANKS, SLOT_PARAMETERS, SUPER_SLOT,
         StockParameter, UNPLACED_BANKS, bank_name, bank_names, bank_owner, block_count,
         constant_protection_definition, handler_slot, instance_shift, membership_keys,
         ordered_rows_match, parameter_abilities, parameter_kind, parameter_label,
         parameter_meaning, parameter_name, parameters, property_rows, register_bank_names,
         retarget_references, row_modifiers, slot_banks, slot_name, slot_parameters, tuning_key,
-        validate, validate_native_owner, with_charge_row, with_ordered_rows, with_property_row,
-        with_property_row_mode,
+        validate, validate_native_owner, widened, with_charge_row, with_ordered_rows,
+        with_property_row, with_property_row_mode,
     };
 }
 
@@ -632,20 +633,22 @@ pub fn open_incoming_shadowkeep_package_manager(
     )
 }
 
+/// Stock with the staged family alone, as a review reads the generation's own items.
+pub fn open_family_shadowkeep_package_manager(
+    packages: &Path,
+    incoming: &mod_content::Incoming,
+) -> Result<PackageManager, String> {
+    crate::package_runtime::open_family_shadowkeep_packages(
+        packages
+            .parent()
+            .ok_or("Packages directory has no install root")?,
+        incoming,
+    )
+}
+
 /// Reports whether the Destiny 2 client is currently running.
 pub fn destiny_is_running() -> Result<bool, String> {
     crate::app::platform::destiny_is_running()
-}
-
-/// Atomically replaces `destination` with the contents of `source`.
-pub fn replace_file_from_path_atomically(source: &Path, destination: &Path) -> Result<(), String> {
-    crate::storage::replace_file_from_path(source, destination).map_err(|error| {
-        format!(
-            "Could not atomically replace {} from {}: {error}",
-            destination.display(),
-            source.display()
-        )
-    })
 }
 
 /// Replaces `destination` with the contents of `source` only while `unchanged` accepts the
@@ -719,6 +722,7 @@ pub mod native_weapon {
 pub use crate::package_runtime::loading::index as loading_index;
 
 pub mod account;
+pub mod dxbc;
 pub use crate::account::contract::{
     SHADOWKEEP_ACCOUNT_FLAG_BANK, SHADOWKEEP_ACCOUNT_FLAG_EXTENSION_CAPACITY,
     SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY, SHADOWKEEP_ACCOUNT_FLAG_REGION_OFFSET,

@@ -15,6 +15,7 @@ use sundial::package_authoring::{
     entity::{WEAPON_STAT_TRANSLATOR_COMPONENT_KEY, weapon_component_bindings},
 };
 use tiger_pkg::TagHash;
+mod charge;
 mod logic;
 #[cfg(feature = "d2-model-importer")]
 pub(crate) mod timing;
@@ -70,7 +71,26 @@ impl Input {
     fn validate(&self) -> AuthoringResult<()> {
         let valid = match (self.component, self.input) {
             (1, 0 | 3) => (1. ..=500.).contains(&self.value) && self.value.fract() == 0.,
+            // The total rounds carried, the magazine included: the inspect display shows input 1
+            // less the capacity as reserves.
+            (1, 1) => (1. ..=9999.).contains(&self.value) && self.value.fract() == 0.,
             (2, 0..=3) => (0.05..=100.).contains(&self.value),
+            // Reload Time and Empty Reload Time, in seconds. Zero would fall back to the
+            // caller's duration rather than reload at once.
+            (3, 1 | 2) => (0.1..=30.).contains(&self.value),
+            // Charge Time and the Hold Time after it, in seconds. The native charge state ends
+            // once both have passed, so a hold of zero releases as soon as the charge completes.
+            (4, 0) => (0.05..=30.).contains(&self.value),
+            (4, 1) => (0. ..=30.).contains(&self.value),
+            // Aim assist members of the controller's `m_aim_assist`: the autoaim, friction,
+            // second magnetism and deviation angles in radians, and the autoaim and magnetism
+            // distances in metres.
+            (0, 11 | 15 | 17 | 22) => (0. ..=std::f32::consts::FRAC_PI_4).contains(&self.value),
+            (0, 12 | 13 | 14 | 19 | 20 | 21) => (0. ..=1000.).contains(&self.value),
+            // The Barrel's error cone at rest and at full error, in radians, and the seconds its
+            // error takes to fall from full to rest (`m_error_deceleration_time`).
+            (2, 14 | 15) => (0.0001..=0.5).contains(&self.value),
+            (2, 17) => (0.01..=30.).contains(&self.value),
             _ => false,
         };
         if !valid {
@@ -84,7 +104,10 @@ pub(crate) fn imported(graph: &serde_json::Value) -> AuthoringResult<Vec<Input>>
     let Some(values) = graph.pointer("/source_gameplay/inputs") else {
         return Ok(Vec::new());
     };
-    if graph["source"] != "marathon" || graph["source_gameplay"]["source"] != "marathon" {
+    let source = graph["source"].as_str();
+    if !matches!(source, Some("marathon" | "halo_reach"))
+        || graph["source_gameplay"]["source"].as_str() != source
+    {
         return Err(invalid("Numeric input translation has no supported source"));
     }
     let values: Vec<Input> = serde_json::from_value(values.clone())
@@ -96,6 +119,32 @@ pub(crate) fn imported(graph: &serde_json::Value) -> AuthoringResult<Vec<Input>>
             return Err(invalid("Duplicate imported numeric input"));
         }
     }
+    let base = |input: u32| {
+        values
+            .iter()
+            .find(|v| (v.component, v.input) == (1, input))
+            .map(|v| v.value)
+    };
+    if let (Some(capacity), Some(total)) = (base(0), base(1))
+        && total < capacity
+    {
+        return Err(invalid(
+            "Imported rounds carried are fewer than the magazine holds",
+        ));
+    }
+    let cone = |input: u32| {
+        values
+            .iter()
+            .find(|v| (v.component, v.input) == (2, input))
+            .map(|v| v.value)
+    };
+    if let (Some(rest), Some(full)) = (cone(14), cone(15))
+        && rest > full
+    {
+        return Err(invalid(
+            "Imported resting error cone is wider than the full one",
+        ));
+    }
     Ok(values)
 }
 
@@ -103,7 +152,8 @@ pub(crate) fn imported(graph: &serde_json::Value) -> AuthoringResult<Vec<Input>>
 /// Requested writers retain other consumers of their shared curves. A paired full-magazine
 /// refill candidate preserves a native literal quantum, including per-shell reloads. Native
 /// component modifiers still operate on these base values. Investment bonuses do not resample
-/// the imported baseline, and donor trigger/state selection remains a separate contract.
+/// the imported baseline, and donor trigger/state selection remains a separate contract. A Charge
+/// input that no route writes takes its value as the Charge definition's own literal instead.
 pub(crate) fn patches(
     manager: &PackageManager,
     entity: &[u8],
@@ -145,6 +195,7 @@ pub(crate) fn patches(
         return Err(invalid("Imported stat route layout differs"));
     }
     let (handled, mut writes) = logic::patches(&owner, table, values)?;
+    let mut charge = Vec::new();
     for value in values {
         value.validate()?;
         let mut found = Vec::new();
@@ -164,6 +215,11 @@ pub(crate) fn patches(
             writes.push((at + 16, literal(value.value)));
         }
         if found.is_empty() && !handled.contains(&(value.component, value.input)) {
+            // A Charge input the translator does not route starts from its definition literal.
+            if value.component == 4 {
+                charge.push(value);
+                continue;
+            }
             return Err(invalid(format!(
                 "Native carrier has no component {} input {} route",
                 value.component, value.input
@@ -180,7 +236,7 @@ pub(crate) fn patches(
             ));
         }
     }
-    unique
+    let mut patches = unique
         .into_iter()
         .map(|(cell, bytes)| {
             Ok(WeaponRuntimeResourcePatch {
@@ -197,5 +253,7 @@ pub(crate) fn patches(
                 graph_trajectories: None,
             })
         })
-        .collect()
+        .collect::<AuthoringResult<Vec<_>>>()?;
+    patches.extend(charge::patches(manager, entity, &charge)?);
+    Ok(patches)
 }

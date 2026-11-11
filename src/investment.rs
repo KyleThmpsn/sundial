@@ -44,15 +44,16 @@ fn is_stock_shader(metadata: &crate::catalog::ItemPackageMetadata) -> bool {
 pub(crate) mod seasonal;
 pub use controls::{
     AUTHORING_SOCKET_RESET_WIDTH, AuthoringItemHeader, CatalogLoadingView, DisplayTooltip,
-    IconOverride, ItemTooltip, PlugChoicePickerButton, PlugChoicePickerOptions, PlugSelection,
-    PlugTooltip, WeaponChoiceFilter, WeaponDonorPickerAction, WeaponDonorPickerClearChoice,
-    WeaponDonorPickerOptions, authoring_button_width, authoring_choice_row_height,
-    authoring_socket_label_width, authoring_socket_reset_width, configure_authoring_fonts,
-    default_plug_selection_mode, draw_asset_choice_row, draw_asset_choice_row_plain,
-    draw_authoring_info_icon, draw_authoring_item_header, draw_authoring_socket_label,
-    draw_authoring_socket_reset, draw_authoring_tile, draw_authoring_toolbar,
-    draw_authoring_warning_icon, draw_catalog_loading_view, draw_display_tooltip,
-    draw_plug_safety_warning, progress_bar, show_plug_safety_warnings, tooltip_title,
+    IconOverride, ItemChoiceFields, ItemChoiceFilter, ItemTooltip, PlugChoicePickerButton,
+    PlugChoicePickerOptions, PlugSelection, PlugTooltip, WeaponChoiceFilter,
+    WeaponDonorPickerAction, WeaponDonorPickerClearChoice, WeaponDonorPickerOptions,
+    authoring_button_width, authoring_choice_row_height, authoring_socket_label_width,
+    authoring_socket_reset_width, configure_authoring_fonts, default_plug_selection_mode,
+    draw_asset_choice_row, draw_asset_choice_row_plain, draw_authoring_info_icon,
+    draw_authoring_item_header, draw_authoring_socket_label, draw_authoring_socket_reset,
+    draw_authoring_tile, draw_authoring_toolbar, draw_authoring_warning_icon,
+    draw_catalog_loading_view, draw_display_tooltip, draw_plug_safety_warning, progress_bar,
+    show_plug_safety_warnings, tooltip_title,
 };
 pub use definitions::{
     AbilityKey, AbilityParameter, AbilityRowSummary, PowerCapChoice, SharedWeaponOrnament,
@@ -679,6 +680,46 @@ impl InvestmentCatalog {
         self.catalog.reusable_plug_set_count()
     }
 
+    /// The ability entity of every installed subclass's supers, by the damage type the subclass
+    /// shows beside its name, in the damage-profile encoding: Solar 1, Arc 2, Void 3. A native
+    /// roster event names the entity an ability row equips, so these are what a roster condition
+    /// compares. `include_definition` chooses subclasses by item definition tag.
+    #[must_use]
+    pub fn subclass_super_entities(
+        &self,
+        include_definition: impl Fn(u32) -> bool,
+    ) -> BTreeMap<u8, BTreeSet<u32>> {
+        let mut result = BTreeMap::<u8, BTreeSet<u32>>::new();
+        for item in self
+            .catalog
+            .items
+            .iter()
+            .filter(|item| item.bucket_hash == crate::catalog::SUBCLASS_BUCKET_HASH)
+            .filter(|item| {
+                self.catalog
+                    .item_package_metadata(item.hash)
+                    .is_some_and(|metadata| include_definition(metadata.definition_tag))
+            })
+        {
+            let Some(damage) = self
+                .catalog
+                .item_package_metadata(item.hash)
+                .and_then(|metadata| metadata.display_damage_type)
+                .filter(|damage| (1..=3).contains(damage))
+            else {
+                continue;
+            };
+            let entities = &item.abilities.entry_entities;
+            result.entry(damage).or_default().extend(
+                item.abilities
+                    .super_ability
+                    .iter()
+                    .filter_map(|choice| entities.get(&choice.entry).copied()),
+            );
+        }
+        result
+    }
+
     /// Number of addressable rows in the installed socket-entry-list table.
     #[must_use]
     pub fn socket_entry_list_count(&self) -> usize {
@@ -895,6 +936,17 @@ impl InvestmentCatalog {
         self.catalog
             .item_package_metadata(u64::from(hash))
             .is_some_and(is_stock_shader)
+    }
+
+    /// Whether an installed plug is an ornament: a plug whose definition carries art rows, which
+    /// change the look of the item it is inserted into.
+    #[must_use]
+    pub fn is_ornament(&self, hash: u32) -> bool {
+        self.is_plug(hash)
+            && self
+                .catalog
+                .item_package_metadata(u64::from(hash))
+                .is_some_and(|metadata| !metadata.art_arrangements.is_empty())
     }
 
     /// The plug category an installed plug declares.

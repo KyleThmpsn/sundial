@@ -60,6 +60,11 @@ pub(super) fn modifier_kind(modifier: Modifier) -> &'static str {
 
 pub(super) fn modifier_classes(modifier: Modifier) -> Result<ModifierClasses, String> {
     let (definition, instance, definition_size) = match modifier {
+        Modifier::Attack(body) if body.melee => (
+            ATTACK_DEFINITION_CLASS,
+            ATTACK_INSTANCE_CLASS,
+            ATTACK_DEFINITION_SIZE,
+        ),
         Modifier::Attack(_) => (attack::CLASS, attack::CLASS + 1, 32),
         Modifier::Group(_) => (group::CLASS, group::TWIN, 40),
         Modifier::Fixed(body) => (body.class, body.class + 1, body.definition_size()?),
@@ -100,7 +105,9 @@ pub(super) fn listed_parameter(
         | Modifier::Scalar { .. }
         | Modifier::Fixed(_)
         | Modifier::Group(_) => Ok(None),
-        Modifier::Parameter { name, applied, add } => {
+        Modifier::Parameter {
+            name, applied, add, ..
+        } => {
             let listed = table
                 .iter()
                 .find(|parameter| parameter.name == name)
@@ -299,7 +306,10 @@ pub(super) fn write_rows(
                 put_u32(out, definition_row + ROW_FLAGS, 0xFF);
                 let selection = match row.body {
                     Body::Fixed(body) => body.selection,
-                    Body::Movement(_, selection) => Some(selection),
+                    Body::Movement(_, selection) | Body::Container(_, _, selection) => {
+                        Some(selection)
+                    }
+                    Body::Own(selection) => selection,
                     _ => None,
                 };
                 if let Some(selection) = selection {
@@ -416,6 +426,12 @@ pub(super) fn write_modifier_pair(out: &mut [u8], owner: u32, row: &Added) -> Re
             put_pointer(out, modifier_definition + 16, roots[0])?;
             put_pointer(out, modifier_definition + 24, roots[1])?;
         }
+        Body::Container(roots, prefix, _) => {
+            put_u32(out, modifier_definition + 0x10, prefix[0]);
+            put_u32(out, modifier_definition + 0x14, prefix[1]);
+            put_pointer(out, modifier_definition + 0x18, roots[0])?;
+            put_pointer(out, modifier_definition + 0x20, roots[1])?;
+        }
         Body::Fixed(body) => {
             for (i, &word) in body.words[..body.byte_len()? / 4].iter().enumerate() {
                 put_u32(out, modifier_definition + 16 + i * 4, word);
@@ -440,7 +456,7 @@ pub(super) fn write_modifier_pair(out: &mut [u8], owner: u32, row: &Added) -> Re
             put_u32(out, modifier_definition + WINDOW_LOW, low.to_bits());
             put_u32(out, modifier_definition + WINDOW_HIGH, high.to_bits());
         }
-        Body::Own => {
+        Body::Own(_) => {
             return Err("Numeric modifiers require their paired input arrays".into());
         }
     }
@@ -504,7 +520,10 @@ pub(super) fn check_read_back(
                 PropertyRow {
                     key: row.key,
                     name: match row.body {
-                        Body::Movement(_, selection) => selection.name,
+                        Body::Movement(_, selection) | Body::Container(_, _, selection) => {
+                            selection.name
+                        }
+                        Body::Own(selection) => selection.map_or(NO_NAME, |s| s.name),
                         Body::Fixed(body) => body.selection.map_or(NO_NAME, |s| s.name),
                         _ => NO_NAME,
                     },

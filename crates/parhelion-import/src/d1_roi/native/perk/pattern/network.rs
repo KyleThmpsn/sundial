@@ -37,7 +37,10 @@ fn native_schema(native: &mut Reader, class: u32, base: u32, size: u32, name: &[
     }
 }
 
-/// Validate all seven exported providers and their reciprocal runtime bindings.
+/// Validate all seven exported providers and their reciprocal runtime bindings. Provider
+/// exclusion bits are numbered across each whole graph, so an effect graph whose other owners
+/// export first, as Devil's Touch's condition volume does, gives its network a later bit. An
+/// exclusion of zero admits any single bit.
 fn exports(
     graph: &Payload,
     p: &Payload,
@@ -74,9 +77,15 @@ fn exports(
             .iter()
             .find(|row| row.0 - if native { 24 } else { 0 } == offset)
             .context("Unknown network export")?;
+        let flags = graph.u32(at)?;
         ensure!(
-            graph.u32(at)? == if method == 3 { exclusion << 16 } else { 0 }
-                && graph.u64(at + 4)? == 0
+            if method != 3 {
+                flags == 0
+            } else if exclusion == 0 {
+                flags & 0xFFFF == 0 && (flags >> 16).is_power_of_two()
+            } else {
+                flags == exclusion << 16
+            } && graph.u64(at + 4)? == 0
                 && graph.u32(at + 12)? == class
                 && graph.u32(at + 20)? == if native { 0x80809C50 } else { 0 }
                 && graph.u64(at + 32)? == p.u64(d + offset + 8)?
@@ -119,24 +128,68 @@ fn lifecycle(p: &Payload, native: bool) -> Result<()> {
 
 pub(super) fn read(source: &Source, native: &mut Reader, graph: &Payload) -> Result<Option<u32>> {
     let bank = graph.u64(32)? == 3;
+    let (owners, ordinal) = if bank { (3, 1) } else { (2, 1) };
     companion(
         source,
         native,
         graph,
         Layout {
             graph: if bank { BANK_GRAPH } else { GRAPH },
-            owners: if bank { 3 } else { 2 },
-            ordinal: 1,
+            owners,
+            ordinal,
+            native_owners: owners,
+            native_ordinal: ordinal,
             exclusion: 4,
             built_in: bank,
         },
     )
 }
 
+/// A generated or built-in network owner of a connected effect graph and the native graph's
+/// network owner. The two graphs can differ in owner count and position. The networks
+/// themselves must agree in provider dispatch, tuning, lifecycle, exports and empty allocation.
+/// A built-in source network, as in Devil's Touch's `80A7E16F`, takes the same checks as a bank
+/// graph's companion.
+pub(super) fn effect(
+    source: &Source,
+    native: &mut Reader,
+    graph: &Payload,
+    ordinal: usize,
+    native_graph: u32,
+    native_ordinal: usize,
+    exclusion: u32,
+) -> Result<u32> {
+    let rows = graph.array(32, 12, Some(0x80800715))?;
+    let owners = rows.len();
+    let network = source.read(graph.u32(*rows.get(ordinal).context("Source network ordinal")?)?)?;
+    let built_in = network.u32(network.pointer(24)? - 4)? == 0x80800362;
+    let native_owners = native
+        .tag(native_graph, Some(0x80809C0F))?
+        .array(16, 12, Some(0x80809C04))?
+        .len();
+    companion(
+        source,
+        native,
+        graph,
+        Layout {
+            graph: native_graph,
+            owners,
+            ordinal,
+            native_owners,
+            native_ordinal,
+            exclusion,
+            built_in,
+        },
+    )?
+    .context("Source effect network is not a qualified network")
+}
+
 struct Layout {
     graph: u32,
     owners: usize,
     ordinal: usize,
+    native_owners: usize,
+    native_ordinal: usize,
     exclusion: u32,
     built_in: bool,
 }
@@ -150,6 +203,8 @@ pub(super) fn sound(source: &Source, native: &mut Reader, graph: &Payload) -> Re
             graph: sequence::audio::GRAPH,
             owners: 3,
             ordinal: 2,
+            native_owners: 3,
+            native_ordinal: 2,
             exclusion: 8,
             built_in: false,
         },
@@ -167,6 +222,8 @@ fn companion(
         graph: native_tag,
         owners: owner_count,
         ordinal,
+        native_owners: native_count,
+        native_ordinal,
         exclusion,
         built_in,
     } = layout;
@@ -238,10 +295,10 @@ fn companion(
     let native_graph = native.tag(native_tag, Some(0x80809C0F))?;
     let native_owners = native_graph.array(16, 12, Some(0x80809C04))?;
     ensure!(
-        native_owners.len() == owner_count,
+        native_owners.len() == native_count,
         "Native network graph owner count differs"
     );
-    let tag = native_graph.u32(native_owners[ordinal])?;
+    let tag = native_graph.u32(native_owners[native_ordinal])?;
     let target = native.tag(tag, Some(0x80809C36))?;
     let (ni, nd) = (target.pointer(16)?, target.pointer(24)?);
     let (nic, ndc) = (target.u32(ni - 4)?, target.u32(nd - 4)?);
@@ -350,7 +407,7 @@ fn companion(
     lifecycle(&p, false)?;
     lifecycle(&target, true)?;
     exports(graph, &p, owner, false, ordinal, exclusion)?;
-    exports(&native_graph, &target, tag, true, ordinal, exclusion)?;
+    exports(&native_graph, &target, tag, true, native_ordinal, exclusion)?;
     let allocation = native.tag(target.u32(0x44)?, None)?;
     ensure!(
         allocation.0.len() == 48
@@ -364,11 +421,19 @@ fn companion(
     Ok(Some(owner))
 }
 
+/// Replication records of stock graphs holding a standalone constant bank of the layout the
+/// plain envelope of that row count has, by row count. A larger bank replaces the envelope's
+/// one-row owner whole, and its replica row comes from one of these.
+/// `80C0020A` is the networked status form's two-row witness. `80C1158F` replicates graph
+/// `80C11517`, whose bank `80C11512` has the seven-row layout of `80EFAD9F`, the owner of
+/// envelope `80BC5798`. `80F66627` (graph `80F44F1F`) is a second seven-row witness.
+const REPLICATION_WITNESSES: [(usize, u32); 2] = [(2, 0x80C0020A), (7, 0x80C1158F)];
+
 pub(super) fn modifier(
     source: &Source,
     native: &mut Reader,
     graph: &Payload,
-) -> Result<(u32, Vec<NativeAssetResourcePatch>)> {
+) -> Result<NativeAssetPatch> {
     // This complete stock graph has a network owner followed by one constant row.
     // Keeping its owner count and allocation avoids constructing a new replication layout.
     const ENVELOPE: u32 = 0x80C19433;
@@ -385,23 +450,23 @@ pub(super) fn modifier(
             graph: ENVELOPE,
             owners: 2,
             ordinal: 0,
+            native_owners: 2,
+            native_ordinal: 0,
             exclusion: 1,
             built_in: false,
         },
     )?
     .context("Source modifier companion is not the qualified network component")?;
     let rows = modifier_owner(source, graph, graph.u32(owners[1])?)?;
-    ensure!(
-        rows.len() == 1,
-        "Network modifier bank has no equal-sized native envelope"
-    );
     let target = native.tag(ENVELOPE, Some(0x80809C0F))?;
     let native_owners = target.array(0x10, 12, Some(0x80809C04))?;
     ensure!(
         native_owners.len() == 2,
         "Native network modifier owner count differs"
     );
-    for (payload, shift, count) in [(graph, 0x10, 11), (&*target, 0, 12)] {
+    // Seven network providers, then the bank's two and each row's two.
+    let source_exports = 7 + 2 + 2 * rows.len();
+    for (payload, shift, count) in [(graph, 0x10, source_exports), (&*target, 0, 12)] {
         let masks = payload.array(0x78 + shift, 2, None)?;
         ensure!(
             payload.bytes::<32>(0x20 + shift)? == [0; 32]
@@ -411,6 +476,40 @@ pub(super) fn modifier(
             "Network modifier graph has connections, masks or extra exports"
         );
     }
-    let patches = modifier_patches(native, &target, target.u32(native_owners[1])?, &rows)?;
-    Ok((ENVELOPE, patches))
+    let bank = target.u32(native_owners[1])?;
+    let (patches, components, remove_owners) = if rows.len() == 1 {
+        (
+            modifier_patches(native, &target, bank, &rows)?,
+            Vec::new(),
+            Vec::new(),
+        )
+    } else {
+        // The network owner, its providers and the graph's replication stay. The one-row
+        // bank leaves, and the complete standalone owner of the source's row count takes its
+        // place, as the networked status form replaces its trailing bank.
+        let replication = REPLICATION_WITNESSES
+            .iter()
+            .find_map(|&(count, tag)| (count == rows.len()).then_some(tag))
+            .context("Network modifier bank size has no native replication witness")?;
+        let (source_graph, patches) = modifier_patch(native, &rows)?;
+        super::connected::allocation(native, source_graph, rows.len())?;
+        (
+            Vec::new(),
+            vec![NativeAssetComponent {
+                source_graph,
+                patches,
+                replication: Some(replication),
+            }],
+            vec![bank],
+        )
+    };
+    Ok(NativeAssetPatch {
+        action_index: 0,
+        source_graph: ENVELOPE,
+        patches,
+        appends: Vec::new(),
+        remove_owners,
+        components,
+        programs: Vec::new(),
+    })
 }

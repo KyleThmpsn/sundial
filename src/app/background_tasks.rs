@@ -1,7 +1,5 @@
 use std::{path::PathBuf, sync::mpsc::Receiver};
 
-use serde_json::Value;
-
 use crate::catalog::{Catalog as Manifest, CatalogProgress};
 
 use super::SettingsLayout;
@@ -10,7 +8,7 @@ pub(super) struct PendingInstallLoad {
     pub(super) install_path: PathBuf,
     pub(super) settings_path: PathBuf,
     pub(super) settings_layout: SettingsLayout,
-    pub(super) document: Value,
+    pub(super) accepted_future_schema: Option<u64>,
 }
 
 pub(super) enum CatalogTaskKind {

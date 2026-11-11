@@ -11,23 +11,38 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs};
-mod animation;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+};
+pub(in crate::halo_reach) mod animation;
 mod decal;
+mod emission;
 mod environment;
 mod fog;
+mod lighting_control;
 mod mux;
+mod normal;
+mod opacity;
+mod overlay;
+mod parallax;
+mod pixel;
+mod resources;
 pub(in crate::halo_reach) mod sky;
 mod specular;
+mod support;
 mod surface;
+mod technique;
 mod terrain;
 pub(in crate::halo_reach) mod vertex_data;
 mod water;
-pub(in crate::halo_reach) use fog::{Band, Fog, Light};
+pub(in crate::halo_reach) use fog::{Band, Fog, Light, METRES_PER_UNIT};
 
 pub(in crate::halo_reach) struct Binding<'a> {
     pub palette: &'a [u8],
     pub rigid: bool,
+    /// The model inputs the surfaces may read. A weapon that connects aim visibility shows its
+    /// source HUD scope at full aim instead of itself, so every surface discards there.
     pub objects: &'a BTreeMap<String, u8>,
     pub overrides: &'a BTreeMap<String, BTreeMap<String, [f32; 4]>>,
     pub lenses: &'a BTreeMap<u32, Lens>,
@@ -40,9 +55,15 @@ pub(in crate::halo_reach) struct Binding<'a> {
     /// Whether the surfaces draw static instances ([`STATIC_SCOPE`]), whose transform and texture
     /// coordinate scale come from the instance scope rather than from an object's.
     pub statics: bool,
+    /// Static cutout materials with a reverse triangle for every face. Their authored copies
+    /// supply both sides, so back-face culling preserves each side's own normal and baked light.
+    pub paired_faces: &'a BTreeSet<u32>,
     /// Prefixes the symbols of the programs and surfaces this build adds, so a second build with
     /// another binding can share the graph. Textures and samplers are shared across builds.
     pub prefix: &'a str,
+    /// Whether the build adds [`prepass`]'s depth technique, for a held item whose opaque
+    /// surfaces draw in the depth prepass as stock weapon parts do.
+    pub prepass: bool,
 }
 
 /// The scope bits a static instance's surfaces take in place of an object's: stock static
@@ -245,6 +266,20 @@ pub(in crate::halo_reach) fn program(
     write_program(native, g, symbol, template, text, &bytes, &warnings)
 }
 
+/// Places an edited copy of native program `template`, whose `bytes` replace its data. The
+/// `note` records the edit beside the program, where a compiled program keeps its source.
+pub(in crate::halo_reach) fn bytecode(
+    native: &mut Reader,
+    g: &mut Graph,
+    symbol: &str,
+    template: u32,
+    bytes: &[u8],
+    note: &str,
+) -> Result<()> {
+    reserve_program(native, g, symbol, template)?;
+    write_program(native, g, symbol, template, note, bytes, "")
+}
+
 /// Places program `symbol`'s header and data nodes, whose payloads [`write_program`] writes.
 fn reserve_program(native: &mut Reader, g: &mut Graph, symbol: &str, template: u32) -> Result<()> {
     let data = format!("{symbol}-data");
@@ -279,10 +314,26 @@ pub(in crate::halo_reach) fn texture(
     normal: bool,
     srgb: bool,
 ) -> Result<String> {
-    Ok(bound_texture(c, pages, native, g, mapping, normal, srgb)?.0)
+    Ok(bound_texture(c, pages, native, g, mapping, normal, srgb, srgb)?.0)
 }
 
-/// The optional flag identifies signed or unsigned BC5 normal samples.
+/// A texture an effect draws. Its base, alpha and second maps are the effect's art whatever their
+/// colour space, so they compress as colour does ([`bound_texture`]). Its palette stays an exact
+/// lookup.
+pub(in crate::halo_reach) fn effect_texture(
+    c: &Cache,
+    pages: &mut Pages,
+    native: &mut Reader,
+    g: &mut Graph,
+    mapping: &material::Mapping,
+    srgb: bool,
+) -> Result<String> {
+    Ok(bound_texture(c, pages, native, g, mapping, false, srgb, true)?.0)
+}
+
+/// The optional flag identifies signed or unsigned BC5 normal samples. `art` marks a binding whose
+/// texels are seen as an image rather than read as numbers.
+#[allow(clippy::too_many_arguments)]
 fn bound_texture(
     c: &Cache,
     pages: &mut Pages,
@@ -291,6 +342,7 @@ fn bound_texture(
     mapping: &material::Mapping,
     normal: bool,
     srgb: bool,
+    art: bool,
 ) -> Result<(String, Option<bool>)> {
     let bitmap = material::Bitmap::read(
         c,
@@ -304,8 +356,15 @@ fn bound_texture(
     let srgb = srgb && bitmap.curve != LINEAR_CURVE;
     let animated = mapping.ammunition_place(c)?.is_some();
     // Smaller levels of a digit strip would blend neighboring digits, and palettes and diffuse
-    // tables are lookup tables read at exact coordinates.
-    let mips = if animated || matches!(mapping.role.as_str(), "palette" | "g_sample_vmf_diffuse") {
+    // tables are lookup tables read at exact coordinates. A scope's extended border reads only the
+    // top level, and without smaller levels a client that drops a texture's top level has no other
+    // level to show. Stock ships its odd-sized RGBA8 textures with one level as well. The sniper
+    // rifle's mask is 394 by 250.
+    let mips = if animated
+        || matches!(
+            mapping.role.as_str(),
+            "palette" | "g_sample_vmf_diffuse" | "scope_border"
+        ) {
         Mips::None
     } else if normal {
         Mips::Normal
@@ -314,8 +373,17 @@ fn bound_texture(
     } else {
         Mips::Data
     };
+    // Art that Reach stores in a format with no native twin decodes to RGBA8, and then takes BC7
+    // as stock's effect and colour art does, a quarter of the memory. Normals, masks, noise and
+    // other values read as numbers keep RGBA8, as do lookups and strips without smaller levels.
+    // A block-compressed top level must be whole 4 by 4 blocks.
+    let compress = art
+        && bitmap.block_format().is_none()
+        && matches!(mips, Mips::Color | Mips::Data)
+        && bitmap.width.is_multiple_of(4)
+        && bitmap.height.is_multiple_of(4);
     let symbol = format!(
-        "{}-{}{}{}",
+        "{}-{}{}{}{}",
         bitmap.name(),
         if srgb { "srgb" } else { "linear" },
         if animated { "-decimal" } else { "" },
@@ -323,7 +391,8 @@ fn bound_texture(
             "-lookup"
         } else {
             ""
-        }
+        },
+        if compress { "-bc7" } else { "" }
     );
     let bc5 = (mips != Mips::None && normal && matches!(bitmap.format, 38 | 44))
         .then_some(bitmap.format == 38);
@@ -347,10 +416,32 @@ fn bound_texture(
         let stored = bitmap
             .stored(c, pages)
             .with_context(|| format!("Surface bitmap role {}", mapping.role))?;
-        let format = if srgb { 29 } else { 28 };
+        let format = match (compress, srgb) {
+            (true, true) => 99,
+            (true, false) => 98,
+            (false, true) => 29,
+            (false, false) => 28,
+        };
         let texture = reserve_texture(native, g, &symbol, format)?;
         let role = mapping.role.clone();
         defer(move || {
+            // Decoding, the mip chain and BC7 encoding repeat for every weapon whose material
+            // binds this bitmap, so what they make is remembered by its whole input, the
+            // converter revision included, and a later import takes it from the store.
+            let mut input = stored.input();
+            input.extend_from_slice(&crate::halo_reach::REVISION.to_le_bytes());
+            input.push(match mips {
+                Mips::None => 0,
+                Mips::Color => 1,
+                Mips::Data => 2,
+                Mips::Normal => 3,
+            });
+            input.push(u8::from(compress));
+            if let Some(made) = crate::store::recall(SURFACE, &input)
+                && let Some((&levels, pixels)) = made.split_first()
+            {
+                return texture.write(extent, format, levels, pixels);
+            }
             let mut rgba = stored
                 .decode()
                 .with_context(|| format!("Surface bitmap role {role}"))?;
@@ -359,36 +450,26 @@ fn bound_texture(
                 "Texture size differs"
             );
             let levels = mip_chain(extent[0], extent[1], &mut rgba, mips);
-            texture.write(extent, format, levels, &rgba)
+            let pixels = if compress {
+                crate::tiger::texture::bc7_chain(extent[0], extent[1], levels, &rgba)
+                    .with_context(|| format!("Surface bitmap role {role}"))?
+            } else {
+                rgba
+            };
+            if pixels.len() as u64 >= crate::store::SMALLEST {
+                let mut made = Vec::with_capacity(pixels.len() + 1);
+                made.push(levels);
+                made.extend_from_slice(&pixels);
+                crate::store::remember(SURFACE, &input, &made);
+            }
+            texture.write(extent, format, levels, &pixels)
         })?;
         return Ok((symbol, None));
     }
     let mut image = bitmap
         .decode(c, pages)
         .with_context(|| format!("Surface bitmap role {}", mapping.role))?;
-    if animated {
-        let tag = mapping.bitmap.as_ref().context("Animated bitmap")?;
-        let frames = (0..10)
-            .map(|frame| material::image(c, pages, tag, frame, normal))
-            .collect::<Result<Vec<_>>>()?;
-        let width = image.width;
-        let height = image.height;
-        ensure!(
-            frames
-                .iter()
-                .all(|f| f.width == width && f.height == height && f.format == image.format),
-            "Decimal bitmap frame dimensions or formats differ"
-        );
-        image.width *= 10;
-        image.rgba.resize(image.width * height * 4, 0);
-        for (index, frame) in frames.iter().enumerate() {
-            for y in 0..height {
-                let start = (y * image.width + index * width) * 4;
-                image.rgba[start..start + width * 4]
-                    .copy_from_slice(&frame.rgba[y * width * 4..(y + 1) * width * 4]);
-            }
-        }
-    }
+    expand_decimal_frames(c, pages, mapping, normal, &mut image)?;
     rgba_texture(
         native,
         g,
@@ -459,6 +540,11 @@ pub(in crate::halo_reach) fn cube_mips(
     )?;
     Ok(())
 }
+
+/// The store recipe decoded surface bitmaps are remembered under: a level count, then the data
+/// entry's mip chain, RGBA8 or BC7. Its input carries the converter revision, so a revision that
+/// changes decoding or encoding misses the older results.
+const SURFACE: &str = "reach-surface-1";
 
 /// How a texture's smaller mip levels are filtered from its top level.
 #[derive(Clone, Copy, PartialEq)]
@@ -597,7 +683,9 @@ fn reserve_texture(
     symbol: &str,
     format: u32,
 ) -> Result<ReservedTexture> {
-    let srgb = matches!(format, 29 | 72 | 75 | 78);
+    // Both templates are stock resident BC7 headers, 99 with colour space byte 5 and 98 with 3, so
+    // the sRGB one serves every sRGB format.
+    let srgb = matches!(format, 29 | 72 | 75 | 78 | 99);
     let template = if srgb { 0x80ec31b9 } else { 0x80ec31bc };
     let header = native.tag(template, None)?.0.clone();
     let data = format!("{symbol}-data");
@@ -691,45 +779,39 @@ impl Drop for DeferralScope {
     }
 }
 
-/// A level's decoded baked lighting: its three atlas textures, the scale of their lighting and the
+/// A level's baked lighting: its source atlas textures, probe table, lighting scale and the
 /// average lit level that lighting is a share of, as [`crate::halo_reach::level::lightmap::Atlas`] describes
 /// them, the light its opaque surfaces add for the level's large bloom, as a share of that level,
 /// and the level's fog.
 #[derive(Clone)]
 pub(in crate::halo_reach) struct Lightmap {
-    pub lobe: String,
-    pub ambient: String,
-    pub direction: String,
+    pub intensity: [String; 3],
+    pub mask: String,
+    pub probes: String,
+    pub decoder: String,
     pub scale: f32,
     pub level: f32,
     pub radiance: f32,
+    /// Source indirect luminance represented by the shared open native visibility.
+    pub reference: f32,
     pub veil: [f32; 3],
     pub sun: Option<Analytical>,
     pub analytical: BTreeMap<u32, Analytical>,
     pub origin: [f32; 3],
     pub fog: Option<Fog>,
-    /// The native sun intensity the map's environment asks for (global channel 8), which hybrid
-    /// surfaces divide their native sun share by ([`hybrid_finish`]).
-    pub native_sun: f32,
+    /// Source camera limits shared with sky and screen-fog in-scatter, as linear exposure.
+    pub fog_exposure: Option<[f32; 2]>,
+    /// Whether the sky's screen fog sheet ([`sky::screen_fog`]) fogs the level's opaque surfaces,
+    /// which then leave `fog` to it ([`native_finish`]).
+    pub screen_fog: bool,
+    /// Self illumination's scale and power over the frame's exposure scale `x`, `scale * x^power`,
+    /// which hold it at Reach's own self illumination exposure ([`self_illumination_exposure`]).
+    pub self_illumination: [f32; 2],
 }
 
-/// The native sun intensity a map takes when nothing changes it, global channel 8's default in the
-/// Shadowkeep defaults table `80A5C051`.
-pub(in crate::halo_reach) const DEFAULT_NATIVE_SUN: f32 = 10.;
-
-/// View distances in meters over which an opaque surface under the native sun takes back Reach's
-/// baked sun visibility. Shadowkeep's three near cascades refit every frame, from about 31 to
-/// 76 m across in the nearest to 218 to 540 m in the third over a 90 degree turn, so a crate's
-/// shadow crawls, softens and drops out with distance, where Reach drew it baked and still.
-const BAKED_SHADOW_NEAR: f32 = 30.;
-const BAKED_SHADOW_FAR: f32 = 60.;
-
-/// Adds a level's decoded baked lighting as three linear RGBA8 textures. Each keeps one level, as
-/// smaller levels would blend neighboring charts of its atlas. Reach's lightmapper packs a BSP's
-/// charts into one image among dark filler texels, the converter keeps that image whole without
-/// chart identities, and a level `k` texel averages a block `2^k` texels wide across chart edges,
-/// so distant edges would darken or take a neighbor's light. Per-chart mips need charts cut from
-/// the lightmap coordinates' triangles and repacked with aligned gutters.
+/// Adds the original BC3 intensity layers and BC5 exponent/visibility map as four native 2D
+/// textures. The shader decodes their filtered values. Constant probes have a separate linear
+/// table. Images retain their source top level, with no generated mips across packed charts.
 pub(in crate::halo_reach) fn lightmap_textures(
     native: &mut Reader,
     g: &mut Graph,
@@ -738,34 +820,58 @@ pub(in crate::halo_reach) fn lightmap_textures(
     sun: Option<Analytical>,
     fog: Option<Fog>,
 ) -> Result<Lightmap> {
-    let mut add = |name: &str, rgba: &[u8]| -> Result<String> {
-        let symbol = format!("lightmap-{name}-linear");
-        rgba_texture(
-            native,
-            g,
-            &symbol,
-            atlas.width,
-            atlas.height,
-            rgba.to_vec(),
-            false,
-            Mips::None,
-        )?;
+    let mut add = |name: &str, extent: [usize; 2], format: u32, bytes: &[u8]| -> Result<String> {
+        let symbol = format!("lightmap-{name}");
+        texture_data(native, g, &symbol, extent, format, 1, bytes)?;
         Ok(symbol)
     };
+    let extent = [atlas.width, atlas.height];
+    let source = &atlas.sampling;
     Ok(Lightmap {
-        lobe: add("lobe", &atlas.lobe)?,
-        ambient: add("ambient", &atlas.ambient)?,
-        direction: add("direction", &atlas.direction)?,
+        intensity: [
+            add("intensity-0", extent, 77, &source.intensity[0])?,
+            add("intensity-1", extent, 77, &source.intensity[1])?,
+            add("intensity-2", extent, 77, &source.intensity[2])?,
+        ],
+        mask: add("mask", extent, 83, &source.mask)?,
+        probes: add("probes", source.probe_extent, RGBA16_FLOAT, &source.probes)?,
+        decoder: source.function(atlas.scale),
         scale: atlas.scale,
         level: atlas.level,
         radiance: LIGHT_RADIANCE,
+        reference: 1.,
         veil,
         sun,
         analytical: BTreeMap::new(),
         origin: [0.; 3],
         fog,
-        native_sun: DEFAULT_NATIVE_SUN,
+        fog_exposure: None,
+        screen_fog: false,
+        self_illumination: [1., 0.],
     })
+}
+
+/// Self illumination's factor over the main exposure. Reach draws it at its own exposure `I`,
+/// `self * 2^I` where lit surfaces take `2^E`: `get_illum_render_scale` (`8258CA40` in the Xbox
+/// `halo3_tag_play` build) returns `2^(I - E)` beside `get_render_exposure`'s `2^E`, and
+/// `c_camera_fx_values::update` (`82595FD0`) sets `I = P + C * (E - P)`, with `P` the camera
+/// effects' preferred self illumination exposure (`+0xC0`) and `C` how much of the main exposure it
+/// follows (`+0xD0`). A lit surface draws at the frame's `x` where Reach draws `2^E`, at
+/// `x = 2^(E + offset)` with `offset` the level's exposure offset
+/// ([`crate::halo_reach::level::native::NativeExposure`]), so self illumination takes
+/// `2^((1 - C) * (P + offset)) * x^(C - 1)` of what the main exposure alone gives it, 1 when the
+/// frame sits at the preferred exposure.
+pub(in crate::halo_reach) fn self_illumination_exposure(
+    preferred: f32,
+    change: f32,
+    offset: f32,
+) -> [f32; 2] {
+    [((1. - change) * (preferred + offset)).exp2(), change - 1.]
+}
+
+/// The pixel program factor of a lightmapped surface's self illumination, `scale * x^power`.
+fn self_illumination_factor([scale, power]: [f32; 2]) -> String {
+    format!("{scale:.9}*pow(max(frameData[1].z,0.000001),{power:.9})")
 }
 
 /// The D3D11 address modes, U then V, of a source mapping's packed address byte. Its low four bits
@@ -954,8 +1060,9 @@ fn decimal_display(c: &Cache, pages: &mut Pages, material: &Material) -> Result<
         0,
         false,
     )?;
+    // The material constants that hold `magazine` are declared with the surface's other rows.
     Ok(Some(format!(
-        "cbuffer Magazine : register(b0) {{ float4 magazine; }};\nfloat2 decimalUv(float2 uv,float place) {{ float digit=fmod(floor(max(magazine.x,0)/place),10); return float2((digit+clamp(uv.x,{:.9},{:.9}))/10,clamp(uv.y,{:.9},{:.9})); }}",
+        "float2 decimalUv(float2 uv,float place) {{ float digit=fmod(floor(max(magazine.x,0)/place),10); return float2((digit+clamp(uv.x,{:.9},{:.9}))/10,clamp(uv.y,{:.9},{:.9})); }}",
         0.5 / frame.width as f32,
         1. - 0.5 / frame.width as f32,
         0.5 / frame.height as f32,
@@ -1000,6 +1107,8 @@ const BUMP_DETAIL3_SLOT: usize = 16;
 /// A standard level surface's color mask, for the `color_mask` albedo.
 const COLOR_MASK_SLOT: usize = 17;
 const SPECULAR_MASK_SLOT: usize = 29;
+const DETAIL_OVERLAY_SLOT: usize = 30;
+const ILLUM_DETAIL_SLOT: usize = 31;
 /// A water surface's color texture and its shape texture, whose alpha fades it at the shore.
 const WATER_COLOR_SLOT: usize = 18;
 const WATER_SHAPE_SLOT: usize = 19;
@@ -1065,9 +1174,8 @@ fn terrain_normal(samples: &BTreeMap<usize, String>, weights: &str) -> String {
 const TERRAIN_NORMAL: &str =
     "float3 terrainNormal(float2 xy){return float3(xy,sqrt(max(1-dot(xy,xy),0)));}";
 
-/// The maps `material` binds and their samples. With `dense`, as for a lightmapped level material,
-/// they take consecutive registers from zero, skipping `reserved`, and the material's diffuse
-/// table binds too.
+/// Texture roles use consecutive native registers, skipping the caller's reserved scope inputs.
+/// The same binding rules apply to baked surfaces, dynamic models and painted equipment.
 #[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
 fn textures(
     c: &Cache,
@@ -1076,7 +1184,6 @@ fn textures(
     g: &mut Graph,
     material: &Material,
     paint: Option<&crate::halo_reach::paint::Surface>,
-    dense: bool,
     reserved: &[usize],
 ) -> Result<TextureBindings> {
     if mux::is(material) {
@@ -1142,7 +1249,7 @@ fn textures(
             material
                 .options
                 .get("self_illumination")
-                .is_none_or(|v| v != "3_channel_self_illum"),
+                .is_none_or(|v| !matches!(v.as_str(), "3_channel_self_illum" | "meter")),
         ),
         (5, &["detail_map"][..], false, true),
         (6, &["noise_map_a"][..], false, false),
@@ -1162,7 +1269,7 @@ fn textures(
         table
     } else {
         let mut table = standard.to_vec();
-        if dense {
+        {
             let option = |name: &str| material.options.get(name).map(String::as_str);
             if material.decal()
                 && matches!(
@@ -1188,19 +1295,100 @@ fn textures(
             }
             if matches!(
                 option("bump_mapping"),
-                Some("detail" | "three_detail_blend")
+                Some("detail" | "detail_blend" | "three_detail_blend" | "detail_wrinkle")
             ) {
                 table.push((BUMP_DETAIL_SLOT, &["bump_detail_map"][..], true, false));
             }
-            if option("bump_mapping") == Some("three_detail_blend") {
+            if matches!(
+                option("bump_mapping"),
+                Some("detail_blend" | "three_detail_blend")
+            ) {
                 table.push((BUMP_DETAIL2_SLOT, &["bump_detail_map2"][..], true, false));
+            }
+            if option("bump_mapping") == Some("three_detail_blend") {
                 table.push((BUMP_DETAIL3_SLOT, &["bump_detail_map3"][..], true, false));
             }
             if matches!(
                 option("albedo"),
-                Some("two_detail" | "detail_blend" | "three_detail_blend")
+                Some(
+                    "two_detail"
+                        | "detail_blend"
+                        | "three_detail_blend"
+                        | "two_detail_overlay"
+                        | "two_detail_black_point"
+                )
             ) {
                 table.push((DETAIL2_SLOT, &["detail_map2"][..], false, true));
+            }
+            if matches!(
+                option("parallax"),
+                Some("simple" | "interpolated" | "simple_detail")
+            ) || option("warp") == Some("parallax_simple")
+            {
+                table.push((parallax::HEIGHT, &["height_map"][..], false, false));
+                if option("parallax") == Some("simple_detail") {
+                    table.push((parallax::SCALE, &["height_scale_map"][..], false, false));
+                }
+            }
+            if matches!(
+                option("alpha_blend_source"),
+                Some(
+                    "from_opacity_map_alpha"
+                        | "from_opacity_map_rgb"
+                        | "from_opacity_map_alpha_and_albedo_alpha"
+                )
+            ) {
+                table.push((GLASS_OPACITY_SLOT, &["opacity_texture"][..], false, false));
+            }
+            if option("warp") == Some("from_texture") {
+                table.push((overlay::WARP, &["warp_map"][..], false, false));
+            }
+            if matches!(
+                option("overlay"),
+                Some("additive" | "multiply" | "additive_detail" | "multiply_and_additive_detail")
+            ) {
+                table.push((overlay::MAP, &["overlay_map"][..], false, true));
+            }
+            if matches!(
+                option("overlay"),
+                Some("additive_detail" | "multiply_and_additive_detail")
+            ) {
+                table.push((overlay::DETAIL, &["overlay_detail_map"][..], false, true));
+            }
+            if option("overlay") == Some("multiply_and_additive_detail") {
+                table.push((
+                    overlay::MULTIPLY,
+                    &["overlay_multiply_map"][..],
+                    false,
+                    true,
+                ));
+            }
+            if option("albedo") == Some("two_detail_overlay") {
+                table.push((
+                    DETAIL_OVERLAY_SLOT,
+                    &["detail_map_overlay"][..],
+                    false,
+                    true,
+                ));
+            }
+            if matches!(
+                option("self_illumination"),
+                Some("illum_detail" | "change_color_detail")
+            ) {
+                table.push((
+                    ILLUM_DETAIL_SLOT,
+                    &["self_illum_detail_map"][..],
+                    false,
+                    true,
+                ));
+            }
+            if matches!(
+                option("bump_mapping"),
+                Some("standard_wrinkle" | "detail_wrinkle")
+            ) {
+                table.push((normal::WRINKLE, &["wrinkle_normal"][..], true, false));
+                table.push((normal::MASK_A, &["wrinkle_mask_a"][..], false, false));
+                table.push((normal::MASK_B, &["wrinkle_mask_b"][..], false, false));
             }
             if option("albedo") == Some("three_detail_blend") {
                 table.push((DETAIL3_SLOT, &["detail_map3"][..], false, true));
@@ -1268,21 +1456,20 @@ fn textures(
             continue;
         }
         if let Some(mapping) = material.mapping(roles) {
-            let (symbol, bc5) = bound_texture(c, pages, native, g, mapping, normal, srgb)?;
-            let target = if dense {
-                bindings
-                    .iter()
-                    .find(|(_, existing)| existing == &symbol)
-                    .map_or_else(
-                        || free_registers(&bindings, 1, reserved),
-                        |(register, _)| *register,
-                    )
-            } else if paint.is_some() && slot >= 3 {
-                slot + 6
-            } else {
-                slot
-            };
-            if !dense || !bindings.iter().any(|(register, _)| *register == target) {
+            // The table's colour roles are its art. Its other roles are read as numbers.
+            let (symbol, bc5) = bound_texture(c, pages, native, g, mapping, normal, srgb, srgb)?;
+            let target = bindings
+                .iter()
+                .find(|(_, existing)| existing == &symbol)
+                .map_or_else(
+                    || free_registers(&bindings, 1, reserved),
+                    |(register, _)| *register,
+                );
+            ensure!(
+                target < MAX_TEXTURE_REGISTERS,
+                "Surface texture binding capacity exceeded"
+            );
+            if !bindings.iter().any(|(register, _)| *register == target) {
                 bindings.push((target, symbol));
             }
             registers.insert(slot, target);
@@ -1293,7 +1480,7 @@ fn textures(
                 slot,
                 mapping,
                 &sampler_name(index),
-                dense,
+                true,
                 &mut notes,
             )?;
             if let Some(signed) = bc5 {
@@ -1308,7 +1495,7 @@ fn textures(
         }
     }
     let mut table = None;
-    if dense && let Some(mapping) = material.mapping(&["g_sample_vmf_diffuse"]) {
+    if let Some(mapping) = material.mapping(&["g_sample_vmf_diffuse"]) {
         let target = free_registers(&bindings, 1, reserved);
         bindings.push((target, texture(c, pages, native, g, mapping, false, false)?));
         registers.insert(VMF_TABLE_SLOT, target);
@@ -1590,28 +1777,30 @@ fn water_normal(samples: &BTreeMap<usize, String>) -> String {
 }
 
 /// Evaluate baked VMF and analytical diffuse as separate source terms. The original MCC
-/// static-lightmap shader adds both and divides diffuse irradiance by pi. The atlas already
-/// includes that divisor and its average-level normalization. Analytical intensity does not.
-/// The three atlas textures bind to the first consecutive registers clear of `reserved`.
+/// static-lightmap shader adds both and divides diffuse irradiance by pi. The sampled VMF
+/// decoder and vertex records use the existing atlas normalization. Analytical intensity does
+/// not. Four source images and the probe table bind clear of `reserved`.
 #[allow(clippy::too_many_arguments)]
 fn level_lighting(
     lightmap: &Lightmap,
     selected: Option<Analytical>,
-    hybrid: bool,
+    deferred: bool,
     bindings: &mut Vec<(usize, String)>,
     table: Option<&str>,
     reflection: Option<&str>,
     water: Option<&str>,
     reserved: &[usize],
 ) -> Result<(String, String)> {
-    let first = free_registers(bindings, 3, reserved);
+    let first = free_registers(bindings, 5, reserved);
     ensure!(
-        first + 3 <= MAX_TEXTURE_REGISTERS,
+        first + 5 <= MAX_TEXTURE_REGISTERS,
         "A level surface needs {} texture registers",
-        first + 3
+        first + 5
     );
-    for (offset, symbol) in [&lightmap.lobe, &lightmap.ambient, &lightmap.direction]
-        .into_iter()
+    for (offset, symbol) in lightmap
+        .intensity
+        .iter()
+        .chain([&lightmap.mask, &lightmap.probes])
         .enumerate()
     {
         bindings.push((first + offset, symbol.clone()));
@@ -1624,29 +1813,36 @@ fn level_lighting(
         None => "lerp(0.5,saturate(dot(n,lightDirection)),lightLobe.a)".to_owned(),
     };
     let specular = reflection.unwrap_or("float3(0,0,0)");
-    let sample = "float2 lightCoordinates=abs(v3.zw);float4 lightLobe=LightLobe.Sample(ClampSampler,lightCoordinates);float4 lightAmbient=LightAmbient.Sample(ClampSampler,lightCoordinates);float3 lightDirection=LightDirection.Sample(ClampSampler,lightCoordinates).xyz*2-1;if(v8.w>0.5){lightLobe=v6;lightAmbient=v7;lightDirection=v8.xyz;}lightDirection=normalize(lightDirection+float3(0,0,0.00001));";
-    let direct = analytical_lighting(lightmap, selected, hybrid && water.is_none());
+    let sample = "float4 lightLobe;float4 lightAmbient;float3 lightDirection;if(v8.w>0.5){lightLobe=v6;lightAmbient=v7;lightDirection=normalize(v8.xyz+float3(0,0,0.00001));}else{reachLightmap(abs(v3.zw),lightLobe,lightAmbient,lightDirection);}";
+    let direct = analytical_lighting(lightmap, selected, deferred && water.is_none());
     let finish = if let Some(water) = water {
         water.to_owned()
-    } else if hybrid {
-        // Only the matching directional source can use the one native sun. Point lights and
-        // other sky directions retain their static diffuse term in emitted radiance.
-        "float3 baseColor=albedo.rgb;float3 directDiffuse=baseColor*lightDirectIrradiance;float3 bakedRadiance=baseColor*(lightResponse*lightLobeIrradiance+lightAmbientIrradiance)+lightSpecular;float3 sunlit=lightNativeSun?directDiffuse:float3(0,0,0);albedo.rgb=bakedRadiance+(lightNativeSun?float3(0,0,0):directDiffuse*lightDirectCosine);".to_owned()
+    } else if deferred {
+        // Source irradiance controls native visibility without becoming material colour.
+        // The native cube and light passes own specular. A separate light draw may retain an
+        // additional analytical source, but never repeats this indirect illumination.
+        "float3 lightIndirect=max(lightResponse*lightLobeIrradiance+lightAmbientIrradiance,0);"
+            .to_owned()
     } else {
         "albedo.rgb=albedo.rgb*(lightResponse*lightLobeIrradiance+lightAmbientIrradiance+lightDirectIrradiance*lightDirectCosine)+lightSpecular;".to_owned()
     };
-    // Vertex lighting arrives linear, and atlas colors as the logarithm of their share of its peak.
+    // The sampler decoder and vertex records both return linear shares of the atlas peak.
     let lighting = format!(
-        "{sample}float lightResponse={response};float3 lightLobeIrradiance=(v8.w>0.5?lightLobe.rgb:{lobe})*{scale:.9};float3 lightAmbientIrradiance=(v8.w>0.5?lightAmbient.rgb:{ambient})*{scale:.9};float3 lightSpecular={specular};{direct}{finish}",
-        lobe = crate::halo_reach::level::lightmap::decode_share_hlsl("lightLobe.rgb"),
-        ambient = crate::halo_reach::level::lightmap::decode_share_hlsl("lightAmbient.rgb"),
+        "{sample}float lightResponse={response};float3 lightLobeIrradiance=lightLobe.rgb*{scale:.9};float3 lightAmbientIrradiance=lightAmbient.rgb*{scale:.9};float3 lightSpecular=({specular})*sourceSpecularOpacity;{direct}{finish}",
         scale = lightmap.scale
     );
-    let declarations = format!(
-        "Texture2D<float4> LightLobe:register(t{first});Texture2D<float4> LightAmbient:register(t{});Texture2D<float4> LightDirection:register(t{});",
-        first + 1,
-        first + 2
-    );
+    let mut declarations = [
+        "LightIntensity0",
+        "LightIntensity1",
+        "LightIntensity2",
+        "LightMask",
+        "LightProbes",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(offset, name)| format!("Texture2D<float4> {name}:register(t{});", first + offset))
+    .collect::<String>();
+    declarations.push_str(&lightmap.decoder);
     Ok((lighting, declarations))
 }
 
@@ -1654,8 +1850,8 @@ fn level_lighting(
 /// intensity and squared baked visibility. Vertex lighting already squares visibility before
 /// interpolation, while pixel lightmaps carry its unsquared value. Gel textures and animated
 /// intensities are separate runtime inputs. Opaque surfaces selecting the global sun use native
-/// shadow visibility near the camera instead of multiplying it by the baked shadow again, and fade
-/// the baked shadow back in with distance. Transparent surfaces,
+/// shadow visibility. Their material constants can separately restore a share of the baked mask
+/// over a view-distance interval. Native visibility couples that mask to ambient light. Transparent surfaces,
 /// water and other analytical lights retain source visibility. Model placements use sky zero
 /// and retain their sampled indirect light.
 fn analytical_lighting(
@@ -1664,7 +1860,7 @@ fn analytical_lighting(
     native_shadows: bool,
 ) -> String {
     let Some(light) = light.filter(|light| light.present()) else {
-        return "bool lightPlaced=v3.z<0;bool lightNativeSun=false;float lightDirectCosine=0;float3 lightDirectIrradiance=0;".into();
+        return "bool lightPlaced=v3.z<0;bool lightNativeSun=false;float lightNativeMask=1;float lightDirectCosine=0;float3 lightDirectIrradiance=0;".into();
     };
     let [x, y, z] = light.vector;
     let direction = if light.directional {
@@ -1680,60 +1876,90 @@ fn analytical_lighting(
     let [r, g, b] = light
         .intensity
         .map(|v| v / (std::f32::consts::PI * lightmap.level));
-    // Near the camera the native cascades shadow the sun. They refit every frame, so beyond
-    // `BAKED_SHADOW_NEAR` the baked visibility fades back in, fully by `BAKED_SHADOW_FAR`, and keeps
-    // distant shadows of small casters that the far cascades blur away.
+    // Native defaults disable the baked sunlight mask. Its optional strength and distance fade
+    // are applied through native visibility for opaque sun receivers. Other lights retain the
+    // source visibility on their analytical coefficient.
     let visibility = if native && native_shadows {
-        format!(
-            "lerp(1,lightVisibilitySquared,saturate((length(v5.xyz)-{BAKED_SHADOW_NEAR:.1})/{:.1}))",
-            BAKED_SHADOW_FAR - BAKED_SHADOW_NEAR
-        )
+        "lerp(1,lightVisibilitySquared,saturate(bakedControl.x)*saturate((length(v5.xyz)-bakedControl.y)/max(bakedControl.z-bakedControl.y,0.001)))"
     } else {
-        "lightVisibilitySquared".to_owned()
+        "lightVisibilitySquared"
     };
     format!(
-        "bool lightPlaced=v3.z<0;bool lightNativeSun={native};float3 lightDirectDirection={direction};lightDirectDirection*=rsqrt(max(dot(lightDirectDirection,lightDirectDirection),0.00000001));float lightDirectCosine=saturate(dot(n,lightDirectDirection));float lightVisibility=saturate(lightAmbient.a);float lightVisibilitySquared=v8.w>0.5?lightVisibility:lightVisibility*lightVisibility;float3 lightDirectIrradiance=float3({r:.9},{g:.9},{b:.9})*{visibility};"
+        "bool lightPlaced=v3.z<0;bool lightNativeSun={native};float3 lightDirectDirection={direction};lightDirectDirection*=rsqrt(max(dot(lightDirectDirection,lightDirectDirection),0.00000001));float lightDirectCosine=saturate(dot(n,lightDirectDirection));float lightVisibility=saturate(lightAmbient.a);float lightVisibilitySquared=v8.w>0.5?lightVisibility:lightVisibility*lightVisibility;float lightNativeMask=lightNativeSun?({visibility}):1;float3 lightDirectIrradiance=float3({r:.9},{g:.9},{b:.9})*{visibility};"
     )
 }
 
-/// Pack source radiance with an emission/direct ratio and a quantized visibility scale. Keeping
-/// full direct visibility when emission dominates can put the shared color below one stored
-/// color step. Scale both terms before packing emission, then divide by their decoded sum.
-/// Round visibility upward so its decoded direct contribution does not fall below the requested
-/// share. The two terms still share one color, so independent chromaticity in shadows remains
-/// approximate. No threshold switches between two shaded colors.
-///
-/// Native global-light programs raise visibility to twice channel 83's exponent. Both checked
-/// Shadowkeep global tables supply 0.35, giving the 0.7 power used here. This is the stock default,
-/// not a captured live bank value. Native exponent overrides, sun intensity, environment response
-/// and exposure remain calibration limits.
-///
-/// Target one holds the normal at length `0.75 + 0.25 * smoothness`, which the deferred passes
-/// decode as `4 * length - 3`, so a surface's Reach roughness stores as `1 - roughness`. Stored
-/// as roughness, fully rough cliffs decoded as mirrors and reflected the sky at its sharpest level.
-///
-/// Target-zero alpha stays below 0.5 on every pixel, as on stock plain surfaces. Above 0.5 the
-/// deferred shading reads it as an iridescence row: rows 0 to 11 tint the specular, and rows 12
-/// to 126 are magenta placeholders whose zero alpha removes all light. A surface that switched
-/// between 0.04 and 1 at its Reach shadow edges drew oily sheens and black patches wherever
-/// those values blended. A pixel outside the native sun loses native ambient light through its
-/// occlusion (`o2.w` 0) instead.
-///
-/// The deferred global lighting lights a pixel with `0.25 * S * x / pi` times its Burley diffuse
-/// and the cosine, where `S` is the native sun intensity (`native_sun`, global channel 8) and `x`
-/// the exposure, while emission decodes at `x * w`. Per unit of decoded emission scale the native
-/// direct term is therefore `N = 0.25 * S / (pi * w)`, 0.57 on Breakneck at the default `S` of 10,
-/// and the packing divides the wanted direct share by it. A share beyond what full visibility gives
-/// stays in the emission.
-fn hybrid_finish(level: f32, veil: [f32; 3], radiance: f32, native_sun: f32) -> String {
+/// Ordinary material colour and bake-derived visibility, calibrated exactly as object probes.
+/// The directional source atlas remains sampled at its original resolution. It contributes no
+/// second diffuse-light draw. Native cubemap grids carry broad spatial colour separately.
+/// Native W affects both direct and environment light, so optional baked visibility controls
+/// inherit that coupling. Exposure and base albedo never participate in visibility selection.
+fn native_finish(lightmap: &Lightmap) -> String {
+    use super::lighting;
+    let fog = if lightmap.screen_fog || lightmap.fog.is_none() {
+        "1"
+    } else {
+        "fog.a"
+    };
     format!(
-        "float exposure={scale:.9}*frameData[1].z/max(frameData[1].x*frameData[1].w,0.000001);float nativeSun={sun:.9}/max(frameData[1].w,0.000001);float3 radiance=(max(albedo.rgb+emission*{inverse:.9},0)*fog.a+fog.rgb*{inverse:.9}+float3({veil_r:.9},{veil_g:.9},{veil_b:.9}))*exposure;sunlit=max(sunlit,0)*fog.a*exposure;float sunLevel=dot(sunlit,float3(0.2126,0.7152,0.0722));bool receives=lightNativeSun&&sunLevel>0.000001&&nativeSun>0.000001;float cosine=receives?lightDirectCosine:0;float3 total=radiance+sunlit*cosine;float peak=max(total.r,max(total.g,total.b));float ratio=dot(radiance,float3(0.2126,0.7152,0.0722))/max(sunLevel,0.000001);float desiredDirect=receives?saturate(peak/max(ratio+cosine,0.000001)):0;float packedVisibility=ceil(pow(saturate(desiredDirect/max(nativeSun,0.000001)),1.0/0.7)*255)/255;float directFactor=receives?pow(max(packedVisibility,0.0001),0.7)*nativeSun:0;float wanted=receives?max(ratio*directFactor,max(peak-directFactor*cosine,0)):peak;float encoded=0.5*(1+2.0/255.0+saturate((log2(wanted+1.0/128.0)+7)/13));float packed=min(ceil(encoded*255)/255,1);float decoded=exp2(13*saturate(2*packed-(1+2.0/255.0))-7)-1.0/128.0;o0=float4(saturate(total/max(decoded+directFactor*cosine,0.000001)),0.04);o1=float4(saturate(n*((1-roughness)*0.125+0.375)+0.5),0);o2=float4(0,packed,0,receives?packedVisibility:0);",
-        scale = radiance * REFERENCE_ILLUMINATION,
-        sun = REFERENCE_ILLUMINATION * native_sun / std::f32::consts::PI,
-        inverse = 1. / level,
-        veil_r = veil[0],
-        veil_g = veil[1],
-        veil_b = veil[2]
+        "float bakedLevel=dot(lightIndirect,float3(0.2126,0.7152,0.0722))*max(bakedControl.w,0);float nativeVisibility=clamp({open:.9}*sqrt(max(bakedLevel,0)/{reference:.9}),{low:.9},{high:.9});nativeVisibility*=pow(saturate(lightNativeMask),1.0/{power:.9})*sqrt(saturate({fog}));o0=float4(saturate(albedo.rgb),0.04);o1=float4(saturate(n*((1-roughness)*0.125+0.375)+0.5),0);o2=float4(0,0.5,0,saturate(nativeVisibility));",
+        open = lighting::OPEN,
+        low = lighting::RANGE[0],
+        high = lighting::RANGE[1],
+        power = lighting::DIRECT_POWER,
+        reference = lightmap.reference.max(1e-4),
+    )
+}
+
+/// Only an analytical light not represented by the principal native sun needs a light draw.
+fn additional_light(lightmap: &Lightmap, key: u32) -> bool {
+    lightmap.analytical.get(&key).is_some_and(|light| {
+        light.present()
+            && !(light.directional
+                && lightmap.sun.is_some_and(|sun| {
+                    sun.vector == light.vector && sun.intensity == light.intensity
+                }))
+    })
+}
+
+/// Retain additional source analytical diffuse in the native light buffer. Its base colour is
+/// already in the G-buffer, and native environment reflection supplies the specular response.
+fn baked_finish(lightmap: &Lightmap) -> String {
+    let fog = if lightmap.screen_fog || lightmap.fog.is_none() {
+        "1"
+    } else {
+        "fog.a"
+    };
+    let fog_declaration = lightmap.fog.map_or_else(
+        || "float4 fog=float4(0,0,0,1);".to_owned(),
+        |_| "float4 fog=reachFog(v5.xyz,v5.w);".to_owned(),
+    );
+    format!(
+        "{fog_declaration}o0=float4(max(lightDirectIrradiance*lightDirectCosine,0)*({scale:.9}*frameData[1].z)*{fog},0);o1=0;",
+        scale = lightmap.radiance * REFERENCE_ILLUMINATION
+    )
+}
+
+/// Ordinary stage 7 follows the sky's transparent stage, so glow applies its own extinction.
+/// The screen sheet already supplies in-scatter over the opaque surface beneath this draw.
+/// Alpha zero with the native premultiplied blend adds color without replacing that surface.
+fn glow_finish(lightmap: &Lightmap) -> String {
+    let fog = if lightmap.fog.is_some() {
+        "float4 fog=reachFog(v5.xyz,v5.w);"
+    } else {
+        "float4 fog=float4(0,0,0,1);"
+    };
+    let scatter = if lightmap.screen_fog {
+        "float3(0,0,0)"
+    } else {
+        "fog.rgb"
+    };
+    let [r, g, b] = lightmap.veil;
+    format!(
+        "{fog}float3 glow=(max(emission*{illumination}+surfaceOverlay,0)*fog.a+{scatter})*{inverse:.9}+float3({r:.9},{g:.9},{b:.9});o0=float4(max(glow,0)*({scale:.9}*frameData[1].z),0);",
+        illumination = self_illumination_factor(lightmap.self_illumination),
+        inverse = 1. / lightmap.level,
+        scale = lightmap.radiance * REFERENCE_ILLUMINATION,
     )
 }
 
@@ -1746,27 +1972,48 @@ fn hybrid_finish(level: f32, veil: [f32; 3], radiance: f32, native_sun: f32) -> 
 /// lies behind it by its unlit albedo's mean faded by its coverage, the nearest a premultiplied
 /// blend comes to a product. As Reach's blended programs do, the level's fog (`fog`) dims a
 /// blended surface and adds its inscatter, and only dims an additive one.
-fn baked_transparent_finish(material: &Material, level: f32, radiance: f32) -> String {
-    if let Some(finish) = decal::multiplication(material) {
+fn baked_transparent_finish(material: &Material, lightmap: &Lightmap) -> String {
+    let scale = format!(
+        "{:.9}*frameData[1].z",
+        lightmap.radiance * REFERENCE_ILLUMINATION
+    );
+    let inverse = 1. / lightmap.level;
+    let exposure = lightmap.fog_exposure.map_or_else(
+        || format!("({scale})*{inverse:.9}"),
+        |exposure| {
+            sky::SkyScale {
+                vertex_color: 1.,
+                radiance: lightmap.radiance / lightmap.level,
+                exposure,
+            }
+            .exposure()
+        },
+    );
+    let scatter = format!("max(fog.rgb,0)*({exposure})");
+    // The destination already contains T * surface + scatter. Multiplying only the receiver
+    // requires M * destination + (1 - M) * scatter, so full fog is independent of decal colour.
+    if let Some(finish) = decal::multiplication(material, &scatter) {
         return finish;
     }
-    let scale = format!("{:.9}*frameData[1].z", radiance * REFERENCE_ILLUMINATION);
-    let inverse = 1. / level;
-    let emission = format!("emission*{inverse:.9}");
+    let emission = format!(
+        "(emission*{}+surfaceOverlay)*{inverse:.9}",
+        self_illumination_factor(lightmap.self_illumination)
+    );
     match material.options.get("blend_mode").map(String::as_str) {
         Some("additive") if material.decal() => format!("o0=float4(albedo.rgb*fog.a*{scale},0);"),
         Some("additive") => format!("o0=float4({emission}*fog.a*{scale},0);"),
-        Some("multiply") => "float3 product=lerp(float3(1,1,1),unlit.rgb,saturate(unlit.a));o0=float4(0,0,0,1-saturate(dot(product,float3(1,1,1))/3));".to_owned(),
+        Some("multiply") => format!(
+            "float3 product=lerp(float3(1,1,1),unlit.rgb,saturate(unlit.a));float coverage=1-saturate(dot(product,float3(1,1,1))/3);o0=float4(({scatter})*coverage,coverage);"
+        ),
         Some("pre_multiplied_alpha") if decal::premultiplied(material) => format!(
-            "float coverage=saturate(albedo.a);o0=float4((albedo.rgb*fog.a+({emission}*fog.a+fog.rgb*{inverse:.9})*coverage)*{scale},coverage);"
+            "float coverage=saturate(albedo.a);o0=float4((albedo.rgb+{emission}*coverage)*fog.a*{scale}+({scatter})*coverage,coverage);"
         ),
         _ => format!(
-            "float coverage=saturate(albedo.a);o0=float4(((albedo.rgb+{emission})*fog.a+fog.rgb*{inverse:.9})*{scale}*coverage,coverage);"
+            "float coverage=saturate(albedo.a);o0=float4(((albedo.rgb+{emission})*fog.a*{scale}+{scatter})*coverage,coverage);"
         ),
     }
 }
 
-#[allow(clippy::cognitive_complexity)]
 pub(in crate::halo_reach) fn build(
     c: &Cache,
     pages: &mut Pages,
@@ -1778,7 +2025,12 @@ pub(in crate::halo_reach) fn build(
     build_with_progress(c, pages, native, g, materials, binding, &mut |_| {})
 }
 
-#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+/// Builds every surface of `materials` in stages: [`resources`] binds what its pixel program
+/// reads, [`pixel`] writes that program and its variants and submits them to compile workers, and
+/// [`technique`] adds its native records to the graph. Once the last surface is placed, the
+/// compiled programs and deferred textures are written, then the shared shadow and prepass
+/// techniques.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::halo_reach) fn build_with_progress(
     c: &Cache,
     pages: &mut Pages,
@@ -1788,12 +2040,112 @@ pub(in crate::halo_reach) fn build_with_progress(
     binding: Binding<'_>,
     report_progress: &mut dyn FnMut(&str),
 ) -> Result<Vec<Value>> {
-    let shell = native.tag(0x80ec270d, Some(0x808071e8))?;
-    let transparent_shell = native.tag(0x815246aa, Some(0x808071e8))?;
-    ensure!(
-        transparent_shell.0[32] == 0x88,
-        "Native premultiplied surface state differs"
-    );
+    let mut shells = Shells::read(native)?;
+    let vertex = vertex_program(native, g, &binding, &shells.opaque)?;
+    let mut report = Vec::new();
+    let mut programs = pixel::Programs::new()?;
+    // Textures decode, take their mips and write their files on workers too ([`defer`]).
+    let deferral = DeferralScope::open()?;
+    for (index, (&key, material)) in materials.iter().enumerate() {
+        report_progress(&format!(
+            "Converting Material {}/{} / {}",
+            index + 1,
+            materials.len(),
+            material
+                .tag
+                .as_ref()
+                .map_or("Unnamed Material", |tag| tag.path.as_str())
+        ));
+        let setup = Setup::new(c, pages, &binding, key, material)?;
+        let mut resources =
+            resources::Resources::bind(c, pages, native, g, &binding, &setup, shells.clamped)?;
+        let lighting = resources::Lighting::bind(&binding, &setup, &mut resources)?;
+        let pixel = pixel::Pixel::write(&binding, &setup, &mut resources, &lighting)?;
+        let shaders = programs.submit(native, g, &binding, key, shells.pixel_template, pixel)?;
+        let stage = technique::add(
+            native,
+            g,
+            &binding,
+            &setup,
+            &mut shells,
+            &resources,
+            &shaders,
+        )?;
+        report.push(entry(&setup, &resources, &lighting, &shaders, stage));
+    }
+    programs.finish(native, g)?;
+    deferral.finish()?;
+    shadow(native, g, &vertex, binding.prefix)?;
+    if binding.prepass {
+        prepass(native, g, &vertex, binding.prefix)?;
+    }
+    Ok(report)
+}
+
+/// The stock surface techniques a surface's record starts from, and what every surface takes
+/// from them.
+struct Shells {
+    opaque: std::sync::Arc<Payload>,
+    transparent: std::sync::Arc<Payload>,
+    /// The opaque shell's clamping sampler row. Surfaces read their maps through copies of the
+    /// shell's sampler with source addressing and trilinear filtering where requested, and a
+    /// lightmap atlas through this original.
+    clamped: [u8; 16],
+    sampler_class: u32,
+    /// The native program the pixel programs copy.
+    pixel_template: u32,
+    /// The matching static or entity alpha-tested shadow envelope, read only once a surface needs
+    /// alpha coverage.
+    clipped: Option<std::sync::Arc<Payload>>,
+}
+
+impl Shells {
+    fn read(native: &mut Reader) -> Result<Self> {
+        let opaque = native.tag(0x80ec270d, Some(0x808071e8))?;
+        let transparent = native.tag(0x815246aa, Some(0x808071e8))?;
+        ensure!(
+            transparent.0[32] == 0x88,
+            "Native premultiplied surface state differs"
+        );
+        let rows = opaque.array(0x308, 16, None)?;
+        let clamped = opaque.bytes::<16>(
+            *rows
+                .get(CLAMPED_SAMPLER)
+                .context("Native sampler table is missing")?,
+        )?;
+        let sampler_class = opaque.u32(rows[0] - 8)?;
+        let pixel_template = opaque.u32(0x2c8)?;
+        Ok(Self {
+            opaque,
+            transparent,
+            clamped,
+            sampler_class,
+            pixel_template,
+            clipped: None,
+        })
+    }
+}
+
+impl Binding<'_> {
+    /// The vertex stage register of the surfaces' vertex data texture.
+    fn vertex_data_register(&self) -> u32 {
+        if self.statics {
+            STATIC_VERTEX_DATA_REGISTER
+        } else {
+            0
+        }
+    }
+}
+
+/// Places the surfaces' shared vertex program, copied from the opaque shell's, and returns its
+/// text before the color pass substitutions, which the shadow and prepass techniques make their
+/// own way.
+fn vertex_program(
+    native: &mut Reader,
+    g: &mut Graph,
+    binding: &Binding<'_>,
+    shell: &Payload,
+) -> Result<String> {
     let palette = binding.palette;
     ensure!(
         !palette.is_empty() && palette.len() <= 256,
@@ -1803,6 +2155,10 @@ pub(in crate::halo_reach) fn build_with_progress(
         binding.lightmap.is_none() || binding.paint.is_empty(),
         "Lightmapped surfaces cannot also take gear paint"
     );
+    ensure!(
+        !binding.statics || binding.rigid,
+        "Static instances are rigid"
+    );
     let lookup = format!(
         "static const uint motionPalette[{}] = {{{}}};",
         palette.len(),
@@ -1811,10 +2167,6 @@ pub(in crate::halo_reach) fn build_with_progress(
             .map(u8::to_string)
             .collect::<Vec<_>>()
             .join(",")
-    );
-    ensure!(
-        !binding.statics || binding.rigid,
-        "Static instances are rigid"
     );
     let motion = if binding.rigid {
         RIGID_MOTION
@@ -1847,10 +2199,16 @@ pub(in crate::halo_reach) fn build_with_progress(
     } else {
         vertex
     };
-    let vertex_data_register = if binding.statics {
-        STATIC_VERTEX_DATA_REGISTER
+    let (declaration, read) = if binding.vertex_data.is_some() {
+        (
+            vertex_data::DECLARATION.replace(
+                "register(t0)",
+                &format!("register(t{})", binding.vertex_data_register()),
+            ),
+            vertex_data::READ,
+        )
     } else {
-        0
+        (String::new(), "o6=0;o7=0;o8=0;")
     };
     program(
         native,
@@ -1860,651 +2218,177 @@ pub(in crate::halo_reach) fn build_with_progress(
         &vertex
             .replace("$SHADOW_RESOURCE$", "")
             .replace("$SHADOW_PROJECTION$", "")
-            .replace(
-                "$VERTEX_LIGHT_DECL$",
-                &if binding.vertex_data.is_some() {
-                    vertex_data::DECLARATION.replace(
-                        "register(t0)",
-                        &format!("register(t{vertex_data_register})"),
-                    )
-                } else {
-                    String::new()
-                },
-            )
-            .replace(
-                "$VERTEX_LIGHT_READ$",
-                if binding.vertex_data.is_some() {
-                    vertex_data::READ
-                } else {
-                    "o6=0;o7=0;o8=0;"
-                },
-            ),
+            .replace("$VERTEX_LIGHT_DECL$", &declaration)
+            .replace("$VERTEX_LIGHT_READ$", read),
         true,
     )?;
-    // Surfaces read their maps through copies of the shell's sampler with source addressing and
-    // trilinear filtering where requested, and a
-    // lightmap atlas through the clamping original.
-    let sampler_rows = shell.array(0x308, 16, None)?;
-    let clamped = shell.bytes::<16>(
-        *sampler_rows
-            .get(CLAMPED_SAMPLER)
-            .context("Native sampler table is missing")?,
-    )?;
-    let sampler_class = shell.u32(sampler_rows[0] - 8)?;
-    let mut report = Vec::new();
-    // Pixel programs compile or load from the shader cache on workers while later surfaces build.
-    // Each program's nodes take their place in the graph at once, and their payloads are written
-    // after the last surface. A cache hit alone opened, leased and validated about eight files.
-    let mut pixels = crate::cancellation::Background::new()?;
-    let mut pending = Vec::new();
-    // Textures decode, take their mips and write their files on workers too ([`defer`]).
-    let deferral = DeferralScope::open()?;
-    // The stock alpha-tested static shadow technique, read once the first alpha-tested level
-    // surface needs it ([`clipped_shadow`]).
-    let mut clipped_envelope = None;
-    for (index, (&key, material)) in materials.iter().enumerate() {
-        report_progress(&format!(
-            "Converting Material {}/{} / {}",
-            index + 1,
-            materials.len(),
-            material
-                .tag
-                .as_ref()
-                .map_or("Unnamed Material", |tag| tag.path.as_str())
-        ));
-        let surface = surface::Surface::new(material, &binding, key);
+    Ok(vertex)
+}
+
+/// What every stage of one surface's build reads: its source material, resolved constants and
+/// gear paint, and the model inputs and texture registers its pixel program takes.
+struct Setup<'a> {
+    key: u32,
+    material: &'a Material,
+    surface: surface::Surface<'a>,
+    paint: Option<&'a crate::halo_reach::paint::Surface>,
+    /// The material constants block and decimal display helper the pixel program declares.
+    display: String,
+    /// Whether the surface shows a decimal ammunition display, which reads the live magazine.
+    animated: bool,
+    /// The aim visibility input. Past 0.99 aim visibility, where Shadowkeep's reticle spline rises
+    /// and the source HUD scope appears, the weapon discards its color fragments as an enclosed
+    /// Marathon sight does. Its shadow technique keeps drawing.
+    aimed: Option<u8>,
+    /// Whether an opaque lightmapped surface reads the native lighting control rows.
+    controlled_lighting: bool,
+    refracts: bool,
+    /// Texture registers no binding may take. Logical texture roles are independent of native
+    /// register numbers. Gear paint owns t3 through t8, and scene refraction owns its scope
+    /// resources.
+    reserved: Vec<usize>,
+}
+
+impl<'a> Setup<'a> {
+    fn new(
+        c: &Cache,
+        pages: &mut Pages,
+        binding: &Binding<'a>,
+        key: u32,
+        material: &'a Material,
+    ) -> Result<Self> {
+        let surface = surface::Surface::new(material, binding, key);
         let paint = binding.paint.get(&key);
         let display = decimal_display(c, pages, material)?;
         let animated = display.is_some();
-        let display = display.unwrap_or_default();
-        let dense = binding.lightmap.is_some()
-            || terrain(material)
-            || material.water()
-            || material.decal()
-            || mux::is(material);
-        // Refracting water reads the transparent scope's scene depth and color, so its fixed
-        // textures leave their registers free.
-        let refracts = binding.lightmap.is_some() && water::refracts(material);
-        let reserved: &[usize] = if refracts { &SCENE_REGISTERS } else { &[] };
-        let TextureBindings {
-            mut notes,
-            mut bindings,
-            samples,
-            samplers: modes,
-            registers,
-            table,
-            functions: texture_functions,
-        } = textures(c, pages, native, g, material, paint, dense, reserved)?;
-        let samplers = samplers(native, g, clamped, &modes)?;
-        let mut samples = samples;
-        notes.extend(surface.parameters.notes.iter().cloned());
-        let parameter_source = &surface.parameters.source;
-        let curve_functions = if samples
-            .values()
-            .any(|sample| sample.contains("reachPeriodic("))
-            || parameter_source.contains("reachPeriodic(")
-        {
-            let free = free_registers(&bindings, 1, reserved);
-            let functions = animation::periodic(native, g, &mut bindings)?;
-            // The curve table takes the next register, which a reserved one moves past.
-            match bindings.last_mut() {
-                Some((register, _)) if *register != free => {
-                    let declared = format!("register(t{register})");
-                    ensure!(
-                        functions.matches(&declared).count() == 1,
-                        "The material curve table's declaration differs"
-                    );
-                    let functions = functions.replace(&declared, &format!("register(t{free})"));
-                    *register = free;
-                    functions
-                }
-                _ => functions,
-            }
+        let aimed = binding
+            .objects
+            .get(&format!(
+                "{:08X}",
+                crate::tiger::channel::inherited::AIM_VISIBILITY
+            ))
+            .copied();
+        let controlled_lighting = binding.lightmap.is_some() && !surface.transparent();
+        let mut rows = if controlled_lighting {
+            lighting_control::DECLARATION.to_owned()
         } else {
             String::new()
         };
-        let mut wave_functions = String::new();
-        if material.water() {
-            ensure!(
-                !water::painted_foam(material)
-                    || [WATER_SHAPE_SLOT, WATER_FOAM_SLOT, WATER_FOAM_DETAIL_SLOT]
-                        .iter()
-                        .all(|slot| samples.contains_key(slot)),
-                "Painted water foam is missing its shape or foam textures"
-            );
-            let normal = if material
-                .options
-                .get("waveshape")
-                .is_some_and(|shape| shape == "bump")
-            {
-                water_normal(&samples)
-            } else {
-                let (functions, normal) = water::waves(
-                    c,
-                    pages,
-                    native,
-                    g,
-                    material,
-                    &surface,
-                    &mut bindings,
-                    reserved,
-                )
-                .with_context(|| {
-                    format!(
-                        "Water waves for {}",
-                        material.tag.as_ref().map_or("unnamed", |tag| &tag.path)
-                    )
-                })?;
-                wave_functions = functions;
-                normal
-            };
-            samples.insert(1, normal);
-            samples.remove(&BUMP_DETAIL_SLOT);
-        }
-        let (environment_declarations, environment) = if binding.lightmap.is_some() {
-            environment::bind(
-                c,
-                pages,
-                native,
-                g,
-                material,
-                &surface,
-                &mut bindings,
-                reserved,
-                &mut notes,
-            )?
-        } else {
-            (String::new(), None)
-        };
-        let specular_table = if binding.lightmap.is_some() {
-            specular::bind(c, pages, native, g, material, &mut bindings)?
-        } else {
-            None
-        };
-        if binding.lightmap.is_some()
-            && matches!(
-                material.options.get("material_model").map(String::as_str),
-                Some("two_lobe_phong" | "cook_torrance")
-            )
-            && specular_table.is_none()
-        {
-            notes.push("The source VMF specular table is absent. Area and environment specular retain only the ambient basis.".into());
-        }
-        let light = binding
-            .lightmap
-            .and_then(|lightmap| highlight(lightmap, lightmap.analytical.get(&key).copied()));
-        let reflected = match binding.lightmap {
-            Some(lightmap) if terrain(material) => terrain::reflection(
-                &surface,
-                table.as_deref(),
-                environment.as_deref(),
-                lightmap.level,
-                light.as_ref(),
-            ),
-            Some(_) if !surface.transparent() => reflection(
-                material,
-                &surface,
-                environment.as_deref(),
-                &samples,
-                specular_table.is_some(),
-                light.as_ref(),
-            ),
-            _ => None,
-        };
-        let water_lighting = binding
-            .lightmap
-            .filter(|_| material.water())
-            .map(|lightmap| {
-                water::lighting(
-                    &surface,
-                    &samples,
-                    environment.as_deref(),
-                    lightmap.level,
-                    refracts,
-                )
-            });
-        let (lighting, lighting_declarations) = match binding.lightmap {
-            // Transparent surfaces evaluate their analytical term here, after native lighting.
-            Some(lightmap) => level_lighting(
-                lightmap,
-                lightmap.analytical.get(&key).copied(),
-                !surface.transparent(),
-                &mut bindings,
-                table.as_deref(),
-                reflected
-                    .as_ref()
-                    .map(|(expression, _)| expression.as_str()),
-                water_lighting.as_deref(),
-                reserved,
-            )?,
-            None => (String::new(), String::new()),
-        };
-        let tint = surface.constant("albedo_color").unwrap_or([1.; 4]);
-        let terrain_parameters = if terrain(material) {
-            terrain::parameters(&surface, &terrain_weights(material, &samples))
-        } else {
-            String::new()
-        };
-        let weights = terrain(material).then_some("terrainDraw");
-        let mux_parameters = mux::parameters(&surface, &samples);
-        let mut color = if material.water() {
-            water_albedo(material, &surface, &samples, refracts)
-        } else if mux::is(material) {
-            mux::albedo(&samples)?
-        } else {
-            albedo(material, &samples, &surface, weights)
-        };
-        if let Some(decal_color) = decal::albedo(material, &surface, &samples)? {
-            color = decal_color;
-        }
-        // Glass replaces its lighting with the blend its compiled programs write.
-        let lighting = if material
-            .decal
-            .as_ref()
-            .is_some_and(|decal| decal.render_pass == 1)
-        {
-            ensure!(
-                surface.transparent(),
-                "Post-lighting opaque decals require a separate native render path"
-            );
-            String::new()
-        } else if material.glass() {
-            let (albedo, shading) =
-                surface.glass(&samples, binding.lightmap.map(|lightmap| lightmap.scale));
-            color = albedo;
-            shading
-        } else {
-            lighting
-        };
-        let emission_tint = surface
-            .constant("self_illum_color")
-            .or_else(|| surface.constant("self_illum_tint_color"))
-            .unwrap_or([1.; 4]);
-        let emission_scale = surface
-            .constant("self_illum_intensity")
-            .map_or(1., |v| v[0])
-            .max(0.);
-        let emission = surface.emission(&samples, &color);
-        // Reach's `detail` bump mapping, read from `ca_heh_catwalk_floor1`'s compiled albedo entry
-        // point: both normals unit length, the detail's XY added to the bump's, the bump's Z kept,
-        // then normalized. `three_detail_blend`, read from Forge World's `big_cliffs`, adds the
-        // three detail normals' XY blended by the base map's alpha as its albedo blends them.
-        let unit_xy = |s: &str| format!("normalize(({s}).xyz*2-1).xy");
-        let detail_xy = match (
-            samples.get(&BUMP_DETAIL_SLOT),
-            samples.get(&BUMP_DETAIL2_SLOT),
-            samples.get(&BUMP_DETAIL3_SLOT),
-        ) {
-            (Some(d1), Some(d2), Some(d3)) => {
-                let (first, second) = three_detail_weights(&surface, &samples);
-                Some(format!(
-                    "lerp(lerp({},{},{first}),{},{second})",
-                    unit_xy(d1),
-                    unit_xy(d2),
-                    unit_xy(d3)
-                ))
-            }
-            (Some(d1), None, None) => Some(unit_xy(d1)),
-            _ => None,
-        };
-        let normal = if let Some(weights) = weights {
-            terrain_normal(&samples, weights)
-        } else {
-            samples
-                .get(&1)
-                .map(|s| match &detail_xy {
-                    Some(d) => format!(
-                        "normalize(float3({}+{d},normalize(({s}).xyz*2-1).z))",
-                        unit_xy(s)
-                    ),
-                    None => format!("({s}).xyz*2-1"),
-                })
-                .unwrap_or_else(|| "float3(0,0,1)".into())
-        };
-        // The native highlight follows Reach's analytical one ([`native_roughness`]). Cook-Torrance
-        // and organism surfaces take their Beckmann slope, `analytical_roughness`, which only an
-        // enabled material texture blends through alpha. A texture bound by another model does
-        // not define a gloss channel. Two-lobe Phong surfaces take `analytical_power`, the Phong
-        // exponent of their analytical highlight. Their `roughness` only selects the slice of the
-        // VMF specular table. Diffuse-only surfaces, decorators, foliage, decals, holograms and
-        // every other surface without a specular model stay fully rough instead of gaining a
-        // reflected highlight.
-        let rough = if terrain(material) {
-            terrain::roughness(material)
-        } else if mux::is(material) {
-            "1".into()
-        } else {
-            match material.options.get("material_model").map(String::as_str) {
-                Some("cook_torrance" | "organism") => {
-                    let name = if surface.constant("analytical_roughness").is_some() {
-                        "analytical_roughness"
-                    } else {
-                        "roughness"
-                    };
-                    let rough = surface.scalar(name, 0.48);
-                    let rough = if surface.boolean("use_material_texture") == Some(true) {
-                        let sample = samples
-                            .get(&2)
-                            .context("Material texture enabled without a bound texture")?;
-                        let black = surface.scalar("material_texture_black_roughness", 1.);
-                        format!("lerp({black},{rough},({sample}).a)")
-                    } else {
-                        rough
-                    };
-                    native_roughness(&rough, &specular_strength(material, &surface, &samples))
-                }
-                Some("two_lobe_phong") => native_roughness(
-                    &format!(
-                        "sqrt(2/(max({},0)+2))",
-                        surface.scalar("analytical_power", 16.)
-                    ),
-                    &specular_strength(material, &surface, &samples),
-                ),
-                _ => "1".into(),
-            }
-        };
-        let diffuse = if terrain(material) {
-            "albedo.rgb*=terrainDiffuse;".to_owned()
-        } else if binding.lightmap.is_some() && !material.water() && !material.glass() {
-            format!(
-                "albedo.rgb*=max({},0);",
-                surface.scalar("diffuse_coefficient", 1.)
-            )
-        } else {
-            String::new()
-        };
-        let clip = if material.alpha_mode() == "MASK" {
-            format!(
-                "clip({}-0.5);",
-                samples
-                    .get(&3)
-                    .map(|s| format!("({s}).a"))
-                    .unwrap_or_else(|| "albedo.a".into())
-            )
-        } else {
-            String::new()
-        };
-        // A decal draws only within its own coordinates ([`material::Material::decal`]). Drawn
-        // with a clamped texture past them, Boardwalk's dirt decals smeared their edge texels into
-        // streaks and flat brown across its floors.
-        let clip = if material.decal() {
-            format!("clip(float4(v3.xy,1-v3.xy));{clip}")
-        } else {
-            clip
-        };
-        let output = surface.output();
-        let (finish, frame) = match binding.lightmap {
-            Some(lightmap) if !surface.transparent() => (
-                hybrid_finish(
-                    lightmap.level,
-                    lightmap.veil,
-                    lightmap.radiance,
-                    lightmap.native_sun,
-                ),
-                FRAME,
-            ),
-            Some(lightmap) => (
-                baked_transparent_finish(material, lightmap.level, lightmap.radiance),
-                FRAME,
-            ),
-            None => (surface.finish(), ""),
-        };
-        // A lightmapped surface's finish reads the level's fog, or none where the level has none.
-        let finish = match binding.lightmap.map(|lightmap| lightmap.fog.is_some()) {
-            Some(true) => format!("float4 fog=reachFog(v5.xyz,v5.w);{finish}"),
-            Some(false) => format!("float4 fog=float4(0,0,0,1);{finish}"),
-            None => finish,
-        };
-        // Refracting water replaces the scene it covers with the refracted scene
-        // ([`water::lighting`]).
-        let finish = if refracts {
-            format!("{finish}{}", water::REFRACTED_FINISH)
-        } else {
-            finish
-        };
-        // An animated transform reads the game clock from the frame constants.
-        let clock = samples
-            .values()
-            .any(|sample| sample.contains("reachPhase("))
-            || parameter_source.contains("reachPhase(");
-        let frame = if clock && frame.is_empty() {
-            FRAME
-        } else {
-            frame
-        };
-        let time = if clock {
-            "float time=frameData[0].x;"
-        } else {
-            ""
-        };
-        let detail_slots = weights.as_ref().map_or(&[][..], |_| &TERRAIN_DETAIL[..]);
-        let declarations = if dense {
-            // Roles can share one texture binding. HLSL requires one resource declaration per
-            // register, even when the native bindings point at the same image.
-            let mut declared = BTreeMap::new();
-            let mut declarations = String::new();
-            for (slot, register) in &registers {
-                if let Some(first) = declared.get(register) {
-                    declarations.push_str(&format!("\n#define Map{slot} Map{first}\n"));
-                } else {
-                    declared.insert(register, slot);
-                    declarations.push_str(&format!(
-                        "Texture2D<float4> Map{slot}:register(t{register});\n"
-                    ));
-                }
-            }
-            declarations
-        } else {
-            (0..=9)
-                .chain(detail_slots.iter().copied())
-                .chain(material.glass().then_some(GLASS_OPACITY_SLOT))
-                .map(|slot| {
-                    let target = if paint.is_some() && slot >= 3 {
-                        slot + 6
-                    } else {
-                        slot
-                    };
-                    format!("Texture2D<float4> Map{slot}:register(t{target});")
-                })
-                .collect::<String>()
-        };
-        let dye = paint.map_or_else(String::new, |paint| {
-            format!(
-                "cbuffer GearPaint:register(b{}) {{float4 dye[27];}};",
-                paint.slot
-            )
-        });
-        let tinting = dye_tint(paint, &samples)?;
-        let decal_coordinates = decal::coordinates(material, &surface);
-        let decal_tint = decal::tint(material, &surface);
-        let functions = format!(
-            "float4 reachNormal(float2 xy){{return float4(float3(xy,sqrt(saturate(1-dot(xy,xy))))*0.5+0.5,1);}}\n{TERRAIN_NORMAL}{}{}{}{}{}",
-            animation::CLOCK,
-            surface::MULTILAYER_FUNCTIONS,
-            weights.as_ref().map_or("", |_| TERRAIN_FUNCTIONS),
-            binding
-                .lightmap
-                .and_then(|lightmap| lightmap.fog)
-                .map_or_else(String::new, |fog| fog.functions()),
-            if light.is_some() {
-                HIGHLIGHT_FUNCTIONS
-            } else {
-                ""
-            }
+        rows.extend(
+            [
+                animated.then_some("magazine"),
+                aimed.map(|_| "aimVisibility"),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|row| format!("float4 {row};")),
         );
-        let sampler_declarations = &samplers.declarations;
-        let text = format!(
-            r#"
-{declarations}
-{lighting_declarations}
-{frame}
-{dye}
-{display}
-{functions}
-{curve_functions}
-{sampler_declarations}
-{texture_functions}
-{environment_declarations}
-{specular_declarations}
-{wave_functions}
-{scene_declarations}
-void main(float4 v0:TEXCOORD0,float4 v1:TEXCOORD1,float4 v2:TEXCOORD2,float4 v3:TEXCOORD3,float3 v4:TEXCOORD4,float4 position:SV_POSITION0,float4 v5:TEXCOORD5,float4 v6:TEXCOORD6,float4 v7:TEXCOORD7,float4 v8:TEXCOORD8,float4 v9:TEXCOORD9,uint front:SV_isFrontFace0,
-{output}) {{
-{time}{parameter_source}{decal_coordinates}{terrain_parameters}{mux_parameters}float3 n={normal};n=normalize(n.x*v1.xyz+n.y*v2.xyz+n.z*v0.xyz);float4 albedo={color};{decal_tint}{tinting}{clip}float4 unlit=albedo;{diffuse}{probe}{lighting}
-float3 emission={emission};float roughness={rough};{finish}
-}}
-"#,
-            specular_declarations = specular_table.as_deref().unwrap_or(""),
-            scene_declarations = if refracts {
-                water::SCENE_DECLARATIONS
-            } else {
-                ""
-            },
-            probe = if binding.lightmap.is_some() {
-                probe(&surface)
-            } else {
+        let display = format!(
+            "{}{}",
+            if rows.is_empty() {
                 String::new()
-            },
-        );
-        let shader = format!("{}pixel-{key:08X}", binding.prefix);
-        notes.extend(surface.parameters.unused(&text));
-        decal::notes(material, &mut notes);
-        if material.water() {
-            notes.push(if refracts {
-                "Water retains source slope animation and uses separate body coordinates where the geometry supplies them. Map reports count base-UV fallbacks. Painted foam and source reflection require baked lighting. Refraction reads the native transparent scope's scene color and depth, with the refracted point on the water pixel's view ray. Ripple interactions, underwater state and geometry displacement remain untranslated."
             } else {
-                "Water retains source slope animation and uses separate body coordinates where the geometry supplies them. Map reports count base-UV fallbacks. Painted foam and source reflection require baked lighting. Without source refraction, coverage approximates the refraction depth. Ripple interactions and geometry displacement remain untranslated."
-            }.into());
+                format!("cbuffer Material : register(b0) {{ {rows} }};\n")
+            },
+            display.unwrap_or_default()
+        );
+        let refracts = binding.lightmap.is_some() && water::refracts(material);
+        let mut reserved = Vec::new();
+        if paint.is_some() {
+            reserved.extend(3..=8);
         }
-        let pixel_template = shell.u32(0x2c8)?;
-        // An alpha-tested level surface also casts through a shadow technique of its own
-        // ([`clipped_shadow`]), whose pixel program keeps the texels the surface keeps.
-        let shadow_text = (binding.statics && clipped_caster(material))
-            .then(|| clip_program(&text, output, &clip))
-            .transpose()?;
-        reserve_program(native, g, &shader, pixel_template)?;
-        pixels.submit(move || Ok((crate::tiger::shader::compile(&text, false)?, text)));
-        pending.push((shader.clone(), pixel_template));
-        let shadow_shader = match shadow_text {
-            Some(text) => {
-                let symbol = format!("{}pixel-{key:08X}-shadow", binding.prefix);
-                reserve_program(native, g, &symbol, pixel_template)?;
-                pixels.submit(move || Ok((crate::tiger::shader::compile(&text, false)?, text)));
-                pending.push((symbol.clone(), pixel_template));
-                Some(symbol)
-            }
-            None => None,
-        };
-        let (template, envelope, stage) = if surface.transparent() {
-            (0x815246aa, &transparent_shell, 7)
-        } else {
-            (0x80ec270d, &shell, 0)
-        };
-        let mut bytes = fresh_surface(envelope)?;
-        if binding.statics {
-            for offset in [24, 28] {
-                let current = Payload(bytes.clone()).u32(offset)?;
-                put(
-                    &mut bytes,
-                    offset,
-                    &((current & !OBJECT_SCOPE) | STATIC_SCOPE).to_le_bytes(),
-                )?;
-            }
+        if refracts {
+            reserved.extend(SCENE_REGISTERS);
         }
-        if let Some(paint) = paint {
-            for offset in [24, 28] {
-                let current = Payload(bytes.clone()).u32(offset)?;
-                put(&mut bytes, offset, &(current | paint.scopes).to_le_bytes())?;
-            }
+        if emission::depth_fade(material) {
+            reserved.push(10);
         }
-        let mut fixed = Vec::new();
-        for (slot, _) in &bindings {
-            fixed.extend((*slot as u32).to_le_bytes());
-            fixed.extend(u32::MAX.to_le_bytes());
-        }
-        append(&mut bytes, 0x2d0, 0x80807211, &fixed, 8)?;
-        append(
-            &mut bytes,
-            0x308,
-            u64::from(sampler_class),
-            &samplers.table,
-            16,
-        )?;
-        let mut expression = if bindings.is_empty() {
-            vec![]
-        } else {
-            samplers.expression.clone()
-        };
-        if animated {
-            let input = *binding
-                .objects
-                .get("32CC5402")
-                .context("Native current-magazine model input")?;
-            expression.extend([0x4d, input, 0x43, 0]);
-            bytes[0x33c] = 0x10;
-            put(
-                &mut bytes,
-                0x338,
-                &u32::try_from(binding.objects.len())?.to_le_bytes(),
-            )?;
-            put(&mut bytes, 0x348, &0u32.to_le_bytes())?;
-        }
-        append(
-            &mut bytes,
-            0x318,
-            0x80800090,
-            if animated { &[0; 16] } else { &[] },
-            16,
-        )?;
-        put(&mut bytes, 0x34c, &u32::MAX.to_le_bytes())?;
-        append(&mut bytes, 0x2e8, 0x80800009, &expression, 1)?;
-        let mut patches = surface_patches(
-            &bytes,
-            &format!("{}vertex", binding.prefix),
-            &shader,
-            &bindings,
-            &samplers.symbols,
-        )?;
-        if let Some(symbol) = binding.vertex_data {
-            let mut row = vertex_data_register.to_le_bytes().to_vec();
-            row.extend(u32::MAX.to_le_bytes());
-            append(&mut bytes, 0x50, 0x80807211, &row, 8)?;
-            let at = Payload(bytes.clone()).array(0x50, 8, None)?[0];
-            patches.push(json!({"offset":at+4,"symbol":symbol}));
-        }
-        g.add(
-            &format!("{}material-{key:08X}", binding.prefix),
-            template,
-            &bytes,
-            None,
-            patches,
-        )?;
-        if let Some(pixel) = &shadow_shader {
-            if clipped_envelope.is_none() {
-                clipped_envelope = Some(clipped_shadow_envelope(native)?);
-            }
-            clipped_shadow(
-                g,
-                clipped_envelope
-                    .as_deref()
-                    .context("Native alpha-tested static shadow technique")?,
-                &bytes,
-                &format!("{}shadow-vertex", binding.prefix),
-                pixel,
-                &bindings,
-                &samplers.symbols,
-                &format!("{}material-{key:08X}-shadow", binding.prefix),
-            )?;
-        }
-        report.push(json!({"source":material.tag,"source_properties":material.properties,"cached_decal":material.decal,"effective_constants":surface.constants,"animation_notes":notes,"animated_parameters":surface.parameters.bindings(),"options":material.options,"bound_textures":bindings,"albedo_color":tint,"emission_color":emission_tint,"emission_scale":emission_scale,"alpha":material.alpha_mode(),"native_stage":stage,"baked_emission":binding.lightmap.is_some()&&!surface.transparent(),"environment_reflection":reflected.as_ref().map(|(_, scale)| scale),"paint":paint.map(|paint| json!({"channel":paint.channel+10,"mask":paint.mask,"constant_buffer":paint.slot,"scope_mask":paint.scopes,"method":"Native equipped dye color multiplied through the authored surface mask. A missing or entirely empty dye record preserves source color."})),"limits":["Opaque surfaces use the native deferred approximation. Transparent surfaces use premultiplied output. Decimal ammunition frame functions are bound to the live magazine input. Time-driven texture scale and translation use the Reach mapping evaluator. Unbound material inputs are reported in animation_notes. Scalar and color overlays use the source constant routes. Activation events, unbound object inputs and plasma depth fading remain limited. Explicit overrides select a static appearance state."]}));
+        Ok(Self {
+            key,
+            material,
+            surface,
+            paint,
+            display,
+            animated,
+            aimed,
+            controlled_lighting,
+            refracts,
+            reserved,
+        })
     }
-    for ((symbol, template), ((bytes, warnings), text)) in pending.into_iter().zip(pixels.finish()?)
-    {
-        write_program(native, g, &symbol, template, &text, &bytes, &warnings)?;
+
+    /// The first material row the surface's model inputs fill, after any lighting control rows.
+    fn input_base(&self) -> usize {
+        if self.controlled_lighting {
+            lighting_control::ROWS
+        } else {
+            0
+        }
     }
-    deferral.finish()?;
-    shadow(native, g, &vertex, binding.prefix)?;
-    Ok(report)
+}
+
+/// The report entry of one built surface.
+fn entry(
+    setup: &Setup<'_>,
+    resources: &resources::Resources,
+    lighting: &resources::Lighting,
+    shaders: &pixel::Shaders,
+    stage: u8,
+) -> Value {
+    let material = setup.material;
+    let surface = &setup.surface;
+    let tint = surface.constant("albedo_color").unwrap_or([1.; 4]);
+    let emission_tint = surface
+        .constant("self_illum_color")
+        .or_else(|| surface.constant("self_illum_tint_color"))
+        .unwrap_or([1.; 4]);
+    let emission_scale = surface
+        .constant("self_illum_intensity")
+        .map_or(1., |v| v[0])
+        .max(0.);
+    json!({"source":material.tag,"source_properties":material.properties,"cached_decal":material.decal,"effective_constants":surface.constants,"animation_notes":resources.notes,"animated_parameters":surface.parameters.bindings(),"options":material.options,"bound_textures":resources.bindings,"texture_registers":resources.registers,"albedo_color":tint,"emission_color":emission_tint,"emission_scale":emission_scale,"alpha":material.alpha_mode(),"native_stage":stage,"hidden_when_aimed":setup.aimed.is_some(),"baked_emission":false,"baked_transport":false,"baked_visibility":setup.controlled_lighting,"additional_analytical_light":shaders.baked.is_some(),"baked_stage":shaders.baked.as_ref().map(|_|4),"glow_stage":shaders.glow.as_ref().map(|_|7),"environment_reflection":lighting.reflected.as_ref().map(|(_, scale)| scale),"native_environment_reflection":setup.controlled_lighting,"paint":setup.paint.map(|paint| json!({"channel":paint.channel+10,"mask":paint.mask,"constant_buffer":paint.slot,"scope_mask":paint.scopes,"method":"Native equipped dye color multiplied through the authored surface mask. A missing or entirely empty dye record preserves source color."})),"limits":["Opaque surfaces use the native deferred approximation. Transparent surfaces use premultiplied output. Decimal ammunition frame functions are bound to the live magazine input. Time-driven texture scale and translation use the Reach mapping evaluator. Unbound material inputs are reported in animation_notes. Scalar and color overlays use the source constant routes. Activation events and unbound object inputs remain limited. Scene-depth fade transport needs live draw verification. Explicit overrides select a static appearance state."]})
+}
+
+/// The stock depth prepass technique of weapon parts. Every opaque surface of a stock weapon
+/// model, such as `80C689B7`, also draws in stage 12 with this vertex-only technique, in every
+/// detail band. Destiny 2 ports keep it through their native parts and stay drawn in first person
+/// against walls, while Reach and Marathon weapons drawn without it were cut by walls and vanished
+/// behind them. That the prepass is what holds a held weapon over nearer world geometry is
+/// inferred from that difference: no consumer of the stage was traced.
+const PREPASS: u32 = 0x80ef_b192;
+
+/// Adds `material-prepass`, [`PREPASS`]'s header with the surfaces' own vertex program, so the
+/// prepass writes the depth the surface draws at.
+fn prepass(native: &mut Reader, g: &mut Graph, vertex: &str, prefix: &str) -> Result<()> {
+    let template = native.tag(PREPASS, Some(0x808071e8))?;
+    ensure!(
+        template.u32(0x08)? == 2
+            && template.u32(0x2c8)? == u32::MAX
+            && template.0.get(0x24..0x28) == Some(&[0x80, 1, 1, 0][..]),
+        "Native depth prepass technique differs"
+    );
+    let vertex = vertex
+        .replace("$VERTEX_LIGHT_DECL$", "")
+        .replace("$VERTEX_LIGHT_READ$", "o6=0;o7=0;o8=0;")
+        .replace("$SHADOW_RESOURCE$", "")
+        .replace("$SHADOW_PROJECTION$", "");
+    program(
+        native,
+        g,
+        &format!("{prefix}prepass-vertex"),
+        template.u32(0x48)?,
+        &vertex,
+        true,
+    )?;
+    let mut bytes = template.0.clone();
+    put(&mut bytes, 0x48, &u32::MAX.to_le_bytes())?;
+    g.add(
+        &format!("{prefix}material-prepass"),
+        PREPASS,
+        &bytes,
+        None,
+        vec![json!({"offset":0x48,"symbol":format!("{prefix}prepass-vertex")})],
+    )
 }
 
 /// The texture role under which a lightmapped surface with a `dynamic` environment map carries the
@@ -2553,6 +2437,24 @@ pub(in crate::halo_reach) fn change_colors(material: &Material) -> usize {
         Some("four_change_color" | "four_change_color_applying_to_specular") => 4,
         _ => 0,
     }
+}
+
+/// Placement colors can drive emission even when the albedo has no change-color mask.
+pub(in crate::halo_reach) fn change_color_inputs(material: &Material) -> usize {
+    let emission = usize::from(matches!(
+        material
+            .options
+            .get("self_illumination")
+            .map(String::as_str),
+        Some(
+            "change_color"
+                | "change_color_detail"
+                | "palettized_plasma_change_color"
+                | "times_diffuse"
+                | "self_illum_times_diffuse"
+        )
+    ));
+    change_colors(material).max(emission)
 }
 
 /// The specular color at normal incidence of a native dielectric (`F0 = 0.04 + 0.84 * metalness`,
@@ -2652,9 +2554,8 @@ fn three_detail_weights(
 /// `1 - m + m * color` for each of the object's change colors ([`CHANGE_COLORS`]) and the channel
 /// `m` of `change_color_map` that masks it, as `calc_albedo_four_change_color_ps` does. The colors
 /// are the placement's, which the level's objects write into each colored variant's constants. A
-/// surface without them keeps white. Options without a
-/// translation keep the base map times `albedo_color`, with the detail map for those named for
-/// details. A terrain shader instead mixes its layers by their blend `weights`, each at its own
+/// surface without them keeps white. Surface permutations are checked before generation.
+/// A terrain shader instead mixes its layers by their blend `weights`, each at its own
 /// tiling and each multiplied by its own detail map.
 fn albedo(
     material: &Material,
@@ -2677,8 +2578,26 @@ fn albedo(
     let detail = |d: &str| format!("float4({dm:.6}*({d}).rgb,({d}).a)");
     let mut color = match (option, details) {
         (Some("constant_color"), _) => tint.clone(),
-        (Some("two_detail" | "two_detail_black_point"), (Some(d1), Some(d2), _)) => {
+        (Some("two_detail"), (Some(d1), Some(d2), _)) => {
             format!("({base})*{}*{}", detail(d1), detail(d2))
+        }
+        (Some("two_detail_black_point"), (Some(d1), Some(d2), _)) => {
+            let midpoint = format!("((({base}).a+1)*0.5)");
+            let alpha = format!("(({d1}).a*({d2}).a)");
+            let mask = format!(
+                "({midpoint}*saturate(({alpha}-({base}).a)/({midpoint}-({base}).a))+saturate({alpha}-{midpoint}))"
+            );
+            format!("float4(({base}).rgb*({d1}).rgb*({d2}).rgb*{dm:.6}*{dm:.6},{mask})")
+        }
+        (Some("two_detail_overlay"), (Some(d1), Some(d2), _)) => {
+            let overlay = samples
+                .get(&DETAIL_OVERLAY_SLOT)
+                .map_or("float4(1,1,1,1)", String::as_str);
+            format!(
+                "float4(({base}).rgb,1)*{}*{}",
+                detail(&format!("lerp({d1},{d2},({base}).a)")),
+                detail(overlay)
+            )
         }
         (Some("detail_blend"), (Some(d1), Some(d2), _)) => {
             let blend = format!("saturate(({base}).a*{})", surface.scalar("blend_alpha", 1.));
@@ -2886,11 +2805,34 @@ const SHADOW_ATLAS_SCOPE: u32 = 0x8000;
 /// A material's rasterizer byte, and the value that selects row 1 without face culling.
 const RASTERIZER: usize = 0x22;
 const TWO_SIDED: u8 = 0x81;
+/// Native row 2 uses counterclockwise front faces and back-face culling.
+const BACK_FACES_CULLED: u8 = 0x82;
+/// The state byte after the rasterizer word. The entity surface shell (`80EC270D`) holds `0x80`
+/// there, an explicit depth state, and stock static surfaces, opaque (`80F56C45`) and
+/// alpha-tested (`80F56C21`, `80FE117F`), hold 0, which keeps the stage's own. Every opaque level
+/// surface drawn on the statics takes 0. Opaque statics that kept the shell's `0x80` received no native sun
+/// shadow: on Paradiso neither a cliff's shadow nor the player's fell on them inside the 30 m where
+/// the cascades replace the baked shadow, and turning the cascades off changed no pixel, while the
+/// cascades' views were built along the map's sun and fitted to the visible ground (live reads of
+/// the client's cascade bases, sizes and planes).
+const DEPTH_STATE: usize = 0x24;
+
+/// Whether level surface `material` is an alpha-tested static's, which draws as stock
+/// alpha-tested statics do: both faces, no explicit depth state and no depth prepass
+/// ([`crate::halo_reach::level::native`]'s statics). In Distant Shore's 59 static meshes all 66
+/// parts with an alpha-tested shadow draw a surface at layout 127 or 128 with state bytes
+/// `00 00 81 00 00 7F 7F 00` at `+0x20`, and none draws in the prepass. Reach draws its foliage
+/// cards from both sides, and culled, Paradiso's pine branches showed from above only. Both faces
+/// light by the authored normal. A material in [`Binding::paired_faces`] already supplies opposite
+/// triangles with their own normals and instead selects back-face culling.
+fn two_sided_static(material: &Material) -> bool {
+    material.alpha_mode() == "MASK" && !material.decal()
+}
 /// The material header before its first stage record. It holds the mode, scopes and state bytes
 /// and no array descriptor.
 const MATERIAL_HEADER: usize = 0x48;
 
-/// Whether level surface `material` also casts a sun shadow through a shadow technique of its own
+/// Whether surface `material` also casts a sun shadow through a shadow technique of its own
 /// ([`clipped_shadow`]): an alpha-tested surface that is neither a decal nor a decorator set's
 /// (`dctr`). The shared solid shadow technique draws every triangle whole, so a branch or a grate
 /// drawn with it would shadow its cut-out texels too. Decorators, the grass, bushes and pebbles
@@ -2926,38 +2868,48 @@ fn clip_program(text: &str, output: &str, clip: &str) -> Result<String> {
     Ok(format!("{head}) {{\n{}\n}}\n", &body[..end]))
 }
 
-/// [`CLIPPED_STATIC_SHADOW`], checked for the header [`clipped_shadow`] copies: a material with a
-/// pixel program whose scopes bind the static instance and the shadow atlas but no object, and
-/// which draws both faces.
-fn clipped_shadow_envelope(native: &mut Reader) -> Result<std::sync::Arc<Payload>> {
-    let envelope = native.tag(CLIPPED_STATIC_SHADOW, Some(0x808071e8))?;
+/// A pixel-bearing shadow envelope with the owning geometry's scopes. Static alpha casters use
+/// the verified two-sided envelope. Entities retain the ordinary object shadow envelope.
+fn clipped_shadow_envelope(native: &mut Reader, statics: bool) -> Result<std::sync::Arc<Payload>> {
+    let envelope = native.tag(
+        if statics {
+            CLIPPED_STATIC_SHADOW
+        } else {
+            0x80ec271d
+        },
+        Some(0x808071e8),
+    )?;
+    let (required, excluded) = if statics {
+        (STATIC_SCOPE, OBJECT_SCOPE)
+    } else {
+        (OBJECT_SCOPE, STATIC_SCOPE)
+    };
     let scoped = |at: usize| {
         envelope.u32(at).is_ok_and(|scope| {
-            scope & (STATIC_SCOPE | SHADOW_ATLAS_SCOPE) == STATIC_SCOPE | SHADOW_ATLAS_SCOPE
-                && scope & OBJECT_SCOPE == 0
+            scope & (required | SHADOW_ATLAS_SCOPE) == required | SHADOW_ATLAS_SCOPE
+                && scope & excluded == 0
         })
     };
     ensure!(
         envelope.u32(0x08)? == 1
-            && envelope.0.get(RASTERIZER) == Some(&TWO_SIDED)
+            && (!statics || envelope.0.get(RASTERIZER) == Some(&TWO_SIDED))
             && scoped(0x18)
             && scoped(0x1c),
-        "Native alpha-tested static shadow technique differs"
+        "Native alpha-tested shadow technique differs"
     );
     Ok(envelope)
 }
 
-/// Adds `symbol`, the shadow technique of an alpha-tested static whose surface record is
-/// `surface`, as stock statics draw alpha-tested parts in the shadow stage. It keeps the surface's
-/// pixel textures, samplers and expression under the header of `envelope`
-/// ([`CLIPPED_STATIC_SHADOW`]), whose scope adds the shadow atlas to the surface's and whose
-/// rasterizer byte draws both faces of Reach's one-sided cards. The static shadow vertex program
-/// `vertex` reads no baked light, so the surface's vertex data binding is left out, and the
-/// clipping program `pixel` ([`clip_program`]) discards what the surface discards.
+/// Adds an alpha-tested shadow technique with the surface's pixel textures, samplers and
+/// expression. The owning envelope supplies depth state and the shadow atlas. Static cards use
+/// its two-sided state. Entities retain their surface's culling and extra scopes. The shadow
+/// vertex program reads no baked light, so that vertex binding is left out. The clipping program
+/// discards the same material texels as the surface.
 #[allow(clippy::too_many_arguments)]
 fn clipped_shadow(
     g: &mut Graph,
     envelope: &Payload,
+    statics: bool,
     surface: &[u8],
     vertex: &str,
     pixel: &str,
@@ -2966,13 +2918,64 @@ fn clipped_shadow(
     symbol: &str,
 ) -> Result<()> {
     let mut bytes = surface.to_vec();
+    lighting_control::stage(&mut bytes, 3)?;
     bytes[0x08..MATERIAL_HEADER].copy_from_slice(
         envelope
             .0
             .get(0x08..MATERIAL_HEADER)
-            .context("The alpha-tested static shadow technique is too short")?,
+            .context("The alpha-tested shadow technique is too short")?,
     );
+    if !statics {
+        // Preserve the surface's extra scopes, including gear paint, material animation and
+        // frame time. The shadow envelope contributes its depth mode and atlas scope.
+        for at in [0x18, 0x1c] {
+            let scope = Payload(surface.to_vec()).u32(at)? | SHADOW_ATLAS_SCOPE;
+            put(&mut bytes, at, &scope.to_le_bytes())?;
+        }
+        bytes[RASTERIZER] = surface[RASTERIZER];
+    }
     put(&mut bytes, 0x50, &[0; 16])?;
     let patches = surface_patches(&bytes, vertex, pixel, bindings, sampler_symbols)?;
-    g.add(symbol, CLIPPED_STATIC_SHADOW, &bytes, None, patches)
+    g.add(
+        symbol,
+        if statics {
+            CLIPPED_STATIC_SHADOW
+        } else {
+            0x80ec271d
+        },
+        &bytes,
+        None,
+        patches,
+    )
+}
+
+fn expand_decimal_frames(
+    c: &Cache,
+    pages: &mut Pages,
+    mapping: &material::Mapping,
+    normal: bool,
+    image: &mut material::Image,
+) -> Result<()> {
+    let tag = mapping.bitmap.as_ref().context("Animated bitmap")?;
+    let frames = (0..10)
+        .map(|frame| material::image(c, pages, tag, frame, normal))
+        .collect::<Result<Vec<_>>>()?;
+    let width = image.width;
+    let height = image.height;
+    ensure!(
+        frames
+            .iter()
+            .all(|f| f.width == width && f.height == height && f.format == image.format),
+        "Decimal bitmap frame dimensions or formats differ"
+    );
+    image.width *= 10;
+    image.rgba.resize(image.width * height * 4, 0);
+    for (index, frame) in frames.iter().enumerate() {
+        for y in 0..height {
+            let start = (y * image.width + index * width) * 4;
+            image.rgba[start..start + width * 4]
+                .copy_from_slice(&frame.rgba[y * width * 4..(y + 1) * width * 4]);
+        }
+    }
+    Ok(())
 }

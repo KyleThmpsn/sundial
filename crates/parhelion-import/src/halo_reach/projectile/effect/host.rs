@@ -103,15 +103,37 @@ pub(super) fn attach(
     entity: &mut Payload,
     owners: &BTreeMap<u32, Payload>,
 ) -> Result<()> {
-    let host = native.tag(ENTITY, Some(0x80809c0f))?;
+    attach_owner(native, entity, owners, OWNER, ENTITY)
+}
+
+/// Appends component `owner`, whose stock entity `registration` registers it, to `entity`. The
+/// owner takes part in no connection there, so it needs none here.
+fn attach_owner(
+    native: &mut Reader,
+    entity: &mut Payload,
+    owners: &BTreeMap<u32, Payload>,
+    owner: u32,
+    registration: u32,
+) -> Result<()> {
+    let host = native.tag(registration, Some(0x80809c0f))?;
     let host_links = links::Graph::read(&host, false)?;
+    let named = |row: &links::Connection| {
+        [&row.consumer, &row.provider].iter().any(|end| {
+            end.object
+                .as_ref()
+                .is_some_and(|object| object.owner == owner)
+        })
+    };
     ensure!(
-        host_links.components.contains(&OWNER)
-            && host_links.connections.is_empty()
-            && host_links.named_connections.is_empty(),
-        "Trail host requires connected providers"
+        host_links.components.contains(&owner)
+            && !host_links
+                .connections
+                .iter()
+                .chain(&host_links.named_connections)
+                .any(named),
+        "Attached flow owner requires connected providers"
     );
-    let template = native.tag(OWNER, Some(0x80809c36))?;
+    let template = native.tag(owner, Some(0x80809c36))?;
     let components = entity
         .array(16, 12, Some(0x80809c04))?
         .into_iter()
@@ -127,8 +149,8 @@ pub(super) fn attach(
         })
         .collect::<Vec<_>>();
     components.push(compiled::Component {
-        owner: OWNER,
-        payload: &owners[&OWNER],
+        owner,
+        payload: &owners[&owner],
         template: &template,
         entity: &host,
     });

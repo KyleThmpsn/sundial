@@ -6,7 +6,7 @@ pub(crate) fn set_sunrise_members(
     members: &[SunriseBadgePlacement],
     pools: &[u8],
 ) -> AuthoringResult<()> {
-    set_members(graph, members, pools, &Layout::sunrise())
+    set_members(graph, members, pools, &Layout::current())
 }
 
 /// Keep leaf members, their collectible parents and each backing record's counter aligned.
@@ -83,14 +83,14 @@ pub(super) fn set_members(
             };
             let unlocks = class_members
                 .iter()
-                .map(|member| member.authored_unlock_index)
+                .map(|member| member.acquisition)
                 .collect::<Vec<_>>();
             let (objectives, strings, index) = append_objective(
                 std::mem::take(&mut graph.objectives),
                 std::mem::take(&mut graph.objective_strings),
                 pools,
                 &unlocks,
-                crate::package_profile::LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                crate::package_profile::localization_table() as u32,
                 &class_layout,
             )?;
             graph.objectives = objectives;
@@ -134,10 +134,8 @@ fn set_objective(
     )?;
     let mut instructions = Vec::new();
     for (position, member) in members.iter().enumerate() {
-        instructions.push(
-            flag.with_semantics(NUMERIC_FLAG_INSTRUCTION, member.authored_unlock_index)
-                .serialized,
-        );
+        let (opcode, operand) = member.acquisition.token();
+        instructions.push(flag.with_semantics(opcode, operand).serialized);
         if position > 0 {
             instructions.push(add.serialized);
         }

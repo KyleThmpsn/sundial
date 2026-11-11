@@ -48,12 +48,19 @@ pub(in crate::halo_reach) struct Table {
     pub height: usize,
 }
 
+/// The flag bit, in the third lighting row's fourth lane, of a record whose third lighting row's
+/// first lane holds the depth in meters of the ground below a water vertex. Only a vertex without
+/// vertex lighting carries it, since that lane is otherwise its lighting.
+const WATER_DEPTH: u8 = 4;
+
+/// `water_depths` holds each water vertex's ground depth by primitive and vertex index.
 pub(in crate::halo_reach) fn add(
     native: &mut Reader,
     graph: &mut Graph,
     primitives: &[crate::halo_reach::model::Primitive],
     peak: f32,
     lightmap: impl Fn(u32, &crate::halo_reach::model::Vertex) -> [f32; 2],
+    water_depths: &HashMap<(u32, u32), f32>,
 ) -> Result<Option<Table>> {
     let count = primitives
         .iter()
@@ -77,14 +84,26 @@ pub(in crate::halo_reach) fn add(
             }
             let mut lighting = source.lighting.unwrap_or([[0.; 4]; 3]);
             // Keep radiance linear through raster interpolation. Pixel lightmaps instead decode
-            // their logarithmic encoding before shading.
+            // the original compressed samples after texture filtering.
             for row in &mut lighting[..2] {
                 for channel in &mut row[..3] {
                     *channel /= peak;
                 }
             }
+            let depth = if source.lighting.is_none() {
+                water_depths
+                    .get(&(u32::try_from(primitive)?, u32::try_from(vertex)?))
+                    .copied()
+            } else {
+                None
+            };
+            if let Some(depth) = depth {
+                lighting[2][0] = depth;
+            }
             lighting[2][3] = f32::from(
-                u8::from(source.lighting.is_some()) | (u8::from(source.water_uv.is_some()) << 1),
+                u8::from(source.lighting.is_some())
+                    | (u8::from(source.water_uv.is_some()) << 1)
+                    | if depth.is_some() { WATER_DEPTH } else { 0 },
             );
             let water = source.water_uv.unwrap_or([0.; 2]);
             let lightmap = lightmap(u32::try_from(primitive)?, source).map(coordinate_bits);
@@ -153,7 +172,8 @@ pub(in crate::halo_reach) fn add(
 }
 
 pub(super) const DECLARATION: &str = "Texture2D<float4> VertexData:register(t0);";
-/// Loads a record's rows into the lighting outputs, its water coordinates into `o9` and its
+/// Loads a record's rows into the lighting outputs, its water coordinates into `o9.xy` and its
 /// lightmap coordinate bits into `o3.zw`, which the static vertex program then decodes with the
-/// attribute stream's own ([`coordinates`]).
-pub(super) const READ: &str = "o6=0;o7=0;o8=0;if(detail.y<0){uint record=f32tof16(detail.x)+(f32tof16(-detail.y)-1)*31744;int2 at=int2((record%512)*4,record/512);o6=VertexData.Load(int3(at,0));o7=VertexData.Load(int3(at+int2(1,0),0));o8=VertexData.Load(int3(at+int2(2,0),0));float4 extra=VertexData.Load(int3(at+int2(3,0),0));uint flags=(uint)o8.w;o8.w=flags&1;o3.zw=extra.zw;if((flags&2)!=0){o9.xy=extra.xy;o9.w=1;}}";
+/// attribute stream's own ([`coordinates`]). `o9.w` is 0 without water coordinates, 1 with them
+/// and 2 plus the ground depth in meters with a depth ([`WATER_DEPTH`]).
+pub(super) const READ: &str = "o6=0;o7=0;o8=0;if(detail.y<0){uint record=f32tof16(detail.x)+(f32tof16(-detail.y)-1)*31744;int2 at=int2((record%512)*4,record/512);o6=VertexData.Load(int3(at,0));o7=VertexData.Load(int3(at+int2(1,0),0));o8=VertexData.Load(int3(at+int2(2,0),0));float4 extra=VertexData.Load(int3(at+int2(3,0),0));uint flags=(uint)o8.w;o8.w=flags&1;o3.zw=extra.zw;if((flags&2)!=0){o9.xy=extra.xy;o9.w=1;}if((flags&4)!=0){o9.w=2+o8.x;o8.x=0;}}";

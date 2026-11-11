@@ -8,7 +8,7 @@ mod early;
 mod linked;
 pub(crate) mod looping;
 mod one_shot;
-pub(crate) use one_shot::Layer as ShotLayer;
+pub(crate) use one_shot::{Attenuation, Layer as ShotLayer};
 mod params;
 pub use early::{upgrade, upgrade_with_settings};
 pub use linked::Namespace;
@@ -33,6 +33,13 @@ struct Reference {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Kind {
     Object,
+    /// The element a Rise of Iron stop, pause, resume, mute or unmute action names. Those actions
+    /// act on instances of hierarchy elements, never on the Init bank's global objects. Rise of
+    /// Iron weapon banks `80AAA7D3`, `80AA90A8` and `80AA92B5` each stop element `3A2CE2B4`, which no
+    /// bank of their closure and no native Init object defines, so the stop acts on nothing. An
+    /// element outside the closure therefore takes the private identity the namespace would give
+    /// it, which nothing defines, rather than refusing the bank, and keeps doing nothing.
+    Stopped,
     Bank,
     Media,
     MediaSize,
@@ -157,10 +164,9 @@ impl Convert {
     }
 }
 
+/// The client's case-insensitive FNV-1 name hash, which Wwise bank, event and object names use.
 pub fn hash(name: &str) -> u32 {
-    name.bytes().fold(0x811C9DC5u32, |h, b| {
-        h.wrapping_mul(16777619) ^ u32::from(b.to_ascii_lowercase())
-    })
+    sundial::package_authoring::fnv1_name_hash(name)
 }
 
 /// Convert a complete source bank, retaining its hierarchy, actions and curves.
@@ -433,11 +439,21 @@ impl Bank {
             );
             ids.insert(*id, private);
         }
+        for reference in &self.refs {
+            if matches!(reference.kind, Kind::Stopped) && !ids.contains_key(&reference.value) {
+                let private = hash(&format!("{namespace}/object/{:08x}", reference.value));
+                ensure!(
+                    unique.insert(private),
+                    "private audio object identity collision"
+                );
+                ids.insert(reference.value, private);
+            }
+        }
         let mut bytes = self.bytes.clone();
         let mut seen = BTreeSet::new();
         for reference in &self.refs {
             let value = match reference.kind {
-                Kind::Object => ids
+                Kind::Object | Kind::Stopped => ids
                     .get(&reference.value)
                     .copied()
                     .unwrap_or(reference.value),

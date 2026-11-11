@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, ensure};
 use parhelion::{BatchBuildRequest, BatchBuildSnapshot, WeaponRecipe, perk::import};
-use parhelion_import::d2_mot::{payload::Payload, reader::Reader};
+use parhelion_import::tiger::{payload::Payload, reader::Reader};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{

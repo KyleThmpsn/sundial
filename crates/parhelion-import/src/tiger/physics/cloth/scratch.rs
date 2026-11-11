@@ -14,7 +14,9 @@ use super::*;
 fn inputs(class: &str) -> &'static [&'static str] {
     match class {
         "hclMoveParticlesOperator" => &["refBufferIdx"],
-        "hclGatherAllVerticesOperator" | "hclCopyVerticesOperator" => &["inputBufferIdx"],
+        "hclGatherAllVerticesOperator"
+        | "hclGatherSomeVerticesOperator"
+        | "hclCopyVerticesOperator" => &["inputBufferIdx"],
         "hclObjectSpaceMeshMeshDeformPOperator" => &["inputBufferIdx", "inputBufferPrevIdx"],
         _ => &[],
     }
@@ -25,7 +27,9 @@ fn inputs(class: &str) -> &'static [&'static str] {
 fn outputs(class: &str) -> &'static [&'static str] {
     match class {
         "hclObjectSpaceSkinPNTOperator" | "hclObjectSpaceSkinPNOperator" => &["outputBufferIndex"],
-        "hclGatherAllVerticesOperator" | "hclCopyVerticesOperator" => &["outputBufferIdx"],
+        "hclGatherAllVerticesOperator"
+        | "hclGatherSomeVerticesOperator"
+        | "hclCopyVerticesOperator" => &["outputBufferIdx"],
         "hclObjectSpaceMeshMeshDeformPOperator" => &["outputBufferIdx", "outputBufferPrevIdx"],
         _ => &[],
     }

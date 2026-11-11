@@ -115,6 +115,7 @@ pub(crate) fn expand(
         randomized_plug_set_index: None,
         randomized_selection_program: Vec::new(),
         reusable_choices: None,
+        hide_perks_in_tooltip: None,
     });
     let slot =
         u16::try_from(lane).map_err(|_| invalid("Vehicle trait socket index is too large"))?;

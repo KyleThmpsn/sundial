@@ -25,7 +25,6 @@ use tiger_pkg::TagHash;
 
 use crate::AuthoringResult;
 use crate::error::{invalid, validation};
-use crate::package_profile::LOCALIZATION_DONOR_TABLE_INDEX;
 use crate::shared_tag_memory::{
     SharedTagDependencies, adjacent_companion_tag, validate_shared_tag_companion_payload,
 };
@@ -861,7 +860,7 @@ pub(super) fn set_node_text(
                 write_localized_reference(
                     &mut payload,
                     display + field,
-                    LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                    crate::package_profile::localization_table() as u32,
                     hash,
                 )?;
             }

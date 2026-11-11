@@ -1,13 +1,62 @@
 //! Literal property bodies preserve D1 values under a bank-local native handler witness.
 use super::*;
 
+/// The melee flag word's bits sit one place lower in Shadowkeep. The charge test reads source
+/// bit 10 (`004846CE`) where native reads bit 9 (`00B97F92`), and the other tested bits line up
+/// the same way (source 6, 11 and 12 against native 5, 10 and 11). Native Scorch stores `0x0300`
+/// for the source's `0x0600`. A bit without a known counterpart refuses the row.
+fn flag_word(source: u32) -> Result<u32> {
+    const BITS: [(u32, u32); 5] = [(6, 5), (9, 8), (10, 9), (11, 10), (12, 11)];
+    ensure!(
+        source <= 0xFFFF,
+        "Source melee flag word exceeds its UInt16"
+    );
+    let mut native = 0;
+    let mut left = source;
+    for (from, to) in BITS {
+        if source & (1 << from) != 0 {
+            native |= 1 << to;
+            left &= !(1 << from);
+        }
+    }
+    ensure!(
+        left == 0,
+        "Source melee flag word {source:04X} sets bits without a native counterpart"
+    );
+    Ok(native)
+}
+
+/// Whether Shadowkeep's HUD glyph table has a row for `key`, so a HUD name the row writes draws.
+fn has_glyph(reader: &mut Reader, key: u32) -> Result<bool> {
+    let table = reader.tag(sundial::package_authoring::ability_hud::GLYPH_TABLE, None)?;
+    let count = usize::try_from(table.u64(8)?)?;
+    for index in 0..count {
+        if table.u32(48 + index * 112)? == key {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn lower(
+    reader: &mut Reader,
     p: &Payload,
     row: usize,
     native: &Payload,
 ) -> Result<Vec<(AbilityRowModifier, Option<usize>)>> {
     let at = p.pointer(row + 32)?;
-    let (class, size) = match p.u32(at - 4)? {
+    let source_class = p.u32(at - 4)?;
+    let (class, size) = match source_class {
+        // Melee integer fields: the source common handler (`0054F4A0`) and the native one
+        // (`00FC01F0`) perform the same operation on the same recipient field. The flag word is
+        // a UInt16 replace, the HUD-hiding field a byte replace and the HUD name a key replace.
+        0x8080241C => (0x80804536, 4),
+        0x8080206A => (0x80804530, 4),
+        0x80802650 => (0x80804532, 4),
+        0x808027CB => (0x80804509, 4),
+        // A contact effect: both Float32 and the attached entity go to a list capped at three
+        // (source `010E12FD`, native `0105C7AB`).
+        0x80802000 => (0x8080442A, 24),
         // These records gained the native reciprocal 16-byte header. Their literal
         // bodies keep the source field order. No pointer, script or resource is copied.
         0x8080251A => (0x80804399, 32),
@@ -119,13 +168,37 @@ pub(super) fn lower(
     let mut words = [0; 8];
     // Priority indices are local to each bank. The qualified native row supplies
     // the priority slot when this private row is appended.
-    for (i, word) in words[..size / 4].iter_mut().enumerate() {
-        *word = p.u32(at + i * 4)?;
+    match source_class {
+        0x8080241C => words[0] = flag_word(u32::from(p.u16(at)?))?,
+        0x8080206A => words[0] = u32::from(p.u8(at)?),
+        0x80802650 => {
+            words[0] = p.u32(at)?;
+            ensure!(
+                has_glyph(reader, words[0])?,
+                "Source HUD name {:08X} has no native glyph row",
+                words[0]
+            );
+        }
+        0x80802000 => {
+            ensure!(
+                p.u64(at + 8)? == 0 && p.u32(at + 20)? == 0,
+                "Source contact effect has additional fields"
+            );
+            // The source entity is a source graph. Until it translates, the hit attaches the
+            // native witness's entity, which the report records beside it.
+            let entity = native.u32(native.pointer(n + 48)? + 32)?;
+            words[..6].copy_from_slice(&[p.u32(at)?, p.u32(at + 4)?, 0, 0, entity, 0]);
+        }
+        _ => {
+            for (i, word) in words[..size / 4].iter_mut().enumerate() {
+                *word = p.u32(at + i * 4)?;
+            }
+        }
     }
     let value = sundial::package_authoring::ability_bank::FixedModifier {
         template_key,
         class,
-        words,
+        words: sundial::package_authoring::ability_bank::widened(words),
         selection,
     };
     value.check_bank(&native.0).map_err(anyhow::Error::msg)?;

@@ -42,6 +42,80 @@ impl Expr {
         no.lerp(yes, condition)
     }
 
+    /// The expression's value with each source input supplied by `input`, by the same operations
+    /// as [`Self::shader`]. CPU periodic and transition tables and native registers have no value
+    /// here.
+    pub fn value(&self, input: &impl Fn(u8) -> Result<f32>) -> Result<[f32; 4]> {
+        let lanes = |a: [f32; 4], b: [f32; 4], f: fn(f32, f32) -> f32| -> [f32; 4] {
+            std::array::from_fn(|lane| f(a[lane], b[lane]))
+        };
+        let result = match self {
+            Self::Value(values) => *values,
+            Self::Input(index) => [input(*index)?; 4],
+            Self::Register(..) | Self::Periodic(..) | Self::Transition(..) => {
+                bail!("Curve term has no value without its native consumer")
+            }
+            Self::Exponent(value, low, high, power) => {
+                let value = value.value(input)?;
+                value.map(|x| {
+                    if power.abs() < 0.0001 || *power < 0. && x.abs() < 0.0001 {
+                        return 1.;
+                    }
+                    let raised = if power.fract() == 0. {
+                        let sign = if power.rem_euclid(2.) == 1. && x < 0. {
+                            -1.
+                        } else {
+                            1.
+                        };
+                        sign * x.abs().powf(*power)
+                    } else {
+                        x.powf(*power)
+                    };
+                    low + (high - low) * raised
+                })
+            }
+            Self::Unary(op, a) => {
+                let a = a.value(input)?;
+                let tau = std::f32::consts::TAU;
+                match op {
+                    0x17 => a.map(f32::floor),
+                    0x18 => a.map(f32::ceil),
+                    0x1a => a.map(|x| x - x.floor()),
+                    0x1d => a.map(|x| -x),
+                    0x1e => a.map(|x| (tau * x).sin()),
+                    0x1f => a.map(|x| (tau * x).cos()),
+                    0x23 => a.map(|x| x.clamp(0., 1.)),
+                    0x24 => a.map(f32::exp2),
+                    0x25 => a.map(f32::log2),
+                    _ => bail!("Unsupported curve unary operation {op}"),
+                }
+            }
+            Self::Binary(op, a, b) => {
+                let (a, b) = (a.value(input)?, b.value(input)?);
+                match op {
+                    1 => lanes(a, b, |x, y| x + y),
+                    2 => lanes(a, b, |x, y| x - y),
+                    3 => lanes(a, b, |x, y| x * y),
+                    4 => lanes(a, b, |x, y| x / y),
+                    9 => lanes(a, b, f32::max),
+                    0x0a => lanes(a, b, |x, y| f32::from(u8::from(x <= y))),
+                    0x0f => a.map(|x| ((b[0] * x + b[1]) * x + b[2]) * x + b[3]),
+                    _ => bail!("Unsupported curve binary operation {op}"),
+                }
+            }
+            Self::Ternary(0x10, a, b, c) => {
+                let (a, b, c) = (a.value(input)?, b.value(input)?, c.value(input)?);
+                std::array::from_fn(|lane| a[lane] + (b[lane] - a[lane]) * c[lane])
+            }
+            Self::Ternary(op, _, _, _) => bail!("Unsupported curve ternary operation {op}"),
+        };
+        ensure!(
+            result.iter().all(|v| v.is_finite()),
+            "Curve value is not finite"
+        );
+        Ok(result)
+    }
+
     pub fn hlsl(&self, input: &impl Fn(u8) -> Result<String>) -> Result<String> {
         self.shader(input, &|_, _| {
             bail!("CPU periodic table has no source shader expression")

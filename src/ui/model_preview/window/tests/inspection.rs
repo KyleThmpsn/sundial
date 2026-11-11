@@ -37,7 +37,7 @@ fn inspector_corner_viewer_keeps_access_and_invalidates_after_its_source_closes(
     frame(crate::test_support::primary_press(at, true));
     frame(crate::test_support::primary_press(at, false));
     let state = shared(&ctx);
-    assert!(state.lock().unwrap().open);
+    assert!(state.lock().unwrap().window.open);
     // Drive the viewer independently, as when the Inspector navigates away from the source.
     let viewer = || {
         ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -50,16 +50,16 @@ fn inspector_corner_viewer_keeps_access_and_invalidates_after_its_source_closes(
     let (sender, receiver) = mpsc::channel();
     {
         let mut preview = state.lock().unwrap();
-        let selection = preview.request.as_ref().unwrap().selection.clone();
-        preview.selection = Some(selection.clone());
-        preview.model = Some(Arc::new(Model::default()));
+        let selection = preview.window.request.as_ref().unwrap().selection.clone();
+        preview.shown.selection = Some(selection.clone());
+        preview.shown.model = Some(Arc::new(Model::default()));
         preview.pending = Some((selection, receiver));
     }
     catalog.suspend_package_access();
     catalog.resume_package_access();
     sender.send(Ok(Model::default())).unwrap();
     let output = viewer();
-    assert!(state.lock().unwrap().model.is_none());
+    assert!(state.lock().unwrap().shown.model.is_none());
     assert!(
         state.lock().unwrap().pending.is_some(),
         "new generation must read again"

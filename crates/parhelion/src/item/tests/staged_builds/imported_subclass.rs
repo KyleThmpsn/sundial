@@ -91,6 +91,7 @@ fn persisted_subclass_attachments_follow_private_pool_actions() {
                 sha256: parhelion_import::d2_mot::native::attachment::fingerprint(&directory)
                     .unwrap(),
                 symbol: "subclass-fixture-root".into(),
+                graph: None,
             }],
             ..Default::default()
         });

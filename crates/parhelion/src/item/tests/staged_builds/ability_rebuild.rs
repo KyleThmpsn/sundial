@@ -157,7 +157,7 @@ fn child(output: &Path, phase: &str) {
         &mut |event| {
             progress.push(json!({
                 "seconds":event.timestamp.saturating_duration_since(start).as_secs_f64(),
-                "label":event.label,"activity":format!("{:?}",event.activity)
+                "label":event.label,"cache_hit":cache_hit(event.activity.as_ref()),"activity":format!("{:?}",event.activity)
             }))
         },
     )
@@ -166,9 +166,9 @@ fn child(output: &Path, phase: &str) {
     // An ability is named with its subclass, and the subclass item's own runtime without one.
     let reused = |(item, _): (&str, u8)| {
         progress.iter().any(|event| {
-            event["label"].as_str().is_some_and(|label| {
-                label.starts_with("Reusing Runtime for ") && label.ends_with(&format!(" · {item}"))
-            })
+            event["cache_hit"]
+                .as_str()
+                .is_some_and(|name| name.ends_with(&format!(" · {item}")))
         })
     };
     let expected = match phase {

@@ -132,7 +132,7 @@ pub fn uninstall_custom_packages(
     backup_root: &Path,
     check: GameRunningCheck,
 ) -> Result<UninstallReport, InstallError> {
-    if plan.mod_folder.is_some() {
+    if plan.mod_folder.is_some() || !plan.mod_family.is_empty() {
         return loader::uninstall_with_observer(plan, backup_root, check, &mut |_| {});
     }
     if loader::selected(&plan.target, sundial::package_authoring::installed_runtime)? {

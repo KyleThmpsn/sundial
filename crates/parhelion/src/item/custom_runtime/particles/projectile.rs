@@ -15,16 +15,23 @@ impl ImportedParticles {
             return Ok(());
         };
         self.projectile(symbol)?;
-        if self.source_trajectory {
+        if self.source_trajectory || self.retained_trajectory {
             return Ok(());
         }
-        super::super::assets::projectile::prepare(
-            &mut self.nodes,
-            symbol,
-            manager,
-            host,
-            group,
-            boost,
-        )
+        // A perk projectile leaves the same Barrel, so it is fitted to the same launch input.
+        let roots = std::iter::once(symbol.to_owned())
+            .chain(self.perk_projectiles.iter().cloned())
+            .collect::<Vec<_>>();
+        for root in roots {
+            super::super::assets::projectile::prepare(
+                &mut self.nodes,
+                &root,
+                manager,
+                host,
+                group,
+                boost,
+            )?;
+        }
+        Ok(())
     }
 }

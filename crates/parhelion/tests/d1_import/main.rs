@@ -24,7 +24,9 @@ use sundial::investment::InvestmentCatalog;
 mod armor;
 mod firing;
 mod first_person;
+mod ornament;
 mod perk;
+mod projectile;
 mod readback;
 
 fn configured(key: &str) -> Result<PathBuf> {
@@ -56,6 +58,26 @@ fn item(reader: &mut Reader, hash: u32) -> Result<(u32, Payload)> {
     let tag = table.u32(row + 16)?;
     Ok((tag, (*reader.tag(tag, Some(0x80807BEA))?).clone()))
 }
+/// Stock weapons of a source weapon's type in the order the importer window offers them: the same
+/// name first, then ordinary weapons before exotics, collection-backed first.
+fn kin(catalog: &InvestmentCatalog, kind: &str, name: &str) -> Vec<u32> {
+    let mut donors = catalog
+        .weapon_donors()
+        .into_iter()
+        .filter(|donor| donor.type_name == kind)
+        .collect::<Vec<_>>();
+    donors.sort_by_key(|donor| {
+        (
+            !donor.name.eq_ignore_ascii_case(name.trim()),
+            donor.rarity == sundial::investment::WeaponRarity::Exotic,
+            !donor.collection_backed,
+            donor.name.clone(),
+            donor.hash,
+        )
+    });
+    donors.into_iter().map(|donor| donor.hash).collect()
+}
+
 fn view(native: &Path, output: &Path, run: &Path, names: &[String]) -> Result<PathBuf> {
     let root = output.join("view");
     let packages = root.join("packages");
@@ -122,8 +144,27 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
     let mut failures = Vec::new();
     let mut unchanged = BTreeMap::new();
     for case in &plan {
-        let name = case["name"].as_str().context("Case name")?;
         let is_armor = case["kind"] == "armor";
+        // A case names its item, or gives only its hash, as a census of every source weapon does.
+        let name = match case["name"].as_str() {
+            Some(name) => name.to_owned(),
+            None => {
+                let hash = number(&case["hash"]).context("Case name or hash")?;
+                if is_armor {
+                    armor
+                        .iter()
+                        .find(|a| a.hash == hash)
+                        .map(|a| a.name.trim().to_owned())
+                } else {
+                    weapons
+                        .iter()
+                        .find(|a| a.hash == hash)
+                        .map(|a| a.name.trim().to_owned())
+                }
+                .with_context(|| format!("Required source item {hash:08X} is missing"))?
+            }
+        };
+        let name = name.as_str();
         let candidates = if is_armor {
             armor
                 .iter()
@@ -151,15 +192,47 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
             "Configured source identity differs from {name}"
         );
         let folder = output.join(format!("item-{selected:08X}"));
+        // Every stock weapon of the source's type, which judges where its ornaments land.
+        let mut type_kin = Vec::new();
         let prepared = if is_armor {
             source.prepare_armor(selected, &native, &donors, &folder, &options, &mut |s| {
                 println!("{s}")
             })
         } else {
-            let bases: Vec<u32> = serde_json::from_value(case["bases"].clone())?;
-            source.prepare_weapon_on_base(selected, &native, &bases, &folder, &options, &mut |s| {
-                println!("{s}")
-            })
+            let planned: Vec<u32> = serde_json::from_value(case["bases"].clone())?;
+            let kind = &weapons
+                .iter()
+                .find(|weapon| weapon.hash == selected)
+                .context("Source weapon")?
+                .kind;
+            // The app offers every stock weapon of the source's type, ordered as below, and those
+            // weapons also lend a base without an ornament socket their socket type. The planned
+            // bases stay first and must be the ones selected.
+            let mut bases = planned.clone();
+            bases.extend(
+                kin(&catalog, kind, name)
+                    .into_iter()
+                    .filter(|hash| !planned.contains(hash)),
+            );
+            type_kin = kin(&catalog, kind, name);
+            let prepared = source.prepare_weapon_on_base(
+                selected,
+                &native,
+                &bases,
+                &folder,
+                &options,
+                &mut |s| println!("{s}"),
+            );
+            if prepared.is_ok() {
+                let selection: Value =
+                    serde_json::from_slice(&fs::read(folder.join("native-base-selection.json"))?)?;
+                // No planned base takes the first one the app offers, as a census does.
+                ensure!(
+                    planned.is_empty() || planned.contains(&number(&selection["selected"])?),
+                    "{name} left its planned bases for another native runtime"
+                );
+            }
+            prepared
         };
         let path = match prepared {
             Ok(path) => {
@@ -288,7 +361,8 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                 );
             }
         }
-        receipts.push(json!({"name":name,"source":selected,"item":recipe.identity.item_hash.parse_u32()?,"donor":donor,"folder":folder,"graph":graph,"portable_sha256":hex::encode(Sha256::digest(portable.as_bytes())),"case":case}));
+        receipts.push(json!({"name":name,"source":selected,"item":recipe.identity.item_hash.parse_u32()?,"donor":donor,"folder":folder,"graph":graph,"portable_sha256":hex::encode(Sha256::digest(portable.as_bytes())),"case":case,"kin":type_kin,
+            "investment_stats":serde_json::to_value(&recipe.overrides.investment_stats)?}));
         recipes.push(reloaded);
     }
     fs::write(
@@ -329,6 +403,8 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
             continue;
         };
         let checked = (|| -> Result<()> {
+            receipt["projectile_readback"] =
+                projectile::check(&source, &mut stock, &mut staged, receipt)?;
             receipt["firing_readback"] = firing::check(&source, &mut stock, &mut staged, receipt)?;
             let (tag, _) = item(&mut staged, hash)?;
             receipt["readback"] = readback::check(
@@ -372,6 +448,10 @@ fn named_source_corpus_survives_conversion_reload_and_staging() -> Result<()> {
                 if receipt["graph"]["kind"] == "armor" {
                     receipt["armor_talents"] =
                         armor::check(&source, &mut staged, tag, recipe, receipt)?;
+                } else {
+                    let kin: Vec<u32> = serde_json::from_value(receipt["kin"].clone())?;
+                    receipt["ornament_collections"] = ornament::check(&mut staged, recipe, &kin)
+                        .with_context(|| format!("Ornament Collections for {}", receipt["name"]))?;
                 }
             }
             if let Some(actions) = receipt["case"].get("first_person_actions") {

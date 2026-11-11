@@ -66,8 +66,12 @@ impl Window {
             .unwrap_or(if self.descending { self.top } else { self.base })
     }
 
-    /// The id `n` packages from the window's first, if the window holds it.
+    /// The id `n` packages from the window's first, if the window holds it. An importer's own
+    /// build takes its asset packages from the ids it installed with instead.
     pub(crate) fn nth(self, n: usize) -> Option<u16> {
+        if let Some(owner) = member() {
+            return crate::mod_family::build::member_asset(owner, n).ok();
+        }
         if self.descending {
             return (self.base..=self.top)
                 .rev()
@@ -214,6 +218,41 @@ pub(crate) fn set_presentation_nodes_shared(shared: bool) {
     NODES_SHARED.store(shared, std::sync::atomic::Ordering::Relaxed);
 }
 
+static MEMBER: std::sync::Mutex<Option<sundial::package_authoring::mod_content::Importer>> =
+    std::sync::Mutex::new(None);
+
+/// The family member whose content the build is compiling: an importer, or `None` for the main
+/// mod and for a layout without mod folders.
+pub(crate) fn member() -> Option<sundial::package_authoring::mod_content::Importer> {
+    *MEMBER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn set_member(member: Option<sundial::package_authoring::mod_content::Importer>) {
+    *MEMBER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = member;
+}
+
+/// Starts one family member's build inside a held turn: its records go to `host` from their
+/// first entry, and its record pages start over.
+pub(crate) fn begin_partition(
+    host: Host,
+    member: Option<sundial::package_authoring::mod_content::Importer>,
+) -> Result<(), String> {
+    set_host(host);
+    set_member(member);
+    crate::appended_tags::clear();
+    name_standalone_package(host.id, RECORDS_FAMILY)
+}
+
+/// Returns the held turn to the main mod's records `host` once every member has compiled.
+pub(crate) fn end_partitions(host: Host) {
+    set_host(host);
+    set_member(None);
+}
+
 /// A build's turn with the window, the host and the standalone names, which every authored id it
 /// places reads. Builds in one process take turns, so a build for a mod loader install never
 /// lends its layout to another, and the stock layout returns when the turn ends.
@@ -238,6 +277,7 @@ pub(crate) fn hold(window: Window, host: Host) -> Profile {
     set_host(host);
     crate::mod_family::build::begin_native();
     crate::appended_tags::clear();
+    crate::turn_cache::clear();
     Profile { turn: Some(turn) }
 }
 
@@ -259,8 +299,11 @@ impl Drop for Profile {
         if self.turn.is_some() {
             crate::mod_family::build::clear();
             crate::appended_tags::clear();
+            crate::turn_cache::finish();
+            crate::turn_cache::clear();
             set_window(Window::FULL);
             set_host(Host::APPENDED);
+            set_member(None);
             set_presentation_nodes_shared(false);
             HOLDING.set(false);
         }
@@ -278,6 +321,20 @@ pub(crate) fn is_stock_item_definition(tag: u32) -> bool {
 }
 pub(crate) const ACCOUNT_UNLOCK_BANK: u8 = sundial::package_authoring::SHADOWKEEP_ACCOUNT_FLAG_BANK;
 pub(crate) const LOCALIZATION_DONOR_TABLE_INDEX: usize = 2_927;
+/// The stock string bank index's rows. A bank a build adds takes the row after them.
+pub(crate) const LOCALIZATION_STOCK_TABLE_COUNT: usize = 3_108;
+
+/// The string bank index row the build's text names. The main mod's text, and every build without
+/// mod folders, joins stock bank 2,927. An importer's own build adds a bank of its own after the
+/// stock rows, which Sunrise's merge renumbers beside other mods' banks, since two mods' text in
+/// one stock bank can't merge.
+pub(crate) fn localization_table() -> usize {
+    if member().is_some() {
+        LOCALIZATION_STOCK_TABLE_COUNT
+    } else {
+        LOCALIZATION_DONOR_TABLE_INDEX
+    }
+}
 
 pub(crate) const VERSION_OFFSET: usize = 0;
 pub(crate) const PACKAGE_ID_OFFSET: usize = 4;
@@ -368,7 +425,7 @@ pub(crate) const PARHELION_ASSET_PACKAGE: AuthoredPackage = AuthoredPackage {
     required_output: true,
 };
 
-pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 28] = [
+pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 30] = [
     // The private perk runtime package.
     CanonicalPackage {
         package_id: PRIVATE_PERK_RUNTIME_PACKAGE_ID,
@@ -635,6 +692,26 @@ pub(crate) const CANONICAL_PACKAGES: [CanonicalPackage; 28] = [
         stock_generation: FINAL_GENERATION,
         required_output: true,
     },
+    // Native deferred lighting, shading and cubemap programs.
+    CanonicalPackage {
+        package_id: 0x019A,
+        stock_file_stem: "w64_globals_019a",
+        stock_patch_id: 5,
+        authored_patch_id: 6,
+        authored_file_name: "w64_globals_019a_6.pkg",
+        stock_generation: EARLIER_GENERATION,
+        required_output: false,
+    },
+    // Native weather and reflection variants in the final globals generation.
+    CanonicalPackage {
+        package_id: 0x01CF,
+        stock_file_stem: "w64_globals_01cf",
+        stock_patch_id: 6,
+        authored_patch_id: 7,
+        authored_file_name: "w64_globals_01cf_7.pkg",
+        stock_generation: FINAL_GENERATION,
+        required_output: false,
+    },
 ];
 
 /// Dependency order: the standalone resource package is installed before overlays that root it.
@@ -646,6 +723,9 @@ pub(crate) const AUTHORED_PACKAGES: [AuthoredPackage; CANONICAL_PACKAGES.len() +
 pub(crate) const CANONICAL_ARTIFACT_FILE_NAMES: [&str; CANONICAL_PACKAGES.len() + 1] =
     canonical_artifact_file_names();
 pub(crate) const CANONICAL_PACKAGE_IDS: [u16; CANONICAL_PACKAGES.len()] = canonical_package_ids();
+/// Map rendering can add these optional stock chains. Receipts without their overlays may
+/// omit them, while a receipt that names either chain must retain its complete source identity.
+pub(crate) const RENDERING_PACKAGE_IDS: [u16; 2] = [0x019A, 0x01CF];
 
 pub(crate) const fn is_authored_standalone_package_id(package_id: u16) -> bool {
     package_id >= MIN_AUTHORED_STANDALONE_PACKAGE_ID

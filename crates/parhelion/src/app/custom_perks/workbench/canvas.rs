@@ -174,9 +174,8 @@ pub(super) fn draw_effect(ui: &mut egui::Ui, canvas: Canvas<'_, '_>, card: cards
                     return;
                 }
                 ui.add(egui::Label::new(description.unwrap_or(&behavior.headline)).wrap());
-                // A stock effect reads in the rows an authored one is edited in. It used to
-                // show one line naming its effect kinds, so what a stock perk actually does
-                // stayed hidden until the reader converted it.
+                // A stock effect reads in the rows an authored one is edited in, so what a stock
+                // perk actually does shows without converting it first.
                 super::reading::rows(ui, behavior, labels, activation, trigger_command);
             }
         }
@@ -468,9 +467,12 @@ fn draw_program_rows(
             });
         match adopted {
             Ok(mut displayed) => {
-                let before = displayed.native.clone();
+                let before = (
+                    displayed.native.clone(),
+                    displayed.native_asset_patches.clone(),
+                );
                 let output = draw_program_rows(ui, &mut displayed, labels, editing, structure);
-                if displayed.native != before {
+                if (&displayed.native, &displayed.native_asset_patches) != (&before.0, &before.1) {
                     *program = displayed;
                 } else if let Some(asset) = output.and_then(|index| displayed.asset(index)) {
                     if let Some(index) = program
@@ -494,14 +496,20 @@ fn draw_program_rows(
             }
         }
     }
+    // An imported group is named after its perk rather than the stand-in graph it binds by.
+    let imported = super::assets::imported_labels(program);
     let Some(native) = &mut program.native else {
         draw_program_reading(ui, program);
         return None;
     };
     program::native::tunings::publish(ui.ctx(), &program.ability_tunings);
+    // A graph with private resource edits takes them in place of component settings, since
+    // its private copy is made once. An imported group's envelope takes neither.
+    let patches = &mut program.native_asset_patches;
     let output = match editing {
         Some(Editing { workbench, .. }) => {
-            let labels = workbench.program_asset_labels(native, &program.name);
+            let mut labels = workbench.program_asset_labels(native, &program.name);
+            labels.extend(imported.clone());
             program::draw_complete(ui, native, true, structure, &labels, &mut |ui, request| {
                 match request {
                     program::NativeRequest::Action(context) => {
@@ -555,8 +563,14 @@ fn draw_program_rows(
                         // An asset's own components are what an author makes theirs, so
                         // their editor opens from beside the asset rather than from under
                         // Show Properties. A projectile edits its movement in place instead.
+                        let patch = patches
+                            .iter_mut()
+                            .find(|edit| edit.source_graph == asset.graph);
+                        let imported_name = imported.get(&asset.graph);
+                        let private = patch.is_some() || imported_name.is_some();
                         let editable = scope != super::assets::AssetScope::Projectiles
-                            && !matches!(asset.graph, 0 | u32::MAX);
+                            && !matches!(asset.graph, 0 | u32::MAX)
+                            && !private;
                         let edit_text = format!("Edit {label}…");
                         let mut edit = false;
                         // A tile, as every value under it is. The asset's name runs long, so
@@ -595,7 +609,20 @@ fn draw_program_rows(
                                                 ui.spacing().interact_size.y,
                                             ),
                                             |ui| {
-                                                workbench.draw_asset_picker(ui, None, asset, scope);
+                                                // The build binds an imported group by its
+                                                // stand-in graph, so picking another would
+                                                // leave the group with nothing to replace.
+                                                match imported_name {
+                                                    Some(name) => {
+                                                        ui.add_enabled(
+                                                            false,
+                                                            egui::Button::new(name.as_str())
+                                                                .truncate(),
+                                                        );
+                                                    }
+                                                    None => workbench
+                                                        .draw_asset_picker(ui, None, asset, scope),
+                                                }
                                             },
                                         );
                                         if editable {
@@ -610,26 +637,42 @@ fn draw_program_rows(
                                 },
                             );
                         });
+                        if let Some(edit) = patch {
+                            program::private_changes(ui, edit);
+                        } else if private {
+                            ui.small("Imported with this perk.");
+                        }
                         if scope == super::assets::AssetScope::Projectiles {
-                            workbench.properties.movement(ui, asset);
-                            workbench.properties.damage_type(ui, asset);
+                            if !private {
+                                workbench.properties.movement(ui, asset);
+                                workbench.properties.damage_type(ui, asset);
+                            }
                             return None;
                         }
-                        workbench.properties.values(ui, asset);
-                        workbench.properties.hud_status(ui, asset);
+                        if !private {
+                            workbench.properties.values(ui, asset);
+                        }
+                        // A status joins the patched copy, but an imported group has its own.
+                        if !imported.contains_key(&asset.graph) {
+                            workbench.properties.hud_status(ui, asset);
+                        }
                         edit.then_some(super::behaviors::Selection::Components)
                     }
                 }
             })
         }
-        None => program::draw_complete(ui, native, false, structure, labels, &mut |_, _| None),
+        None => {
+            let mut labels = labels.clone();
+            labels.extend(imported);
+            program::draw_complete(ui, native, false, structure, &labels, &mut |_, _| None)
+        }
     };
     settle_tunings(ui, program);
     output
 }
 
 /// Takes the tunings the key pickers defined this frame into the program, and drops the
-/// tunings no action applies any more.
+/// tunings no action applies any more and the private resource edits no effect names.
 fn settle_tunings(ui: &mut egui::Ui, program: &mut Program) {
     for change in program::native::tunings::withdraw(ui.ctx()) {
         if let Err(error) = program.define_ability_tuning(change.replaced, change.tuning) {
@@ -637,6 +680,7 @@ fn settle_tunings(ui: &mut egui::Ui, program: &mut Program) {
         }
     }
     program.prune_ability_tunings();
+    program.prune_private_resources();
 }
 
 /// The locked reading of a stored guided program.
@@ -670,8 +714,10 @@ fn draw_program_reading(ui: &mut egui::Ui, program: &Program) {
             });
         });
     }
+    // The row has one name in every reading. Repeat Interval and Cooldown name the timer tiles
+    // inside Timing, not the row.
     if let Some(text) = program::rearm_text(program) {
-        row(ui, program::rearm_label(program), REARM_HINT, |ui| {
+        row(ui, "Reactivation", REARM_HINT, |ui| {
             plain(ui, "rearm", |ui| {
                 ui.label(text);
             });

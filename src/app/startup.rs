@@ -19,7 +19,8 @@ use super::{
     SundialApp, diagnostics, display_version, draw_future_schema_warning, load_logo_texture,
     settings::{
         load_workspace_json, missing_settings_message, resolve_settings_path,
-        settings_path_for_install,
+        restore_settings_backup, settings_backup_directory, settings_path_for_install,
+        validate_settings_backup,
     },
 };
 
@@ -30,6 +31,8 @@ mod window;
 
 enum StartupEvent {
     Progress(CatalogProgress),
+    /// The settings file the load reads, sent once it is found.
+    Settings(SettingsLayout, PathBuf),
     SettingsChoice(PathBuf),
     FutureSchema(PendingFutureSchemaLoad),
     Finished(Box<Result<SundialApp, String>>),
@@ -46,6 +49,12 @@ pub(super) struct StartupApp {
     title_bar_icon: Option<egui::TextureHandle>,
     pending_settings_choice: Option<PathBuf>,
     pending_future_schema: Option<PendingFutureSchemaLoad>,
+    /// The settings file the last load found, which a failed load can restore from a backup.
+    settings: Option<(SettingsLayout, PathBuf)>,
+    /// A checked backup waiting for the user to confirm the restore.
+    settings_restore: Option<PathBuf>,
+    /// The outcome of the last restore, shown with the next result.
+    restore_note: Option<Result<String, String>>,
     preferences: Preferences,
     preferences_warning: Option<String>,
     package_authoring: Option<Box<dyn PackageAuthoringUtility>>,
@@ -78,6 +87,9 @@ impl StartupApp {
             title_bar_icon: None,
             pending_settings_choice: None,
             pending_future_schema: None,
+            settings: None,
+            settings_restore: None,
+            restore_note: None,
             preferences,
             preferences_warning,
             package_authoring,
@@ -97,6 +109,9 @@ impl StartupApp {
         self.error = None;
         self.pending_settings_choice = None;
         self.pending_future_schema = None;
+        self.settings = None;
+        self.settings_restore = None;
+        self.restore_note = None;
         self.progress = CatalogProgress {
             message: "Checking the saved installation…",
             completed: 0,
@@ -105,6 +120,10 @@ impl StartupApp {
         thread::spawn(
             move || match resolve_settings_path(&install_path, preferred_layout) {
                 SettingsPathResolution::Found(settings_layout, settings_path) => {
+                    let _ = sender.send(StartupEvent::Settings(
+                        settings_layout,
+                        settings_path.clone(),
+                    ));
                     match load_workspace_json(&settings_path) {
                         Ok(document) => {
                             if let Some(schema_version) =
@@ -154,6 +173,8 @@ impl StartupApp {
         self.error = None;
         self.pending_settings_choice = None;
         self.pending_future_schema = None;
+        self.settings = Some((settings_layout, settings_path.clone()));
+        self.settings_restore = None;
         self.progress = CatalogProgress {
             message: "Starting the local catalog…",
             completed: 0,
@@ -181,6 +202,57 @@ impl StartupApp {
         }
     }
 
+    /// Picks a settings backup and checks that it reads as settings before asking to restore it.
+    fn choose_settings_backup(&mut self) {
+        let Some((_, settings)) = self.settings.clone() else {
+            return;
+        };
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Select a settings.json Backup")
+            .add_filter("Settings Backup", &["json", "bak"])
+            .add_filter("All Files", &["*"]);
+        if let Some(directory) = settings_backup_directory(&settings) {
+            dialog = dialog.set_directory(directory);
+        }
+        let Some(backup) = dialog.pick_file() else {
+            return;
+        };
+        match validate_settings_backup(&settings, &backup) {
+            Ok(()) => {
+                self.settings_restore = Some(backup);
+                self.restore_note = None;
+            }
+            Err(error) => {
+                self.restore_note = Some(Err(format!(
+                    "Backup not selected: {error}. No files were changed."
+                )));
+            }
+        }
+    }
+
+    /// Replaces the unreadable settings file with the confirmed backup, keeping the current file
+    /// in Sundial's backups first, then loads the installation again.
+    fn restore_settings(&mut self, backup: &std::path::Path) {
+        self.settings_restore = None;
+        let (Some((layout, settings)), Some(install)) =
+            (self.settings.clone(), self.install_path.clone())
+        else {
+            return;
+        };
+        match restore_settings_backup(&settings, backup) {
+            Ok(kept) => {
+                self.begin_loading(install, Some(layout));
+                self.restore_note = Some(Ok(format!(
+                    "Restored {} from {}. The replaced file is kept at {}.",
+                    settings.display(),
+                    backup.display(),
+                    kept.display()
+                )));
+            }
+            Err(error) => self.restore_note = Some(Err(format!("Not restored: {error}"))),
+        }
+    }
+
     fn receive_events(&mut self) {
         let mut events = Vec::new();
         let mut disconnected = false;
@@ -199,6 +271,7 @@ impl StartupApp {
         for event in events {
             match event {
                 StartupEvent::Progress(progress) => self.progress = progress,
+                StartupEvent::Settings(layout, path) => self.settings = Some((layout, path)),
                 StartupEvent::SettingsChoice(install_path) => {
                     self.pending_settings_choice = Some(install_path);
                     self.receiver = None;
@@ -211,6 +284,9 @@ impl StartupApp {
                     Ok(mut editor) => {
                         editor.package_authoring = self.package_authoring.take();
                         editor.logo.clone_from(&self.logo);
+                        if let Some(Ok(note)) = self.restore_note.take() {
+                            editor.set_status(note, false);
+                        }
                         if let Err(error) = editor.save_preferences() {
                             editor.set_status(
                                 format!(
@@ -380,6 +456,10 @@ impl StartupApp {
                                         .small(),
                                     );
                                 }
+                                self.draw_settings_restore(ui);
+                                if self.settings_restore.is_some() {
+                                    return;
+                                }
                                 ui.add_space(16.0);
                                 ui.horizontal(|ui| {
                                     if ui.button("Choose Another Folder").clicked() {
@@ -389,6 +469,17 @@ impl StartupApp {
                                         && ui.button("Try Again").clicked() {
                                             self.begin_loading(path, None);
                                         }
+                                    if self
+                                        .settings
+                                        .as_ref()
+                                        .is_some_and(|(_, path)| path.is_file())
+                                        && ui
+                                            .button("Restore Settings Backup…")
+                                            .on_hover_text("Replace settings.json with one of its backups. The current file is kept in Sundial's backups first")
+                                            .clicked()
+                                    {
+                                        self.choose_settings_backup();
+                                    }
                                 });
                                 return;
                             }
@@ -417,6 +508,40 @@ impl StartupApp {
                         });
                     });
             });
+        });
+    }
+}
+
+impl StartupApp {
+    /// The last restore's outcome, and the confirmation for a chosen backup.
+    fn draw_settings_restore(&mut self, ui: &mut egui::Ui) {
+        if let Some(note) = &self.restore_note {
+            ui.add_space(8.0);
+            match note {
+                Ok(note) => ui.label(note),
+                Err(error) => ui.colored_label(ui.visuals().error_fg_color, error),
+            };
+        }
+        let (Some(backup), Some((_, settings))) =
+            (self.settings_restore.clone(), self.settings.as_ref())
+        else {
+            return;
+        };
+        ui.add_space(12.0);
+        ui.strong("Restore Settings Backup?");
+        ui.label(format!(
+            "Replaces {} with {}. The current file is kept in Sundial's backups first. Close Destiny 2 before restoring.",
+            settings.display(),
+            backup.display()
+        ));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Restore Backup").clicked() {
+                self.restore_settings(&backup);
+            }
+            if ui.button("Cancel").clicked() {
+                self.settings_restore = None;
+            }
         });
     }
 }
@@ -458,5 +583,13 @@ impl eframe::App for StartupApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.window.save(storage);
+    }
+
+    /// The loaded editor is this app's child, so eframe reaches its exit work only through here:
+    /// Parhelion's importer view and a last write of perk drafts. Recipes save on their own.
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        if let Some(editor) = &mut self.editor {
+            eframe::App::on_exit(editor, gl);
+        }
     }
 }

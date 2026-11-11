@@ -6,15 +6,17 @@ use std::collections::BTreeSet;
 
 pub(crate) mod animation;
 mod component;
+pub(crate) mod damage_profile;
 mod dye;
 mod geometry;
 mod icon;
 mod material;
-mod perk;
+pub(crate) mod perk;
 mod plate;
 mod recipe;
 mod resource;
 mod rig;
+mod runtime_marker;
 mod weapon;
 
 pub struct NativeOptions {
@@ -48,6 +50,14 @@ struct Assembly<'a> {
     /// Complete graph audio, shared by retained animation clips and private talent programs.
     /// Its storage and namespace metadata must remain separate from ordinary appearance nodes.
     audio_assets: Option<Value>,
+    /// Private human actions the item's evades play, which the build adds to the shared human
+    /// tables from the graph's `human_actions` section.
+    human: Option<crate::d1_roi::ability::animation::Human>,
+    /// Cues a translated projectile spawn names, which join the graph audio closure.
+    projectile_cues: BTreeSet<u32>,
+    /// Channels the private bank of a retained projectile declares, empty while the donor's
+    /// projectile stays.
+    projectile_names: BTreeSet<u32>,
     templates: BTreeMap<(u8, u8), u32>,
     globals: super::expression::Globals,
     layouts: super::layout::Layouts,
@@ -95,6 +105,9 @@ impl<'a> Assembly<'a> {
             nodes: Vec::new(),
             symbols: BTreeSet::new(),
             audio_assets: None,
+            human: None,
+            projectile_cues: BTreeSet::new(),
+            projectile_names: BTreeSet::new(),
             templates: BTreeMap::new(),
             globals,
             layouts,
@@ -218,4 +231,15 @@ fn array(
 fn size(data: &mut [u8]) -> Result<()> {
     let length = data.len() as u64;
     put(data, 0, &length.to_le_bytes())
+}
+
+impl Source {
+    /// Lower every distinct talent step of every source weapon and armor piece and report how
+    /// many translate, by distinct step, across items and by talent name. `folder` receives the
+    /// native reader's working files and any imported attachment groups.
+    pub fn talent_census(&self, packages: &Path, folder: &Path) -> Result<Value> {
+        fs::create_dir_all(folder)?;
+        let mut native = Reader::new(packages, &folder.join("native-source"), false)?;
+        perk::census(self, &mut native, folder)
+    }
 }

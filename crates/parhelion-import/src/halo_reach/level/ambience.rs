@@ -14,8 +14,9 @@
 //! | Looping sound tracks, `0xB0` rows | `+0x20` | Gain `+0x08` (dB), start, loop and end sounds `+0x0C`, `+0x1C` and `+0x2C`, fade in and out `+0x7C` and `+0x84` (seconds) |
 //! | Looping sound details, `0x48` rows | `+0x2C` | Sound `+0x04`, the wait between plays `+0x18` (two seconds), gain `+0x20` (dB) |
 //!
-//! A cluster whose bounds hold every other cluster's is the level's outside, so its area's loop
-//! plays everywhere, without position. Another area's loop plays at each of its clusters, at full
+//! A cluster whose bounds hold every other cluster's supplies a background approximation that
+//! plays everywhere, without position. Equal background loops from loaded BSPs share one point
+//! with their combined membership. Another area's loop plays at each of its clusters, at full
 //! volume within the cluster's bounds. A placed loop falls off with the inverse of distance from
 //! its full-volume distance, faded to silence at its farthest.
 use super::{
@@ -230,6 +231,36 @@ fn layers(cache: &Cache, tag: &Tag) -> Result<(Vec<Layer>, Option<u16>)> {
 /// A placed sound: its index in the level's sounds, its position and its structure BSP mask.
 type Emitter = (usize, [f32; 3], u32);
 
+/// One shared nonspatial background. Interior cluster bounds provide its culling center, with
+/// the enclosing bounds used when every contributing BSP has only an enclosing cluster.
+struct Background {
+    source: Tag,
+    bsps: u32,
+    inner: Vec<([f32; 3], [f32; 3])>,
+    outer: Vec<([f32; 3], [f32; 3])>,
+}
+
+impl Background {
+    fn center(&self) -> [f32; 3] {
+        let bounds = if self.inner.is_empty() {
+            &self.outer
+        } else {
+            &self.inner
+        };
+        std::array::from_fn(|axis| {
+            let low = bounds
+                .iter()
+                .map(|b| b.0[axis])
+                .fold(f32::INFINITY, f32::min);
+            let high = bounds
+                .iter()
+                .map(|b| b.1[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            low * 0.5 + high * 0.5
+        })
+    }
+}
+
 /// The level's sounds and where each plays, with the structure BSPs each place belongs to (zero
 /// for every one): area loops at the clusters of `bsps`, and the loops of the sound scenery
 /// placed in them ([`super::objects::placed_in`]). Winter Contingency's
@@ -238,6 +269,7 @@ type Emitter = (usize, [f32; 3], u32);
 fn placements(cache: &Cache, bsps: &[Tag], offset: [f32; 3]) -> Result<(Vec<Sound>, Vec<Emitter>)> {
     let mut sounds = Vec::<Sound>::new();
     let mut emitters = Vec::new();
+    let mut backgrounds = BTreeMap::<u32, Background>::new();
     let mut add = |sound: Sound, position: [f32; 3], bsps: u32| {
         let index = match sounds.iter().position(|known| *known == sound) {
             Some(index) => index,
@@ -265,10 +297,23 @@ fn placements(cache: &Cache, bsps: &[Tag], offset: [f32; 3]) -> Result<(Vec<Soun
             .into_iter()
             .map(|row| {
                 let bounds = cache.floats::<6>(row)?.map(|value| value * METRES_PER_UNIT);
+                ensure!(
+                    bounds.iter().all(|value| value.is_finite())
+                        && (0..3).all(|axis| bounds[axis * 2] <= bounds[axis * 2 + 1]),
+                    "Ambience cluster bounds differ in {}",
+                    bsp.path
+                );
+                let area = cache.i16(row + CLUSTER_AREA)?;
+                ensure!(
+                    area >= -1 && (area < 0 || (area as usize) < areas.len()),
+                    "Ambience cluster area {area} is outside {} entries in {}",
+                    areas.len(),
+                    bsp.path
+                );
                 Ok((
                     [bounds[0], bounds[2], bounds[4]],
                     [bounds[1], bounds[3], bounds[5]],
-                    cache.i16(row + CLUSTER_AREA)?,
+                    area,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -284,13 +329,6 @@ fn placements(cache: &Cache, bsps: &[Tag], offset: [f32; 3]) -> Result<(Vec<Soun
             .filter(|&(index, _)| !holds_all(index))
             .map(|(_, cluster)| cluster)
             .collect::<Vec<_>>();
-        let middle = |set: &[&([f32; 3], [f32; 3], i16)]| -> [f32; 3] {
-            std::array::from_fn(|k| {
-                let low = set.iter().map(|c| c.0[k]).fold(f32::MAX, f32::min);
-                let high = set.iter().map(|c| c.1[k]).fold(f32::MIN, f32::max);
-                (low + high) / 2.
-            })
-        };
         let source = |area: i16| {
             usize::try_from(area)
                 .ok()
@@ -311,17 +349,21 @@ fn placements(cache: &Cache, bsps: &[Tag], offset: [f32; 3]) -> Result<(Vec<Soun
                 continue;
             };
             if holds_all(index) {
-                // One point, at the middle of the level, plays the outside everywhere.
-                if everywhere.insert(source.datum) && !inner.is_empty() {
-                    add(
-                        Sound {
-                            source,
-                            curve: None,
-                            reach: EVERYWHERE,
-                        },
-                        middle(&inner),
-                        bit,
-                    );
+                if everywhere.insert(source.datum) {
+                    let background =
+                        backgrounds
+                            .entry(source.datum)
+                            .or_insert_with(|| Background {
+                                source,
+                                bsps: 0,
+                                inner: Vec::new(),
+                                outer: Vec::new(),
+                            });
+                    background.bsps |= bit;
+                    background.outer.push((low, high));
+                    background
+                        .inner
+                        .extend(inner.iter().map(|cluster| (cluster.0, cluster.1)));
                 }
                 continue;
             }
@@ -346,6 +388,18 @@ fn placements(cache: &Cache, bsps: &[Tag], offset: [f32; 3]) -> Result<(Vec<Soun
                 bit,
             );
         }
+    }
+    for background in backgrounds.into_values() {
+        let center = background.center();
+        add(
+            Sound {
+                source: background.source,
+                curve: None,
+                reach: EVERYWHERE,
+            },
+            center,
+            background.bsps,
+        );
     }
     let scenario = cache.only("scnr")?.address()?;
     let loaded = super::bsp_mask(cache, bsps)?;
@@ -617,7 +671,8 @@ pub(super) fn add(
         .collect::<Result<Vec<_>>>()?;
     let mut media_bytes = 0usize;
     for (id, file) in &decoded {
-        let wem = transcode::normalize_pcm_wem(&fs::read(file)?)?;
+        let wem = transcode::normalize_pcm_wem(&fs::read(file)?)
+            .with_context(|| format!("Ambience sample {id:08X} in {}", file.display()))?;
         media_bytes += wem.len();
         graph.add(
             &format!("ambience-media-{id:08X}"),

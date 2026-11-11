@@ -2,6 +2,7 @@
 use super::*;
 mod conditional;
 mod display;
+pub(super) mod host;
 mod lifecycle;
 
 pub(super) fn pair(
@@ -24,6 +25,19 @@ pub(super) fn pair(
             && p.u32(definition + 16)? == ic
             && p.u32(definition + 20)? == 0,
         "Source status has a different embedded pair"
+    );
+    Ok(())
+}
+
+/// Settings `+B4` is the Float32 that source getter `010B5EA0` publishes through the `+90`
+/// declaration. Native keeps one field for it and the compared priority, `80803A61 +14`, which the
+/// writer fills with the HUD priority. So it is admitted when it is zero or already that priority.
+/// The `+90` declaration is never an admitted export, so the source value is unobservable here.
+fn scalar(p: &Payload, settings: usize, priority: i32) -> Result<()> {
+    let value = p.f32(settings + 0xB4)?;
+    ensure!(
+        value == 0.0 || value == priority as f32,
+        "Source status scalar differs from its competition priority"
     );
     Ok(())
 }
@@ -127,24 +141,30 @@ fn validate(
         pair(p, owner, i, d, ic, dc)?;
     }
     // The only connected receiver admitted here is the separately checked audio
-    // companion. Its complete sequence and resource obligations remain in the graph.
+    // companion. Its complete sequence and resource obligations remain in the graph. Its bound
+    // request is required (policy 0) in both builds, as the sound template `80BC5833`'s status
+    // `81532CC9` holds it at `+60`, so a required request carries with the companion.
+    let policy = p.u64(settings + 0xD0)?;
     ensure!(
-        p.u64(settings + 0xD0)? == 2
+        (policy == 2 || (policy == 0 && audio.is_some()))
             && p.u64(settings + 0xD8)? == 0x808003E3
             && p.u64(settings + 0xE0)? == 0
             && p.u64(settings + 0xE8)? == u32::MAX as u64
             && p.u32(settings + 0xA8)? == 0x3C18FBCE
             && p.u32(settings + 0xAC)? == 0
-            && matches!(p.u64(settings + 0xB0)?, 0 | 4),
+            && p.u32(settings + 0xB0)? <= 0xFF,
         "Source status host has a state program or unqualified competition flags"
     );
     // D1 keeps the competition mask on the host and uses the HUD's signed priority.
     // Native 3A61 owns both fields, with a Float32 priority. Keep integer ordering exact.
+    // Both builds' activation and reevaluation predicates agree for every mask byte pair,
+    // and so do the bit 2 and 3 counters, so any byte mask carries.
     let priority = i32::from_le_bytes(p.bytes::<4>(hud + 0x8C)?);
     ensure!(
         (-16_777_216..=16_777_216).contains(&priority),
         "Source status competition priority cannot be represented exactly"
     );
+    scalar(p, settings, priority)?;
     let mut competition = [0; 8];
     competition[0] = p.u8(settings + 0xB0)?;
     competition[4..].copy_from_slice(&(priority as f32).to_le_bytes());
@@ -297,7 +317,7 @@ fn validate(
                 || (companion.is_none() && p.u32(duration + 0xA0)? == 9)
                 || (network.is_some() && p.u32(duration + 0xA0)? == 11)
                 || (companion.is_none() && network.is_none() && p.u32(duration + 0xA0)? == 0x17))
-            && i32::from_le_bytes(p.bytes(duration + 0xA8)?) > 0
+            && i32::from_le_bytes(p.bytes(duration + 0xA8)?) >= 0
             && (p.u64(duration + 0xB0)? == u64::from(companion.is_some())
                 || (network.is_some() && p.u64(duration + 0xB0)? == 1)
                 || reset_owned)
@@ -349,6 +369,479 @@ fn validate(
         seconds,
         display,
         reset_owned,
+    })
+}
+
+/// A status lifetime: a replicated constant, a program over one named channel input, or a
+/// program over constants and the builtin clock alone.
+pub(crate) enum Lifetime {
+    Constant([u8; 16]),
+    Program {
+        code: Vec<u8>,
+        constants: Vec<[u8; 16]>,
+        input: u32,
+    },
+    /// Destiny 1 tools write `3C 00 23 3E 00` for an unset program, the clock saturated to one
+    /// second. Both interpreters, `003A4110` and `003B7A80`, run it identically.
+    Builtin {
+        code: Vec<u8>,
+        constants: Vec<[u8; 16]>,
+    },
+}
+
+/// A lifetime without a named input: a constant when it has the constant form, otherwise a
+/// program over constants and the builtin clock.
+fn unnamed(
+    p: &Payload,
+    at: usize,
+    indefinite: bool,
+    code: Vec<u8>,
+    constants: Vec<[u8; 16]>,
+) -> Result<Lifetime> {
+    Ok(if code == [0x34, 0, 0x3E, 0] {
+        Lifetime::Constant(constant(p, at, indefinite)?)
+    } else {
+        Lifetime::Builtin { code, constants }
+    })
+}
+
+const ICON: &[u8] = b"abilities.ability_components.c_player_status_icon_definition\0";
+
+/// Whether a source dynamic definition schema is the player status icon script,
+/// `bs\abilities\ability_components.bs` on component base `80802361`. Two byte-identical copies
+/// exist under different tags, so the class name decides.
+pub(super) fn is_icon(schema: &Payload) -> bool {
+    schema.u32(16).ok() == Some(0x80802361)
+        && schema.0.windows(ICON.len()).any(|window| window == ICON)
+}
+
+/// A source player status icon: the HUD block a status embeds, `8080254F` at definition `+60`,
+/// with its Duration and Timer, and no host. Its runtime twins sit where a status's do. The icon
+/// has no host-state input, so it carries as a native status whose lifetime receiver is optional,
+/// policy 2, with the competition the HUD priority gives. The graph's own rows never name it.
+pub(super) fn icon(p: &Payload, owner: u32) -> Result<Connected> {
+    let live = p.pointer(16)?;
+    let settings = p.pointer(24)?;
+    let hud = settings + 0x60;
+    let duration = hud + 0x160;
+    let controller = duration + 0xB8;
+    ensure!(
+        p.u32(live)? == owner && p.u32(settings)? == owner,
+        "Source status icon root differs"
+    );
+    for (i, d, ic, dc) in [
+        (live + 0x30, hud, 0x8080278D, 0x8080254F),
+        (live + 0x50, duration, 0x8080255D, 0x8080223C),
+        (live + 0x80, controller, 0x808027B5, 0x80802890),
+        (live + 0xA0, duration + 0x138, 0x808008AC, 0x8080038D),
+        (live + 0xE0, hud + 0xA0, 0x8080084D, 0x808005A0),
+        (live + 0x110, hud + 0x108, 0x8080084D, 0x808005A0),
+    ] {
+        pair(p, owner, i, d, ic, dc)?;
+    }
+    let flags = p.u32(duration + 0xA0)?;
+    ensure!(
+        p.u32(hud + 0x30)? == 0x80800955
+            && p.u32(hud + 0x50)? == 0x80800652
+            && p.u64(hud + 0x98)? == 0
+            && p.u64(duration + 0x30)? == 0x8080299F
+            && p.u64(duration + 0x50)? == 0x80802B20
+            && flags & !0x1F == 0
+            && i32::from_le_bytes(p.bytes(duration + 0xA8)?) >= 0
+            && p.u64(duration + 0xB0)? <= 1
+            && p.u64(controller + 0x78)? <= 1,
+        "Source status icon has additional presentation or duration policy"
+    );
+    let priority = i32::from_le_bytes(p.bytes::<4>(hud + 0x8C)?);
+    ensure!(
+        (-16_777_216..=16_777_216).contains(&priority),
+        "Source status icon priority cannot be represented exactly"
+    );
+    let mut competition = [0; 8];
+    competition[4..].copy_from_slice(&(priority as f32).to_le_bytes());
+    let lifetime_at = duration + 0x138;
+    ensure!(
+        p.u64(lifetime_at + 88)? == 0 && [0, 0x811C9DC5].contains(&p.u64(lifetime_at + 96)?),
+        "Source status icon lifetime has additional flags or a named input"
+    );
+    let (code, constants, input) = program(p, lifetime_at)?;
+    ensure!(
+        input.is_none(),
+        "Source status icon lifetime reads an input"
+    );
+    let indefinite = p.u64(controller + 0x78)? == 1;
+    let lifetime = unnamed(p, lifetime_at, indefinite, code, constants)?;
+    if flags & 0x10 != 0 {
+        ensure!(
+            matches!(&lifetime, Lifetime::Constant(seconds)
+                if f32::from_le_bytes(seconds[..4].try_into()?) > 0.0),
+            "Source refreshing status icon needs a positive constant lifetime"
+        );
+    }
+    Ok(Connected {
+        competition,
+        hud: p.bytes(hud + 0x88)?,
+        duration: p.bytes(duration + 0xA0)?,
+        timer: p.bytes(controller + 0x78)?,
+        count: constant(p, hud + 0xA0, false)?,
+        lifetime,
+        lifetime_input: None,
+        provider_input: usize::MAX,
+        receiver_policy: 2,
+    })
+}
+
+/// A source Timer, definition `80802890` at `definition` with runtime `808027B5` at `live`: its
+/// flag word and lifetime, as a status's Timer holds them at its Duration `+B8`.
+pub(super) fn timer(
+    p: &Payload,
+    owner: u32,
+    live: usize,
+    definition: usize,
+) -> Result<([u8; 8], Lifetime)> {
+    pair(p, owner, live, definition, 0x808027B5, 0x80802890)?;
+    let at = definition + 0x80;
+    pair(p, owner, live + 0x20, at, 0x808008AC, 0x8080038D)?;
+    let flag = p.u64(definition + 0x78)?;
+    ensure!(
+        flag <= 1 && p.u64(at + 88)? == 0 && [0, 0x811C9DC5].contains(&p.u64(at + 96)?),
+        "Source Timer has unknown flags or a named lifetime"
+    );
+    let (code, constants, input) = program(p, at)?;
+    ensure!(input.is_none(), "Source Timer lifetime reads an input");
+    Ok((
+        p.bytes(definition + 0x78)?,
+        unnamed(p, at, flag == 1, code, constants)?,
+    ))
+}
+
+/// The source fields of a status host whose lifetime sequence is another graph owner.
+pub(crate) struct Connected {
+    pub competition: [u8; 8],
+    pub hud: [u8; 12],
+    pub duration: [u8; 20],
+    pub timer: [u8; 8],
+    pub count: [u8; 16],
+    pub lifetime: Lifetime,
+    /// Offsets in the source owner of the lifetime input definition and the lifetime-sequence
+    /// receiver, which graph connection rows name.
+    pub lifetime_input: Option<usize>,
+    pub provider_input: usize,
+    /// Lifetime-sequence receiver policy at host `+D0`: zero required, two optional. Native
+    /// connected statuses keep it at root `+70`.
+    pub receiver_policy: u64,
+}
+
+/// Opcodes of the scalar dialect that both builds interpret identically in the qualified
+/// dynamic programs. Their operand widths match the source program validator.
+#[allow(clippy::type_complexity)]
+pub(super) fn program(
+    p: &Payload,
+    at: usize,
+) -> Result<(Vec<u8>, Vec<[u8; 16]>, Option<(u32, usize)>)> {
+    let code = p
+        .array(at + 24, 1, Some(0x80800009))?
+        .into_iter()
+        .map(|a| p.u8(a))
+        .collect::<Result<Vec<_>>>()?;
+    let constants = p
+        .array(at + 40, 16, Some(0x80800090))?
+        .into_iter()
+        .map(|a| p.bytes::<16>(a))
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        constants.iter().all(|row| row
+            .chunks_exact(4)
+            .all(|lane| f32::from_le_bytes(lane.try_into().unwrap()).is_finite())),
+        "Source status program has a nonfinite constant"
+    );
+    let inputs = p.array(at + 72, 48, Some(0x80800927))?;
+    let mut position = 0;
+    let mut reads = false;
+    while position < code.len() {
+        let op = code[position];
+        // Opcode 12 is `a*b + c`. Original interpreters 3A4110 and 3B7A80 give equal bits for
+        // Defensive Reflex's lifetime program over twelve supplied input and constant cases.
+        let operand = match op {
+            0x01 | 0x03 | 0x12 | 0x23 => None,
+            0x34 | 0x3C | 0x3E => {
+                Some(*code.get(position + 1).context("Truncated status program")?)
+            }
+            _ => anyhow::bail!("Source status program opcode {op:02X} needs a native contract"),
+        };
+        match (op, operand) {
+            (0x34, Some(index)) => ensure!(
+                usize::from(index) < constants.len(),
+                "Source status program constant is undeclared"
+            ),
+            // Input zero is the builtin both builds supply to a lifetime: the game clock in
+            // seconds, wrapped at 28800, from source `003A6550` and native `003BA320`. Input
+            // one is the first declared input.
+            (0x3C, Some(0)) => {}
+            (0x3C, Some(index)) => {
+                ensure!(
+                    index == 1 && inputs.len() == 1,
+                    "Source status program reads an undeclared input"
+                );
+                reads = true;
+            }
+            (0x3E, Some(index)) => ensure!(
+                index == 0 && position + 2 == code.len(),
+                "Source status program has another output"
+            ),
+            _ => {}
+        }
+        position += 1 + usize::from(operand.is_some());
+    }
+    ensure!(
+        code.ends_with(&[0x3E, 0])
+            && p.u64(at + 56)? == if reads { 2 } else { 1 }
+            && p.u64(at + 64)? == 1,
+        "Source status program slots differ"
+    );
+    let input = if reads {
+        let row = inputs[0];
+        let owner = p.u32(row)?;
+        pair(
+            p,
+            owner,
+            usize::try_from(p.u64(row + 8)?)?,
+            row,
+            0x8080077D,
+            0x80800927,
+        )?;
+        ensure!(
+            p.u64(row + 24)? == 0 && p.u64(row + 32)? == 0x808003E8,
+            "Source status program input is not a direct named channel"
+        );
+        Some((p.u32(row + 40)?, row))
+    } else {
+        ensure!(inputs.is_empty(), "Source status program has unused inputs");
+        None
+    };
+    Ok((code, constants, input))
+}
+
+/// Read a status host whose required lifetime-sequence receiver is another owner of its graph.
+/// Every field the native status stores is returned. The graph's other owners are validated
+/// by their own readers. HUD display state is checked here and translated by the caller.
+#[allow(clippy::cognitive_complexity)]
+pub(super) fn connected(
+    graph: &Payload,
+    p: &Payload,
+    owner: u32,
+    ordinal: usize,
+) -> Result<Connected> {
+    let live = p.pointer(16)?;
+    let settings = p.pointer(24)?;
+    let hud = settings + 0xF0;
+    let duration = hud + 0x160;
+    let controller = duration + 0xB8;
+    ensure!(
+        p.u32(live - 4)? == 0x80802A75 && p.u32(settings - 4)? == 0x80802698,
+        "Source status root differs"
+    );
+    for (offset, value) in [
+        (0x18, 0),
+        (0x20, u32::MAX as u64),
+        (0x28, 0),
+        (0x30, u32::MAX as u64),
+        (0x38, u32::MAX as u64),
+        (0x40, 0),
+        (0x48, u32::MAX as u64),
+        (0x50, 0),
+        (0x58, 0),
+    ] {
+        ensure!(
+            p.u64(settings + offset)? == value,
+            "Source status host has additional state"
+        );
+    }
+    for (i, d, ic, dc) in [
+        (live, settings, 0x80802A75, 0x80802698),
+        (live + 0x30, hud, 0x8080278D, 0x8080254F),
+        (live + 0x50, duration, 0x8080255D, 0x8080223C),
+        (live + 0x80, controller, 0x808027B5, 0x80802890),
+        (live + 0xA0, duration + 0x138, 0x808008AC, 0x8080038D),
+        (live + 0xE0, hud + 0xA0, 0x8080084D, 0x808005A0),
+        (live + 0x110, hud + 0x108, 0x8080084D, 0x808005A0),
+        (live + 0x170, settings + 0xB8, 0x808008AF, 0x80800456),
+    ] {
+        pair(p, owner, i, d, ic, dc)?;
+    }
+    // Policy zero marks the lifetime-sequence receiver required. Its provider is checked with
+    // the graph's connections. Policy two leaves it optional, as for a status with no lifetime
+    // sequence, such as Eliksni Immunity's, whose request stays unbound. The native template
+    // keeps its own receiver policy, and its unbound status rows stand in for the request.
+    ensure!(
+        matches!(p.u64(settings + 0xD0)?, 0 | 2)
+            && p.u64(settings + 0xD8)? == 0x808003E3
+            && p.u64(settings + 0xE0)? == 0
+            && p.u64(settings + 0xE8)? == u32::MAX as u64
+            && p.u32(settings + 0xA8)? == 0x3C18FBCE
+            && p.u32(settings + 0xAC)? == 0
+            && p.u32(settings + 0xB0)? <= 0xFF,
+        "Source connected status has a state program or unqualified competition flags"
+    );
+    let priority = i32::from_le_bytes(p.bytes::<4>(hud + 0x8C)?);
+    ensure!(
+        (-16_777_216..=16_777_216).contains(&priority),
+        "Source status competition priority cannot be represented exactly"
+    );
+    scalar(p, settings, priority)?;
+    let mut competition = [0; 8];
+    competition[0] = p.u8(settings + 0xB0)?;
+    competition[4..].copy_from_slice(&(priority as f32).to_le_bytes());
+    let declarations: [(usize, usize, u32, u32, u64, u32); 17] = [
+        (settings + 0x60, live, 0x80802A75, 0x80AAC44B, 0, 0),
+        (settings + 0x78, live, 0x80802A75, 0x80AAC282, 0xFFA2, 0),
+        (settings + 0x418, live, 0x80802A75, 0x80AAC44A, 0, 0),
+        (settings + 0x438, live, 0x80802A75, 0x80AAC283, 0, 0),
+        (hud + 0x18, live + 0x30, 0x8080278D, 0x80AAC449, 0, 0),
+        (hud + 0x38, live + 0x30, 0x8080278D, 0x80AAC447, 0, 0),
+        (hud + 0x58, live + 0x30, 0x8080278D, 0x80AAC281, 0, 0),
+        (hud + 0x70, live + 0x30, 0x8080278D, 0x80AAC448, 0, 1),
+        (duration + 0x18, live + 0x50, 0x8080255D, 0x80AAC286, 0, 0),
+        (duration + 0x38, live + 0x50, 0x8080255D, 0x80AAC284, 0, 0),
+        (duration + 0x58, live + 0x50, 0x8080255D, 0x80AAEDB3, 0, 0),
+        (duration + 0x70, live + 0x50, 0x8080255D, 0x80AAC288, 0, 0),
+        (duration + 0x88, live + 0x50, 0x8080255D, 0x80AAC444, 0, 0),
+        (
+            controller + 0x18,
+            live + 0x80,
+            0x808027B5,
+            0x80AAEDB4,
+            0xFF9C,
+            0,
+        ),
+        (controller + 0x30, live + 0x80, 0x808027B5, 0x80AAC285, 0, 2),
+        (controller + 0x48, live + 0x80, 0x808027B5, 0x80AAC289, 0, 0),
+        (controller + 0x60, live + 0x80, 0x808027B5, 0x80AAC287, 0, 0),
+    ];
+    let exports = graph.array(0x68, 40, Some(0x80800370))?;
+    let refs = graph.array(0x78, 24, Some(0x80800790))?;
+    ensure!(
+        exports.len() == refs.len(),
+        "Source status export references differ"
+    );
+    let mut seen = BTreeSet::new();
+    for (&at, &reference) in exports.iter().zip(&refs) {
+        if graph.u32(at + 16)? != owner {
+            continue;
+        }
+        let a = usize::try_from(graph.u64(at + 24)?)?;
+        let &(_, instance, class, declaration, value, output) = declarations
+            .iter()
+            .find(|d| d.0 == a)
+            .context("Unknown source connected status export")?;
+        let container = match class {
+            0x80802A75 => settings,
+            0x8080278D => hud,
+            0x8080255D => duration,
+            _ => controller,
+        };
+        let selector = if value == 0 {
+            0
+        } else {
+            (value as u16 as i16 as i32) as u32
+        };
+        // Provider exclusion bits are numbered across the whole graph, network first, so a
+        // connected status holds one bit per exclusive provider rather than fixed values.
+        let flags = graph.u32(at)?;
+        let exclusion = if output == 0 {
+            flags == 0
+        } else {
+            flags & 0xFFFF == 0 && (flags >> 16).is_power_of_two()
+        };
+        ensure!(
+            p.pointer(a)? == container
+                && p.u64(a + 8)? == declaration as u64
+                && p.u64(a + 16)? == value
+                && exclusion
+                && graph.u32(at + 4)? as usize == instance - live
+                && graph.u32(at + 8)? == selector
+                && graph.u32(at + 12)? == class
+                && graph.u64(at + 32)? == declaration as u64
+                && graph.u64(reference)? == owner as u64
+                && graph.u64(reference + 8)? == instance as u64
+                && graph.u64(reference + 16)? == ordinal as u64
+                && seen.insert(a),
+            "Source connected status export targets another parameter"
+        );
+    }
+    ensure!(
+        seen.len() == declarations.len(),
+        "Source connected status exports are incomplete"
+    );
+    // Every Duration flag bit has the same consumer in both builds: bit 0 gates retirement on
+    // the entity bitmap test (source 7B690A and 7B710B, native CA071B and C9FC46), bit 1 keeps a
+    // matched Duration from retiring before its count falls (7B6FFA, C9FDB2), bits 2 and 3 select
+    // the priority rule, and bit 4 refreshes the lifetime, checked below. Native connected status
+    // 80FEF720 stores 07 in the same graph form. The match count at `+A8` carries as stored, zero
+    // included, as stock Duration host 8157808D stores it, since both builds decrement and test it
+    // on the same matching paths.
+    let flags = p.u32(duration + 0xA0)?;
+    ensure!(
+        p.u32(hud + 0x30)? == 0x80800955
+            && p.u32(hud + 0x50)? == 0x80800652
+            && p.u64(hud + 0x98)? == 0
+            && p.u64(duration + 0x30)? == 0x8080299F
+            && p.u64(duration + 0x50)? == 0x80802B20
+            && flags & !0x1F == 0
+            && i32::from_le_bytes(p.bytes(duration + 0xA8)?) >= 0
+            && p.u64(duration + 0xB0)? <= 1
+            && p.u64(controller + 0x78)? <= 1,
+        "Source connected status has additional presentation or duration policy"
+    );
+    let lifetime_at = duration + 0x138;
+    ensure!(
+        p.u32(lifetime_at + 16)? == 0x808008AC
+            && p.u64(lifetime_at + 88)? == 0
+            && [0, 0x811C9DC5].contains(&p.u64(lifetime_at + 96)?),
+        "Source status lifetime has additional flags or a named input"
+    );
+    let (code, constants, input) = program(p, lifetime_at)?;
+    // With the Timer flag set, a nonpositive lifetime deactivates the Timer in both builds:
+    // source method one clears its active byte, and native setter EDF2E0 calls EDF1E0 with zero,
+    // which stores the active byte at +B1. The status then lasts until it is removed, so the
+    // indefinite -1 literal carries, as on the elemental armor perks' statuses.
+    let indefinite = p.u64(controller + 0x78)? == 1;
+    let lifetime = match input {
+        None => unnamed(p, lifetime_at, indefinite, code, constants)?,
+        Some((name, _)) => Lifetime::Program {
+            code,
+            constants,
+            input: name,
+        },
+    };
+    if flags & 0x10 != 0 {
+        // Source refresh assigns the evaluated lifetime, native refresh only raises a shorter
+        // remainder. A constant positive lifetime keeps them equal. An indefinite status keeps
+        // its Timer deactivated in both builds: source refresh assigns the nonpositive lifetime
+        // again, which deactivates it, and native refresh has no remainder to raise, so the
+        // status lasts until it is removed, as Tempered Light's lasts while its sword is held.
+        let kept = match &lifetime {
+            Lifetime::Constant(seconds) => {
+                let seconds = f32::from_le_bytes(seconds[..4].try_into()?);
+                seconds > 0.0 || (indefinite && seconds <= 0.0)
+            }
+            Lifetime::Program { .. } | Lifetime::Builtin { .. } => false,
+        };
+        ensure!(
+            kept,
+            "Source refreshing status needs a positive or indefinite constant lifetime"
+        );
+    }
+    Ok(Connected {
+        competition,
+        hud: p.bytes(hud + 0x88)?,
+        duration: p.bytes(duration + 0xA0)?,
+        timer: p.bytes(controller + 0x78)?,
+        count: constant(p, hud + 0xA0, false)?,
+        lifetime,
+        lifetime_input: input.map(|(_, row)| row),
+        provider_input: settings + 0xB8,
+        receiver_policy: p.u64(settings + 0xD0)?,
     })
 }
 
@@ -467,12 +960,15 @@ pub(super) fn read(
             && target.u64(sequence_live + 8)? == sequence as u64,
         "Native status competition pair differs"
     );
+    // The status's lifetime request policy at `+70`. The sound template `80BC5833` binds that
+    // request to its sound sequence `80EFADEC` with policy 0 (required), the source sound form's
+    // own policy, where the other templates leave it at 2.
     ensure!(
         target.u32(root - 4)? == 0x80804205
             && target.u32(h + 4)? == 0x80804211
             && target.u32(d + 4)? == 0x80803B32
             && target.u64(root + 0x58)? == if audio.is_some() { 4 } else { 0 }
-            && target.u64(root + 0x70)? == 2
+            && target.u64(root + 0x70)? == if audio.is_some() { 0 } else { 2 }
             && target.u64(root + 0xC0)? == 0x3C18FBCE
             && target.u64(root + 0x408)? == 0
             && target.u64(root + 0x410)? == 0

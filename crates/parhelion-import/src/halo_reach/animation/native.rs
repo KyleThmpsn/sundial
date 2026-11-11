@@ -14,7 +14,7 @@ use std::{
     fs,
     path::Path,
 };
-pub(in crate::halo_reach) use wheel::rotations;
+pub(in crate::halo_reach) use wheel::{Suspension, overlay, rotations, suspension};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +25,9 @@ pub struct Binding {
     pub shared: usize,
 }
 
+/// The graph symbol of a rig's private per-control pose table.
+const CONTROL_TABLE: &str = "motion-control-table";
+
 struct Owner {
     tag: u32,
     original: Payload,
@@ -32,6 +35,8 @@ struct Owner {
     symbol: String,
     bank_field: Option<usize>,
     relocation: Option<(usize, usize)>,
+    /// Fields of the converted payload that name another private node, with its symbol.
+    references: Vec<(usize, String)>,
 }
 
 pub(in crate::halo_reach) struct Bundle {
@@ -43,6 +48,8 @@ pub(in crate::halo_reach) struct Bundle {
     bank: (u32, Payload),
     clips: Vec<(u32, Payload)>,
     layers: Vec<(u32, usize, u32, Payload)>,
+    /// The controls' private per-control pose table, when the extension grew one.
+    table: Option<(u32, Payload)>,
 }
 
 fn multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -226,9 +233,13 @@ pub(in crate::halo_reach) fn prepare(
     bindings: &[Binding],
     root: &Path,
 ) -> Result<Bundle> {
+    // Only the root model's rig is appended. Attached objects follow its bones.
     ensure!(
-        scene.models.len() == 1 && scene.models[0].parent.is_none(),
-        "Native source motion currently requires one complete model rig"
+        scene
+            .models
+            .first()
+            .is_some_and(|model| model.parent.is_none()),
+        "Native source motion requires a root model rig"
     );
     let source_root = root
         .parent()
@@ -287,6 +298,14 @@ pub(in crate::halo_reach) fn prepare(
         .as_array()
         .context("Extended bones")?
         .len();
+    // The controls' per-control pose table grows with them when it holds per-control entries.
+    let (table_field, table_tag) = animation::rig::control_table(&controls)?;
+    let slots = controls
+        .array(controls.pointer(24)? + 0xA0, 52, Some(0x80809076))?
+        .len();
+    let table =
+        animation::rig::extend_control_table(&*reader.tag(table_tag, None)?, slots, total - count)?
+            .map(|payload| (table_tag, payload));
     let mut owners = vec![
         Owner {
             tag: fk_tag,
@@ -295,6 +314,7 @@ pub(in crate::halo_reach) fn prepare(
             symbol: "motion-skeleton".into(),
             bank_field: None,
             relocation: Some(extended.relocation),
+            references: Vec::new(),
         },
         Owner {
             tag: control_tag,
@@ -303,6 +323,10 @@ pub(in crate::halo_reach) fn prepare(
             symbol: "motion-controls".into(),
             bank_field: None,
             relocation: None,
+            references: table
+                .iter()
+                .map(|_| (table_field, CONTROL_TABLE.to_owned()))
+                .collect(),
         },
         Owner {
             tag: lookup_tag,
@@ -311,6 +335,7 @@ pub(in crate::halo_reach) fn prepare(
             symbol: "motion-lookup".into(),
             bank_field: Some(lookup.pointer(24)? + 0x90),
             relocation: None,
+            references: Vec::new(),
         },
     ];
     for class in [0x80803640, 0x808036CF] {
@@ -327,6 +352,7 @@ pub(in crate::halo_reach) fn prepare(
             symbol: format!("motion-consumer-{tag:08X}"),
             bank_field: Some(field),
             relocation: None,
+            references: Vec::new(),
         });
     }
     let mut selected = BTreeMap::new();
@@ -419,7 +445,7 @@ pub(in crate::halo_reach) fn prepare(
     let section = json!({"status":"linked","runtime_entity":entity_tag,"lookup_owner":lookup_tag,"bank":bank_tag,
         "files":files,"bank_consumers":consumers,"clips":clip_files,"rigs":rigs,"preserve_timing":true});
     let source_motion = json!({"bindings":bindings,"bones":total,"source_graph":source_tag,"source_bones":scene.models[0].model.bones,
-        "first_source_bone":count,"resampling":"Normalized source duration fitted to the unchanged native frame count",
+        "first_source_bone":count,"control_table":{"native":format!("{table_tag:08X}"),"grown":table.is_some()},"resampling":"Normalized source duration fitted to the unchanged native frame count",
         "limits":["Native bank selection, timing, events and vehicle behavior are retained. Source root movement, layering and events are not translated. In-game playback is unverified."]});
     Ok(Bundle {
         skeleton,
@@ -430,6 +456,7 @@ pub(in crate::halo_reach) fn prepare(
         bank: (bank_tag, bank),
         clips,
         layers,
+        table,
     })
 }
 
@@ -462,6 +489,9 @@ impl Bundle {
                 vec![],
             )?;
         }
+        if let Some((tag, table)) = &self.table {
+            graph.add(CONTROL_TABLE, *tag, &table.0, None, vec![])?;
+        }
         for owner in &self.owners {
             if let Some((cut, delta)) = owner.relocation {
                 animation::rig::rebase_entity(entity, &owner.original, owner.tag, cut, delta)?;
@@ -477,6 +507,10 @@ impl Bundle {
             if let Some(field) = owner.bank_field {
                 put(&mut payload, field, &u32::MAX.to_le_bytes())?;
                 owner_patches.push(json!({"offset":field,"symbol":"motion-bank"}));
+            }
+            for (field, symbol) in &owner.references {
+                put(&mut payload, *field, &u32::MAX.to_le_bytes())?;
+                owner_patches.push(json!({"offset":field,"symbol":symbol}));
             }
             for &(_, field, tag, _) in self
                 .layers

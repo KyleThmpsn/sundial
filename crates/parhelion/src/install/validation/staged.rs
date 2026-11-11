@@ -62,6 +62,8 @@ fn verify_staged_file(stage: &Path, file: &ArtifactMetadata) -> Result<(), Insta
     loader::verify_file(&path, &TransactionDigest::from(file))
 }
 
+/// The packages the run itself holds: every artifact but those of a kept member, which are read
+/// from its installed folder.
 pub(super) fn packages(
     artifacts: &[ArtifactMetadata],
     mods: &[crate::mod_family::Member],
@@ -69,13 +71,15 @@ pub(super) fn packages(
     artifacts
         .iter()
         .filter(|artifact| {
+            let (id, native) = crate::mod_family::split(&artifact.file_name);
             !mods.iter().any(|member| {
                 member.kept
+                    && member.manifest.id == id
                     && member
                         .receipt
                         .artifacts
                         .iter()
-                        .any(|a| a.path.rsplit('/').next() == Some(artifact.file_name.as_str()))
+                        .any(|a| a.path.rsplit('/').next() == Some(native))
             })
         })
         .cloned()
@@ -97,7 +101,11 @@ pub(super) fn verify(
             "An importer mod family requires Sunrise 0.6 or later",
         ));
     }
-    validate_direct_package_set(stage, &packages(&validated.artifacts, &validated.mods))?;
+    validate_direct_package_set(
+        stage,
+        &packages(&validated.artifacts, &validated.mods),
+        &validated.mods,
+    )?;
     for artifact in validated
         .artifacts
         .iter()

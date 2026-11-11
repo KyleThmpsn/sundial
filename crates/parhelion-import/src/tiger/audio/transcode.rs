@@ -359,8 +359,8 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     let channels = word(fmt, 2)?;
     let rate = dword(fmt, 4)?;
     ensure!(
-        matches!(channels, 1 | 2 | 4) && (8_000..=192_000).contains(&rate),
-        "unsupported PCM layout: {channels} channels at {rate} Hz. Expected 1, 2 or 4 channels at 8000 to 192000 Hz"
+        matches!(channels, 1 | 2 | 4 | 6) && (8_000..=192_000).contains(&rate),
+        "unsupported PCM layout: {channels} channels at {rate} Hz. Expected 1, 2, 4 or 6 channels at 8000 to 192000 Hz"
     );
     ensure!(
         word(fmt, 14)? == 16
@@ -369,8 +369,9 @@ pub fn normalize_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
         "invalid 16-bit PCM sample layout"
     );
     let mask = match word(fmt, 0)? {
-        // A plain WAV of four channels, as the decoder writes Boardwalk's quad ambience, takes
-        // the side quad layout the writer supports.
+        // Plain decoded WAVs use the established side-quad mapping for four channels and
+        // standard FL, FR, FC, LFE, BL, BR order for six-channel surround. FSB custom Vorbis
+        // already decodes in this order, so adding the speaker mask must not reorder samples.
         1 => {
             ensure!(
                 fmt.len() == 16 || (fmt.len() == 18 && word(fmt, 16)? == 0),
@@ -403,6 +404,7 @@ fn channel_mask(channels: u16) -> u32 {
     match channels {
         1 => 4,
         4 => 0x603,
+        6 => 0x3F,
         _ => 3,
     }
 }
@@ -439,11 +441,14 @@ pub fn early_pcm_wem(media: &[u8]) -> Result<Vec<u8>> {
     let mask = dword(fmt, 20)?;
     let frames = dword(fmt, 24)? as usize;
     ensure!(
-        matches!((channels, mask), (1, 4) | (1, 8) | (2, 3))
+        matches!((channels, mask), (1, 4) | (1, 8) | (2, 3) | (4, 0x33))
             && (8_000..=192_000).contains(&rate)
             && frames > 0,
         "unsupported early media speakers or sample rate"
     );
+    // Back quad keeps its channel order as side quad, the four-channel layout the native writer
+    // supports. Both masks order front left, front right, then the left and right surrounds.
+    let mask = if mask == 0x33 { 0x603 } else { mask };
     let decoded =
         sundial::package_authoring::decode_audio_wave(media).map_err(anyhow::Error::msg)?;
     crate::cancellation::check()?;
@@ -482,9 +487,11 @@ fn riff_pcm(channels: u16, rate: u32, data: &[u8]) -> Result<Vec<u8>> {
 
 fn riff_pcm_layout(channels: u16, rate: u32, mask: u32, data: &[u8]) -> Result<Vec<u8>> {
     ensure!(
-        // Mono center, mono low frequency, stereo and side quad.
-        matches!((channels, mask), (1, 4) | (1, 8) | (2, 3) | (4, 0x603))
-            && !data.is_empty()
+        // Mono center, mono low frequency, stereo, side quad and standard 5.1 surround.
+        matches!(
+            (channels, mask),
+            (1, 4) | (1, 8) | (2, 3) | (4, 0x603) | (6, 0x3F)
+        ) && !data.is_empty()
             && data.len().is_multiple_of(usize::from(channels) * 2),
         "unsupported PCM speaker layout or incomplete samples"
     );

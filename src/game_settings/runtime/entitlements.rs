@@ -72,7 +72,7 @@ pub(super) fn draw(ui: &mut egui::Ui, document: &mut Value) -> bool {
         Ok(None) => {
             ui.label("Using Sunrise's bundled entitlements.");
             if ui.button("Customize Bundled Entitlements").clicked() {
-                let defaults = serde_json::from_str(include_str!("entitlements.json"))
+                let defaults = serde_json::from_str(include_str!("entitlements/entitlements.json"))
                     .expect("bundled entitlements");
                 return write_value(document, PATH, defaults).is_ok();
             }

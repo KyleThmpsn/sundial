@@ -3,6 +3,7 @@
 //! unintended motion while paused and an unreadable frame artifact.
 use super::*;
 mod armor;
+mod character;
 mod inspection;
 
 #[test]

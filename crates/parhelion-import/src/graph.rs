@@ -9,18 +9,42 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 mod opened;
+mod particles;
 mod place;
 mod presentation;
 pub use opened::forget_opened;
+pub(crate) use particles::check as check_particle_bindings;
 pub use place::{GRAPH, ORNAMENTS, conversion_folder, in_place, place, settle, unplace};
 
 /// The importer revision a new import records in its graph. Raise it with any change to what
 /// conversion writes. Raise `MINIMUM_CONVERTER_REVISION` to it as well when imports made before
 /// the change are unsafe or wrong to install, so Parhelion asks for those to be imported again.
-pub const CONVERTER_REVISION: u32 = 263;
+pub const CONVERTER_REVISION: u32 = 370;
 /// Imports from an earlier revision need importing again. Imports made before revisions were
 /// recorded count as revision 0.
 pub const MINIMUM_CONVERTER_REVISION: u32 = 0;
+
+/// The data folder's folder of what imports produce, `imports/<importer>/<HASH>/<kind>-<n>`.
+pub const IMPORTS: &str = "imports";
+
+/// The folders of `IMPORTS` that hold each importer's items, named for its module.
+pub const IMPORTERS: [&str; 4] = ["d1_roi", "d2_mot", "halo_reach", "marathon"];
+
+/// The importer folder `imports/<importer>` that holds `folder`, an item's conversion or a
+/// folder inside one. `None` outside the imports layout, such as for a test's own folder.
+#[must_use]
+pub fn importer_folder(folder: &Path, importer: &str) -> Option<PathBuf> {
+    folder
+        .ancestors()
+        .find(|path| {
+            path.file_name().is_some_and(|name| name == importer)
+                && path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == IMPORTS)
+        })
+        .map(Path::to_path_buf)
+}
 
 /// A content-pinned local asset graph. Changing any payload requires reselection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -402,37 +426,89 @@ fn animation_files(graph: &Value) -> Result<Vec<&str>> {
     Ok(files)
 }
 
+/// Every payload file a graph names, by section, each in the order [`fingerprint`] hashes it:
+/// the nodes, the animation files, the transcoded audio media and converted banks, the particle,
+/// audio asset, projectile, sword, firing effect and additional projectile nodes, and the icons.
+/// Copying, reading ahead
+/// and hashing a graph all read this one inventory, so a section a graph gains is listed here once. Each
+/// operation keeps its own checks of a section's paths.
+struct Inventory<'a> {
+    nodes: Vec<&'a str>,
+    animation: Vec<&'a str>,
+    media: Vec<&'a str>,
+    assets: Vec<&'a str>,
+    icons: Vec<&'a str>,
+}
+
+impl<'a> Inventory<'a> {
+    fn of(graph: &'a Value) -> Result<Self> {
+        let files = |pointers: &[&str], what: &str| -> Result<Vec<&'a str>> {
+            let mut files = Vec::new();
+            for pointer in pointers {
+                for node in graph
+                    .pointer(pointer)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    files.push(node["file"].as_str().with_context(|| what.to_owned())?);
+                }
+            }
+            Ok(files)
+        };
+        // Each additional projectile is a section of its own, hashed after the fixed sections.
+        let additional = (0..graph["additional_projectiles"]
+            .as_array()
+            .map_or(0, Vec::len))
+            .map(|index| format!("/additional_projectiles/{index}/nodes"))
+            .collect::<Vec<_>>();
+        let assets = [
+            "/particles/nodes",
+            "/audio_assets/nodes",
+            "/projectile/nodes",
+            "/sword/nodes",
+            "/firing_effect/assets/nodes",
+            "/firing_effect/owners",
+            "/firing_effect/allocations",
+        ]
+        .into_iter()
+        .chain(additional.iter().map(String::as_str))
+        .collect::<Vec<_>>();
+        Ok(Self {
+            nodes: graph["nodes"]
+                .as_array()
+                .context("Missing asset nodes")?
+                .iter()
+                .map(|node| node["file"].as_str().context("Missing asset payload path"))
+                .collect::<Result<_>>()?,
+            animation: animation_files(graph)?,
+            media: files(
+                &["/audio/transcoded_media", "/audio/converted_banks"],
+                "audio media file",
+            )?,
+            assets: files(&assets, "particle payload file")?,
+            icons: ["ornament_icon_png", "source_icon_png"]
+                .into_iter()
+                .filter_map(|key| graph[key].as_str())
+                .collect(),
+        })
+    }
+
+    /// Every file, each section in fingerprint order.
+    fn files(&self) -> impl Iterator<Item = &'a str> + '_ {
+        self.nodes
+            .iter()
+            .chain(&self.animation)
+            .chain(&self.media)
+            .chain(&self.assets)
+            .chain(&self.icons)
+            .copied()
+    }
+}
+
 /// Resolve the complete augmented graph before creating any destination directory.
 fn copy_plan(graph: &Value, root: &Path, output: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let mut files = BTreeSet::new();
-    for node in graph["nodes"].as_array().context("Missing asset nodes")? {
-        files.insert(
-            node["file"]
-                .as_str()
-                .context("Missing asset payload path")?,
-        );
-    }
-    if let Some(file) = graph["source_icon_png"].as_str() {
-        files.insert(file);
-    }
-    files.extend(animation_files(graph)?);
-    for pointer in [
-        "/audio/transcoded_media",
-        "/audio/converted_banks",
-        "/particles/nodes",
-        "/audio_assets/nodes",
-        "/projectile/nodes",
-        "/sword/nodes",
-    ] {
-        for node in graph
-            .pointer(pointer)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            files.insert(node["file"].as_str().context("audio or particle file")?);
-        }
-    }
+    let files = Inventory::of(graph)?.files().collect::<BTreeSet<_>>();
     files
         .into_iter()
         .map(|file| {
@@ -447,8 +523,8 @@ fn copy_plan(graph: &Value, root: &Path, output: &Path) -> Result<Vec<(PathBuf, 
         .collect()
 }
 
-fn hash_animation(graph: &Value, root: &Path, digest: &mut Sha256) -> Result<()> {
-    for name in animation_files(graph)? {
+fn hash_animation(files: &[&str], root: &Path, digest: &mut Sha256) -> Result<()> {
+    for &name in files {
         let payload = fs::read(checked_payload(root, name, "Animation")?)?;
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
@@ -456,25 +532,23 @@ fn hash_animation(graph: &Value, root: &Path, digest: &mut Sha256) -> Result<()>
     Ok(())
 }
 
-/// Reads every file under `root` once on several threads, so the hash that follows finds them in
-/// the file cache. A cold folder of a thousand payloads otherwise waits on each read in turn,
-/// eight seconds for one Rise of Iron weapon. Failures are left for the hash to report.
-fn read_ahead(root: &Path) {
+/// Reads the files [`fingerprint`] hashes once on several threads, so the hash that follows finds
+/// them in the file cache. A cold folder of a thousand payloads otherwise waits on each read in
+/// turn, eight seconds for one Rise of Iron weapon. Only hashed files are read: a Rise of Iron
+/// graph also keeps tens of thousands of small native source records that the hash never reads,
+/// and opening each of those costs more than the hash itself. Failures are left for the hash to
+/// report.
+fn read_ahead(root: &Path, inventory: &Inventory<'_>) {
     use std::io::Read;
-    let mut files = Vec::new();
-    let mut folders = vec![root.to_path_buf()];
-    while let Some(folder) = folders.pop() {
-        let Ok(entries) = fs::read_dir(&folder) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
-                Ok(kind) if kind.is_file() => files.push(entry.path()),
-                _ => {}
-            }
-        }
-    }
+    let files = inventory
+        .files()
+        .map(Path::new)
+        .filter(|path| {
+            path.components()
+                .all(|part| matches!(part, Component::Normal(_)))
+        })
+        .map(|path| root.join(path))
+        .collect::<Vec<_>>();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(8));
     std::thread::scope(|scope| {
@@ -525,7 +599,8 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
     digest.update((bytes.len() as u64).to_le_bytes());
     digest.update(&bytes);
     let root = directory.canonicalize()?;
-    read_ahead(&root);
+    let inventory = Inventory::of(&graph)?;
+    read_ahead(&root, &inventory);
     let mut symbols = BTreeSet::new();
     for node in nodes {
         let symbol = node["symbol"].as_str().context("Missing asset symbol")?;
@@ -592,19 +667,8 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
             "Imported graph has no parent asset"
         );
     }
-    hash_animation(&graph, &root, &mut digest)?;
-    for media in graph["audio"]["transcoded_media"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .chain(
-            graph["audio"]["converted_banks"]
-                .as_array()
-                .into_iter()
-                .flatten(),
-        )
-    {
-        let name = media["file"].as_str().context("audio media file")?;
+    hash_animation(&inventory.animation, &root, &mut digest)?;
+    for &name in &inventory.media {
         let path = Path::new(name);
         ensure!(
             !path.as_os_str().is_empty()
@@ -628,25 +692,7 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
-    for node in graph["particles"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .chain(
-            graph["audio_assets"]["nodes"]
-                .as_array()
-                .into_iter()
-                .flatten(),
-        )
-        .chain(
-            graph["projectile"]["nodes"]
-                .as_array()
-                .into_iter()
-                .flatten(),
-        )
-        .chain(graph["sword"]["nodes"].as_array().into_iter().flatten())
-    {
-        let name = node["file"].as_str().context("particle payload file")?;
+    for &name in &inventory.assets {
         let path = Path::new(name);
         ensure!(
             !path.as_os_str().is_empty()
@@ -664,13 +710,7 @@ fn fingerprint(directory: &Path, item: Option<u32>) -> Result<String> {
         digest.update((payload.len() as u64).to_le_bytes());
         digest.update(payload);
     }
-    for icon in [
-        graph["ornament_icon_png"].as_str(),
-        graph["source_icon_png"].as_str(),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for &icon in &inventory.icons {
         ensure!(
             Path::new(icon)
                 .components()

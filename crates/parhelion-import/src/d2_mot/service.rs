@@ -182,11 +182,7 @@ pub fn packages_path(path: &Path) -> Result<PathBuf> {
         .context("Open modern Destiny 2 packages")
 }
 
-/// The data folder's folder of what imports produce, `imports/<importer>/<HASH>/<kind>-<n>`.
-pub const IMPORTS: &str = "imports";
-
-/// The folders of `IMPORTS` that hold each importer's items, named for its module.
-pub const IMPORTERS: [&str; 4] = ["d1_roi", "d2_mot", "halo_reach", "marathon"];
+pub use crate::graph::{IMPORTERS, IMPORTS};
 
 /// The stable folder of one source item, `<imports>/<importer>/<HASH>`. The hash names the item
 /// within its importer, so an item the game renames keeps its folder.
@@ -195,6 +191,55 @@ pub fn item_directory(imports: &Path, importer: &str, hash: u32) -> Result<PathB
     let parent = imports.join(importer);
     fs::create_dir_all(&parent)?;
     Ok(parent.join(format!("{hash:08X}")))
+}
+
+/// A hold on the conversions of one item folder. A conversion no saved recipe names, such as a
+/// map's, is read only under a shared hold, and a sweep sets one aside only under an exclusive
+/// hold, whichever process each runs in. A conversion's manifest time orders which one a sweep
+/// keeps but cannot keep one alive while it is read. The lock file lies beside the item folder,
+/// `<importer>/.<HASH>.lock`, and is never removed, so readers and sweeps always lock the same
+/// file, and an item folder emptied of its conversions can still be removed.
+pub struct Hold {
+    _file: fs::File,
+}
+
+fn hold_file(item: &Path) -> Result<fs::File> {
+    let name = item
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Item folder has no name")?;
+    let parent = item
+        .parent()
+        .context("Item folder has no importer folder")?;
+    fs::create_dir_all(parent)?;
+    Ok(fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(parent.join(format!(".{name}.lock")))?)
+}
+
+/// Holds the conversions of `item` while one is read, waiting while a sweep sets some aside.
+pub fn hold_for_reading(item: &Path) -> Result<Hold> {
+    let file = hold_file(item)?;
+    loop {
+        crate::cancellation::check()?;
+        match fs2::FileExt::try_lock_shared(&file) {
+            Ok(()) => return Ok(Hold { _file: file }),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Holds the conversions of `item` while a sweep sets some aside, or `None` while one is read.
+pub fn hold_for_sweep(item: &Path) -> Option<Hold> {
+    let file = hold_file(item).ok()?;
+    fs2::FileExt::try_lock_exclusive(&file).ok()?;
+    Some(Hold { _file: file })
 }
 
 /// Reserve independent assets inside a stable weapon folder without replacing a saved graph.
@@ -551,6 +596,32 @@ fn convert_with_donor(
         crate::cancellation::check()?;
         super::crosshair::record_failure(&graph, &error)?;
     }
+    progress("Translating source firing and reload timing…".into());
+    super::gameplay::timing::apply(
+        modern,
+        native,
+        source,
+        profile::hash(donor, "hash")?,
+        &attempt.join("timing"),
+        &graph,
+    )?;
+    progress("Translating the source firing presentation…".into());
+    let folder = PathBuf::from(
+        prepared["folder"]
+            .as_str()
+            .context("Missing import folder")?,
+    );
+    let native_rig: Value =
+        serde_json::from_slice(&fs::read(folder.join("native").join("rig.json"))?)?;
+    super::native::firing::apply(&super::native::firing::Request {
+        source_packages: modern,
+        native_packages: native,
+        source,
+        native_rig: &native_rig,
+        namespace: &weapon.namespace(),
+        work: &attempt.join("firing"),
+        graph: &graph,
+    })?;
     progress("Verifying and saving recipe assets…".into());
     let item = profile::hash(&document["identity"], "item_hash")?;
     super::graph::record_converter_revision(&graph)?;
@@ -590,7 +661,7 @@ fn convert_with_donor(
     let audio = &graph_manifest["audio"];
     write_json(
         &output.join("result.json"),
-        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Source-only and unnamed firing cues still need runtime routing."}),
+        &json!({"recipe":recipe,"donor":donor["name"],"donor_hash":donor["hash"],"audio":audio,"source_audio_imported":false,"gameplay_verified":false,"material_limitations":graph_manifest["material_limitations"],"limitations":"Modern PCM media is prepared for named events with compatible native routing. Package authoring links those events through private Dawn soundbanks. Translated firing slots play the source's own firing sounds. Unnamed firing cues of other slots still need runtime routing."}),
     )?;
     Ok(Attempt::Prepared(recipe))
 }

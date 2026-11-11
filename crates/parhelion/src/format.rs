@@ -4,7 +4,7 @@ use skeleton::*;
 use std::{collections::BTreeSet, ops::Range};
 
 use sha1::{Digest, Sha1};
-use sundial::package_authoring::is_valid_package_tag;
+use sundial::package_authoring::{is_valid_package_tag, native_payload};
 use tiger_pkg::TagHash;
 
 use crate::package_profile::{
@@ -1065,34 +1065,31 @@ fn checked_range(
     Ok(offset..end)
 }
 
+/// The little-endian bytes of the field at `offset`, with `field` naming it in the error.
+fn field_at<const N: usize>(bytes: &[u8], offset: usize, field: &str) -> AuthoringResult<[u8; N]> {
+    native_payload::bytes_at(bytes, offset).map_err(|error| invalid(format!("{field}: {error}")))
+}
+
+/// Writes `value` over the field at `offset`, with `field` naming it in the error.
+fn write_field(bytes: &mut [u8], offset: usize, value: &[u8], field: &str) -> AuthoringResult<()> {
+    native_payload::write_bytes(bytes, offset, value)
+        .map_err(|error| invalid(format!("{field}: {error}")))
+}
+
 fn read_u16(bytes: &[u8], offset: usize) -> AuthoringResult<u16> {
-    let range = checked_range(bytes, offset, size_of::<u16>(), "16-bit field")?;
-    Ok(u16::from_le_bytes(
-        bytes[range]
-            .try_into()
-            .expect("a checked two-byte range has the requested size"),
-    ))
+    field_at(bytes, offset, "16-bit field").map(u16::from_le_bytes)
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> AuthoringResult<u32> {
-    let range = checked_range(bytes, offset, size_of::<u32>(), "32-bit field")?;
-    Ok(u32::from_le_bytes(bytes[range].try_into().expect(
-        "a checked four-byte range has the requested size",
-    )))
+    field_at(bytes, offset, "32-bit field").map(u32::from_le_bytes)
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> AuthoringResult<u64> {
-    let range = checked_range(bytes, offset, size_of::<u64>(), "64-bit field")?;
-    Ok(u64::from_le_bytes(bytes[range].try_into().expect(
-        "a checked eight-byte range has the requested size",
-    )))
+    field_at(bytes, offset, "64-bit field").map(u64::from_le_bytes)
 }
 
 fn read_i64(bytes: &[u8], offset: usize) -> AuthoringResult<i64> {
-    let range = checked_range(bytes, offset, size_of::<i64>(), "signed 64-bit field")?;
-    Ok(i64::from_le_bytes(bytes[range].try_into().expect(
-        "a checked signed eight-byte range has the requested size",
-    )))
+    field_at(bytes, offset, "Signed 64-bit field").map(i64::from_le_bytes)
 }
 
 fn relative_target(bytes: &[u8], pointer: usize) -> AuthoringResult<usize> {
@@ -1129,27 +1126,19 @@ fn adjust_relative_pointer(
 }
 
 fn write_u16(bytes: &mut [u8], offset: usize, value: u16) -> AuthoringResult<()> {
-    let range = checked_range(bytes, offset, size_of::<u16>(), "16-bit field")?;
-    bytes[range].copy_from_slice(&value.to_le_bytes());
-    Ok(())
+    write_field(bytes, offset, &value.to_le_bytes(), "16-bit field")
 }
 
 fn write_u32(bytes: &mut [u8], offset: usize, value: u32) -> AuthoringResult<()> {
-    let range = checked_range(bytes, offset, size_of::<u32>(), "32-bit field")?;
-    bytes[range].copy_from_slice(&value.to_le_bytes());
-    Ok(())
+    write_field(bytes, offset, &value.to_le_bytes(), "32-bit field")
 }
 
 fn write_u64(bytes: &mut [u8], offset: usize, value: u64) -> AuthoringResult<()> {
-    let range = checked_range(bytes, offset, size_of::<u64>(), "64-bit field")?;
-    bytes[range].copy_from_slice(&value.to_le_bytes());
-    Ok(())
+    write_field(bytes, offset, &value.to_le_bytes(), "64-bit field")
 }
 
 fn write_i64(bytes: &mut [u8], offset: usize, value: i64) -> AuthoringResult<()> {
-    let range = checked_range(bytes, offset, size_of::<i64>(), "signed 64-bit field")?;
-    bytes[range].copy_from_slice(&value.to_le_bytes());
-    Ok(())
+    write_field(bytes, offset, &value.to_le_bytes(), "Signed 64-bit field")
 }
 
 #[cfg(test)]

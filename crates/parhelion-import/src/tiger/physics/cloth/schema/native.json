@@ -1533,6 +1533,70 @@
     "parent": "hclOperator",
     "signature": 3543321017
   },
+  "hclGatherSomeVerticesOperator": {
+    "size": 64,
+    "version": 0,
+    "members": [
+      {
+        "name": "vertexPairs",
+        "kind": 22,
+        "subtype": 25,
+        "length": 0,
+        "flags": 0,
+        "offset": 32,
+        "class": "hclGatherSomeVerticesOperatorVertexPair"
+      },
+      {
+        "name": "inputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "outputBufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 52
+      },
+      {
+        "name": "gatherNormals",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 56
+      }
+    ],
+    "parent": "hclOperator",
+    "signature": 1718814946
+  },
+  "hclGatherSomeVerticesOperatorVertexPair": {
+    "size": 4,
+    "version": 0,
+    "members": [
+      {
+        "name": "indexInput",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 0
+      },
+      {
+        "name": "indexOutput",
+        "kind": 6,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 2
+      }
+    ],
+    "parent": null
+  },
   "hclMoveParticlesOperator": {
     "size": 56,
     "version": 0,
@@ -2483,6 +2547,102 @@
       }
     ],
     "parent": null
+  },
+  "hclUpdateAllVertexFramesOperator": {
+    "size": 144,
+    "version": 2,
+    "members": [
+      {
+        "name": "vertToNormalID",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 32
+      },
+      {
+        "name": "triangleFlips",
+        "kind": 22,
+        "subtype": 8,
+        "length": 0,
+        "flags": 0,
+        "offset": 48
+      },
+      {
+        "name": "referenceVertices",
+        "kind": 22,
+        "subtype": 6,
+        "length": 0,
+        "flags": 0,
+        "offset": 64
+      },
+      {
+        "name": "tangentEdgeCosAngle",
+        "kind": 22,
+        "subtype": 11,
+        "length": 0,
+        "flags": 0,
+        "offset": 80
+      },
+      {
+        "name": "tangentEdgeSinAngle",
+        "kind": 22,
+        "subtype": 11,
+        "length": 0,
+        "flags": 0,
+        "offset": 96
+      },
+      {
+        "name": "biTangentFlip",
+        "kind": 22,
+        "subtype": 11,
+        "length": 0,
+        "flags": 0,
+        "offset": 112
+      },
+      {
+        "name": "bufferIdx",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 128
+      },
+      {
+        "name": "numUniqueNormalIDs",
+        "kind": 8,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 132
+      },
+      {
+        "name": "updateNormals",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 136
+      },
+      {
+        "name": "updateTangents",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 137
+      },
+      {
+        "name": "updateBiTangents",
+        "kind": 1,
+        "subtype": 0,
+        "length": 0,
+        "flags": 0,
+        "offset": 138
+      }
+    ],
+    "parent": "hclOperator",
+    "signature": 2095217549
   },
   "hclUpdateSomeVertexFramesOperator": {
     "size": 192,

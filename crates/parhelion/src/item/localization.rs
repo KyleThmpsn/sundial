@@ -73,7 +73,91 @@ pub(super) fn author_project_localized_strings(
         merged_header,
         locale_data,
         donor_header_tag,
+        own_bank: false,
     })
+}
+
+/// Moves the text into a bank of the build's own: the donor bank's header and locale data with the
+/// build's text, as new records after `records`, and a string bank index row that names the header.
+/// The row takes the importer's own key, so no other mod's row repeats it.
+pub(super) fn own_bank(
+    mut localization: AuthoredLocalization,
+    importer: sundial::package_authoring::mod_content::Importer,
+    records: &mut Vec<NewTagSpec>,
+) -> AuthoringResult<AuthoredLocalization> {
+    let host = crate::package_profile::host();
+    let allocator = AppendedTagAllocator::records(host.first);
+    let first = records.len();
+    if crate::appended_tags::records_end().is_some_and(|end| end > host.first + first) {
+        return Err(validation(
+            "Records were assigned past the build's records before its string bank",
+        ));
+    }
+    let header_tag = allocator.assigned_tag(first, "String bank", "header")?;
+    let mut header = std::mem::take(&mut localization.merged_header);
+    let mut locales = Vec::with_capacity(localization.locale_data.len());
+    for (position, locale) in std::mem::take(&mut localization.locale_data)
+        .into_iter()
+        .enumerate()
+    {
+        let offset = LOCALIZATION_DATA_TAG_START + position * 4;
+        if offset >= LOCALIZATION_DATA_TAG_END || read_u32(&header, offset)? != locale.donor_tag.0 {
+            return Err(invalid("The donor string bank's locale list changed"));
+        }
+        let tag = allocator.assigned_tag(first + 1 + position, "String bank", "locale")?;
+        write_u32(&mut header, offset, tag.0)?;
+        locales.push(NewTagSpec {
+            template_tag: locale.donor_tag,
+            payload: locale.payload,
+            storage: crate::NewTagStorageMode::InheritTemplate,
+        });
+    }
+    if locales.len() != LOCALIZATION_LOCALE_COUNT {
+        return Err(invalid(
+            "The donor string bank has an unexpected locale count",
+        ));
+    }
+    records.push(NewTagSpec {
+        template_tag: localization.donor_header_tag,
+        payload: header,
+        storage: crate::NewTagStorageMode::InheritTemplate,
+    });
+    records.extend(locales);
+    let mut index = std::mem::take(&mut localization.index);
+    let (count, array, rows, class) = array_at(&index, 8)?;
+    if class != LOCALIZED_INDEX_ROW_CLASS
+        || count != crate::package_profile::localization_table()
+        || rows + count * LOCALIZED_INDEX_ROW_SIZE != index.len()
+    {
+        return Err(invalid(
+            "The string bank index is not the terminal stock table a new bank row follows",
+        ));
+    }
+    let keys = (0..count)
+        .map(|row| read_u32(&index, rows + row * LOCALIZED_INDEX_ROW_SIZE))
+        .collect::<AuthoringResult<std::collections::BTreeSet<_>>>()?;
+    let key = (0u32..)
+        .map(|attempt| {
+            let name = match attempt {
+                0 => format!("parhelion_strings_{}", importer.id()),
+                _ => format!("parhelion_strings_{}#{attempt}", importer.id()),
+            };
+            sundial::package_authoring::fnv1_name_hash(&name)
+        })
+        .find(|key| {
+            !matches!(*key, 0 | u32::MAX)
+                && *key != sundial::package_authoring::FNV1_EMPTY_HASH
+                && !keys.contains(key)
+        })
+        .ok_or_else(|| invalid("No string bank key is free"))?;
+    let mut row = [0; LOCALIZED_INDEX_ROW_SIZE];
+    row[..4].copy_from_slice(&key.to_le_bytes());
+    row[4..8].copy_from_slice(&header_tag.0.to_le_bytes());
+    index.extend_from_slice(&row);
+    set_array_count(&mut index, 8, array, count + 1)?;
+    localization.index = synchronize_payload_size(index)?;
+    localization.own_bank = true;
+    Ok(localization)
 }
 
 pub(super) fn project_localized_values_with_sets<'a>(
@@ -204,10 +288,26 @@ pub(super) fn project_authored_localized_values<'a>(
             custom_values.push((hash, description));
         }
     }
+    let badge = crate::badge::Identity::current();
+    let (name, description) = crate::badge::text(branding);
     custom_values.extend([
-        (SUNRISE_BADGE_DESCRIPTION_HASH, branding.description()),
-        (SUNRISE_BADGE_NAME_HASH, branding.name()),
+        (badge.description_hash, description),
+        (badge.name_hash, name),
     ]);
+    // Without mod folders each source's items take that source's badge in this one mod.
+    let sources = weapons
+        .iter()
+        .filter(|weapon| weapon.has_collections())
+        .filter_map(crate::badge::source_badge)
+        .collect::<BTreeSet<_>>();
+    for importer in sources {
+        let identity = crate::badge::Identity::importer(importer);
+        let (name, description) = crate::badge::source_text(importer);
+        custom_values.extend([
+            (identity.description_hash, description),
+            (identity.name_hash, name),
+        ]);
+    }
     let mut badges = BTreeMap::new();
     for weapon in weapons {
         custom_values.extend(crate::subclass::authoring::authored_text(

@@ -27,6 +27,7 @@ mod transfer;
 #[cfg(feature = "d2-model-importer")]
 pub(crate) use conversions::{Progress, Removed, SetAside, Status, Step};
 pub(crate) use delete::DeleteRecipe;
+pub(crate) use listing::in_parallel;
 pub(crate) use restore::RestoreDefaults;
 pub(crate) use restore::RestoreRecipe;
 pub(crate) use transfer::ImportReport;

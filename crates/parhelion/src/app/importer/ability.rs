@@ -6,9 +6,10 @@ use parhelion_import::d1_roi::{AbilityChoice, Source as RoiSource};
 // Keep the entry point hidden until ability preparation is ready for use.
 const AVAILABLE: bool = false;
 
+/// The ability window's choices and messages. Its reads and preparations run as the importer's
+/// `Work::Ability`.
 pub(super) struct Picker {
     open: bool,
-    pending: bool,
     choices: Vec<AbilityChoice>,
     selected: Option<usize>,
     entry: u8,
@@ -21,7 +22,6 @@ impl Default for Picker {
     fn default() -> Self {
         Self {
             open: false,
-            pending: false,
             choices: Vec::new(),
             selected: None,
             entry: layout::MOVEMENT[0],
@@ -33,17 +33,14 @@ impl Default for Picker {
 }
 
 impl Picker {
-    pub(super) fn close(&mut self) -> bool {
+    pub(super) fn close(&mut self) {
         self.open = false;
-        self.pending
     }
 
+    /// Reports an ability worker whose channel closed before it sent its result.
     pub(super) fn worker_stopped(&mut self) {
-        if self.pending {
-            self.pending = false;
-            self.notice = "The ability import worker stopped. Read the choices again.".into();
-            self.failed = true;
-        }
+        self.notice = "The ability import worker stopped. Read the choices again.".into();
+        self.failed = true;
     }
 }
 
@@ -181,9 +178,11 @@ impl PackageAuthoringApp {
                 }
             });
         self.importer.abilities.open = open;
-        if !open && self.importer.abilities.pending {
-            self.importer.cancel.store(true, Ordering::Relaxed);
-        } else if read {
+        // Closing the window stops its running read or preparation.
+        if !open && self.importer.cancel_ability() {
+            return;
+        }
+        if read {
             self.read_roi_abilities(ctx);
         } else if start {
             self.start_roi_ability(ctx);
@@ -199,11 +198,13 @@ impl PackageAuthoringApp {
         };
         let native_packages = self.packages.clone();
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
-        self.importer.abilities.pending = true;
-        self.importer.import_started = Some(Instant::now());
-        self.importer.cancel = Arc::new(AtomicBool::new(false));
-        let cancel = self.importer.cancel.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.importer.task = Some(Task::new(
+            receiver,
+            Work::Ability {
+                cancel: cancel.clone(),
+            },
+        ));
         self.importer.abilities.loaded = None;
         self.importer.abilities.choices.clear();
         self.importer.abilities.selected = None;
@@ -266,11 +267,13 @@ impl PackageAuthoringApp {
         let recipe = self.recipe.clone();
         let entry = self.importer.abilities.entry;
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
-        self.importer.abilities.pending = true;
-        self.importer.import_started = Some(Instant::now());
-        self.importer.cancel = Arc::new(AtomicBool::new(false));
-        let cancel = self.importer.cancel.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.importer.task = Some(Task::new(
+            receiver,
+            Work::Ability {
+                cancel: cancel.clone(),
+            },
+        ));
         self.importer.abilities.notice.clear();
         let ctx = ctx.clone();
         thread::spawn(move || {
@@ -296,7 +299,6 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn finish_roi_abilities(&mut self, listed: Listed) {
-        self.importer.abilities.pending = false;
         if !self.importer.open || !self.importer.enabled || !self.importer.abilities.open {
             return;
         }
@@ -327,7 +329,6 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn finish_roi_ability(&mut self, prepared: Prepared) {
-        self.importer.abilities.pending = false;
         if !self.importer.open || !self.importer.enabled || !self.importer.abilities.open {
             return;
         }

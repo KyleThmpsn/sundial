@@ -12,6 +12,12 @@ pub(super) struct Sections {
     pub report: Value,
 }
 
+/// Native health per source vitality unit. The stock tank's damage owner holds 3,600 against the
+/// Scorpion's 600, with sections at 25 to 100 percent of it. Unscaled, the Scorpion's 120-point
+/// treads fell off the hull in game (Dawn 1.7.2, 2026-11-06), while native impacts barely mark
+/// the tank. One factor for every source vehicle keeps their Reach ratios to one another.
+const VITALITY_SCALE: f32 = 6.;
+
 fn scalar(value: &Value, field: &str) -> Result<f32> {
     let number = value[field]
         .as_f64()
@@ -104,16 +110,12 @@ pub(super) fn build(
         "Source damage section names collide"
     );
     transfer::validate(sections)?;
-    let main = usize::try_from(
-        source["indirect_section"]
-            .as_u64()
-            .context("Source indirect damage section")?,
-    )?;
+    let main = super::primary_section(source)?;
     ensure!(
         main < sections.len() && source["shielded_section"] == -1,
         "Source vehicle shield routing needs an explicit translation"
     );
-    let base = scalar(source, "vitality")?;
+    let base = scalar(source, "vitality")? * VITALITY_SCALE;
     ensure!(base > 0., "Source vehicle has no vitality");
     let outputs = output::remap(payload, instance, definition, &names, main)?;
     let old = payload.array(definition + 0x1b0, 0x138, Some(0x80804c11))?;
@@ -261,7 +263,7 @@ pub(super) fn build(
     }
     ensure!(
         ordinal <= 64,
-        "Native one-shot damage thresholds exceed their state bitmap"
+        "Native damage thresholds exceed their 64-bit state bitmap ({ordinal} rows)"
     );
     Ok(Sections {
         count: sections.len(),

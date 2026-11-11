@@ -92,17 +92,21 @@ impl View {
             return Err(plan.coexistence.problems.join("\n"));
         }
         let mut additions = content_files(install)?;
-        additions.extend(incoming.packages.iter().chain(&incoming.patches).cloned());
-        additions.extend(
-            incoming
-                .packages
-                .iter()
-                .chain(&incoming.patches)
-                .map(|path| path.with_extension(super::merge::sidecar::EXTENSION))
-                .filter(|path| path.is_file()),
-        );
+        additions.extend(incoming_files(incoming));
         let contents = contents(install, &additions)?;
         Self::from_plan(install, plan, &contents, refused, &incoming.retired).map(Arc::new)
+    }
+
+    /// A fresh view of stock with the incoming family alone, no other mod, as a review reads the
+    /// staged generation's own content. It never publishes mod files or changes the cache.
+    pub(in crate::package_runtime) fn family(
+        install: &Path,
+        incoming: &content::Incoming,
+    ) -> Result<Arc<Self>, String> {
+        ensure_readable(install)?;
+        let plan = content::Plan::family(install, incoming)?;
+        let contents = contents(install, &incoming_files(incoming))?;
+        Self::from_plan(install, plan, &contents, Vec::new(), &incoming.retired).map(Arc::new)
     }
 
     fn open_scope(install: &Path, scope: Scope) -> Result<Option<Arc<Self>>, String> {
@@ -180,7 +184,7 @@ impl View {
         refused: Vec<Refusal>,
     ) -> Result<Self, String> {
         let plan = match scope {
-            Scope::Managed => content::Plan::installed(additions),
+            Scope::Managed => content::Plan::installed(install, additions)?,
             Scope::Effective => content::Plan::read(install, &refused, None)?,
         };
         Self::from_plan(install, plan, contents, refused, &[])
@@ -336,6 +340,21 @@ fn link_decoders(install: &Path, directory: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Every incoming member's packages and patches, with the merge data beside them.
+fn incoming_files(incoming: &content::Incoming) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for member in std::iter::once(incoming).chain(&incoming.family) {
+        files.extend(member.packages.iter().chain(&member.patches).cloned());
+    }
+    let sidecars = files
+        .iter()
+        .map(|path| path.with_extension(super::merge::sidecar::EXTENSION))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    files.extend(sidecars);
+    files
 }
 
 /// Reads what a view of `install` would project. Directory listings carry sizes and write times

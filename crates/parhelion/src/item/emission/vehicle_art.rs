@@ -81,14 +81,8 @@ fn model(
     if keys.is_empty() {
         return Err(invalid("The gear art lists no parts"));
     }
-    let table = match replacements
-        .iter()
-        .find(|replacement| replacement.tag == art::ASSIGNMENT_TABLE)
-    {
-        Some(replacement) => replacement.payload.clone(),
-        None => read(manager, art::ASSIGNMENT_TABLE.0)?,
-    };
-    let map = assignments(&table)?;
+    let table = art::assignment_table(manager, replacements)?;
+    let map = art::assignments(&table)?;
     let (substitutions, entries) = match sparrow.inventory_model {
         InventoryModel::Sparrow => return Ok(()),
         InventoryModel::Empty => {
@@ -108,53 +102,17 @@ fn model(
     if substitutions.is_empty() {
         return Err(invalid("No part of the gear art has a model to change"));
     }
-    let row_index = art::prepare_row_at(emission, item, source_row)?;
-    let (_, _, rows, _) = array(&emission.item_metadata, 8)?;
-    art::rewrite(
-        &mut emission.item_metadata,
-        rows + row_index * 32,
-        rows + source_row * 32,
-        |singles, slots| {
-            for key in singles
-                .iter_mut()
-                .chain(slots.iter_mut().flat_map(|(_, keys)| keys))
-            {
-                if let Some(private) = substitutions.get(key) {
-                    *key = *private;
-                }
-            }
-            Ok(())
-        },
+    art::substitute_row(
+        emission,
+        (item, ordinal),
+        source_row,
+        &art_rows,
+        &substitutions,
     )?;
-    let arrangement =
-        u16::try_from(row_index).map_err(|_| invalid("Gear-art row index overflow"))?;
-    let updated = art_rows
-        .iter()
-        .map(|row| WeaponArtArrangementOverride {
-            character_class: row.character_class,
-            arrangement,
-        })
-        .collect::<Vec<_>>();
-    set_weapon_art_arrangements(&mut emission.host_new_tags[ordinal].payload, &updated)?;
     if !entries.is_empty() {
-        let replacement = art::insert_assignments(&table, &entries)?;
-        replacements.retain(|existing| existing.tag != art::ASSIGNMENT_TABLE);
-        replacements.push(replacement);
+        art::replace_assignments(replacements, &table, &entries)?;
     }
     Ok(())
-}
-
-/// The assignment map's rows: gear-art key to relation tag.
-fn assignments(table: &[u8]) -> AuthoringResult<BTreeMap<u32, u32>> {
-    let (count, _, rows, _) = array(table, 8)?;
-    (0..count)
-        .map(|i| {
-            Ok((
-                read_u32(table, rows + i * 8)?,
-                read_u32(table, rows + i * 8 + 4)?,
-            ))
-        })
-        .collect()
 }
 
 /// A stock assignment whose relation names no entity. Stock gear art lists such empty parts,

@@ -1,5 +1,12 @@
 use super::*;
 
+/// What a library listing shows: its rows, and the export choices it hides.
+#[derive(Clone, Copy)]
+struct Shown {
+    matches: usize,
+    hidden: usize,
+}
+
 impl PackageAuthoringApp {
     /// `open_only` leaves recipes open to opening while the rest of the library waits for the
     /// importer's sweep or source read.
@@ -29,9 +36,9 @@ impl PackageAuthoringApp {
                 self.draw_library_notice(ui);
                 self.draw_library_search(ui);
                 ui.separator();
-                let matches = self.draw_library_entries(ui, busy, open_only, &mut action);
+                let shown = self.draw_library_entries(ui, busy, open_only, &mut action);
                 ui.separator();
-                self.draw_library_footer(ui, busy, matches, &mut action);
+                self.draw_library_footer(ui, busy, shown, &mut action);
             });
         self.library_open = open;
         if !open {
@@ -48,9 +55,8 @@ impl PackageAuthoringApp {
             ui,
             "library-sort",
             &mut self.library_query,
-            &mut self.library_state.sort,
-            &mut self.library_state.kind,
-            &mut self.library_state.activities_only,
+            &mut self.library_state,
+            (&self.recipe_entries, &self.library_donors),
             &mut self.recipe_search_focus_pending,
         );
     }
@@ -77,24 +83,29 @@ impl PackageAuthoringApp {
         }
     }
 
+    /// Draws the rows the search and filters show. Returns how many show and, while recipes are
+    /// being chosen for export, how many chosen ones they hide.
     fn draw_library_entries(
         &mut self,
         ui: &mut egui::Ui,
         busy: bool,
         open_only: bool,
         action: &mut Option<LibraryAction>,
-    ) -> usize {
+    ) -> Shown {
         let query = self.library_query.trim().to_lowercase();
-        let mut shown =
+        let listing =
             self.library_state
-                .matching_entries(&self.recipe_entries, &self.library_donors, &query);
-        self.library_state
-            .sort_entries(&mut shown, &self.library_donors);
+                .take_listing(&self.recipe_entries, &self.library_donors, &query);
+        let shown = listing
+            .shown
+            .iter()
+            .map(|(index, details)| (&self.recipe_entries[*index], details.as_str()))
+            .collect::<Vec<_>>();
         // Activity recipes have their own editor. Item bundles do not carry activities.
         let shown_maps = if self.library_state.export_selection.is_some() {
             Vec::new()
         } else {
-            super::matching_maps(&self.map_entries, self.library_state.kind, &query)
+            super::matching_maps(&self.map_entries, &self.library_state, &query)
         };
         if let Some(selected) = &mut self.library_state.export_selection {
             ui.horizontal(|ui| {
@@ -116,7 +127,7 @@ impl PackageAuthoringApp {
             .max_height(super::windowed_list_height(ui, footer_height))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (entry, details) in &shown {
+                for &(entry, details) in &shown {
                     let current = self.recipe_path.as_ref() == Some(&entry.path);
                     let response = ui
                         .add_enabled_ui(can_open, |ui| {
@@ -174,14 +185,26 @@ impl PackageAuthoringApp {
                     let _ = clicked;
                 }
             });
-        shown.len() + shown_maps.len()
+        let counts = Shown {
+            matches: shown.len() + shown_maps.len(),
+            hidden: self
+                .library_state
+                .export_selection
+                .as_ref()
+                .map_or(0, |selected| {
+                    super::hidden_selection(selected, shown.iter().map(|(entry, _)| &entry.path))
+                }),
+        };
+        drop(shown);
+        self.library_state.keep_listing(listing);
+        counts
     }
 
     fn draw_library_footer(
         &mut self,
         ui: &mut egui::Ui,
         busy: bool,
-        matches: usize,
+        Shown { matches, hidden }: Shown,
         action: &mut Option<LibraryAction>,
     ) {
         if let Some(selected) = &self.library_state.export_selection {
@@ -197,7 +220,7 @@ impl PackageAuthoringApp {
                 }
                 cancel = ui.add_enabled(!busy, egui::Button::new("Cancel")).clicked();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(format!("{count} selected · {matches} shown"));
+                    super::draw_selection_count(ui, count, hidden, matches);
                 });
             });
             if cancel {

@@ -60,6 +60,9 @@ use validation::*;
 mod donors;
 use donors::*;
 
+mod subclass_gate;
+pub(crate) use subclass_gate::expand_subclass_gates;
+
 mod armor;
 mod dyes;
 mod gear;
@@ -70,7 +73,7 @@ mod build;
 pub(crate) use build::build_weapon_project_after_catalog_validation;
 #[cfg(test)]
 use build::canonical_project_weapons;
-pub(crate) use build::{Phase as CompilePhase, compile_with_progress};
+pub(crate) use build::{Phase as CompilePhase, census, compile_with_progress};
 
 #[cfg(test)]
 pub use build::build_weapon_project;
@@ -87,7 +90,7 @@ use sundial::package_authoring::icon_schema::ICON_WATERMARK_LAYER_OFFSET;
 #[cfg(test)]
 use sundial::package_authoring::sandbox_perk::sandbox_perk_runtime_assignment;
 use sundial::package_authoring::{
-    FNV1_EMPTY_HASH, SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY,
+    FNV1_EMPTY_HASH,
     entity::{
         SANDBOX_PATTERN_ENTITY_ASSIGNMENT_CLASS, SANDBOX_PATTERN_ENTITY_ASSIGNMENT_TAG,
         SANDBOX_PATTERN_GLOBAL_ID_OFFSET, SANDBOX_PATTERN_INDEX_ROW_CLASS,
@@ -118,6 +121,7 @@ use sundial::package_authoring::{
         ITEM_INVESTMENT_STAT_ROW_CLASS, ITEM_INVESTMENT_STAT_ROW_SIZE,
         ITEM_LINKED_PLUG_BLOCK_CLASS, ITEM_LINKED_PLUG_INDEX_OFFSET, ITEM_MAX_STACK_SIZE_OFFSET,
         ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET, ITEM_ORDINARY_SOCKET_EMBEDDED_PLUGS_OFFSET,
+        ITEM_ORDINARY_SOCKET_HIDE_PERKS_IN_TOOLTIP_OFFSET,
         ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_CLASS, ITEM_ORDINARY_SOCKET_PLUG_MEMBER_ROW_SIZE,
         ITEM_ORDINARY_SOCKET_PLUG_MEMBER_WEIGHT_OFFSET, ITEM_ORDINARY_SOCKET_POINTER_OFFSET,
         ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET,
@@ -161,7 +165,6 @@ use sundial::package_authoring::{
         ROOT_UNLOCK_FLAG_BANK_TABLE_SLOT, ROOT_UNLOCK_FLAG_DEFINITION_TABLE_SLOT,
         SOLAR_DAMAGE_PLUG_ITEM_HASH, SOLAR_DAMAGE_PLUG_ITEM_INDEX,
         UNLOCK_FLAG_DEFINITION_ROW_CLASS, UNLOCK_FLAG_DISPLAY_ROW_CLASS,
-        UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS, UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE,
         VOID_DAMAGE_PLUG_ITEM_HASH, VOID_DAMAGE_PLUG_ITEM_INDEX, investment_globals_table_tag,
         investment_root_table_tag, item_version_array,
     },
@@ -206,27 +209,24 @@ use crate::package_profile::{
     PRIVATE_PERK_RUNTIME_PACKAGE_ID,
 };
 use crate::progression::{
-    AuthoredCollectibleSpec, BLANK_LOCALIZED_REFERENCE_HASH, BLANK_LOCALIZED_REFERENCE_TABLE_INDEX,
-    COLLECTIBLE_CURATED_ACQUISITION_FLAG, COLLECTIBLE_CURATED_ACQUISITION_FLAG_OFFSET,
-    COLLECTIBLE_CURATED_WEAPON_MATERIAL_SET, COLLECTIBLE_DEFINITION_ROW_CLASS,
-    COLLECTIBLE_DISPLAY_DESCRIPTION_REFERENCE_OFFSET, COLLECTIBLE_DISPLAY_ICON_INDEX_OFFSET,
-    COLLECTIBLE_DISPLAY_NAME_REFERENCE_OFFSET, COLLECTIBLE_DISPLAY_REQUIREMENT_REFERENCE_OFFSET,
-    COLLECTIBLE_DISPLAY_ROW_CLASS, COLLECTIBLE_DISPLAY_ROW_SIZE,
-    COLLECTIBLE_DISPLAY_SOURCE_REFERENCE_OFFSET, COLLECTIBLE_EXOTIC_WEAPON_MATERIAL_SET,
-    COLLECTIBLE_HASH_OFFSET, COLLECTIBLE_ITEM_INDEX_OFFSET, COLLECTIBLE_MATERIAL_SET_OFFSET,
-    COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET, COLLECTIBLE_REACQUISITION_ENABLED,
-    COLLECTIBLE_REACQUISITION_STATE_OFFSET, COLLECTIBLE_ROW_SIZE, CollectibleUnlockClone,
-    NESTED_ARRAY_TRAILER, NUMERIC_INSTRUCTION_ROW_SIZE, NUMERIC_PROGRAM_ROW_CLASS,
-    PRESENTATION_NODE_INDEX_ROW_CLASS, ProjectAuthoredRow, SunriseAcquiredPoolSelection,
-    UNLOCK_DISPLAY_ROW_SIZE, UNLOCK_ROW_SIZE, append_collectible, append_collectible_display,
-    append_unlock, append_unlock_display, append_unlock_flag_bank_row,
-    classify_sunrise_count_pools, collection_unlock_index, donor_weapon_collection_page,
-    first_free_unlock_slot, numeric_program_layout, numeric_program_stack_depth,
-    patch_project_acquired_count_programs, template_presentation_parents,
-    unlock_flag_bank_descriptor, unlock_sorted_index_position,
-    validate_authored_collectible_display_row, validate_authored_collectible_nested_isolation,
-    validate_authored_unlock_display_row, validate_authored_unlock_flag_bank_row,
-    validate_weapon_material_sets,
+    Acquisition, AuthoredCollectibleSpec, BLANK_LOCALIZED_REFERENCE_HASH,
+    BLANK_LOCALIZED_REFERENCE_TABLE_INDEX, COLLECTIBLE_CURATED_ACQUISITION_FLAG,
+    COLLECTIBLE_CURATED_ACQUISITION_FLAG_OFFSET, COLLECTIBLE_CURATED_WEAPON_MATERIAL_SET,
+    COLLECTIBLE_DEFINITION_ROW_CLASS, COLLECTIBLE_DISPLAY_DESCRIPTION_REFERENCE_OFFSET,
+    COLLECTIBLE_DISPLAY_ICON_INDEX_OFFSET, COLLECTIBLE_DISPLAY_NAME_REFERENCE_OFFSET,
+    COLLECTIBLE_DISPLAY_REQUIREMENT_REFERENCE_OFFSET, COLLECTIBLE_DISPLAY_ROW_CLASS,
+    COLLECTIBLE_DISPLAY_ROW_SIZE, COLLECTIBLE_DISPLAY_SOURCE_REFERENCE_OFFSET,
+    COLLECTIBLE_EXOTIC_WEAPON_MATERIAL_SET, COLLECTIBLE_HASH_OFFSET, COLLECTIBLE_ITEM_INDEX_OFFSET,
+    COLLECTIBLE_MATERIAL_SET_OFFSET, COLLECTIBLE_PRESENTATION_NODE_PARENTS_OFFSET,
+    COLLECTIBLE_REACQUISITION_ENABLED, COLLECTIBLE_REACQUISITION_STATE_OFFSET,
+    COLLECTIBLE_ROW_SIZE, CollectibleUnlockClone, NESTED_ARRAY_TRAILER,
+    NUMERIC_INSTRUCTION_ROW_SIZE, NUMERIC_PROGRAM_ROW_CLASS, PRESENTATION_NODE_INDEX_ROW_CLASS,
+    ProjectAuthoredRow, SunriseAcquiredPoolSelection, UNLOCK_DISPLAY_ROW_SIZE, UNLOCK_ROW_SIZE,
+    acquires_by, append_collectible, append_collectible_display, classify_sunrise_count_pools,
+    collection_unlock_index, donor_weapon_collection_page, numeric_program_layout,
+    numeric_program_stack_depth, patch_project_acquired_count_programs,
+    template_presentation_parents, validate_authored_collectible_display_row,
+    validate_authored_collectible_nested_isolation, validate_weapon_material_sets,
 };
 use crate::recipe::validate_parhelion_namespace;
 use crate::shared_tag_memory::{
@@ -240,8 +240,7 @@ use crate::tag_payload::{
 };
 use crate::{
     AuthoringError, AuthoringResult, ExtendedOverlayArtifact, ItemKind, NewTagSpec,
-    ReplacementSpec, SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME_HASH,
-    SUNRISE_BADGE_NODE_HASHES, SunriseBadgePlacement, SunriseProjectMetadata, SupportedPlugSet,
+    ReplacementSpec, SunriseBadgePlacement, SunriseProjectMetadata, SupportedPlugSet,
     WeaponIconRequest, append_badge_icon_row, author_sunrise_badge_graph,
     item_icon_row_with_container, sunrise_badge_collectible_parents,
     validate_socket_column_overrides_with_variants, validate_stat_overrides,
@@ -322,10 +321,12 @@ const PRIVATE_PERK_RESIDENCY_B9_SIZE: usize = 0x160;
 const PRIVATE_PERK_RESIDENCY_BA_SIZE: usize = 0xA14;
 const PRIVATE_PERK_RESIDENCY_ROOT_SIZE: usize = 0xC0;
 const PRIVATE_PERK_RESIDENCY_COMPANION_TEMPLATE_SIZE: usize = 0x122;
-const LOCALIZATION_STOCK_TABLE_COUNT: usize = 3108;
+const LOCALIZATION_STOCK_TABLE_COUNT: usize =
+    crate::package_profile::LOCALIZATION_STOCK_TABLE_COUNT;
 // Bank 2927 is an already-rooted native two-string bank. Its existing hashes and strings are
-// preserved while authored weapon and private-plug text is appended in a patch overlay. A new independent
-// bank is addressable after package registration but is never queued by the stock root graph.
+// preserved while authored weapon and private-plug text is appended in a patch overlay. An
+// importer's own build on the mod loader copies it into a bank of its own in its records package,
+// which the investment loading index keeps resident like the other records.
 const LOCALIZATION_HEADER_HASH_CLASS: u32 = 0x8080_0070;
 const LOCALIZATION_PART_CLASS: u32 = 0x8080_9A90;
 const LOCALIZATION_AUX_CLASS: u32 = 0x8080_0006;
@@ -763,6 +764,9 @@ struct ResolvedSocketColumn {
     /// The leading choices the embedded list holds. Every choice belongs to the private
     /// randomized set, whose index the plug set plan fills in.
     reusable_choices: Option<usize>,
+    /// Whether the item tooltip leaves the socket's plugs out of its perk rows. Omitted keeps the
+    /// row's own flag, which an added socket starts without.
+    hide_perks_in_tooltip: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

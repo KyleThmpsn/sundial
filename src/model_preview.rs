@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, path::Path};
 pub(crate) mod animation;
 pub(crate) mod appearance;
 pub(crate) mod assets;
+pub(crate) mod character;
 mod cloth;
 mod decode;
 mod effects;
@@ -79,6 +80,9 @@ pub(crate) struct Model {
     /// The game's iridescence lookup: one row per dye id, view angle along the row.
     pub iridescence: Option<texture::Texture>,
     pub(crate) dyes: [Option<shader::Dye>; 6],
+    /// Independent gear pieces and head regions retain their own six material surfaces.
+    pub(crate) dye_banks: Vec<[Option<shader::Dye>; 6]>,
+    pub(crate) triangle_dye_banks: Vec<Option<usize>>,
     pub(crate) dye_animations: Vec<(usize, crate::dyes::material::Animation)>,
     /// Surfaces drawn with an editor's colors instead of their dyes'. A shown model takes new
     /// ones in place, so a color edit never reads the model again.
@@ -247,6 +251,7 @@ pub(crate) struct Stage {
 pub(crate) struct Load {
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     stage: std::sync::Arc<std::sync::Mutex<Stage>>,
+    stored_pose: bool,
 }
 
 /// Returned when a load stops early. Callers discard it rather than showing it.
@@ -282,6 +287,14 @@ pub(crate) fn package_reads_running() -> bool {
 }
 
 impl Load {
+    /// Static composition needs stored geometry and materials, without animation or cloth setup.
+    fn stored(&self) -> Self {
+        Self {
+            stored_pose: true,
+            ..self.clone()
+        }
+    }
+
     pub fn stop(&self) {
         self.cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -410,10 +423,12 @@ fn load_with_manager(
         clip,
         emitter_only,
     )?;
-    model.assets = {
-        let _stage = timing::stage("assets");
-        assets::read(manager, tag, &inventory, cancel)?
-    };
+    if !cancel.stored_pose {
+        model.assets = {
+            let _stage = timing::stage("assets");
+            assets::read(manager, tag, &inventory, cancel)?
+        };
+    }
     decode::finish(manager, model, &inventory, &resources, emitter_only)
 }
 

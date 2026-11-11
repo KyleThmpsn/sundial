@@ -10,7 +10,7 @@
 //! in `get_atmosphere_fog`).
 
 /// Meters per Reach world unit.
-const METRES_PER_UNIT: f32 = 3.048;
+pub(in crate::halo_reach) const METRES_PER_UNIT: f32 = 3.048;
 
 /// One band of an atmosphere fog tag (`fogg`), in world units: its floor, how far above the floor
 /// it reaches, its extinction per world unit, the farthest a ray travels in it, and its color
@@ -146,13 +146,16 @@ result.rgb+=lightScale*{color}*pow(saturate(dot(viewDirection,{direction})*{scal
                 angular = n(light.angular),
             )
         });
+        // HREK's calc_mixed_fog_extinction weights color by rate * distance directly.
+        // Recovering that depth from exp(-depth) loses dense-fog weights to underflow or
+        // a transparency floor, and loses very thin fog when extinction rounds to one.
         format!(
             "float reachFogBand(float distance,float top,float bottom,float span,float height,float base,float rate,float reach,out float travel){{top=min(top-base,height);bottom-=base;float inside=saturate((top-bottom)/span);float weight=saturate((height-bottom)/height);travel=min(max(distance*inside+{bias},0),reach);return saturate(exp(-rate*weight*weight*travel));}}\
 float4 reachFog(float3 toCamera,float worldZ){{float distance=length(toCamera)/{unit};float pointZ=(worldZ-{lift})/{unit};float viewZ=pointZ+toCamera.z/{unit};\
 float top=max(viewZ,pointZ)+0.001;float bottom=min(viewZ,pointZ);float span=top-bottom;float groundTop={ground_top};float travel;\
 float skyExtinction=reachFogBand(distance,top,max(bottom,groundTop),span,{sky_height},{sky_base},{sky_rate},{sky_reach},travel);\
 float groundTravel;float groundExtinction=reachFogBand(distance,min(top,groundTop),bottom,span,{ground_height},{ground_base},{ground_rate},{ground_reach},groundTravel);\
-float groundBottom=bottom-{ground_base};float groundDepth=-log(max(groundExtinction,0.0000001));\
+float groundBottom=bottom-{ground_base};float groundWeight=saturate(({ground_height}-groundBottom)/{ground_height});float groundDepth={ground_rate}*groundWeight*groundWeight*groundTravel;\
 float groundInside=saturate((min(min(top,groundTop)-{ground_base},{ground_height})-groundBottom)/span);float baseTravel=min(max(distance*groundInside+{bias},0),{sky_reach}-travel);\
 float baseDepth={sky_rate}*baseTravel;float mixedExtinction=groundExtinction*saturate(exp(-baseDepth));\
 float3 mixed=({ground_color}*groundDepth+{sky_color}*baseDepth)/max(groundDepth+baseDepth,0.00001);\

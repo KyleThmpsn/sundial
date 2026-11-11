@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 pub(crate) mod armor;
+pub(crate) mod front;
 
 pub const NODE_CAPACITY: usize = 1024;
 pub const BASE_NODE_COUNT: usize = crate::progression::STOCK_PRESENTATION_NODE_COUNT + 4;
@@ -158,15 +159,50 @@ impl Position {
     }
 }
 
-/// Whether an entry goes before a stock node's own entries. `None` is automatic: first, as
-/// Parhelion has always placed them, unless another installed Sunrise mod changes the
-/// presentation nodes. Sunrise's merge adds a mod's entries after a node's stock entries and
-/// can't combine an edit that puts them first with another mod's, so they go last then.
-pub(crate) fn first(position: Option<Position>) -> bool {
-    position.map_or_else(
-        || !crate::package_profile::presentation_nodes_shared(),
-        |position| position == Position::First,
-    )
+/// Whether an entry goes before the entries of the array at `array` of node `node`, its child
+/// nodes or its collectibles.
+///
+/// Sunrise's merge writes a stock node's own entries row by row, each row from the mod that
+/// changed it, a row two mods changed alike counting once, then adds each mod's entries after
+/// them in load order. Entries placed first take stock rows and move the stock entries into the
+/// build's own rows. `None` is automatic.
+///
+/// Every family member's automatic entries go before the stock entries of a stock collectible
+/// array, each member's in rows of its own after the earlier members' ([`front`]). The members
+/// compile in a fixed order, the main mod first and then each importer. A stock child-node array
+/// still has one leading member: automatic entries lead in the first member to place any there.
+/// No member's automatic entries lead while another installed Sunrise mod changes the presentation
+/// nodes, so a Studio mod's entries merge beside them. An importer's own nodes take its automatic
+/// entries after whatever their template kept.
+pub(crate) fn leads(position: Option<Position>, node: usize, array: usize) -> bool {
+    let stock = node < crate::progression::STOCK_PRESENTATION_NODE_COUNT;
+    let lead = if stock && array == crate::progression::PRESENTATION_NODE_COLLECTIBLES_OFFSET {
+        leads_stock_collectibles(position)
+    } else {
+        match position {
+            Some(position) => position == Position::First,
+            None => {
+                !crate::package_profile::presentation_nodes_shared()
+                    && (crate::package_profile::member().is_none()
+                        || (stock && !crate::mod_family::build::led_before(node, array)))
+            }
+        }
+    };
+    if lead && stock {
+        crate::mod_family::build::lead(node, array, position.is_some());
+    }
+    lead
+}
+
+/// What [`leads`] answers for a stock page's collectibles, which is the same for every member and
+/// needs nothing another member did: an entry set to First leads, and an automatic one does while
+/// no other installed mod changes the presentation nodes. The family counts the importers' entries
+/// from it before any member builds (`item::census`).
+pub(crate) fn leads_stock_collectibles(position: Option<Position>) -> bool {
+    match position {
+        Some(position) => position == Position::First,
+        None => !crate::package_profile::presentation_nodes_shared(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]

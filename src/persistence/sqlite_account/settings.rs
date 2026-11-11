@@ -42,7 +42,6 @@ pub(super) fn load(connection: &Connection) -> Result<AccountSettingsState, Sqli
             .map_err(|error| SqliteAccountError::sqlite("read settings from", error))?;
         let names = statement
             .column_names()
-            .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let row_values = statement

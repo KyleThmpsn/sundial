@@ -263,11 +263,12 @@ fn verify_generation(
     );
     let program =
         crate::progression::numeric_program_layout(&objectives, objective + 0x08).unwrap();
+    // Each built item is acquired unconditionally, so the badge counts it through a constant 1.
     assert_eq!(
         program
             .tokens
             .iter()
-            .filter(|(opcode, _)| *opcode == crate::progression::NUMERIC_FLAG_INSTRUCTION)
+            .filter(|token| **token == (crate::progression::NUMERIC_CONSTANT_INSTRUCTION, 1))
             .count(),
         expected_sunrise_count
     );

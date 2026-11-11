@@ -762,8 +762,7 @@ impl SundialApp {
             if requested == PlugSelectionMode::AnyPlug
                 && !self.preferences.really_unsafe_warning_acknowledged
             {
-                self.remember_plug_selection_mode_after_confirmation = false;
-                self.confirmation = Some(ConfirmationDialog::ReallyUnsafe);
+                self.confirmation = Some(ConfirmationDialog::ReallyUnsafe { remember: false });
             } else {
                 self.plug_selection_mode = requested;
             }

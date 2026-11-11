@@ -3,7 +3,7 @@ use super::*;
 use parhelion_import::d2_mot::{AudioNamespace, ConvertedAudioBank};
 use serde::Deserialize;
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub(in crate::item) struct Metadata {
     #[serde(default, rename = "audio_bank")]
     bank: Option<ConvertedAudioBank>,
@@ -13,13 +13,20 @@ pub(in crate::item) struct Metadata {
     events: Vec<Event>,
 }
 
-#[derive(Deserialize)]
+impl Metadata {
+    /// Whether audio binding leaves the node alone.
+    pub(in crate::item) fn is_empty(&self) -> bool {
+        self.bank.is_none() && self.media.is_empty() && self.events.is_empty()
+    }
+}
+
+#[derive(Clone, Deserialize)]
 struct Medium {
     id: u32,
     symbol: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Event {
     offset: usize,
     id: u32,

@@ -481,9 +481,10 @@ impl PackageAuthoringApp {
     }
 
     pub(super) fn start_build(&mut self) {
+        // Readiness has no side effects, so it goes first: a blocked build saves nothing.
         let inputs = match self
-            .save_edits_for_build()
-            .and_then(|()| self.build_ready())
+            .build_ready()
+            .and_then(|()| self.save_edits_for_build())
         {
             Ok(()) => self.build_inputs(),
             Err(error) => {
@@ -503,22 +504,25 @@ impl PackageAuthoringApp {
         thread::spawn(move || {
             // Loading and checking the included recipes reads each embedded model in full, which
             // can take a while, so each recipe is reported as its file is read.
+            let mut recipe_total = 0;
+            let (one_mod, source_badges) = (inputs.one_mod, inputs.source_badges);
             let snapshot = inputs
                 .request_reporting(&mut |path, index, total| {
+                    recipe_total = total;
                     let name = inputs.recipe_name(path);
                     let _ = sender.send(BuildWorkerEvent::Progress(
                         TimedBuildProgress::from_progress(
-                            BuildProgress::artifact(
-                                BuildPhase::InspectingSource,
-                                format!("Reading recipe {name}"),
-                                index,
-                                total,
-                            ),
+                            BuildProgress::artifact(BuildPhase::ReadingRecipes, name, index, total),
                             started,
                         ),
                     ));
                 })
-                .and_then(BatchBuildSnapshot::new);
+                .and_then(BatchBuildSnapshot::new)
+                .map(|snapshot| {
+                    snapshot
+                        .in_one_mod(one_mod)
+                        .with_source_badges(source_badges)
+                });
             // The window releases package access by dropping its catalog, so this copy goes first.
             drop(inputs);
             let snapshot = match snapshot {
@@ -528,7 +532,15 @@ impl PackageAuthoringApp {
                     return;
                 }
             };
-            let result = build_and_stage_snapshot_reporting(&snapshot, |progress| {
+            let _ = sender.send(BuildWorkerEvent::Progress(
+                TimedBuildProgress::from_progress(
+                    BuildProgress::phase(BuildPhase::ReadingRecipes, recipe_total, recipe_total),
+                    started,
+                ),
+            ));
+            // A recipe that stops the build on its own is left out and the rest builds again,
+            // so one broken item doesn't cost the whole build.
+            let result = build_and_stage_snapshot_skipping(&snapshot, |progress| {
                 let _ = sender.send(BuildWorkerEvent::Progress(
                     TimedBuildProgress::from_progress(progress, started),
                 ));
@@ -539,13 +551,15 @@ impl PackageAuthoringApp {
             });
         });
         self.build_progress = Some(TimedBuildProgress {
-            phase: BuildPhase::InspectingSource,
-            current_artifact: Some("Checking Recipes".to_owned()),
+            phase: BuildPhase::ReadingRecipes,
+            current_artifact: None,
             completed: 0,
-            total: 2,
+            total: 0,
             elapsed: Duration::ZERO,
             activity: None,
+            member: None,
         });
+        self.build_fraction = build_status::BuildFraction::default();
         self.latest_build = None;
         self.restore = None;
         self.build_blocker = None;
@@ -593,8 +607,12 @@ impl PackageAuthoringApp {
                     }
                     if !matches!(
                         progress.activity,
-                        Some(crate::workflow::BuildActivity::Diagnostic(_))
+                        Some(
+                            crate::workflow::BuildActivity::Diagnostic(_)
+                                | crate::workflow::BuildActivity::RuntimeDetail(_)
+                        )
                     ) {
+                        self.build_fraction.advance(&progress);
                         self.build_progress = Some(progress);
                     }
                 }
@@ -609,11 +627,18 @@ impl PackageAuthoringApp {
                         total: 1,
                         elapsed,
                         activity: None,
+                        member: None,
                     });
                     self.log.push(LogEntry::info(format!(
                         "Build complete: {}",
                         report.run_directory.display()
                     )));
+                    for recipe in &report.skipped {
+                        let message =
+                            format!("Left {} out of the build: {}", recipe.name, recipe.reason);
+                        self.build_activity.push(elapsed, message.clone());
+                        self.log.push(LogEntry::error(message));
+                    }
                     self.latest_build = Some(if std::mem::take(&mut self.build_invalidated) {
                         let error =
                             "Recipes changed during the build. Build & Stage again before installing."

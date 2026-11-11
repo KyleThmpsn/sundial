@@ -2,9 +2,9 @@
 use super::*;
 use std::sync::Arc;
 use sundial::package_authoring::account::{
-    AuthoredAccountCleanup, AuthoredClientSettings, AuthoredMoveOutcome, AuthoredSlotReplacement,
-    AuthoredSocketChange, preview_authored_account_replacement_for_runtime,
-    preview_authored_client_settings_for_runtime,
+    AuthoredAccountCleanup, AuthoredClientSettings, AuthoredGrantReport, AuthoredMoveOutcome,
+    AuthoredSlotReplacement, AuthoredSocketChange,
+    preview_authored_account_replacement_for_runtime, preview_authored_client_settings_for_runtime,
 };
 
 /// A staged recipe's private copy of a stock plug in one socket of its item. The copy takes the
@@ -33,9 +33,28 @@ pub struct ReplacementReview {
     runtime: RuntimeSnapshot,
     cleanup: Option<AuthoredAccountCleanup>,
     client_settings: Option<AuthoredClientSettings>,
+    /// The subclasses and shaders installation adds after the cleanup, with the characters that
+    /// equip them, read from the account as it is now. `None` when the build grants nothing.
+    grants: Option<Result<AuthoredGrantReport, String>>,
+    /// Collections unlocks installation sets for the build's items where they are not set yet.
+    collection_unlocks: usize,
 }
 
 impl ReplacementReview {
+    pub fn item_grants(&self) -> Option<&Result<AuthoredGrantReport, String>> {
+        self.grants.as_ref()
+    }
+    pub fn collection_unlocks(&self) -> usize {
+        self.collection_unlocks
+    }
+    /// Whether installation adds items to the account or equips them.
+    pub fn grants_items(&self) -> bool {
+        self.grants.as_ref().is_some_and(|grants| {
+            grants
+                .as_ref()
+                .is_ok_and(|report| !report.added.is_empty() || !report.equipped.is_empty())
+        })
+    }
     pub(super) fn validated(&self) -> Option<&Arc<ValidatedManifest>> {
         self.validated.as_ref()
     }
@@ -168,20 +187,17 @@ fn preview_validated(
         .collect::<Vec<_>>();
     let (installed, packages) =
         loader::preview_uninstall_with_packages(target, &known).map_err(|e| e.to_string())?;
-    let mut installed_family = installed.mod_family.clone();
-    if let Some(main) = &installed.mod_folder {
-        installed_family.insert(
-            sundial::package_authoring::mod_content::ID.into(),
-            main.clone(),
-        );
-    }
+    let installed_family = installed_family(&installed);
     report(progress, "Reading Client Settings", 3);
     let client_settings = preview_authored_client_settings_for_runtime(install, runtime)?;
     let mut review = ReplacementReview {
         validated: Some(Arc::clone(incoming)),
         packages,
         mods: if runtime.uses_mod_loader()? {
-            crate::mod_family::reports(&incoming.mods, install, &incoming.artifacts)?
+            let mut reports =
+                crate::mod_family::reports(&incoming.mods, install, &incoming.artifacts)?;
+            loader::mark_unchanged(install, &incoming.mods, &mut reports)?;
+            reports
         } else {
             Vec::new()
         },
@@ -197,7 +213,10 @@ fn preview_validated(
         runtime: runtime.clone(),
         cleanup: None,
         client_settings,
+        grants: None,
+        collection_unlocks: incoming.authored_unlocks.len(),
     };
+    let granted = &incoming.authored_grants;
     report(progress, "Reading Staged Item Identities", 4);
     let incoming = identities::Generation::open(target, staged)?;
     let compared = (|| {
@@ -209,22 +228,44 @@ fn preview_validated(
         if !review.installed.is_empty() {
             report(progress, "Reading Installed Item Identities", 5);
             let installed = identities::Generation::open(target, target)?;
-            let compared = identities::read_identities(&installed).and_then(|old| {
+            let compared = identities::read_installed_identities(&installed).and_then(|old| {
                 compare_generations(&installed, &incoming, old, variants, &mut review, progress)
             });
             installed.finish(compared)?;
         }
+        // Installation grants after this cleanup, so the grant review reads the account with
+        // the cleanup's removed rows already gone.
+        report(progress, "Checking Account Items and References", 9);
+        let cleanup = account_references(target, &review)?;
+        if !granted.is_empty() {
+            report(progress, "Checking Items to Add", 9);
+            let removed = cleanup.removed_items.keys().copied().collect();
+            review.grants = Some(identities::preview_grants(
+                install, runtime, &incoming, granted, &removed,
+            ));
+        }
+        review.cleanup = Some(cleanup);
         Ok(())
     })();
     incoming.finish(compared)?;
-    report(progress, "Checking Account Items and References", 9);
-    review.cleanup = Some(account_references(target, &review)?);
     if let (Some(settings), Some(cleanup)) = (&review.client_settings, &mut review.cleanup)
         && settings.merge_account_change(cleanup)?
     {
         review.client_settings = None;
     }
     Ok(review)
+}
+
+/// Every installed mod folder by id, the main folder included.
+fn installed_family(installed: &uninstall::UninstallPlan) -> BTreeMap<String, loader::Folder> {
+    let mut family = installed.mod_family.clone();
+    if let Some(main) = &installed.mod_folder {
+        family.insert(
+            sundial::package_authoring::mod_content::ID.into(),
+            main.clone(),
+        );
+    }
+    family
 }
 
 fn incoming_mod_definitions(
@@ -361,6 +402,13 @@ pub(super) fn review_request(
     if request.skip_replacement_review {
         return Ok(request.confirmed_replacement.clone());
     }
+    if let Some(confirmed) = &request.confirmed_replacement
+        && confirmed
+            .validated()
+            .is_some_and(|reviewed| Arc::ptr_eq(reviewed, incoming))
+    {
+        return reuse_review(target, runtime, confirmed, progress).map(Some);
+    }
     let known = request
         .confirmed_replacement
         .as_ref()
@@ -372,13 +420,39 @@ pub(super) fn review_request(
     Ok(Some(current))
 }
 
+/// A confirmed review of the staged content this installation already verified stays valid while
+/// the installed packages, runtime and account it read are unchanged. Its identities, socket
+/// choices and slots follow from those inputs and the staged packages alone, so they are not
+/// read again.
+fn reuse_review(
+    target: &Path,
+    runtime: &RuntimeSnapshot,
+    confirmed: &ReplacementReview,
+    progress: progress::Observer<'_>,
+) -> Result<ReplacementReview, String> {
+    report(progress, "Checking Installed Packages", 2);
+    confirmed.verify_runtime(runtime)?;
+    let (installed, _) = loader::preview_uninstall_with_packages(target, confirmed.packages())
+        .map_err(|e| e.to_string())?;
+    if installed.artifacts() != confirmed.installed.as_slice() {
+        return Err(CHANGED_SINCE_REVIEW.into());
+    }
+    confirmed.verify_family(&installed_family(&installed))?;
+    report(progress, "Confirming Reviewed Changes", 10);
+    verify_account(target, Some(confirmed))?;
+    report(progress, "Account Review Complete", REVIEW_OPERATIONS);
+    Ok(confirmed.clone())
+}
+
+const CHANGED_SINCE_REVIEW: &str = "The package set or selected account changed since review. Review installation again before confirming installation.";
+
 fn validate_consent(
     current: &ReplacementReview,
     confirmed: Option<&ReplacementReview>,
 ) -> Result<(), String> {
     if let Some(confirmed) = confirmed {
         if confirmed != current {
-            return Err("The package set or selected account changed since review. Review installation again before confirming installation.".into());
+            return Err(CHANGED_SINCE_REVIEW.into());
         }
     } else if current.changes_account() {
         return Err("This build updates saved custom items, socket selections, or references. Review Account Changes and confirm installation first. No packages or account data were changed.".into());
@@ -520,6 +594,8 @@ pub(crate) fn test_review_with_slots(
         runtime,
         cleanup: None,
         client_settings,
+        grants: None,
+        collection_unlocks: 0,
     };
     review.cleanup = Some(account_references(&target, &review).unwrap());
     if let (Some(settings), Some(cleanup)) = (&review.client_settings, &mut review.cleanup)

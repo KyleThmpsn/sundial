@@ -10,7 +10,7 @@ pub(in crate::install) fn completed_backup_owner(backup: &Path) -> Option<PathBu
     let record: Record = mod_content::read_json(&marker).ok()?;
     if record.state != InstallTransactionState::Committed
         || !paths_equal(&record.context.backup_directory, backup)
-        || record.incoming.is_none()
+        || !record.publishes()
         || record.retires_legacy()
         || record
             .members()

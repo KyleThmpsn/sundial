@@ -28,6 +28,47 @@ pub(crate) const REPORT_FILE_NAME: &str = "merge-data.json";
 pub(crate) struct MergeData {
     pub(crate) sidecars: Vec<(String, Vec<u8>)>,
     pub(crate) report: Vec<u8>,
+    /// The stock entries the build changes and how, or `None` when it ships no merge data.
+    pub(crate) touched: Option<Vec<Touch>>,
+}
+
+/// One stock entry a build changes, as Sunrise would merge it with another mod's change.
+#[derive(Clone, Debug)]
+pub(crate) struct Touch {
+    pub(crate) tag: u32,
+    /// The entry's class, which names what it holds when two members can't share it.
+    pub(crate) class: u32,
+    /// Sunrise serves the entry from the mod that loads last.
+    pub(crate) opaque: bool,
+    /// The aligned 8-byte words of the stock entry its diffs change, outside the ranges Sunrise
+    /// rebuilds for every mod. Sunrise keeps the later mod's value of a word two mods change.
+    pub(crate) words: Vec<Word>,
+}
+
+/// One aligned 8-byte word of a stock entry a build's diffs change.
+#[derive(Clone, Debug)]
+pub(crate) struct Word {
+    pub(crate) index: u32,
+    /// The word's built bytes, each `None` where Sunrise rebuilds it for every mod. `None` as a
+    /// whole where a relocated site sits in the word: Sunrise shifts those bytes by load order,
+    /// so equal built bytes there can still point at different rows.
+    pub(crate) bytes: Option<[Option<u8>; 8]>,
+}
+
+impl Word {
+    /// Whether Sunrise would keep only one build's value of a word both change. The loader takes
+    /// a later copy's word whole where a byte an earlier copy changed differs in it, so two builds
+    /// that write the same bytes share the word.
+    fn clashes(&self, other: &Self) -> bool {
+        self.index == other.index
+            && match (&self.bytes, &other.bytes) {
+                (Some(mine), Some(theirs)) => mine
+                    .iter()
+                    .zip(theirs)
+                    .any(|pair| matches!(pair, (Some(a), Some(b)) if a != b)),
+                _ => true,
+            }
+    }
 }
 
 #[derive(Serialize)]
@@ -58,11 +99,12 @@ pub(crate) fn describe(packages: &Path, files: &[(&str, &[u8])]) -> MergeData {
     describe_all(packages, files).unwrap_or_else(|reason| MergeData {
         sidecars: Vec::new(),
         report: encode(&Report {
-            version: sidecar::VERSION,
+            version: sidecar::OLDEST_VERSION,
             skipped: Some(&reason),
             pairs: &[],
             entries: &[],
         }),
+        touched: None,
     })
 }
 
@@ -128,8 +170,72 @@ fn describe_all(packages: &Path, files: &[(&str, &[u8])]) -> Result<MergeData, S
         });
     }
     let result = describe::describe(&described, &build, &mut Stock(&manager))?;
+    let rebuilt = result
+        .entries
+        .iter()
+        .filter_map(|entry| Some((u32::from_str_radix(&entry.tag, 16).ok()?, &entry.rebuilt)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    // Sunrise merges no rows while a pair group's tables gain different counts, so then every
+    // entry is served whole from one mod.
+    let unpaired = !result.pairs.is_empty();
+    let mut touched = Vec::new();
+    for (package, sidecar) in described.iter().zip(&result.sidecars) {
+        if !package.installed {
+            continue;
+        }
+        for entry in &sidecar.entries {
+            let tag = TagHash::new(sidecar.package, entry.index as u16).0;
+            let rebuilt = rebuilt.get(&tag).map_or(&[][..], |ranges| &ranges[..]);
+            let is_rebuilt = |at: u32| {
+                rebuilt
+                    .iter()
+                    .any(|&(begin, end)| (begin..end).contains(&at))
+            };
+            let mut indices = entry
+                .diffs
+                .iter()
+                .flat_map(|diff| diff.offset..diff.offset + diff.old.len() as u32)
+                .filter(|&at| !is_rebuilt(at))
+                .map(|at| at / 8)
+                .collect::<Vec<_>>();
+            indices.dedup();
+            let edited = build.edited.get(&tag);
+            // Built bytes in stock coordinates. Bytes past the stock size belong to added blobs.
+            let stock_region = edited.map_or(&[][..], |edited| {
+                let end = edited.stock.len().min(edited.built.len());
+                &edited.built[..end]
+            });
+            let words = indices
+                .into_iter()
+                .map(|index| {
+                    let start = index * 8;
+                    let relocated = entry.sites.iter().any(|site| {
+                        site.offset < start + 8 && site.offset + u32::from(site.width) > start
+                    });
+                    let bytes = (!relocated && edited.is_some()).then(|| {
+                        std::array::from_fn(|byte| {
+                            let at = start + byte as u32;
+                            (!is_rebuilt(at))
+                                .then(|| stock_region.get(at as usize).copied())
+                                .flatten()
+                        })
+                    });
+                    Word { index, bytes }
+                })
+                .collect();
+            touched.push(Touch {
+                tag,
+                class: edited.map_or(0, |edited| edited.class),
+                opaque: unpaired || entry.kind == sidecar::EntryKind::Opaque,
+                words,
+            });
+        }
+    }
     let mut sidecars = Vec::with_capacity(files.len());
+    // Each file takes the oldest version that holds it, and the report names the newest written.
+    let mut version = sidecar::OLDEST_VERSION;
     for (&(name, _), sidecar) in files.iter().zip(&result.sidecars) {
+        version = version.max(sidecar.version());
         let stem = name
             .strip_suffix(".pkg")
             .ok_or_else(|| format!("{name} isn't a package file name"))?;
@@ -141,12 +247,143 @@ fn describe_all(packages: &Path, files: &[(&str, &[u8])]) -> Result<MergeData, S
     Ok(MergeData {
         sidecars,
         report: encode(&Report {
-            version: sidecar::VERSION,
+            version,
             skipped: None,
             pairs: &result.pairs,
             entries: &result.entries,
         }),
+        touched: Some(touched),
     })
+}
+
+/// What an entry Sunrise can't merge holds, for a reason the user reads.
+fn shared(class: u32) -> &'static str {
+    match class {
+        0x8080_9C36 => "an ability bank",
+        0x8080_47BD => "the crosshair table",
+        0x8080_8EE1 => "an animation parameter dictionary",
+        0x8080_3465 | 0x8080_36F6 | 0x8080_345F | 0x8080_3478 | 0x8080_348E | 0x8080_34EB => {
+            "the character animation tables"
+        }
+        0x8080_9A88 | 0x8080_9A8A => "HUD status names",
+        0x8080_76F0 | 0x8080_5E0A => "the activity tables",
+        0x8080_7571 | 0x8080_59B9 => "the private match tables",
+        0x8080_775B => "the Collections counts",
+        _ => "game data",
+    }
+}
+
+/// Why an importer's build can't ship beside the other members' as it is.
+#[derive(Debug, Default)]
+pub(crate) struct Conflict {
+    /// Sentences saying why none of the importer's entries can be described, so no item can be
+    /// named for them.
+    pub(crate) whole: std::collections::BTreeSet<String>,
+    /// Each stock entry the importer's build changes that another member's also changes in a way
+    /// Sunrise wouldn't merge, with what the entry holds and each such member's name.
+    pub(crate) entries:
+        std::collections::BTreeMap<u32, std::collections::BTreeSet<(&'static str, &'static str)>>,
+}
+
+impl Conflict {
+    /// Every reason, as sentences.
+    pub(crate) fn reasons(&self) -> Vec<String> {
+        let shares = self
+            .entries
+            .values()
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
+        self.whole
+            .iter()
+            .cloned()
+            .chain(
+                shares
+                    .into_iter()
+                    .map(|(what, with)| format!("Shares {what} with {with}.")),
+            )
+            .collect()
+    }
+}
+
+/// The importers whose builds change a stock entry another member's build also changes in a
+/// way Sunrise wouldn't merge, or whose merge data can't be written. `builds` pairs each member's
+/// importer, or `None` for the main mod, with its merge data.
+pub(crate) fn conflicts(
+    builds: &[(
+        Option<sundial::package_authoring::mod_content::Importer>,
+        &MergeData,
+    )],
+) -> std::collections::BTreeMap<sundial::package_authoring::mod_content::Importer, Conflict> {
+    use std::collections::BTreeMap;
+    let name = |owner: Option<sundial::package_authoring::mod_content::Importer>| {
+        owner.map_or("Parhelion", |importer| importer.name())
+    };
+    let mut found = BTreeMap::<_, Conflict>::new();
+    // Merge data a member can't ship leaves Sunrise to serve every shared entry from one mod.
+    let mut entries = BTreeMap::<u32, Vec<(Option<_>, &Touch)>>::new();
+    for &(owner, data) in builds {
+        match &data.touched {
+            Some(touched) => {
+                for touch in touched {
+                    entries.entry(touch.tag).or_default().push((owner, touch));
+                }
+            }
+            None => {
+                if let Some(owner) = owner {
+                    found
+                        .entry(owner)
+                        .or_default()
+                        .whole
+                        .insert("Its merge data couldn't be written.".into());
+                }
+            }
+        }
+    }
+    // Installation takes merge data for every package of a build or for none, so without the
+    // main mod's every importer builds with it.
+    if builds
+        .iter()
+        .any(|&(owner, data)| owner.is_none() && data.touched.is_none())
+    {
+        for &(owner, _) in builds {
+            if let Some(owner) = owner {
+                found
+                    .entry(owner)
+                    .or_default()
+                    .whole
+                    .insert("Parhelion's merge data couldn't be written.".into());
+            }
+        }
+    }
+    for (tag, members) in entries {
+        if members.len() < 2 {
+            continue;
+        }
+        for (index, &(owner, touch)) in members.iter().enumerate() {
+            let Some(owner) = owner else {
+                continue;
+            };
+            for (other, &(them, theirs)) in members.iter().enumerate() {
+                if other != index
+                    && (touch.opaque
+                        || theirs.opaque
+                        || touch
+                            .words
+                            .iter()
+                            .any(|word| theirs.words.iter().any(|other| word.clashes(other))))
+                {
+                    found
+                        .entry(owner)
+                        .or_default()
+                        .entries
+                        .entry(tag)
+                        .or_default()
+                        .insert((shared(touch.class), name(them)));
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Writes the merge data beside the staged packages and returns the merge data files.

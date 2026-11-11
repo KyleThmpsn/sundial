@@ -59,6 +59,25 @@ fn read_dyes<T>(
     indices: &[u16],
     decode: impl Fn(&[u8], &[u8]) -> Result<T, String>,
 ) -> Result<BTreeMap<u16, Result<T, String>>, String> {
+    read_dye_buffers(manager, indices, &[27], decode)
+}
+
+pub(crate) fn read_character_dyes<T>(
+    manager: &PackageManager,
+    indices: &[u16],
+    decode: impl Fn(&[u8], &[u8]) -> Result<T, String>,
+) -> Result<BTreeMap<u16, Result<T, String>>, String> {
+    // Character hair and feature layers also use a smaller native material scope.
+    // Ordinary gear continues to require the complete 27-vector layout.
+    read_dye_buffers(manager, indices, &[12, 27], decode)
+}
+
+fn read_dye_buffers<T>(
+    manager: &PackageManager,
+    indices: &[u16],
+    vector_counts: &[usize],
+    decode: impl Fn(&[u8], &[u8]) -> Result<T, String>,
+) -> Result<BTreeMap<u16, Result<T, String>>, String> {
     let globals = manager
         .read_tag(resolve_live_named_tag(manager, "investment_globals", None)?)
         .map_err(|error| error.to_string())?;
@@ -88,7 +107,7 @@ fn read_dyes<T>(
                 let scope = typed(manager, word(&dye, 0x0C)?, 0x8080_71F3)?;
                 // Animated scopes initialize their buffer from inline vectors. The
                 // external allocation can contain only zeros until the game binds it.
-                if let Some(constants) = inline_constants(&scope)? {
+                if let Some(constants) = inline_constants(&scope, vector_counts)? {
                     return decode(constants, &scope);
                 }
                 let header = TagHash(word(&scope, 0xBC)?);
@@ -312,16 +331,19 @@ pub fn load_iridescence_rows(packages: &Path) -> Result<Vec<IridescenceRow>, Str
     Ok(rows)
 }
 
-fn inline_constants(scope: &[u8]) -> Result<Option<&[u8]>, String> {
+fn inline_constants<'a>(
+    scope: &'a [u8],
+    vector_counts: &[usize],
+) -> Result<Option<&'a [u8]>, String> {
     if u64::from_le_bytes(bytes_at(scope, 0x88)?) == 0 {
         return Ok(None);
     }
     let (count, _, rows, class) = native_array_at(scope, 0x88)?;
-    if count != 27 || class != 0x8080_0090 {
+    if !vector_counts.contains(&count) || class != 0x8080_0090 {
         return Err("Unsupported inline dye material buffer layout".into());
     }
     scope
-        .get(rows..rows + 27 * 16)
+        .get(rows..rows + count * 16)
         .map(Some)
         .ok_or_else(|| "Truncated inline dye material buffer".into())
 }
@@ -368,10 +390,13 @@ mod tests {
         scope[0x90..0x98].copy_from_slice(&0x60_u64.to_le_bytes());
         scope[0xF0..0xF8].copy_from_slice(&27_u64.to_le_bytes());
         scope[0xF8..0xFC].copy_from_slice(&0x8080_0090_u32.to_le_bytes());
-        assert_eq!(inline_constants(&scope).unwrap().unwrap().len(), 27 * 16);
-        assert!(inline_constants(&scope[..scope.len() - 1]).is_err());
+        assert_eq!(
+            inline_constants(&scope, &[27]).unwrap().unwrap().len(),
+            27 * 16
+        );
+        assert!(inline_constants(&scope[..scope.len() - 1], &[27]).is_err());
         scope[0x88..0x90].fill(0);
-        assert!(inline_constants(&scope).unwrap().is_none());
+        assert!(inline_constants(&scope, &[27]).unwrap().is_none());
     }
 
     #[test]

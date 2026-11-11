@@ -1,4 +1,6 @@
-//! Numeric grants require a matching native property declaration in the corresponding bank.
+//! Numeric grants require a matching native property declaration in the corresponding bank. A
+//! gated row, as an upgrade's rows gate on their base ability's key, keeps its own name,
+//! priority and the gate the caller maps for it.
 use super::*;
 
 pub(super) fn lower(
@@ -6,6 +8,7 @@ pub(super) fn lower(
     data: &Payload,
     row: usize,
     native: &Payload,
+    gate: Option<u32>,
 ) -> Result<Vec<(AbilityRowModifier, Option<usize>)>> {
     let modifier = data.pointer(row + 32)?;
     let declarations = data.array(modifier, 8, Some(0x80802AA5))?;
@@ -19,15 +22,62 @@ pub(super) fn lower(
         count > 0 && count == declarations.len() && end <= inputs.len(),
         "Source numeric declarations and flattened input range differ"
     );
+    // The source gate's own key, which a same-key native declaration gates on too.
+    let source_gate = if data.u64(row + 24)? == 0 {
+        0
+    } else {
+        data.u32(data.pointer(row + 24)?)?
+    };
+    ensure!(
+        (source_gate == 0) == gate.is_none(),
+        "Source numeric property gate has no mapped key"
+    );
+    let rows = native.array(native.pointer(24)? + 0x88, 56, Some(0x8080453B))?;
+    let gate_of = |r: usize| -> Result<u32> {
+        if native.u64(r + 40)? == 0 {
+            return Ok(0);
+        }
+        let at = native.pointer(r + 40)?;
+        ensure!(
+            native.u32(at - 4)? == 0x8080454A,
+            "Native numeric gate has another class"
+        );
+        native.u32(at)
+    };
     let mut anchors = Vec::new();
-    for r in native.array(native.pointer(24)? + 0x88, 56, Some(0x8080453B))? {
+    for &r in &rows {
         let m = native.pointer(r + 48)?;
         if native.u32(r + 16)? == data.u32(row)? && native.u32(m + 4)? == 0x8080451B {
             ensure!(
-                native.u64(r + 40)? == 0 && native.u32(r + 32)? == data.u32(row + 16)?,
+                gate_of(r)? == source_gate && native.u32(r + 32)? == data.u32(row + 16)?,
                 "Matching native numeric property has a different gate or mode"
             );
             anchors.push(m);
+        }
+    }
+    // A gated row whose key has no native declaration, such as Brimstone's, is anchored by
+    // any declaration that reads the same inputs with the same operations. The handler and
+    // input storage are the bank's, so they witness the row as well as a same-key one.
+    let shared = anchors.is_empty() && gate.is_some();
+    if shared {
+        let wanted = declarations
+            .iter()
+            .map(|&d| Ok((data.u8(d)?, data.u8(d + 1)?)))
+            .collect::<Result<Vec<_>>>()?;
+        for &r in &rows {
+            let m = native.pointer(r + 48)?;
+            if native.u32(m + 4)? != 0x8080451B || native.u32(r + 32)? != data.u32(row + 16)? {
+                continue;
+            }
+            let children = native.array(m + 16, 24, Some(0x8080451F))?;
+            let read = children
+                .iter()
+                .map(|&c| Ok((native.u8(c + 16)?, native.u8(c + 17)?)))
+                .collect::<Result<Vec<_>>>()?;
+            if read == wanted {
+                anchors.push(m);
+                break;
+            }
         }
     }
     ensure!(
@@ -39,6 +89,15 @@ pub(super) fn lower(
         children.len() == count,
         "Matching numeric property has different input arity"
     );
+    // An ungated wildcard row keeps the selection-free identity it always had.
+    let priority = u8::try_from(data.u32(row + 8)?)?;
+    let selection = (gate.is_some() || priority != 255).then(|| {
+        sundial::package_authoring::ability_bank::FixedSelection {
+            name: data.u32(row + 4).unwrap_or(0),
+            priority,
+            required_key: gate.unwrap_or(0),
+        }
+    });
     let mut result = Vec::new();
     let mut seen = BTreeSet::new();
     for (index, ((&declaration, &flat), &child)) in declarations
@@ -79,6 +138,7 @@ pub(super) fn lower(
                 input,
                 value: amount.to_bits(),
                 multiply: operation != 0,
+                selection,
             },
             Some(first + index),
         ));

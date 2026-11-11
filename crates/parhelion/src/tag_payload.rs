@@ -77,6 +77,25 @@ pub(crate) fn array_at(
         .map_err(|error| invalid(format!("Native array at 0x{descriptor:X}: {error}")))
 }
 
+/// The header an array descriptor at `descriptor` names, for a pass that moves the bytes after
+/// fixed rows ending at `rows_end`. A descriptor names its header through the pointer whatever
+/// its count, so an empty array moves with those bytes as a full one does. A null pointer, or an
+/// empty list naming bytes inside the fixed rows, names no array to move.
+pub(crate) fn nested_header(
+    data: &[u8],
+    descriptor: usize,
+    rows_end: usize,
+) -> AuthoringResult<Option<usize>> {
+    if read_u64(data, descriptor + 8)? == 0 {
+        return Ok(None);
+    }
+    let target = relative_target(data, descriptor + 8)?;
+    if target < rows_end && read_u64(data, descriptor)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(target))
+}
+
 pub(crate) fn set_array_count(
     data: &mut [u8],
     descriptor: usize,

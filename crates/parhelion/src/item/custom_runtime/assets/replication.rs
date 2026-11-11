@@ -62,6 +62,61 @@ pub(in crate::item) fn validate_templates<M>(
     Ok(())
 }
 
+/// The root names no replication record, by value or by symbol.
+pub(in crate::item) fn absent<M>(root: &Node<M>) -> AuthoringResult<bool> {
+    Ok(
+        read_u32(&root.payload, 0x88)? == u32::MAX
+            && root.patches.iter().all(|(at, _)| *at != 0x88),
+    )
+}
+
+/// The network component's definition class. Its initialization reads the entity's `+0x88`
+/// replication record with no absent-record branch.
+const NETWORK: u32 = 0x80C7_0EDD;
+
+/// A root stays unreplicated when it names no replication record and either its native template
+/// is unreplicated, as stock projectile carriers such as `80BBB0DB` are, or none of its components
+/// is a network component, the only reader of the record. Its private nodes still load eagerly.
+/// With no replication record there is no loading companion to enroll.
+pub(in crate::item) fn unreplicated<M>(
+    nodes: &[Node<M>],
+    root: &Node<M>,
+    manager: &PackageManager,
+) -> AuthoringResult<bool> {
+    if !absent(root)? {
+        return Ok(false);
+    }
+    let template = manager
+        .read_tag(TagHash(root.template))
+        .map_err(|error| invalid(error.to_string()))?;
+    if read_u32(&template, 0x88)? == u32::MAX {
+        return Ok(true);
+    }
+    let (owners, _, start, class) = array_at(&root.payload, 16)?;
+    if class != 0x80809C04 {
+        return Err(invalid("Private entity component rows differ"));
+    }
+    for row in (0..owners).map(|index| start + index * 12) {
+        let private;
+        let stock;
+        let payload: &[u8] = if root.patches.iter().any(|(at, _)| *at == row) {
+            private = target(nodes, root, row)?;
+            &private.payload
+        } else {
+            stock = manager
+                .read_tag(TagHash(read_u32(&root.payload, row)?))
+                .map_err(|error| invalid(error.to_string()))?;
+            &stock
+        };
+        let definition =
+            crate::tag_payload::bounded_relative_target(payload, 24, "Component definition")?;
+        if definition < 4 || read_u32(payload, definition - 4)? == NETWORK {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(in crate::item) struct Loading {
     pub(super) owner: String,
     source: crate::LoadingOwner,
@@ -110,6 +165,9 @@ impl Loading {
                 .iter()
                 .find(|node| node.symbol == *symbol)
                 .ok_or_else(|| invalid("Private entity root is missing"))?;
+            if unreplicated(nodes, root, manager)? {
+                continue;
+            }
             let loading = Self::read(nodes, root, manager, resources)?;
             if !result
                 .iter()

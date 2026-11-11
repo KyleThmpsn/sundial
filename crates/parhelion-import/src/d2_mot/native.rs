@@ -6,6 +6,8 @@ pub mod categories;
 pub mod collection;
 mod contracts;
 pub mod effects;
+pub mod feedback;
+pub mod firing;
 mod mesh;
 pub mod projectile;
 pub(crate) use crate::tiger::shader;
@@ -70,39 +72,6 @@ pub fn compile_shader(input: &Path, out: &Path, stage: &str) -> Result<Value> {
 struct Graph {
     root: PathBuf,
     manifest: Value,
-}
-
-pub fn merge_models(plan: &Path, out: &Path) -> Result<Value> {
-    let input = load(plan)?;
-    let entries = input["parts"].as_array().context("model parts")?;
-    let mut parts = vec![];
-    for entry in entries {
-        let mapped = Path::new(entry["mapped"].as_str().context("mapped model")?);
-        outside(out, mapped)?;
-        let materials = entry["materials"]
-            .as_object()
-            .context("part material assignments")?
-            .iter()
-            .map(|(k, v)| Ok((k.clone(), v.as_str().context("material symbol")?.to_owned())))
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        parts.push(mesh::load_raw(mapped, materials)?);
-    }
-    ensure!(!out.exists(), "merge output already exists");
-    let result = mesh::merge(
-        parts,
-        u16::try_from(input["max_bone"].as_u64().context("maximum bone")?)?,
-    )?;
-    fs::create_dir_all(out)?;
-    fs::write(out.join("model.bin"), &result.header)?;
-    for (name, data) in ["positions.bin", "attributes.bin", "indices.bin"]
-        .iter()
-        .zip(&result.streams)
-    {
-        fs::write(out.join(name), data)?;
-    }
-    let report = json!({"patches":result.patches,"count":result.count,"max_position_error":result.position_error,"bounding_sphere_radius":result.radius});
-    write_json(&out.join("merged.json"), &report)?;
-    Ok(report)
 }
 
 pub fn library(

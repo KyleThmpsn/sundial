@@ -15,10 +15,27 @@ use std::{
 };
 
 #[cfg(windows)]
+mod cache;
+#[cfg(windows)]
 mod linker;
+#[cfg(windows)]
+mod warmup;
 
 /// Linked programs no preview holds stay this many per context, for a model shown again.
 const KEPT: usize = 96;
+
+/// Driver compilation shares the machine with model decoding and the desktop.
+const COMPILER_THREADS: u32 = 1;
+
+unsafe fn limit_compiler_threads(gl: &glow::Context) {
+    let extensions = gl.supported_extensions();
+    if extensions.contains("GL_KHR_parallel_shader_compile")
+        || extensions.contains("GL_ARB_parallel_shader_compile")
+    {
+        // SAFETY: the current context advertises the extension defining this call.
+        unsafe { gl.max_shader_compiler_threads(COMPILER_THREADS) };
+    }
+}
 
 /// A program's vertex and fragment text, with a hash that tells most different texts apart
 /// before they are compared.
@@ -246,8 +263,8 @@ unsafe fn with_library<T>(gl: &glow::Context, work: impl FnOnce(&mut Library) ->
             let parallel = extensions.contains("GL_KHR_parallel_shader_compile")
                 || extensions.contains("GL_ARB_parallel_shader_compile");
             if parallel {
-                // SAFETY: the extension that defines this call is present on this context.
-                unsafe { gl.max_shader_compiler_threads(u32::MAX) };
+                // SAFETY: with_library requires this context to be current.
+                unsafe { limit_compiler_threads(gl) };
             }
             libraries.push(Library {
                 context,
@@ -424,17 +441,33 @@ unsafe fn binary_now(gl: &glow::Context, source: &Source) -> Result<glow::Progra
             return Err("The preview program did not start linking.".into());
         };
         check(gl, program, shaders)?;
-        let binary = gl.get_program_binary(program);
+        // Loading the binary resets uniforms, so the helper's dummy draw state stays here.
+        let binary = warmup::draw(gl, program).and_then(|()| {
+            gl.get_program_binary(program)
+                .filter(|binary| !binary.buffer.is_empty())
+                .ok_or_else(|| "The driver returned no binary for a preview program.".into())
+        });
         gl.delete_program(program);
         binary
-            .filter(|binary| !binary.buffer.is_empty())
-            .ok_or_else(|| "The driver returned no binary for a preview program.".into())
     }
 }
 
 /// A program from a worker's binary, or `None` when the driver refuses it.
 #[cfg(windows)]
 unsafe fn load(gl: &glow::Context, binary: &glow::ProgramBinary) -> Option<Linked> {
+    // SAFETY: the caller's context is current. The painter owns the accepted program.
+    unsafe {
+        let program = load_program(gl, binary)?;
+        Some(Linked {
+            program,
+            uniforms: Uniforms::locate(gl, program),
+        })
+    }
+}
+
+/// Loads and validates a binary without looking up uniforms the compiler helper never uses.
+#[cfg(windows)]
+unsafe fn load_program(gl: &glow::Context, binary: &glow::ProgramBinary) -> Option<glow::Program> {
     // SAFETY: the caller's context is current, and a refused program is deleted here.
     unsafe {
         let program = gl.create_program().ok()?;
@@ -443,10 +476,7 @@ unsafe fn load(gl: &glow::Context, binary: &glow::ProgramBinary) -> Option<Linke
             gl.delete_program(program);
             return None;
         }
-        Some(Linked {
-            program,
-            uniforms: Uniforms::locate(gl, program),
-        })
+        Some(program)
     }
 }
 

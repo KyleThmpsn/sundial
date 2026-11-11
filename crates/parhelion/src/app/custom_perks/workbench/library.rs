@@ -29,7 +29,7 @@ pub(super) struct PendingDelete {
 }
 
 /// The name a row shows for a recipe, with a stand-in for an empty one.
-fn display_name(name: &str) -> &str {
+pub(super) fn display_name(name: &str) -> &str {
     if name.trim().is_empty() {
         "Untitled Perk"
     } else {
@@ -56,84 +56,6 @@ fn file_stem(name: &str) -> String {
     } else {
         stem
     }
-}
-
-/// "1 draft" or "N drafts".
-fn drafts(count: usize) -> String {
-    if count == 1 {
-        "1 draft".to_owned()
-    } else {
-        format!("{count} drafts")
-    }
-}
-
-/// The documents in a drafts file that still open, and the entries that no longer do. A file
-/// that is not a list of drafts at all is one rejected entry, so it is set aside whole.
-fn read_drafts(bytes: &[u8]) -> (Vec<Document>, Vec<serde_json::Value>) {
-    let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(bytes) else {
-        let whole = serde_json::from_slice::<serde_json::Value>(bytes)
-            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(bytes).into()));
-        return (Vec::new(), vec![whole]);
-    };
-    let mut documents = Vec::new();
-    let mut rejected = Vec::new();
-    for entry in entries {
-        match serde_json::from_value::<Document>(entry.clone()) {
-            Ok(document) if document.recipe.validate_draft().is_ok() => documents.push(document),
-            _ => rejected.push(entry),
-        }
-    }
-    (documents, rejected)
-}
-
-/// A name for this window's set-aside drafts that no other window shares.
-fn draft_session() -> String {
-    let started = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis());
-    format!("{started}-{}", std::process::id())
-}
-
-/// Writes the drafts this window changed since it last wrote the drafts file into its own file
-/// beside it, and returns what the status line says about it. Drafts the window left as it
-/// found them stay out, so a stale copy never comes back as a second draft.
-fn set_aside(
-    library: &Library,
-    session: &str,
-    documents: &[&Document],
-    baseline: Option<&[u8]>,
-) -> Result<String, String> {
-    let before = baseline
-        .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(bytes).ok())
-        .unwrap_or_default();
-    let mut changed = Vec::new();
-    for document in documents {
-        let value = serde_json::to_value(document).map_err(|error| error.to_string())?;
-        if !before.contains(&value) {
-            changed.push(value);
-        }
-    }
-    let bytes = serde_json::to_vec_pretty(&changed).map_err(|error| error.to_string())?;
-    let path = library.save_set_aside_drafts(session, &bytes)?;
-    Ok(format!(
-        "Another window changed the drafts file. This window's drafts are kept in {} and open with the others on the next start.",
-        path.display().to_string().trim_start_matches(r"\\?\")
-    ))
-}
-
-/// The drafts file's contents: the open drafts, then the entries that do not open and could not
-/// be kept elsewhere, as they were.
-fn drafts_file(documents: &[&Document], unopened: &[serde_json::Value]) -> Result<Vec<u8>, String> {
-    if unopened.is_empty() {
-        return serde_json::to_vec_pretty(documents).map_err(|error| error.to_string());
-    }
-    let mut entries = documents
-        .iter()
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    entries.extend_from_slice(unopened);
-    serde_json::to_vec_pretty(&entries).map_err(|error| error.to_string())
 }
 
 /// The right-click menu of one Custom Perks row.
@@ -175,37 +97,14 @@ impl Workbench {
         self.initialized = true;
         match library {
             Ok(library) => {
-                let draft_path = library.root().join("workbench-drafts.json");
-                match std::fs::read(&draft_path) {
-                    Ok(bytes) => {
-                        let (documents, rejected) = read_drafts(&bytes);
-                        self.documents = documents;
-                        for document in &mut self.documents {
-                            if document.origin.is_none() {
-                                document.origin = Some(document.recipe.clone());
-                            }
-                            document.read_baseline();
-                        }
-                        self.drafts_writable = true;
-                        // A draft the workbench cannot read is set aside before any write can
-                        // drop it, so the ones it can read open and autosave carries on.
-                        if !rejected.is_empty() {
-                            self.keep_rejected_drafts(&library, &bytes, rejected);
-                        }
-                        self.draft_baseline = Some(bytes);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        self.drafts_writable = true
-                    }
-                    Err(error) => {
-                        self.error = Some(format!(
-                            "Could not read workbench drafts: {error}. Draft autosave is paused."
-                        ))
-                    }
+                if let Some(report) = self.drafts.open(&library, &mut self.documents) {
+                    self.error = Some(report);
+                }
+                if let Some(report) = self.drafts.adopt_set_aside(&library, &mut self.documents) {
+                    self.error = Some(report);
                 }
                 let refresh = library.defaults_refresh().cloned();
                 self.library = Some(library);
-                self.adopt_set_aside_drafts();
                 self.refresh_library();
                 if let Some(refresh) = refresh {
                     self.reload_bundled_documents();
@@ -255,9 +154,10 @@ impl Workbench {
         }
     }
 
-    /// A failed refresh must not offer stale saved versions as current library entries.
+    /// A failed refresh must not offer stale saved versions as current library entries. The
+    /// saved recipes' perks stay as they were read, since saving or deleting a perk changes no
+    /// recipe. Refresh Library reads those again too.
     pub(super) fn scan_library(&mut self) -> Vec<String> {
-        self.authored_templates = None;
         self.entries.clear();
         let Some(library) = &self.library else {
             return vec!["Custom Perks is unavailable.".into()];
@@ -275,213 +175,15 @@ impl Workbench {
         }
     }
 
-    /// Keeps the drafts file's entries that no longer open in a new file of their own, so an
-    /// earlier batch is never replaced. When that fails they stay in the drafts file and every
-    /// write carries them. A drafts file that is not a list at all cannot carry them, so autosave
-    /// pauses instead and its bytes stay as they are.
-    fn keep_rejected_drafts(
-        &mut self,
-        library: &Library,
-        bytes: &[u8],
-        rejected: Vec<serde_json::Value>,
-    ) {
-        let whole = serde_json::from_slice::<Vec<serde_json::Value>>(bytes).is_err();
-        let copy = if whole {
-            Ok(bytes.to_vec())
-        } else {
-            serde_json::to_vec_pretty(&rejected).map_err(|error| error.to_string())
-        };
-        let kept = copy.and_then(|copy| library.save_rejected_drafts(&draft_session(), &copy));
-        let count = drafts(rejected.len());
-        self.error = Some(match kept {
-            Ok(path) => format!(
-                "{count} could not be opened. Kept in {}.",
-                path.display().to_string().trim_start_matches(r"\\?\")
-            ),
-            Err(error) if whole => {
-                self.drafts_writable = false;
-                format!(
-                    "The drafts file could not be opened or set aside: {error}. Draft autosave is paused."
-                )
-            }
-            Err(error) => {
-                self.unopened_drafts = rejected;
-                format!(
-                    "{count} could not be opened or set aside: {error}. They stay in the drafts file."
-                )
-            }
-        });
-    }
-
     pub(super) fn persist_drafts(&mut self) {
-        if !self.drafts_writable {
-            return;
-        }
-        let Some(library) = &self.library else {
-            return;
-        };
-        let documents = self
-            .documents
-            .iter()
-            .filter(|document| !document.untouched_copy())
-            .collect::<Vec<_>>();
-        // Another window wrote the drafts file since this one last did. Taking that file as the
-        // baseline would let the next write replace the other window's drafts with these, so
-        // this window keeps its own drafts beside it for the rest of the session instead.
-        let durable = if let Some(session) = &self.drafts_set_aside {
-            let kept = set_aside(library, session, &documents, self.draft_baseline.as_deref());
-            let durable = kept.is_ok();
-            self.drafts_error = Some(kept.unwrap_or_else(|error| error));
-            durable
-        } else {
-            match drafts_file(&documents, &self.unopened_drafts) {
-                Err(error) => {
-                    self.drafts_error = Some(error);
-                    false
-                }
-                Ok(bytes) => match library.save_drafts(&bytes, self.draft_baseline.as_deref()) {
-                    Ok(DraftsWrite::Written) => {
-                        self.draft_baseline = Some(bytes);
-                        self.drafts_error = None;
-                        true
-                    }
-                    Ok(DraftsWrite::Conflict) => {
-                        let session = draft_session();
-                        let kept = set_aside(
-                            library,
-                            &session,
-                            &documents,
-                            self.draft_baseline.as_deref(),
-                        );
-                        let durable = kept.is_ok();
-                        self.drafts_error = Some(kept.unwrap_or_else(|error| error));
-                        self.drafts_set_aside = Some(session);
-                        durable
-                    }
-                    Err(error) => {
-                        self.drafts_error = Some(error);
-                        false
-                    }
-                },
-            }
-        };
-        // A failed write, such as while another window holds the library, is tried again
-        // against the same baseline without waiting for the next edit, and the host asks
-        // before exiting while it keeps failing.
-        self.drafts_retry = (!durable).then(std::time::Instant::now);
+        self.drafts.persist(self.library.as_ref(), &self.documents);
     }
 
-    /// Tries the drafts again after a failed write, every few seconds while it keeps failing.
-    pub(super) fn retry_drafts(&mut self, ctx: &egui::Context) {
-        const RETRY: std::time::Duration = std::time::Duration::from_secs(3);
-        let Some(failed) = self.drafts_retry else {
-            return;
-        };
-        if failed.elapsed() >= RETRY {
-            self.persist_drafts();
-        }
-        ctx.request_repaint_after(RETRY);
-    }
-
-    /// Writes the drafts again when the last write left them unsaved, and returns why edited
-    /// drafts are still unsaved. The workbench outlives its window but not the process, so
-    /// the host asks before exiting while this has a reason.
+    /// Writes the drafts when an edit is waiting or the last write left them unsaved, and
+    /// returns why edited drafts are still unsaved. The workbench outlives its window but not
+    /// the process, so the host asks before exiting while this has a reason.
     pub(in crate::app) fn unsaved_drafts(&mut self) -> Option<String> {
-        if self.drafts_retry.is_some() {
-            self.persist_drafts();
-        }
-        if self.drafts_retry.is_some() {
-            return Some(format!(
-                "Parhelion could not save its perk drafts: {}",
-                self.drafts_error.as_deref().unwrap_or("the write failed")
-            ));
-        }
-        let edited = self.documents.iter().any(|document| {
-            !document.untouched_copy() && (document.changed() || document.pending_effect.is_some())
-        });
-        // A library that never opened leaves the workbench editable with nowhere to save, so
-        // its drafts are as unsaved as those of a paused autosave.
-        if !edited || self.drafts_writable {
-            None
-        } else if self.library.is_none() {
-            Some(
-                "Custom Perks could not open, so Parhelion's edited perk drafts are not saved."
-                    .into(),
-            )
-        } else {
-            Some(
-                "Parhelion's draft autosave is paused, so its edited perk drafts are not saved."
-                    .into(),
-            )
-        }
-    }
-
-    /// Opens the drafts other windows set aside after losing the drafts file, and folds them
-    /// into it. A draft already open under the same id with other content opens as a copy.
-    fn adopt_set_aside_drafts(&mut self) {
-        if !self.drafts_writable {
-            return;
-        }
-        let Some(library) = &self.library else {
-            return;
-        };
-        let found = match library.set_aside_drafts() {
-            Ok(found) => found,
-            Err(error) => {
-                self.error = Some(format!("Could not read set-aside drafts: {error}"));
-                return;
-            }
-        };
-        if found.is_empty() {
-            return;
-        }
-        let mut adopted = Vec::new();
-        for (path, bytes) in found {
-            let (documents, rejected) = read_drafts(&bytes);
-            // A file that does not read whole stays where it is for the reader to inspect.
-            if !rejected.is_empty() {
-                continue;
-            }
-            for mut document in documents {
-                if document.origin.is_none() {
-                    document.origin = Some(document.recipe.clone());
-                }
-                document.read_baseline();
-                match self
-                    .documents
-                    .iter()
-                    .find(|open| open.recipe.id == document.recipe.id)
-                {
-                    Some(open)
-                        if open.recipe == document.recipe
-                            && open.pending_effect == document.pending_effect =>
-                    {
-                        continue;
-                    }
-                    Some(_) => {
-                        document.recipe.id = PerkRecipe::new().id;
-                        document.recipe.name =
-                            format!("{} Copy", display_name(&document.recipe.name));
-                        document.origin = Some(document.recipe.clone());
-                        document.set_baseline(None);
-                    }
-                    None => {}
-                }
-                self.documents.push(document);
-            }
-            adopted.push((path, bytes));
-        }
-        self.persist_drafts();
-        if self.drafts_set_aside.is_some() || self.drafts_error.is_some() {
-            return;
-        }
-        if let Some(library) = &self.library {
-            for (path, bytes) in adopted {
-                if let Err(error) = library.remove_set_aside_drafts(&path, &bytes) {
-                    self.error = Some(format!("Could not remove {}: {error}", path.display()));
-                }
-            }
-        }
+        self.drafts.unsaved(self.library.as_ref(), &self.documents)
     }
 
     pub(super) fn add_document(&mut self, document: Document) {
@@ -518,6 +220,13 @@ impl Workbench {
             self.draw_library_actions(ui, catalog);
         });
         self.draw_library_search(ui);
+        // Perks of saved recipes the library gains join the list when they land.
+        if self.loading_templates() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Reading saved recipes…");
+            });
+        }
         if let Some((weapon, donor)) = weapon {
             let header = format!("Current {} Perks", weapon.kind.label());
             if weapon.kind == crate::ItemKind::Subclass {
@@ -530,20 +239,17 @@ impl Workbench {
                 });
             }
         }
-        if !self.drafts_writable {
-            ui.colored_label(ui.visuals().warn_fg_color, "Draft autosave is paused.");
-        } else if let (Some(_), Some(note)) = (&self.drafts_set_aside, &self.drafts_error) {
-            ui.colored_label(ui.visuals().warn_fg_color, "Drafts are kept separately.")
-                .on_hover_text(note);
-        } else if let Some(error) = &self.drafts_error {
-            ui.colored_label(ui.visuals().warn_fg_color, "Draft autosave failed.")
-                .on_hover_text(error);
+        if let Some((status, detail)) = self.drafts.status() {
+            let label = ui.colored_label(ui.visuals().warn_fg_color, status);
+            if let Some(detail) = detail {
+                label.on_hover_text(detail);
+            }
         }
         let query = self.query.trim().to_lowercase();
         let mut picked = None;
         let mut selected = None;
         let mut action = None;
-        let order = self.library_rows();
+        let order = self.library_rows(catalog);
         let issues = self.row_issues(ui.ctx(), &order);
         egui::ScrollArea::vertical()
             .id_salt("perk-library")
@@ -769,6 +475,8 @@ impl Workbench {
                 }
                 if ui.button("Refresh Library").clicked() {
                     self.refresh_library();
+                    // The perks of saved recipes are read and imported again in the background.
+                    self.forget_authored_templates();
                     ui.close();
                 }
                 ui.separator();

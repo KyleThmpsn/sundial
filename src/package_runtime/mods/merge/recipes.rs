@@ -4,9 +4,13 @@
 //!
 //! Parhelion also names rows it adds in fields Studio never writes: the item hash index, an item's
 //! secondary icon, item art selectors of other types, Collections parents and child nodes, node
-//! icons, subclass pools, nodes and attunements, and private match pictures. Their rules sit beside
-//! Studio's, so an earlier mod that adds rows to the same tables moves every one of them.
+//! icons, subclass pools, nodes and attunements, private match pictures, and the objectives and
+//! records its Collections pages and badges name. Their rules sit beside Studio's, so an earlier
+//! mod that adds rows to the same tables moves every one of them. It also describes tables Studio
+//! doesn't write: the item hash index, node displays, the HUD's status and glyph rows, and the
+//! records, objectives and their strings.
 use super::sidecar::{FieldKind, OpKind};
+mod runtime;
 
 /// A typed-array writer stops at this many rows.
 pub const EDITOR_ROW_LIMIT: u32 = 1_048_576;
@@ -16,6 +20,13 @@ pub const SIGNED_ROW_LIMIT: u32 = 0x8000;
 pub const SHORT_ROW_LIMIT: u32 = 0x7FFF;
 /// An item display picks its stat group with a signed byte.
 pub const STAT_GROUP_LIMIT: u32 = 128;
+/// Parhelion's custom badges keep the records below this many rows (`badge::custom`).
+pub const RECORD_ROW_LIMIT: u32 = 4096;
+/// A subclass pool names an ability row with a signed byte.
+pub const ABILITY_ROW_LIMIT: u32 = 128;
+/// An item names a dye row with a u16. Parhelion's shader editor keeps `0xF000` and up for an
+/// imported shader's source channels.
+pub const DYE_ROW_LIMIT: u32 = 0xF000;
 
 pub const ITEM_INDEX: u32 = 0x8132_7CCB;
 pub const ITEM_DISPLAY_INDEX: u32 = 0x8161_3CF1;
@@ -41,12 +52,34 @@ pub const STRING_BANK_INDEX: u32 = 0x81A2_7211;
 pub const RUNTIME_NAMES: u32 = 0x80EC_3F60;
 pub const ART_NAMES: u32 = 0x80EC_3F61;
 pub const HUD_ICONS: u32 = 0x80EF_C07B;
+/// The HUD status rows, sorted by the status name hash at `+0`.
+pub const HUD_STATUSES: u32 = 0x80D5_FFD3;
+/// The HUD ability glyph rows, sorted by the glyph key at `+0`.
+pub const HUD_GLYPHS: u32 = 0x80BC_6A79;
 pub const PLUG_SETS: u32 = 0x8131_9349;
 pub const NODE_DISPLAYS: u32 = 0x8161_3CF8;
 /// Item hashes to item rows, in two family arrays.
 pub const ITEM_HASH_INDEX: u32 = 0x8131_934A;
 /// Private match activity groups and their map pictures.
 pub const PRIVATE_MATCH_DISPLAYS: u32 = 0x8161_3CFA;
+/// Records and their text, row for row.
+pub const RECORDS: u32 = 0x8131_9339;
+pub const RECORD_STRINGS: u32 = 0x8161_3CFF;
+/// Objectives and their text, row for row.
+pub const OBJECTIVES: u32 = 0x8131_9344;
+pub const OBJECTIVE_STRINGS: u32 = 0x8161_3CF5;
+/// Art dyes, which shaders and gear name by row.
+pub const DYES: u32 = 0x8161_3D24;
+/// Ability definitions and their identities, row for row.
+pub const ABILITY_DEFINITIONS: u32 = 0x8161_3D26;
+pub const ABILITY_IDENTITIES: u32 = 0x8131_9130;
+/// Subclass socket entry lists and their talent displays, row for row.
+pub const SOCKET_ENTRY_LISTS: u32 = 0x8131_932C;
+pub const TALENT_DISPLAYS: u32 = 0x8161_3D09;
+/// Activity displays, whose text blocks name text banks.
+pub const ACTIVITY_DISPLAYS: u32 = 0x8132_7D35;
+/// The 48 destination displays.
+pub const DESTINATION_DISPLAYS: u32 = 0x8132_7D6B;
 
 pub const ITEM_CLASS: u32 = 0x8080_7BEA;
 pub const ITEM_DISPLAY_CLASS: u32 = 0x8080_5CE1;
@@ -90,6 +123,8 @@ pub struct Shape {
     pub stride: usize,
     pub fields: &'static [Field],
     pub local: &'static [Local],
+    /// Row words that hold numbers which can read as pointers, so the pointer check skips them.
+    pub values: &'static [usize],
 }
 
 /// One typed array the merge rebuilds, at the `{count, relative}` descriptor in the entry.
@@ -156,6 +191,7 @@ const fn plain(stride: usize) -> Shape {
         stride,
         fields: &[],
         local: &[],
+        values: &[],
     }
 }
 
@@ -219,12 +255,14 @@ const STAT_ROW: Shape = Shape {
     stride: 24,
     fields: &[owned(8, 8, None)],
     local: &[],
+    values: &[],
 };
 /// An arrangement holder points at a 24-byte group whose art hashes are a typed array at `+8`.
 const HOLDER_GROUP: Shape = Shape {
     stride: 24,
     fields: &[owned(8, 4, None)],
     local: &[],
+    values: &[],
 };
 const HOLDER: Shape = Shape {
     stride: 8,
@@ -233,6 +271,7 @@ const HOLDER: Shape = Shape {
         offset: 0,
         target: &HOLDER_GROUP,
     }],
+    values: &[],
 };
 const COLLECTIBLE_ROW: Shape = Shape {
     stride: 184,
@@ -247,6 +286,7 @@ const COLLECTIBLE_ROW: Shape = Shape {
         owned(168, 0, None),
     ],
     local: &[],
+    values: &[],
 };
 /// A node's child-node row: the child's index, then the condition program that shows it, a typed
 /// array at `+8`.
@@ -254,6 +294,7 @@ const CHILD_NODE_ROW: Shape = Shape {
     stride: 24,
     fields: &[owned(8, 0, None)],
     local: &[],
+    values: &[],
 };
 const NODE_ROW: Shape = Shape {
     stride: 168,
@@ -277,6 +318,7 @@ const NODE_ROW: Shape = Shape {
         owned(152, 4, None),
     ],
     local: &[],
+    values: &[],
 };
 const PERK_DISPLAY_ROW: Shape = Shape {
     stride: 24,
@@ -289,6 +331,7 @@ const PERK_DISPLAY_ROW: Shape = Shape {
         nestable: false,
     }],
     local: &[],
+    values: &[],
 };
 const SOCKET_TYPE_ROW: Shape = Shape {
     stride: 96,
@@ -299,11 +342,13 @@ const SOCKET_TYPE_ROW: Shape = Shape {
         owned(80, 0, None),
     ],
     local: &[],
+    values: &[],
 };
 const STAT_GROUP_ROW: Shape = Shape {
     stride: 56,
     fields: &[owned(16, 24, Some(&STAT_ROW)), owned(32, 0, None)],
     local: &[],
+    values: &[],
 };
 /// A gear row's `+8` points at an object, not an array.
 const GEAR_ROW: Shape = Shape {
@@ -320,12 +365,33 @@ const GEAR_ROW: Shape = Shape {
         owned(32, 0, None),
     ],
     local: &[],
+    values: &[],
 };
-/// The `+24` group pool stays in place, since stock holders point into it.
+/// A row's holders point into the group pool at the entry's `+24`, a group each.
 const ARRANGEMENT_ROW: Shape = Shape {
     stride: 32,
     fields: &[owned(16, 8, Some(&HOLDER))],
     local: &[],
+    values: &[],
+};
+/// A plug set member: its item at `+0`, its availability condition at `+8` and its weight at
+/// `+24`.
+const PLUG_MEMBER: Shape = Shape {
+    stride: 32,
+    fields: &[owned(8, 8, None)],
+    local: &[],
+    values: &[],
+};
+/// A plug set: its hash at `+0` and its members at `+8`. Parhelion adds members to a stock set
+/// after its own.
+const PLUG_SET_ROW: Shape = Shape {
+    stride: 24,
+    fields: &[Field {
+        nestable: true,
+        ..owned(8, 32, Some(&PLUG_MEMBER))
+    }],
+    local: &[],
+    values: &[],
 };
 
 const PLAIN_4: Shape = plain(4);
@@ -333,11 +399,71 @@ const PLAIN_8: Shape = plain(8);
 const PLAIN_16: Shape = plain(16);
 const PLAIN_28: Shape = plain(28);
 const PLAIN_40: Shape = plain(40);
+const PLAIN_44: Shape = plain(44);
 const PLAIN_112: Shape = plain(112);
 const COLLECTIBLE_DISPLAY_ROW: Shape = Shape {
     stride: 96,
     fields: &[owned(72, 0, None)],
     local: &[],
+    values: &[],
+};
+/// A record's parent nodes at `+24` and objectives at `+48`, u16 rows, its 12-byte interval
+/// objectives at `+64` and six condition programs. The u32 at `+208` holds a number, 0x7FFFFFFF
+/// in most rows, that can read as a pointer.
+const RECORD_ROW: Shape = Shape {
+    stride: 216,
+    fields: &[
+        owned(24, 2, None),
+        owned(48, 2, None),
+        owned(64, 12, None),
+        owned(104, 8, None),
+        owned(120, 8, None),
+        owned(136, 8, None),
+        owned(152, 8, None),
+        owned(168, 8, None),
+        owned(192, 8, None),
+    ],
+    local: &[],
+    values: &[208],
+};
+/// One interval's rewards, a typed array of 24-byte rows.
+const INTERVAL_REWARDS: Shape = Shape {
+    stride: 16,
+    fields: &[owned(0, 24, None)],
+    local: &[],
+    values: &[],
+};
+/// A record's text: its 24-byte reward rows at `+72`, then at `+88` one element for each interval
+/// its record holds, with that interval's rewards.
+const RECORD_TEXT_ROW: Shape = Shape {
+    stride: 128,
+    fields: &[owned(72, 24, None), owned(88, 16, Some(&INTERVAL_REWARDS))],
+    local: &[],
+    values: &[],
+};
+/// An objective's condition programs at `+8`, `+24` and `+56`, and its u16 perk flags at `+72`.
+/// Parhelion counts every badge of its family in the Badges root objective, appending a term per
+/// badge to the stock program at `+8`, which only its main mod changes.
+const OBJECTIVE_ROW: Shape = Shape {
+    stride: 160,
+    fields: &[
+        Field {
+            nestable: true,
+            ..owned(8, 8, None)
+        },
+        owned(24, 8, None),
+        owned(56, 8, None),
+        owned(72, 2, None),
+    ],
+    local: &[],
+    values: &[],
+};
+/// An objective's text, with a condition program at `+48`.
+const OBJECTIVE_TEXT_ROW: Shape = Shape {
+    stride: 64,
+    fields: &[owned(48, 8, None)],
+    local: &[],
+    values: &[],
 };
 
 /// Every table whose rows the loader merges.
@@ -378,10 +504,16 @@ pub const TABLES: &[Recipe] = &[
             append("fields", 40, &PLAIN_8, None, EDITOR_ROW_LIMIT),
             append("items", 56, &PLAIN_16, Some("item"), SIGNED_ROW_LIMIT),
             // One presentation row per socket entry list, which the inspect screen reads by the
-            // list's index. Studio's recipe stops at the items, as Studio adds no lists. A build
-            // that adds a list grows this array, and a mod that doesn't keeps its stock count,
-            // which the merge accepts.
-            append("lists", 72, &PLAIN_8, None, EDITOR_ROW_LIMIT),
+            // list's index, so it grows with the lists. Studio's recipe stops at the items, as
+            // Studio adds no lists. A build that adds a list grows this array, and a mod that
+            // doesn't keeps its stock count, which the merge accepts.
+            append(
+                "lists",
+                72,
+                &PLAIN_8,
+                Some("socket_entry_list"),
+                EDITOR_ROW_LIMIT,
+            ),
         ],
     },
     Recipe {
@@ -413,7 +545,25 @@ pub const TABLES: &[Recipe] = &[
     Recipe {
         tag: PRESENTATION_NODES,
         name: "presentation nodes",
-        arrays: &[append("rows", ROWS, &NODE_ROW, None, SIGNED_ROW_LIMIT)],
+        arrays: &[append(
+            "rows",
+            ROWS,
+            &NODE_ROW,
+            Some("node"),
+            SIGNED_ROW_LIMIT,
+        )],
+    },
+    // Node `n` shows display row `n`, so the two grow in step. Studio's recipe names neither.
+    Recipe {
+        tag: NODE_DISPLAYS,
+        name: "node displays",
+        arrays: &[append(
+            "rows",
+            ROWS,
+            &PLAIN_44,
+            Some("node"),
+            SIGNED_ROW_LIMIT,
+        )],
     },
     Recipe {
         tag: PERK_DEFINITIONS,
@@ -520,13 +670,20 @@ pub const TABLES: &[Recipe] = &[
     Recipe {
         tag: ARRANGEMENTS,
         name: "arrangements",
-        arrays: &[append(
-            "rows",
-            ROWS,
-            &ARRANGEMENT_ROW,
-            Some("arrangement"),
-            SIGNED_ROW_LIMIT,
-        )],
+        arrays: &[
+            append(
+                "rows",
+                ROWS,
+                &ARRANGEMENT_ROW,
+                Some("arrangement"),
+                SIGNED_ROW_LIMIT,
+            ),
+            // The group pool, which stock holders name by pointer. A row a build adds owns its
+            // groups behind the entry, as Studio's do, so the pool keeps its stock count. Earlier
+            // Parhelion builds grew it, which leaves the entry opaque, and listing it keeps the
+            // root descriptor on the pool where the merge layout moves it.
+            append("groups", 24, &HOLDER_GROUP, None, EDITOR_ROW_LIMIT),
+        ],
     },
     Recipe {
         tag: ARRANGEMENT_DEFINITIONS,
@@ -591,11 +748,162 @@ pub const TABLES: &[Recipe] = &[
         name: "HUD icon library",
         arrays: &[sorted("rows", &PLAIN_112)],
     },
+    // The HUD finds a status or glyph row by its key, never by its number, and the rows hold no
+    // pointers: artwork tags at `+4`, colors from `+0x20` and a mask byte at `+0x60`.
+    Recipe {
+        tag: HUD_STATUSES,
+        name: "HUD statuses",
+        arrays: &[sorted("rows", &PLAIN_112)],
+    },
+    Recipe {
+        tag: HUD_GLYPHS,
+        name: "HUD glyphs",
+        arrays: &[sorted("rows", &PLAIN_112)],
+    },
+    // The game looks an item up by the hash at `+0` and reads its item row at `+4`. Builds add
+    // rows only after a family's stock rows.
+    Recipe {
+        tag: ITEM_HASH_INDEX,
+        name: "item hash index",
+        arrays: &[
+            unique_keys(append(
+                "first family",
+                ROWS,
+                &PLAIN_8,
+                None,
+                EDITOR_ROW_LIMIT,
+            )),
+            unique_keys(append(
+                "second family",
+                24,
+                &PLAIN_8,
+                None,
+                EDITOR_ROW_LIMIT,
+            )),
+        ],
+    },
+    // Record `n` shows text row `n`, and objective `n` text row `n`. A record's hash is at `+40`
+    // and an objective's at `+0`. Parhelion's badges and Collections pages add rows after the
+    // stock rows.
+    Recipe {
+        tag: RECORDS,
+        name: "records",
+        arrays: &[Array {
+            key_offset: Some(40),
+            unique: true,
+            ..append("rows", ROWS, &RECORD_ROW, Some("record"), RECORD_ROW_LIMIT)
+        }],
+    },
+    Recipe {
+        tag: RECORD_STRINGS,
+        name: "record strings",
+        arrays: &[append(
+            "rows",
+            ROWS,
+            &RECORD_TEXT_ROW,
+            Some("record"),
+            RECORD_ROW_LIMIT,
+        )],
+    },
+    Recipe {
+        tag: OBJECTIVES,
+        name: "objectives",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &OBJECTIVE_ROW,
+            Some("objective"),
+            SIGNED_ROW_LIMIT,
+        ))],
+    },
+    Recipe {
+        tag: OBJECTIVE_STRINGS,
+        name: "objective strings",
+        arrays: &[append(
+            "rows",
+            ROWS,
+            &OBJECTIVE_TEXT_ROW,
+            Some("objective"),
+            SIGNED_ROW_LIMIT,
+        )],
+    },
+    // A socket names its reusable and randomized sets by row. Parhelion's rolling sockets add
+    // sets, and a plug offered everywhere joins stock sets, whose member arrays grow.
+    Recipe {
+        tag: PLUG_SETS,
+        name: "plug sets",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &PLUG_SET_ROW,
+            None,
+            SIGNED_ROW_LIMIT,
+        ))],
+    },
+    // A dye row's key at `+4` names the dye through the entity assignments. Items name dye rows
+    // by number.
+    Recipe {
+        tag: DYES,
+        name: "dyes",
+        arrays: &[append("rows", ROWS, &PLAIN_8, None, DYE_ROW_LIMIT)],
+    },
+    // Ability row `n` has identity row `n`, with the same hash at `+0`.
+    Recipe {
+        tag: ABILITY_DEFINITIONS,
+        name: "ability definitions",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &PLAIN_28,
+            Some("ability"),
+            ABILITY_ROW_LIMIT,
+        ))],
+    },
+    Recipe {
+        tag: ABILITY_IDENTITIES,
+        name: "ability identities",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &PLAIN_4,
+            Some("ability"),
+            ABILITY_ROW_LIMIT,
+        ))],
+    },
+    // List `n` shows talent display row `n` and item art list row `n`.
+    Recipe {
+        tag: SOCKET_ENTRY_LISTS,
+        name: "socket entry lists",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &INDEX_ROW,
+            Some("socket_entry_list"),
+            SIGNED_ROW_LIMIT,
+        ))],
+    },
+    Recipe {
+        tag: TALENT_DISPLAYS,
+        name: "talent displays",
+        arrays: &[unique_keys(append(
+            "rows",
+            ROWS,
+            &INDEX_ROW,
+            Some("socket_entry_list"),
+            SIGNED_ROW_LIMIT,
+        ))],
+    },
 ];
 
 /// The recipe of an installed table, if the loader merges its rows.
 pub fn table(tag: u32) -> Option<&'static Recipe> {
-    TABLES.iter().find(|recipe| recipe.tag == tag)
+    all().find(|recipe| recipe.tag == tag)
+}
+
+/// Every recipe: the investment tables, then the first-person dictionaries imported animation
+/// gives lookup rows.
+pub fn all() -> impl Iterator<Item = &'static Recipe> {
+    TABLES.iter().chain(runtime::RUNTIME_TABLES)
 }
 
 const fn rule(
@@ -646,6 +954,37 @@ const TRANSLATION: &[Step] = &[Step::Pointer {
     offset: 136,
     marker: 0,
 }];
+/// The translation block's three dye arrays, 4-byte rows of a channel and a dye row at `+2`.
+const FIRST_DYES: &[Step] = &[
+    Step::Pointer {
+        offset: 136,
+        marker: 0x8080_77AF,
+    },
+    Step::Each {
+        offset: 40,
+        stride: 4,
+    },
+];
+const SECOND_DYES: &[Step] = &[
+    Step::Pointer {
+        offset: 136,
+        marker: 0x8080_77AF,
+    },
+    Step::Each {
+        offset: 56,
+        stride: 4,
+    },
+];
+const THIRD_DYES: &[Step] = &[
+    Step::Pointer {
+        offset: 136,
+        marker: 0x8080_77AF,
+    },
+    Step::Each {
+        offset: 72,
+        stride: 4,
+    },
+];
 const ART_ROWS: &[Step] = &[
     Step::Pointer {
         offset: 136,
@@ -689,6 +1028,23 @@ const ITEM_RULES: &[Rule] = &[
     ),
     rule("gear row", TRANSLATION, 88, 2, GEAR),
     rule("arrangement row", ART_ROWS, 2, 2, ARRANGEMENTS),
+    // A socket's reusable and randomized plug sets, `0xFFFF` for none.
+    rule("reusable plug set", SOCKET_ROWS, 12, 2, PLUG_SETS),
+    rule("randomized plug set", SOCKET_ROWS, 32, 2, PLUG_SETS),
+    rule("dye row", FIRST_DYES, 2, 2, DYES),
+    rule("dye row", SECOND_DYES, 2, 2, DYES),
+    rule("dye row", THIRD_DYES, 2, 2, DYES),
+    // A subclass's talent grid holder names its socket entry list.
+    rule(
+        "socket entry list",
+        &[Step::Pointer {
+            offset: 128,
+            marker: 0x8080_77B7,
+        }],
+        0,
+        2,
+        SOCKET_ENTRY_LISTS,
+    ),
 ];
 
 const ITEM_DISPLAY_RULES: &[Rule] = &[
@@ -696,6 +1052,8 @@ const ITEM_DISPLAY_RULES: &[Rule] = &[
     rule("name bank", ROOT, 132, 4, STRING_BANK_INDEX),
     rule("type bank", ROOT, 144, 4, STRING_BANK_INDEX),
     rule("flavor bank", ROOT, 152, 4, STRING_BANK_INDEX),
+    // The inventory tooltip's source text.
+    rule("source bank", ROOT, 160, 4, STRING_BANK_INDEX),
     Rule {
         signed: true,
         ..rule(
@@ -743,43 +1101,80 @@ const VENDOR_DISPLAY_RULES: &[Rule] = &[
 ];
 
 /// A pool's groups, their variants and each variant's sandbox perks.
-const POOL_RULES: &[Rule] = &[rule(
-    "pool perk",
-    &[
-        Step::Each {
-            offset: 8,
-            stride: 144,
-        },
-        Step::Each {
-            offset: 0,
-            stride: 88,
-        },
-        Step::Each {
-            offset: 32,
-            stride: 2,
-        },
-    ],
-    0,
-    2,
-    PERK_DEFINITIONS,
-)];
-/// A node record's steps and each step's display rows.
-const NODE_RECORD_RULES: &[Rule] = &[rule(
-    "node icon",
-    &[
-        Step::Each {
-            offset: 8,
-            stride: 32,
-        },
-        Step::Each {
-            offset: 0,
-            stride: 32,
-        },
-    ],
-    24,
-    2,
-    ICON_INDEX,
-)];
+const POOL_RULES: &[Rule] = &[
+    rule(
+        "pool perk",
+        &[
+            Step::Each {
+                offset: 8,
+                stride: 144,
+            },
+            Step::Each {
+                offset: 0,
+                stride: 88,
+            },
+            Step::Each {
+                offset: 32,
+                stride: 2,
+            },
+        ],
+        0,
+        2,
+        PERK_DEFINITIONS,
+    ),
+    // Each variant's 16-byte records at `+0`: the ability row the record's key applies to at
+    // `+4` and the row it equips at `+11`, signed bytes with `0xFF` for none.
+    Rule {
+        signed: true,
+        ..rule("key ability row", POOL_RECORDS, 4, 1, ABILITY_DEFINITIONS)
+    },
+    Rule {
+        signed: true,
+        ..rule(
+            "equipped ability row",
+            POOL_RECORDS,
+            11,
+            1,
+            ABILITY_DEFINITIONS,
+        )
+    },
+];
+const POOL_RECORDS: &[Step] = &[
+    Step::Each {
+        offset: 8,
+        stride: 144,
+    },
+    Step::Each {
+        offset: 0,
+        stride: 88,
+    },
+    Step::Each {
+        offset: 0,
+        stride: 16,
+    },
+];
+/// A node record's steps and each step's display rows, which start with a name and a description.
+const NODE_RECORD_DISPLAYS: &[Step] = &[
+    Step::Each {
+        offset: 8,
+        stride: 32,
+    },
+    Step::Each {
+        offset: 0,
+        stride: 32,
+    },
+];
+const NODE_RECORD_RULES: &[Rule] = &[
+    rule("node icon", NODE_RECORD_DISPLAYS, 24, 2, ICON_INDEX),
+    rule("name bank", NODE_RECORD_DISPLAYS, 0, 4, STRING_BANK_INDEX),
+    rule(
+        "description bank",
+        NODE_RECORD_DISPLAYS,
+        8,
+        4,
+        STRING_BANK_INDEX,
+    ),
+];
 /// An attunement's plug source hash, then its lore row.
 const SUBCLASS_DISPLAY_RULES: &[Rule] = &[rule(
     "attunement lore",
@@ -848,6 +1243,13 @@ const COLLECTIBLE_DISPLAY_RULES: &[Rule] = &[
     rule("name bank", &[each_row(96)], 8, 4, STRING_BANK_INDEX),
     rule("flavor bank", &[each_row(96)], 16, 4, STRING_BANK_INDEX),
     rule("source bank", &[each_row(96)], 24, 4, STRING_BANK_INDEX),
+    rule(
+        "requirement bank",
+        &[each_row(96)],
+        32,
+        4,
+        STRING_BANK_INDEX,
+    ),
 ];
 const NODE_RULES: &[Rule] = &[
     rule(
@@ -884,9 +1286,33 @@ const NODE_RULES: &[Rule] = &[
             },
         ],
     ),
+    // A Collections page's count objective and a badge node's record. `0xFFFF` is none.
+    rule("objective row", &[each_row(168)], 80, 2, OBJECTIVES),
+    rule("record row", &[each_row(168)], 82, 2, RECORDS),
 ];
+/// A record's objectives, u16 rows at `+48`. Parhelion's badge records name the badge's own.
+const RECORD_RULES: &[Rule] = &[rule(
+    "objective row",
+    &[
+        each_row(216),
+        Step::Each {
+            offset: 48,
+            stride: 2,
+        },
+    ],
+    0,
+    2,
+    OBJECTIVES,
+)];
 const NODE_DISPLAY_RULES: &[Rule] = &[
     rule("name bank", &[each_row(44)], 8, 4, STRING_BANK_INDEX),
+    rule(
+        "description bank",
+        &[each_row(44)],
+        16,
+        4,
+        STRING_BANK_INDEX,
+    ),
     // The Sunrise badge's icons.
     rule("icon row", &[each_row(44)], 4, 2, ICON_INDEX),
 ];
@@ -911,19 +1337,55 @@ const HASH_INDEX_RULES: &[Rule] = &[
     },
 ];
 /// Each activity group's map rows, whose picture is an icon row.
-const PRIVATE_MATCH_RULES: &[Rule] = &[rule(
-    "map picture",
-    &[
-        each_row(80),
-        Step::Each {
-            offset: 64,
-            stride: 20,
-        },
-    ],
-    16,
-    4,
-    ICON_INDEX,
-)];
+const PRIVATE_MATCH_RULES: &[Rule] = &[
+    rule(
+        "map title bank",
+        PRIVATE_MATCH_MAPS,
+        0,
+        4,
+        STRING_BANK_INDEX,
+    ),
+    rule(
+        "map description bank",
+        PRIVATE_MATCH_MAPS,
+        8,
+        4,
+        STRING_BANK_INDEX,
+    ),
+    rule("map picture", PRIVATE_MATCH_MAPS, 16, 4, ICON_INDEX),
+];
+const PRIVATE_MATCH_MAPS: &[Step] = &[
+    each_row(80),
+    Step::Each {
+        offset: 64,
+        stride: 20,
+    },
+];
+/// An objective's text: its name, description and progress text.
+const OBJECTIVE_TEXT_RULES: &[Rule] = &[
+    rule("name bank", &[each_row(64)], 8, 4, STRING_BANK_INDEX),
+    rule(
+        "description bank",
+        &[each_row(64)],
+        16,
+        4,
+        STRING_BANK_INDEX,
+    ),
+    rule("progress bank", &[each_row(64)], 24, 4, STRING_BANK_INDEX),
+];
+/// The display text blocks, the 36-byte array at `+24` each display record points at: a title
+/// at `+4` and a description at `+12`.
+const ACTIVITY_DISPLAY_RULES: &[Rule] = &[
+    rule("title bank", ACTIVITY_TEXT, 4, 4, STRING_BANK_INDEX),
+    rule("description bank", ACTIVITY_TEXT, 12, 4, STRING_BANK_INDEX),
+];
+const ACTIVITY_TEXT: &[Step] = &[Step::Each {
+    offset: 24,
+    stride: 36,
+}];
+/// Each 56-byte destination display's name. Parhelion writes it into an unused stock row.
+const DESTINATION_DISPLAY_RULES: &[Rule] =
+    &[rule("name bank", &[each_row(56)], 4, 4, STRING_BANK_INDEX)];
 const PERK_TEXT: &[Step] = &[Step::Each {
     offset: 24,
     stride: 28,
@@ -1150,6 +1612,7 @@ pub fn table_rules(tag: u32) -> &'static [Rule] {
         COLLECTIBLES => COLLECTIBLE_RULES,
         COLLECTIBLE_DISPLAYS => COLLECTIBLE_DISPLAY_RULES,
         PRESENTATION_NODES => NODE_RULES,
+        RECORDS => RECORD_RULES,
         NODE_DISPLAYS => NODE_DISPLAY_RULES,
         PERK_DISPLAYS => PERK_DISPLAY_RULES,
         LORE_TEXT => LORE_TEXT_RULES,
@@ -1157,6 +1620,9 @@ pub fn table_rules(tag: u32) -> &'static [Rule] {
         ITEM_ART => ITEM_ART_RULES,
         ITEM_HASH_INDEX => HASH_INDEX_RULES,
         PRIVATE_MATCH_DISPLAYS => PRIVATE_MATCH_RULES,
+        OBJECTIVE_STRINGS => OBJECTIVE_TEXT_RULES,
+        ACTIVITY_DISPLAYS => ACTIVITY_DISPLAY_RULES,
+        DESTINATION_DISPLAYS => DESTINATION_DISPLAY_RULES,
         _ => &[],
     }
 }

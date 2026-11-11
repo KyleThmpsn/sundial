@@ -31,12 +31,21 @@ pub(super) fn validate_firing_routes(behavior: &Value) -> Result<()> {
         .filter_map(|trigger| trigger["secondary_barrel"].as_i64())
         .filter(|barrel| *barrel >= 0)
         .collect::<BTreeSet<_>>();
+    // A charged pair's charged barrel is the one second action the importer translates, as the
+    // charged release perk, whose receipt records it. That shot plays the weapon's own firing
+    // route, and the primary fire receipt lists the barrel's recording as untranslated. A
+    // Spew-Charge pair fires its charged barrel as the weapon's shot, and its spew is not fired.
+    let charged = nodes
+        .get(&format!("{root:08X}"))
+        .and_then(|node| super::super::firing::charged_pair(&node["data"]["object"]["gameplay"]))
+        .and_then(|pair| i64::try_from(pair.other()).ok());
     for edge in edges.iter().filter(|edge| {
         edge["owner"] == behavior["root"]["datum"]
             && matches!(
                 edge["role"].as_str(),
                 Some("fire" | "secondary_fire" | "charge" | "discharge")
             )
+            && !(edge["role"] == "fire" && charged.is_some() && edge["barrel"].as_i64() == charged)
     }) {
         let mut queue = vec![
             edge["tag"]["datum"]
@@ -173,31 +182,55 @@ pub(super) fn resolve(
         .collect::<Vec<_>>();
     let attached = firing_loops(behavior)?;
     if !attached.is_empty() {
-        let loops = sounds
-            .iter()
-            .copied()
-            .filter(|sound| {
-                sound["root_slot"] == 4
-                    && sound["component_class"] == "808084E9"
-                    && sound["node_kind"] == "loop"
-            })
-            .collect::<Vec<_>>();
+        // Each presentation group lists its own sounds, so a loop shared by the item's content rows
+        // appears once per group. The item's selected content row decides, and a loop node counts
+        // once however many groups list it.
+        let loops = move |selected: bool| {
+            groups
+                .iter()
+                .filter(|group| !selected || group["content_key"] == rig["content_key"])
+                .flat_map(|group| group["sounds"].as_array().into_iter().flatten())
+                .filter(|sound| {
+                    sound["root_slot"] == 4
+                        && sound["component_class"] == "808084E9"
+                        && sound["node_kind"] == "loop"
+                })
+                .filter_map(|sound| sound["node_name"].as_str())
+                .collect::<BTreeSet<_>>()
+        };
+        let selected = loops(true);
+        let loops = if selected.is_empty() {
+            loops(false)
+        } else {
+            selected
+        };
+        if let ([source], [node]) = (
+            attached.as_slice(),
+            loops.iter().collect::<Vec<_>>().as_slice(),
+        ) {
+            options.firing = Some(Firing::Loop {
+                source: source["tag"]["path"]
+                    .as_str()
+                    .context("Source loop path")?
+                    .into(),
+                slot: 4,
+                node: u32::from_str_radix(node, 16)?,
+            });
+            return Ok(options);
+        }
+        // A donor with no native loop cannot carry the source loop, such as a charging hum on a
+        // weapon whose donor fires once per shot. The source's one-shot fire still takes the
+        // ordinary route below, and the receipt names the loop it leaves out. Several loops on
+        // either side stay ambiguous.
         ensure!(
-            attached.len() == 1 && loops.len() == 1,
-            "Source or native firing loop is ambiguous. Configure the explicit loop route"
+            loops.is_empty() && !fire_sounds(behavior)?.0.is_empty(),
+            "Source or native firing loop is ambiguous: source loops {:?}, native slot 4 loops {:?}. Configure the explicit loop route",
+            attached
+                .iter()
+                .map(|node| node["tag"]["path"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            loops
         );
-        options.firing = Some(Firing::Loop {
-            source: attached[0]["tag"]["path"]
-                .as_str()
-                .context("Source loop path")?
-                .into(),
-            slot: 4,
-            node: u32::from_str_radix(
-                loops[0]["node_name"].as_str().context("Native loop node")?,
-                16,
-            )?,
-        });
-        return Ok(options);
     }
     // Native named cues carry event paths. A terminal fire token excludes ready,
     // reload, tail and handling events. Ambiguous paths still need an explicit route.
@@ -252,7 +285,7 @@ fn firing_loops(behavior: &Value) -> Result<Vec<&Value>> {
     let nodes = behavior["nodes"]
         .as_object()
         .context("Source behavior nodes")?;
-    Ok(behavior["edges"]
+    let loops = behavior["edges"]
         .as_array()
         .context("Source attachment edges")?
         .iter()
@@ -272,5 +305,34 @@ fn firing_loops(behavior: &Value) -> Result<Vec<&Value>> {
                         .is_some_and(|sound| sound["data"]["class"] == 4)
                 })
         })
-        .collect())
+        .collect::<Vec<_>>();
+    // Several weapon-fire loops can attach, such as the Focus Rifle's firing loop beside a heat
+    // warning beep. The firing loop is the one whose attachment the weapon's `primary_firing`
+    // function scales.
+    if loops.len() > 1 {
+        let root = behavior["root"]["datum"]
+            .as_u64()
+            .context("Source behavior root")?;
+        let firing = nodes
+            .get(&format!("{root:08X}"))
+            .and_then(|node| node["data"]["object"]["attachments"].as_array())
+            .into_iter()
+            .flatten()
+            .filter(|row| row["primary_scale"] == "primary_firing")
+            .filter_map(|row| row["tag"]["datum"].as_u64())
+            .collect::<BTreeSet<_>>();
+        let scaled = loops
+            .iter()
+            .copied()
+            .filter(|node| {
+                node["tag"]["datum"]
+                    .as_u64()
+                    .is_some_and(|id| firing.contains(&id))
+            })
+            .collect::<Vec<_>>();
+        if !scaled.is_empty() {
+            return Ok(scaled);
+        }
+    }
+    Ok(loops)
 }

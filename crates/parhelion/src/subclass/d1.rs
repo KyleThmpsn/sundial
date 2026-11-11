@@ -579,6 +579,19 @@ impl Plan {
         }
         Ok(())
     }
+
+    /// Stamps `abilities` as the entries this plan prepared, after the build changed a copy of
+    /// entries it found [`Self::ready`]. The plan's own stamp is unchanged.
+    pub(super) fn restamp(&mut self, abilities: &SubclassAbilities) -> Result<(), String> {
+        let mut output = abilities.clone();
+        output.d1 = None;
+        let stamp = digest(&output)?;
+        let applied = self.applied.as_mut().ok_or(
+            "D1 subclass plan is saved but its selected behavior has not been completely prepared",
+        )?;
+        applied.abilities_sha256 = stamp;
+        Ok(())
+    }
 }
 
 fn number(value: &Value, field: &str) -> Result<u32, String> {

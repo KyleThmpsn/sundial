@@ -28,8 +28,16 @@ pub(crate) fn from_str_within<T: DeserializeOwned>(
     serde_json::from_value(value)
 }
 
-pub(crate) fn from_reader<R: Read, T: DeserializeOwned>(reader: R) -> Result<T, serde_json::Error> {
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+pub(crate) fn from_reader<R: Read, T: DeserializeOwned>(
+    mut reader: R,
+) -> Result<T, serde_json::Error> {
+    // serde_json pulls a reader one byte at a time, one system call per byte on an unbuffered
+    // file. The document is read whole and parsed from memory instead.
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(serde_json::Error::io)?;
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
     let value = StrictValueSeed {
         depth: 0,
         limit: MAX_CONTAINER_DEPTH,

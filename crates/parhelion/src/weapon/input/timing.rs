@@ -23,7 +23,13 @@ pub(crate) fn imported(graph: &serde_json::Value) -> AuthoringResult<Option<Timi
     if timing["status"] != "translated" {
         return Ok(None);
     }
-    if graph["source"] != "d1_roi" || graph["kind"] != "weapon" {
+    // Rise of Iron graphs name their kind. Modern weapon graphs carry none.
+    let weapon = match graph["source"].as_str() {
+        Some("d1_roi") => graph["kind"] == "weapon",
+        Some("d2_mot") => graph["kind"].is_null() || graph["kind"] == "weapon",
+        _ => false,
+    };
+    if !weapon {
         return Err(invalid("Imported firing curves have an unsupported source"));
     }
     let value: Timing = serde_json::from_value(timing.clone())

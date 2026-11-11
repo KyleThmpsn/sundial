@@ -22,6 +22,7 @@ pub use identity::{
     NativeMember, native_holders, native_member_names, native_members, native_pointer_layout,
     native_relocation_layout, native_type_name, native_type_parent,
 };
+pub(crate) use identity::{native_declaration, native_layouts};
 pub mod modifiers;
 
 mod values;
@@ -88,19 +89,27 @@ pub fn component_binding_label(binding: u32) -> String {
 }
 
 /// Native ancestry from the same registered Shadowkeep declarations used to resolve fields.
-pub fn native_type_inherits(mut class: u32, parent: u32) -> bool {
+pub fn native_type_inherits(class: u32, parent: u32) -> bool {
     let Ok(registry) = runtime_registry() else {
         return false;
     };
+    inherits(class, parent, |class| {
+        registry.records.get(&class).map(|record| record.base_type)
+    })
+}
+
+/// Whether `class` is `parent` or reaches it through `base_of`, which gives a class's base or
+/// `None` where the caller's declarations end. A base chain that loops back reaches nothing more.
+pub(crate) fn inherits(mut class: u32, parent: u32, base_of: impl Fn(u32) -> Option<u32>) -> bool {
     let mut seen = BTreeSet::new();
     while seen.insert(class) {
         if class == parent {
             return true;
         }
-        let Some(record) = registry.records.get(&class) else {
+        let Some(base) = base_of(class) else {
             return false;
         };
-        class = record.base_type;
+        class = base;
     }
     false
 }

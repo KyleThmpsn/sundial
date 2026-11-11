@@ -1,12 +1,69 @@
 //! Follow a private attachment through its component and compare the numeric contract.
 use super::*;
 mod audio;
+mod closure;
 mod connected;
+mod duration;
 mod nested;
 mod network;
 mod player;
+mod profile;
 mod replication;
 mod sequence;
+mod table;
+
+/// D1 arrays have their own allocation marker even where the value bytecode dialect agrees.
+fn source_program(
+    source: &Payload,
+    at: usize,
+) -> CheckResult<sundial::package_authoring::sandbox_perk::action::native::value::Program> {
+    use sundial::package_authoring::sandbox_perk::action::native::value::{Instruction, Program};
+    for field in [at, at + 16] {
+        if source.u64(field)? != 0 {
+            assert_eq!(source.u32(source.pointer(field + 8)? - 4)?, 0x80800184);
+        }
+    }
+    let code = source
+        .array(at, 1, Some(0x80800009))?
+        .into_iter()
+        .map(|row| source.u8(row))
+        .collect::<Result<Vec<_>>>()?;
+    let mut cursor = 0;
+    let mut instructions = Vec::new();
+    while cursor < code.len() {
+        let opcode = code[cursor];
+        cursor += 1;
+        let operand = match opcode {
+            34 | 52..=62 => {
+                let value = *code.get(cursor).ok_or("Truncated source value operand")?;
+                cursor += 1;
+                Some(value)
+            }
+            0..=51 => None,
+            _ => return Err("Unknown source value instruction".into()),
+        };
+        instructions.push(Instruction { opcode, operand });
+    }
+    let constants = source
+        .array(at + 16, 16, Some(0x80800090))?
+        .into_iter()
+        .map(|row| {
+            Ok([
+                source.u32(row)?,
+                source.u32(row + 4)?,
+                source.u32(row + 8)?,
+                source.u32(row + 12)?,
+            ])
+        })
+        .collect::<CheckResult<Vec<_>>>()?;
+    let fast_path = source.u32(at + 44)?;
+    assert!(fast_path <= 1, "Unknown source value fast path");
+    Ok(Program {
+        instructions,
+        constants,
+        fast_path,
+    })
+}
 
 pub(super) fn audio_evidence(
     source: &Source,
@@ -67,7 +124,7 @@ pub(super) fn dynamic(
     assert_eq!(owners.len(), 1);
     let owner = reader.read(original_graph.u32(owners[0])?)?;
     let rows = owner.array(owner.pointer(24)? + 96, 96, Some(0x8080205F))?;
-    let original = Program::read(&Graph::read(&source.0, s, 0x80803E44)?, 0, 32)?;
+    let original = source_program(source, s + 32)?;
     let unused_input = source.u8(s + 80)? == 9;
     if unused_input {
         // The source getter still executes, but the full expression never consumes it.
@@ -196,13 +253,34 @@ pub(super) fn check(
     assert_eq!(native.u8(n)?, 1);
     assert_eq!(source.bytes::<3>(s + 1)?, native.bytes::<3>(n + 1)?);
     assert_eq!(source.bytes::<24>(s + 24)?, native.bytes::<24>(n + 24)?);
-    graph(
-        reader,
-        stock,
-        emitted,
-        source.u32(s + 16)?,
-        native.u32(n + 16)?,
-    )?;
+    // An attachment to the event's other combatant, one whose graph has more owners than the
+    // dedicated one-, two- and three-owner forms, or a status led by the shared framework network
+    // is translated whole.
+    let attached = reader.read(source.u32(s + 16)?)?;
+    let owners = attached
+        .array(32, 12, Some(0x80800715))?
+        .into_iter()
+        .map(|row| attached.u32(row))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let network_led = match owners.as_slice() {
+        [0x80AA_CEA6, status] => {
+            let owner = reader.read(*status)?;
+            owner.u32(owner.pointer(24)? - 4)? == 0x80802698
+        }
+        _ => false,
+    };
+    if source.u8(s + 2)? == 3 || owners.len() > 3 || network_led {
+        let graph = attached;
+        closure::check(reader, stock, emitted, &graph, native.u32(n + 16)?)?;
+    } else {
+        graph(
+            reader,
+            stock,
+            emitted,
+            source.u32(s + 16)?,
+            native.u32(n + 16)?,
+        )?;
+    }
     player::owner(reader, stock, emitted, source, s, native, n)
 }
 
@@ -216,6 +294,9 @@ pub(super) fn graph(
 ) -> CheckResult<()> {
     let graph = reader.read(source_tag)?;
     let owners = graph.array(32, 12, Some(0x80800715))?;
+    if closure::matches(reader, &graph)? {
+        return closure::check(reader, stock, emitted, &graph, native_tag);
+    }
     if owners.len() == 3 {
         let companion = reader.read(graph.u32(owners[1])?)?;
         if companion.u32(companion.pointer(24)? - 4)? == 0x80800610 {

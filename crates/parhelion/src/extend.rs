@@ -565,6 +565,8 @@ fn build_extended_overlay_from(
         &candidate_layout,
         &shared_tag_enrollments,
     )?;
+    let inherited_unchanged =
+        inherited_blocks_unchanged(&source_bytes, &layout, &artifact, &candidate_layout)?;
 
     progress("Validating Payloads");
     let output_path = package_directory.join(&output_file_name);
@@ -589,6 +591,7 @@ fn build_extended_overlay_from(
             replacement_indices: &replacement_indices,
             append_start_entry_count,
             reserved_entry_count,
+            inherited_unchanged,
         },
     )?;
 
@@ -675,12 +678,7 @@ fn for_merge(source: &PackageD2PreBL, replacements: &[ReplacementSpec]) -> Vec<R
                     None => relaid?,
                 };
                 // A relaid entry starts with its own length when the stock entry does.
-                let word = |bytes: &[u8]| {
-                    bytes
-                        .get(..8)
-                        .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
-                };
-                if word(&stock) == Some(stock.len() as u64) && relaid.len() >= 8 {
+                if leading_word(&stock) == Some(stock.len() as u64) && relaid.len() >= 8 {
                     let length = relaid.len() as u64;
                     relaid[..8].copy_from_slice(&length.to_le_bytes());
                 }
@@ -695,9 +693,12 @@ fn for_merge(source: &PackageD2PreBL, replacements: &[ReplacementSpec]) -> Vec<R
 }
 
 /// `replacements` with their size words kept in step. Many installed entries begin with a u64
-/// holding their own length. A replacement that grows such an entry and leaves the stock length
-/// there gets its own length, as the game's entries and Sunrise Studio's have. Sunrise's merge
-/// reads the word that way, and an entry whose word disagrees can't merge with another mod's.
+/// holding their own length. A replacement of such an entry gets its own length there, as the
+/// game's entries and Sunrise Studio's have. Sunrise's merge reads the word that way, an entry
+/// whose word disagrees can't merge with another mod's, and Sundial's checked reads, the model
+/// preview's among them, refuse it. A builder may set the word partway through and grow the entry
+/// again afterwards, leaving a length that matches neither stock nor the result, so the stock
+/// entry decides whether the word is a length.
 fn with_size_words(
     source: &PackageD2PreBL,
     replacements: &[ReplacementSpec],
@@ -707,20 +708,32 @@ fn with_size_words(
         .iter()
         .map(|spec| {
             let mut spec = spec.clone();
-            let stock = entries
-                .get(spec.tag.entry_index() as usize)
-                .map(|entry| entry.file_size as u64);
-            let word = spec
-                .payload
-                .get(..8)
-                .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes")));
             let length = spec.payload.len() as u64;
-            if stock.is_some_and(|stock| stock != length && word == Some(stock)) {
+            let word = leading_word(&spec.payload);
+            if word.is_none_or(|word| word == length) {
+                return spec;
+            }
+            let index = spec.tag.entry_index() as usize;
+            let Some(stock) = entries.get(index).map(|entry| entry.file_size as u64) else {
+                return spec;
+            };
+            let sized = word == Some(stock)
+                || source
+                    .read_entry(index)
+                    .is_ok_and(|bytes| leading_word(&bytes) == Some(bytes.len() as u64));
+            if sized {
                 spec.payload[..8].copy_from_slice(&length.to_le_bytes());
             }
             spec
         })
         .collect()
+}
+
+/// The u64 an entry opens with, which many entries use for their own length.
+fn leading_word(bytes: &[u8]) -> Option<u64> {
+    bytes
+        .get(..8)
+        .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
 }
 
 fn validate_replacements(
@@ -1270,6 +1283,54 @@ struct CandidateExpectations<'a> {
     replacement_indices: &'a BTreeSet<usize>,
     append_start_entry_count: usize,
     reserved_entry_count: usize,
+    /// Whether [`inherited_blocks_unchanged`] proved every unchanged entry reads the source's
+    /// bytes, which spares decoding both packages whole.
+    inherited_unchanged: bool,
+}
+
+/// Set to decode and compare every unchanged entry of every overlay, as builds did before the
+/// inherited block rows were compared instead.
+const VERIFY_UNCHANGED_PAYLOADS: &str = "PARHELION_VERIFY_UNCHANGED_PAYLOADS";
+
+/// Whether every entry the candidate leaves at its source location reads the source's bytes,
+/// shown from the tables alone. tiger-pkg reads a block from the file of the patch its row
+/// names, at the row's offset and size, and decrypts it with the row's flags and tag under a
+/// nonce from the version and package id. Unredacted blocks need nothing else, so equal rows,
+/// equal identity fields and an equal entry location read equal bytes. A redacted block takes
+/// its key from the group field, which an overlay sets to Sundial's build signature, so a
+/// source with one is decoded whole as before. An overlay only appends block rows, so an
+/// inherited row that differs at all fails. Decoding both packages whole took up to 13 s for
+/// one large sandbox patch, and each family member built about fifteen such patches.
+fn inherited_blocks_unchanged(
+    source: &[u8],
+    layout: &PackageLayout,
+    candidate: &[u8],
+    candidate_layout: &PackageLayout,
+) -> AuthoringResult<bool> {
+    fn rows(bytes: &[u8], offset: usize, size: usize) -> AuthoringResult<&[u8]> {
+        offset
+            .checked_add(size)
+            .and_then(|end| bytes.get(offset..end))
+            .ok_or_else(|| validation("An inherited block table extends beyond its package"))
+    }
+    let size = layout
+        .block_count
+        .checked_mul(BLOCK_HEADER_SIZE)
+        .ok_or_else(|| invalid("Inherited block-table size overflowed"))?;
+    let before = rows(source, layout.block_table_offset, size)?;
+    if rows(candidate, candidate_layout.block_table_offset, size)? != before {
+        return Err(validation("Candidate changed an inherited block row"));
+    }
+    // The version, platform and package id lead the header.
+    let identity = crate::package_profile::PACKAGE_ID_OFFSET + 2;
+    if source.get(..identity) != candidate.get(..identity) {
+        return Err(validation("Candidate changed the package identity fields"));
+    }
+    const REDACTED: u16 = 0x8;
+    let redacted = before
+        .chunks_exact(BLOCK_HEADER_SIZE)
+        .any(|row| u16::from_le_bytes([row[10], row[11]]) & REDACTED != 0);
+    Ok(!redacted && std::env::var_os(VERIFY_UNCHANGED_PAYLOADS).is_none())
 }
 
 fn validate_candidate(
@@ -1285,6 +1346,7 @@ fn validate_candidate(
         replacement_indices,
         append_start_entry_count,
         reserved_entry_count,
+        inherited_unchanged,
     } = expectations;
     if append_start_entry_count
         .checked_sub(source.entries().len())
@@ -1389,6 +1451,10 @@ fn validate_candidate(
             });
     if !named_equal {
         return Err(validation("Candidate changed the named-tag table"));
+    }
+    // The entry loop above already holds every unchanged entry at its source location.
+    if inherited_unchanged {
+        return Ok(());
     }
     validate_all_unchanged_entry_payloads(
         source.entries(),

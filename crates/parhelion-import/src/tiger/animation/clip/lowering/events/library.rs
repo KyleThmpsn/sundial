@@ -87,6 +87,10 @@ impl Library {
         let frames = u32::from(lowered.u16(NATIVE_FRAMES)?);
         ensure!(frames > 0, "converted clip has no frames");
         let mut converted = Vec::new();
+        // Modern builds added sequence selectors that no paired Shadowkeep clip sends. Such a
+        // value has no established native operation, and copying its number could invoke a
+        // different one, so it is left out, as the stock counterparts leave it out.
+        let mut omitted = Vec::new();
         for record in &from.records {
             validate(source, record, true)?;
             ensure!(
@@ -100,10 +104,10 @@ impl Library {
                 .1;
             let mut bytes = source.0[record.at..record.at + size(record.class)?].to_vec();
             if record.class == RECORDS[3].0 {
-                let values = self
-                    .selectors
-                    .get(&record.data)
-                    .context("event selector has no paired native evidence")?;
+                let Some(values) = self.selectors.get(&record.data) else {
+                    omitted.push(json!({"frame":record.kind & 0xFFFF,"selector":record.data}));
+                    continue;
+                };
                 ensure!(
                     values.len() == 1,
                     "event selector has contradictory native evidence"
@@ -158,7 +162,18 @@ impl Library {
         }
         let len = lowered.0.len() as u64;
         lowered.0[..8].copy_from_slice(&len.to_le_bytes());
-        let check = events(lowered, false)?.context("converted event block is missing")?;
+        let report = json!({"events":"source sequence with validated native event formats",
+            "event_count":converted.len(),"marker_count":from.markers.len(),
+            "source_timing_preserved":true,"source_markers_preserved":true,
+            "omitted_unpaired_selectors":omitted});
+        let Some(check) = events(lowered, false)? else {
+            // Only unpaired selectors remained, so the converted clip has no event block.
+            ensure!(
+                converted.is_empty() && from.markers.is_empty(),
+                "converted event block is missing"
+            );
+            return Ok(report);
+        };
         ensure!(
             check.markers == from.markers && check.records.len() == converted.len(),
             "converted event block changed its source sequence"
@@ -178,11 +193,7 @@ impl Library {
                 );
             }
         }
-        Ok(
-            json!({"events":"source sequence with validated native event formats",
-            "event_count":converted.len(),"marker_count":from.markers.len(),
-            "source_timing_preserved":true,"source_markers_preserved":true}),
-        )
+        Ok(report)
     }
 }
 

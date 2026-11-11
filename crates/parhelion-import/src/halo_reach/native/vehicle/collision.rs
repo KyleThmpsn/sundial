@@ -47,6 +47,7 @@ pub(super) fn build(
     assembly: &mut Assembly,
     scene: &Scene,
     bones: &Value,
+    mass_scale: f32,
 ) -> Result<Value> {
     let mut selected = body::physical(scene)?;
     // The initial active body keeps the carrier's primary name. All solid rows
@@ -65,8 +66,11 @@ pub(super) fn build(
     let mut groups = Vec::new();
     let mut solids = Vec::new();
     let mut initial_mass = 0.;
+    let center = body::initial_center(scene)?;
     for part in selected {
-        let properties = body::properties(scene, part.body)?;
+        let properties = body::properties(scene, part.body)?
+            .scaled(mass_scale)
+            .about(center);
         if part
             .condition
             .as_ref()
@@ -128,11 +132,7 @@ pub(super) fn build(
     let count = solids.len() + hits.len();
     let rows = damage::array(payload, definition + 0x388, 0x80808c07, 0x90, count)?;
     let damage_source = &scene.object.gameplay["damage"];
-    let main = usize::try_from(
-        damage_source["indirect_section"]
-            .as_u64()
-            .context("Source indirect damage section")?,
-    )?;
+    let main = super::damage::primary_section(damage_source)?;
     let main_name = damage_source["sections"][main]["name"]
         .as_str()
         .context("Source primary damage section")?;

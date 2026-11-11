@@ -193,13 +193,10 @@ impl Workbench {
             });
         self.diagnostics_open = open;
         if merge {
-            let mut changed = recipe.clone();
+            let mut changed = recipe;
             match preflight::consolidate(&mut changed, self.consolidation.0, self.consolidation.1) {
                 Ok(()) => {
-                    let document = &mut self.documents[self.selected];
-                    document.history.record_step(recipe);
-                    document.recipe = changed;
-                    document.modified = Some(SystemTime::now());
+                    self.documents[self.selected].commit_step(changed);
                     self.persist_drafts();
                 }
                 Err(error) => self.error = Some(error),

@@ -104,6 +104,7 @@ impl Projectile {
         &self,
         manager: &PackageManager,
         packages: &mut crate::asset_packages::AssetPackages,
+        shared: &mut assets::Shared,
     ) -> AuthoringResult<(TagHash, Vec<TagHash>)> {
         let entities = self
             .nodes
@@ -121,6 +122,7 @@ impl Projectile {
             &entities,
             manager,
             packages,
+            (|_: &Node| true, shared),
             |_| Ok(BTreeMap::new()),
             |_, _, _| Ok(()),
         )?;

@@ -88,14 +88,7 @@ impl SundialApp {
         let mut document = if artifact_context && self.document.native_account().is_some() {
             self.draw_artifact_context(ui)
         } else {
-            self.progression_ui
-                .cached_view
-                .take()
-                .filter(|(character, _)| *character == self.selected_character)
-                .map_or_else(
-                    || self.document.progression_view(self.selected_character),
-                    |(_, document)| document,
-                )
+            self.take_progression_view()
         };
         let changed = match self.progression_section {
             ProgressionSection::Vendors | ProgressionSection::Missions => false,
@@ -147,7 +140,26 @@ impl SundialApp {
                 false,
             );
         } else if self.progression_section != ProgressionSection::Seasonal {
-            self.progression_ui.cached_view = Some((self.selected_character, document));
+            self.keep_progression_view(document);
         }
+    }
+
+    /// The selected character's progression view, kept between frames until an account edit or
+    /// another character drops it. Building one copies a JSON account, or assembles a native
+    /// account's progression and context, so the page and the Inspector share it.
+    pub(in crate::app) fn take_progression_view(&mut self) -> serde_json::Value {
+        self.progression_ui
+            .cached_view
+            .take()
+            .filter(|(character, _)| *character == self.selected_character)
+            .map_or_else(
+                || self.document.progression_view(self.selected_character),
+                |(_, document)| document,
+            )
+    }
+
+    /// Keeps a view from [`Self::take_progression_view`] that was drawn without a change.
+    pub(in crate::app) fn keep_progression_view(&mut self, document: serde_json::Value) {
+        self.progression_ui.cached_view = Some((self.selected_character, document));
     }
 }

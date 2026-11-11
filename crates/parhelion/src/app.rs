@@ -79,7 +79,7 @@ use crate::recipe::VariableDamageRecipe;
 use crate::runtime::{RuntimeGraphKey, load_effective_runtime_graph};
 use crate::workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildFailure, BuildPhase, BuildProgress, BuildReport,
-    build_and_stage_snapshot_reporting, default_backup_root, default_staging_root,
+    build_and_stage_snapshot_skipping, default_backup_root, default_staging_root,
 };
 use crate::{
     CombatProfileAction, HexHash, ItemKind, RecipeAmmoType, RecipeLibrary, RecipeLibraryEntry,
@@ -129,6 +129,8 @@ struct PackageAuthoringApp {
     installed: installed::Installed,
     build_selection_query: String,
     recipe_library: Option<RecipeLibrary>,
+    /// The library's first read, while its worker runs. The library stays unset until it lands.
+    library_load: Option<Receiver<document::LibraryLoad>>,
     recipe_entries: Vec<RecipeLibraryEntry>,
     /// The maps folder's recipes, none without the D2 model importer.
     map_entries: Vec<crate::recipe_library::MapLibraryEntry>,
@@ -142,6 +144,7 @@ struct PackageAuthoringApp {
     build_receiver: Option<Receiver<BuildWorkerEvent>>,
     build_invalidated: bool,
     build_progress: Option<TimedBuildProgress>,
+    build_fraction: build_status::BuildFraction,
     build_activity: build_status::Activity,
     install_status: build_status::InstallStatus,
     build_started: Option<Instant>,
@@ -161,6 +164,12 @@ struct PackageAuthoringApp {
     play_preview_animations: bool,
     load_preview_models: bool,
     ability_notice_dismissed: bool,
+    /// Whether builds put every item in the Parhelion mod.
+    one_mod: bool,
+    /// Whether imported items in the Parhelion mod take their source game's badge.
+    source_badges: bool,
+    /// What an import does with a saved recipe that was edited since its own conversion.
+    reimport_edits: crate::preferences::ReimportEdits,
     preferences_open: bool,
     preferences_error: Option<String>,
     perk_workbench: custom_perks::workbench::Workbench,
@@ -338,6 +347,7 @@ impl Default for PackageAuthoringApp {
             installed: installed::Installed::default(),
             build_selection_query: String::new(),
             recipe_library,
+            library_load: None,
             recipe_entries,
             map_entries: Vec::new(),
             #[cfg(feature = "d2-model-importer")]
@@ -349,6 +359,7 @@ impl Default for PackageAuthoringApp {
             build_receiver: None,
             build_invalidated: false,
             build_progress: None,
+            build_fraction: build_status::BuildFraction::default(),
             build_activity: build_status::Activity::default(),
             install_status: build_status::InstallStatus::default(),
             build_started: None,
@@ -365,6 +376,9 @@ impl Default for PackageAuthoringApp {
             play_preview_animations: backup_preferences.play_preview_animations,
             load_preview_models: backup_preferences.load_preview_models,
             ability_notice_dismissed: backup_preferences.ability_notice_dismissed,
+            one_mod: backup_preferences.one_mod,
+            source_badges: backup_preferences.source_badges,
+            reimport_edits: backup_preferences.reimport_edits,
             preferences_open: false,
             preferences_error: None,
             perk_workbench: custom_perks::workbench::Workbench::default(),
@@ -492,6 +506,7 @@ impl PackageAuthoringApp {
         self.poll_replacement_review();
         self.poll_uninstall();
         self.poll_upgrade();
+        self.poll_library_load();
         self.refresh_installed(ctx);
         self.poll_runtime_donors();
         self.poll_technical_markers();
@@ -522,7 +537,7 @@ impl PackageAuthoringApp {
         if !self.catalog_load_requested && self.install_receiver.is_none() {
             self.start_catalog_load(ctx);
         }
-        if self.catalog_is_loading() {
+        if self.catalog_is_loading() || self.library_load.is_some() {
             self.draw_catalog_loading_screen(ui);
             self.draw_activity_log_window(ctx);
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -595,6 +610,7 @@ impl PackageAuthoringApp {
         self.draw_activity_editor(ctx);
         self.synchronize_recipe_dirty();
         self.follow_appearance_preview(ctx);
+        self.recipe_save_shortcut(ctx);
         self.recipe_history_shortcuts(ctx);
         self.record_recipe_history(ctx);
         if self.has_background_work() {
@@ -613,11 +629,20 @@ impl PackageAuthoringApp {
             .logo
             .get_or_insert_with(|| load_parhelion_logo_texture(ui.ctx()))
             .clone();
-        let progress = self.catalog_progress.unwrap_or(CatalogLoadProgress {
-            message: "Loading weapon catalog…",
-            completed: 0,
-            total: 0,
-        });
+        // The recipe library reads beside the catalog, and only its own read can outlast it.
+        let progress = if self.library_load.is_some() && !self.catalog_is_loading() {
+            CatalogLoadProgress {
+                message: "Reading recipe library…",
+                completed: 0,
+                total: 0,
+            }
+        } else {
+            self.catalog_progress.unwrap_or(CatalogLoadProgress {
+                message: "Loading weapon catalog…",
+                completed: 0,
+                total: 0,
+            })
+        };
         draw_catalog_loading_view(
             ui,
             &logo,
@@ -819,6 +844,9 @@ impl PackageAuthoringApp {
             play_preview_animations: self.play_preview_animations,
             load_preview_models: self.load_preview_models,
             ability_notice_dismissed: self.ability_notice_dismissed,
+            one_mod: self.one_mod,
+            source_badges: self.source_badges,
+            reimport_edits: self.reimport_edits,
             ..ParhelionPreferences::default()
         };
         match preferences.save_default() {

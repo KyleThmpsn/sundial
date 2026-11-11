@@ -99,6 +99,45 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The workspace declares Rust 1.95 as its minimum, and the README tells builders so. This
+  # checks the release configuration with exactly that toolchain, which the pin would otherwise
+  # never exercise.
+  minimum-rust:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check Out Source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust 1.95
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --no-self-update
+          rustup override set 1.95.0
+
+      - name: Install Build Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            pkg-config \
+            libgl1-mesa-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev
+
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: minimum-rust-${{ runner.os }}
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream' }}
+
+      - name: Check Sundial and Parhelion with Rust 1.95
+        run: cargo check --release --workspace --locked
+
   windows:
     runs-on: windows-2022
 

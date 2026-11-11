@@ -18,12 +18,12 @@
 //!
 //! The model draws through stock grass's vertex layout 71: one 32-byte stream of 16-bit signed
 //! normalized position, an anchor offset, texture coordinates, normal, a second anchor offset,
-//! tangent and four bytes of wind weights, then the instance stream. Its surfaces copy a stock grass
-//! technique pair, the deferred surface and the alpha-tested depth prepass, binding the set's
-//! texture in place of the stock albedo and opening the alpha test at half, as Reach's decorator
-//! program clips. They draw no shadow, as converted alpha-tested statics do not, and as stock
-//! grass leaves some of its types out of the shadow stage. Destiny lights them as dynamic
-//! surfaces, where Reach multiplied each instance by its baked light.
+//! tangent and four bytes of wind weights, then the instance stream. Its surfaces copy stock grass's
+//! deferred surface technique, binding the set's texture in place of every stock texture and
+//! opening the alpha test at half, as Reach's decorator program clips. They draw in no depth
+//! prepass and cast no shadow, as converted alpha-tested statics do not, and as stock grass leaves
+//! some of its types out of the shadow stage. Destiny lights them as dynamic surfaces, with each
+//! instance's baked luminance mapped through the same visibility reference as scenery and objects.
 use super::{Graph, Payload, Reader, Visible, put};
 use crate::{
     halo_reach::{cache::Cache, material::Mapping, native, resource::Pages},
@@ -117,11 +117,13 @@ const MESH_PARTS: usize = 0x18;
 const MESH_RANGES: usize = 0x28;
 const MESH_LAYOUTS: usize = 0x58;
 const PART_SIZE: usize = 32;
-/// The stages the decorator parts draw in, the deferred surface and the depth prepass, the
-/// render stages a stage range spans, and stock grass's vertex layout, which every stage of its
-/// model names.
+/// The stage the decorator parts draw in, the deferred surface, the render stages a stage range
+/// spans, and stock grass's vertex layout, which every stage of its model names.
+///
+/// Stock grass also draws each type in the depth prepass (stage 12) through technique `80F7BAF6`,
+/// whose pixel program lives in another of Distant Shore's activity packages. The copies draw
+/// their surface alone, as stock alpha-tested statics do, so the map loads one stock technique.
 const SURFACE_STAGE: usize = 0;
-const DEPTH_STAGE: usize = 12;
 const STAGES: usize = 23;
 const LAYOUT: u16 = 71;
 const TRIANGLE_LIST: u16 = 3;
@@ -138,12 +140,16 @@ const VERTEX_CONSTANTS: usize = 0x98;
 /// weights, row 5's z sways every vertex along the world's y axis by its height, which would
 /// wobble pebbles and rocks, so the copies zero them.
 const WIND_ROWS: std::ops::Range<usize> = 4..8;
-/// Pixel constant rows: the alpha threshold in x, the albedo multiplier, and the normal and
-/// detail normal decodes, whose z lanes add to the ambient occlusion.
+/// Pixel constant rows: alpha threshold, albedo scale and floor, flat normal decodes,
+/// alpha-derived smoothness and blue-derived material visibility. Reach's decorator texture
+/// carries diffuse colour and cutout coverage, not the stock grass's material masks.
 const ALPHA_ROW: usize = 16;
 const ALBEDO_ROW: usize = 18;
+const ALBEDO_MIN_ROW: usize = 19;
 const NORMAL_ROW: usize = 21;
 const DETAIL_ROW: usize = 23;
+const SMOOTHNESS_ROW: usize = 24;
+const VISIBILITY_ROW: usize = 25;
 /// Reach's decorator pixel program discards texels whose alpha falls below half.
 const ALPHA_TEST: f32 = 0.5;
 /// The most clusters one record holds, and the side of the first cell its clusters try, in
@@ -151,18 +157,49 @@ const ALPHA_TEST: f32 = 0.5;
 /// lists hold at most 65,535. Distant Shore's grass clusters span 2 to 10 m.
 const MAX_CLUSTERS: usize = 4096;
 const CELL: f32 = 8.;
-/// The shortest fade end and fade the level of detail records take, in meters, where a set's own
-/// are shorter or unreadable. Stock grass fades out over 10 m, the nearest by 70 m.
-const MIN_FADE_END: f32 = 40.;
-const MIN_FADE: f32 = 5.;
+/// How much farther than its authored distances a Reach decorator draws. Reach scales the camera's
+/// distance by `1.71867 * tan(vertical field of view / 2)` before it reads a set's transitions,
+/// 0.78287 at MCC's default 78 degree horizontal view on a 16:9 screen.
+const VIEW_SCALE: f32 = 1.277_35;
+/// The shortest fade out the level of detail records take, in meters, and the distances they
+/// take where a set's transitions are unreadable.
+const MIN_FADE: f32 = 1.;
 const DEFAULT_BANDS: [f32; 4] = [5., 20., 60., 70.];
+/// An instance's native visibility is repeated in all four bytes of its mapped row.
+const OCCLUSION_STRIDE: u16 = 4;
+
+/// The level's decorator occlusion: the buffer holding each instance's ambient visibility, and
+/// each record's symbol, instance header identity and first instance there. A bubble's occlusion
+/// record (`80807268`) maps an identifier to a buffer and an offset through its three mapping
+/// arrays, and Distant Shore's maps its grass record's instance header identity in the third
+/// (`+0x38` buffer, `+0x40` rows), whose 11,520 four-byte rows match that record's instances.
+/// The grass vertex program reads the row as `BLENDINDICES0` and passes its `w` to the surface's
+/// third target, the ambient visibility `W` that the deferred lighting programs scale direct light
+/// by as `W^0.7` and ambient light by as `W^2`. A map whose record mapped no row drew every blade
+/// black in full sun.
+/// Shadowkeep 86657's binding routine at RVA 11634D0 adds the draw's instance index to the mapping
+/// before multiplying by the four-byte stride. The mapping therefore stores rows, not bytes.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Occlusion {
+    pub buffer: String,
+    pub records: Vec<(String, u64, u32)>,
+}
+
+/// Source instances retain absolute irradiance. The reference uses normalized atlas units,
+/// as map surfaces and object probes do, so convert the instance before comparing them.
+fn visibility(light: f32, open: Option<f32>, source_level: f32) -> u8 {
+    let value =
+        crate::halo_reach::native::lighting::visibility(light / source_level, open.unwrap_or(1.));
+    (value * 255.).round() as u8
+}
 
 /// Stock records the map's decorators copy, from Distant Shore (`pvp_greenhouse_2`, package
 /// `0358`), whose second decorator draws 11,520 grass instances of 42 types through one model:
 /// its placement table and decorator entity, its record, instance header, constants, instance
 /// buffer header, instance rows and bounds, its model row and level of detail record, its grass
-/// model, whose first mesh's buffer headers the models copy, and the technique pair of its first
-/// type, whose programs read layout 71 and the instance stream.
+/// model, whose first mesh's buffer headers the models copy, the surface technique of its first
+/// type, whose programs read layout 71 and the instance stream, and the header of its occlusion
+/// record's third buffer, which holds each grass instance's ambient visibility ([`Occlusion`]).
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct Templates {
     pub table: u32,
@@ -177,7 +214,7 @@ pub struct Templates {
     pub lod: u32,
     pub model: u32,
     pub surface: u32,
-    pub depth: u32,
+    pub occlusion: u32,
 }
 
 impl Templates {
@@ -194,7 +231,7 @@ impl Templates {
         lod: 0x80EB_030E,
         model: 0x80EB_030D,
         surface: 0x80FE_1883,
-        depth: 0x80F7_BAF6,
+        occlusion: 0x80EB_0393,
     };
 
     /// The stock templates, when `class` finds each tag with its expected class. A buffer
@@ -214,7 +251,7 @@ impl Templates {
             (stock.lod, Some(LOD_CLASS), "level of detail record"),
             (stock.model, Some(MODEL_CLASS), "model"),
             (stock.surface, Some(TECHNIQUE_CLASS), "surface technique"),
-            (stock.depth, Some(TECHNIQUE_CLASS), "depth technique"),
+            (stock.occlusion, None, "occlusion buffer"),
         ] {
             match class(tag) {
                 Some(found) if expected.is_none_or(|expected| expected == found) => {}
@@ -230,18 +267,19 @@ impl Templates {
     }
 
     /// The stock tags a container placing these decorators loads, as Distant Shore's loads its
-    /// own: the decorator entity its rows place and the techniques whose programs, textures and
-    /// samplers the copies name.
-    pub fn loads(&self) -> [u32; 3] {
-        [self.entity, self.surface, self.depth]
+    /// own: the decorator entity its rows place and the technique whose programs and samplers the
+    /// copies name.
+    pub fn loads(&self) -> [u32; 2] {
+        [self.entity, self.surface]
     }
 }
 
 /// The decorator records [`add`] wrote: each area's records by symbol, with their clusters as
-/// its tome's Umbra objects, and the report.
+/// its tome's Umbra objects, the report, and the records' occlusion when there are any.
 pub(super) struct Added {
     pub areas: Vec<(Vec<String>, Vec<Visible>)>,
     pub report: Value,
+    pub occlusion: Option<Occlusion>,
 }
 
 fn floats(values: &[f32]) -> Vec<u8> {
@@ -281,55 +319,80 @@ fn perpendicular(n: [f32; 3]) -> [f32; 3] {
     unit(std::array::from_fn(|k| axis[k] - along * n[k])).unwrap_or([0., 0., 1.])
 }
 
-/// The four distances of type `kind`'s level of detail row from its set's fade distances: the
-/// first mesh until Reach's first model is gone, the coarsest mesh from where Reach's second is
-/// gone, and the fourth model's fade as the fade out. A fade that ends nearer than [`MIN_FADE_END`]
-/// moves out to it, keeping its width of at least [`MIN_FADE`], and unreadable distances take
+/// The four distances of type `kind`'s level of detail row from its set's transitions, each
+/// scaled by [`VIEW_SCALE`] and moved out by the kind's grid radius, since Reach measures from a
+/// grid's bounding sphere. The last transition, the fade out of the set's last valid model, is the
+/// fade out, at least [`MIN_FADE`] wide. The first mesh gives way where Reach's first cross-fade
+/// starts, and the coarsest mesh is reached where its first (two models) or second (three or four)
+/// ends. With four models the third is drawn until the fade out. Unreadable transitions take
 /// [`DEFAULT_BANDS`].
 fn bands(kind: &Kind) -> [f32; 4] {
-    let fades = kind.fades;
-    if !fades
+    let rows = &kind.transitions;
+    let Some(&[fade_start, fade_end]) = rows.last() else {
+        return DEFAULT_BANDS;
+    };
+    if !rows
         .iter()
         .flatten()
+        .chain([&kind.grid])
         .all(|value| value.is_finite() && *value >= 0.)
-        || fades[3][1] <= 0.
+        || fade_end <= 0.
     {
         return DEFAULT_BANDS;
     }
-    let near = fades[0][1].max(1.);
-    let middle = fades[1][1].max(near);
-    let width = (fades[3][1] - fades[3][0]).max(MIN_FADE);
-    let end = fades[3][1].max(MIN_FADE_END).max(middle + width);
-    let start = (end - width).max(middle);
-    [near, middle, start, end]
+    let far = |distance: f32| distance * VIEW_SCALE + kind.grid;
+    let end = far(fade_end);
+    let start = far(fade_start).min(end - MIN_FADE).max(0.);
+    let (near, middle) = match rows.as_slice() {
+        [] | [_] => (start, start),
+        [first, _] => (far(first[0]), far(first[1])),
+        [first, second, ..] => (far(first[0]), far(second[1])),
+    };
+    let middle = middle.min(start);
+    [near.min(middle), middle, start, end]
 }
 
-/// Copies stock technique `template`, binding `texture` in its pixel stage's slot 0, opening
-/// its alpha test at [`ALPHA_TEST`] and stilling its wind ([`WIND_ROWS`]). A `surface` copy
-/// also takes the texture's color unscaled and a flat normal with no ambient occlusion from the
-/// stock normal maps it still names.
+/// Copies stock surface technique `template`, binding `texture` in each of its pixel stage's
+/// slots, opening its alpha test at [`ALPHA_TEST`] and stilling its wind ([`WIND_ROWS`]). The copy
+/// takes the texture's color unscaled and a flat normal with no ambient occlusion, so its decode
+/// rows discard what slots 1 and 2, the stock normal and detail normal maps, sample. The copy binds
+/// the texture there too and names no stock texture. Stock grass keeps those maps in
+/// `w64_environments` packages that a converted map's activity need not load, and the renderer
+/// resolves every bound texture, sampled or not, faulting on one whose payload is not resident.
+/// The copy keeps the template's state bytes, rasterizer row 1 (both faces) and the stage's blend.
 fn technique(
     native: &mut Reader,
     graph: &mut Graph,
     template: u32,
     texture: &str,
     symbol: &str,
-    surface: bool,
 ) -> Result<()> {
     let payload = native
         .tag(template, Some(TECHNIQUE_CLASS))
         .context("Decorator technique template")?;
     let mut bytes = payload.0.clone();
-    let slot = payload
-        .array(PIXEL_TEXTURES, 8, Some(TEXTURE_ROW_CLASS))?
-        .into_iter()
-        .find(|&row| payload.u32(row).ok() == Some(0))
-        .context("The decorator technique template binds no texture in slot 0")?;
-    put(&mut bytes, slot + 4, &u32::MAX.to_le_bytes())?;
-    let rows = payload.array(PIXEL_CONSTANTS, 16, Some(FLOAT4_CLASS as u32))?;
-    let needed = if surface { DETAIL_ROW } else { ALPHA_ROW };
+    let slots = payload.array(PIXEL_TEXTURES, 8, Some(TEXTURE_ROW_CLASS))?;
+    let mut bound = BTreeSet::new();
+    for &row in &slots {
+        bound.insert(payload.u32(row)?);
+    }
     ensure!(
-        rows.len() > needed,
+        bound.contains(&0),
+        "The decorator technique template binds no texture in slot 0"
+    );
+    ensure!(
+        bound.iter().all(|slot| (0..=2).contains(slot)),
+        "The decorator technique template binds textures in slots {bound:?}, beyond the albedo and \
+         the normal maps its copy discards"
+    );
+    let mut patches = Vec::new();
+    for &row in &slots {
+        put(&mut bytes, row + 4, &u32::MAX.to_le_bytes())?;
+        patches.push(json!({"offset": row + 4, "symbol": texture}));
+    }
+    let rows = payload.array(PIXEL_CONSTANTS, 16, Some(FLOAT4_CLASS as u32))?;
+    ensure!(
+        rows.len() > VISIBILITY_ROW,
         "The decorator technique template holds {} pixel constant rows",
         rows.len()
     );
@@ -343,19 +406,16 @@ fn technique(
     for row in WIND_ROWS {
         put(&mut bytes, vertex_rows[row], &[0; 16])?;
     }
-    if surface {
-        put(&mut bytes, rows[ALBEDO_ROW], &floats(&[1.; 4]))?;
-        for row in [NORMAL_ROW, DETAIL_ROW] {
-            put(&mut bytes, rows[row], &floats(&[0., 0., 1., 0.]))?;
-        }
+    put(&mut bytes, rows[ALBEDO_ROW], &floats(&[1.; 4]))?;
+    put(&mut bytes, rows[ALBEDO_MIN_ROW], &[0; 16])?;
+    for row in [NORMAL_ROW, DETAIL_ROW] {
+        put(&mut bytes, rows[row], &floats(&[0., 0., 1., 0.]))?;
     }
-    graph.add(
-        symbol,
-        template,
-        &bytes,
-        None,
-        vec![json!({"offset": slot + 4, "symbol": texture})],
-    )
+    put(&mut bytes, rows[SMOOTHNESS_ROW], &[0; 16])?;
+    // The stock pixel program writes Y = 0.5 * saturate(bias + scale * albedo.blue).
+    // Neutral Y preserves the instance visibility without treating source colour as occlusion.
+    put(&mut bytes, rows[VISIBILITY_ROW], &floats(&[1., 0., 0., 0.]))?;
+    graph.add(symbol, template, &bytes, None, patches)
 }
 
 /// One layout 71 vertex of `vertex`, under the model's position and texture coordinate scales:
@@ -418,8 +478,8 @@ fn buffer(
     Ok(symbol)
 }
 
-/// The surface and depth techniques each kind draws with.
-type Techniques = Vec<(String, String)>;
+/// The surface technique each kind draws with.
+type Techniques = Vec<String>;
 
 /// One mesh's vertex and index bytes, and each kind's first index and index count.
 type Streams = (Vec<u8>, Vec<u8>, Vec<(u32, u32)>);
@@ -544,40 +604,28 @@ fn model(
     )?;
     let mut patches = Vec::new();
     let mut meshes = Vec::with_capacity(DETAILS);
-    // Each part's running index over the model, kind by kind and stage by stage, as stock grass
-    // numbers its parts.
+    // Each part's running index over the model, kind by kind, as stock grass numbers its parts.
     let mut index = 0u16;
     for detail in 0..DETAILS {
         let (vertices, indices, ranges) =
             detail_streams(kinds, detail, center, scale, (uv_center, uv_scale), name)?;
-        let mut parts = Vec::with_capacity(kinds.len() * 2);
-        let mut part_techniques = Vec::with_capacity(kinds.len() * 2);
-        let mut numbers = vec![[0u16; 2]; kinds.len()];
-        for slot in &mut numbers {
-            *slot = [index, index + 1];
-            index += 2;
-        }
-        for (stage, which) in [(SURFACE_STAGE, 0), (DEPTH_STAGE, 1)] {
-            for (group, (&(first, count), techniques)) in ranges.iter().zip(techniques).enumerate()
-            {
-                let mut part = vec![0u8; PART_SIZE];
-                put(&mut part, 0, &u32::MAX.to_le_bytes())?;
-                put(&mut part, 4, &u16::MAX.to_le_bytes())?;
-                put(&mut part, 6, &TRIANGLE_LIST.to_le_bytes())?;
-                put(&mut part, 8, &first.to_le_bytes())?;
-                put(&mut part, 12, &count.to_le_bytes())?;
-                put(&mut part, 16, &(count / 3).to_le_bytes())?;
-                put(&mut part, 20, &u16::try_from(group)?.to_le_bytes())?;
-                put(&mut part, 22, &numbers[group][which].to_le_bytes())?;
-                part[28] = 0x7F;
-                part[29] = 1;
-                parts.push((stage, part));
-                part_techniques.push(if which == 0 {
-                    techniques.0.clone()
-                } else {
-                    techniques.1.clone()
-                });
-            }
+        let mut parts = Vec::with_capacity(kinds.len());
+        let mut part_techniques = Vec::with_capacity(kinds.len());
+        for (group, (&(first, count), technique)) in ranges.iter().zip(techniques).enumerate() {
+            let mut part = vec![0u8; PART_SIZE];
+            put(&mut part, 0, &u32::MAX.to_le_bytes())?;
+            put(&mut part, 4, &u16::MAX.to_le_bytes())?;
+            put(&mut part, 6, &TRIANGLE_LIST.to_le_bytes())?;
+            put(&mut part, 8, &first.to_le_bytes())?;
+            put(&mut part, 12, &count.to_le_bytes())?;
+            put(&mut part, 16, &(count / 3).to_le_bytes())?;
+            put(&mut part, 20, &u16::try_from(group)?.to_le_bytes())?;
+            put(&mut part, 22, &index.to_le_bytes())?;
+            index += 1;
+            part[28] = 0x7F;
+            part[29] = 1;
+            parts.push((SURFACE_STAGE, part));
+            part_techniques.push(technique.clone());
         }
         let vertices_symbol = buffer(
             native,
@@ -724,17 +772,26 @@ pub(super) fn add(
     membership: &dyn Fn(u32) -> u64,
     offset: [f32; 3],
     areas: usize,
+    open: Option<f32>,
+    source_level: f32,
 ) -> Result<Added> {
+    ensure!(
+        source_level.is_finite() && source_level > 0.,
+        "The decorator lighting normalization must be finite and positive"
+    );
     let Instanced { kinds, placements } = instanced;
     let mut added = Added {
         areas: vec![(Vec::new(), Vec::new()); areas],
         report: json!({"mode": "native", "records": [], "kinds": []}),
+        occlusion: None,
     };
     if placements.is_empty() {
         return Ok(added);
     }
-    // Each set's techniques, which its kinds share.
-    let mut sets = BTreeMap::<String, (String, String)>::new();
+    let mut occlusion_rows = Vec::with_capacity(placements.len() * usize::from(OCCLUSION_STRIDE));
+    let mut occlusion_records = Vec::new();
+    // Each set's technique, which its kinds share.
+    let mut sets = BTreeMap::<String, String>::new();
     let mut techniques = Vec::with_capacity(kinds.len());
     for kind in &kinds {
         if !sets.contains_key(&kind.set.path) {
@@ -750,14 +807,9 @@ pub(super) fn add(
             let texture =
                 native::material::texture(cache, pages, native, graph, &mapping, false, true)
                     .with_context(|| format!("Decorator set {} texture", kind.set.path))?;
-            let set = sets.len();
-            let pair = (
-                format!("decorator-surface{set}"),
-                format!("decorator-depth{set}"),
-            );
-            technique(native, graph, templates.surface, &texture, &pair.0, true)?;
-            technique(native, graph, templates.depth, &texture, &pair.1, false)?;
-            sets.insert(kind.set.path.clone(), pair);
+            let surface = format!("decorator-surface{}", sets.len());
+            technique(native, graph, templates.surface, &texture, &surface)?;
+            sets.insert(kind.set.path.clone(), surface);
         }
         techniques.push(sets[&kind.set.path].clone());
     }
@@ -862,7 +914,8 @@ pub(super) fn add(
                         json!({
                             "set": kinds[kind].set.path,
                             "type": kinds[kind].index,
-                            "fades": kinds[kind].fades,
+                            "transitions": kinds[kind].transitions,
+                            "grid": kinds[kind].grid,
                             "bands": distances[k],
                             "radius": radii[k],
                             "triangles": kinds[kind].details.iter().map(|primitives| {
@@ -1015,11 +1068,21 @@ pub(super) fn add(
                 .tag(templates.header, Some(HEADER_CLASS))
                 .context("Decorator instance header template")?;
             let mut header = header_template.0.clone();
-            put(
-                &mut header,
-                HEADER_IDENTITY,
-                &fnv1a64(&format!("parhelion/decorators/{name}")).to_le_bytes(),
-            )?;
+            let identity = fnv1a64(&format!("parhelion/decorators/{name}"));
+            put(&mut header, HEADER_IDENTITY, &identity.to_le_bytes())?;
+            occlusion_records.push((
+                name.clone(),
+                identity,
+                u32::try_from(occlusion_rows.len() / usize::from(OCCLUSION_STRIDE))?,
+            ));
+            for &index in &ordered {
+                let byte = visibility(
+                    placements[members[index].placement].light,
+                    open,
+                    source_level,
+                );
+                occlusion_rows.extend([byte; OCCLUSION_STRIDE as usize]);
+            }
             for at in [HEADER_CONSTANTS, HEADER_BUFFER, HEADER_DATA] {
                 put(&mut header, at, &u32::MAX.to_le_bytes())?;
             }
@@ -1170,6 +1233,29 @@ pub(super) fn add(
         "instances": placements.len() - unloaded,
         "unloaded": unloaded,
         "sets": sets.keys().collect::<Vec<_>>(),
+        "open_light": open,
+        "source_light_level": source_level,
+        "visibility": occlusion_rows.iter().step_by(usize::from(OCCLUSION_STRIDE)).fold(
+            [u8::MAX, 0], |[low, high], &byte| [low.min(byte), high.max(byte)]),
     });
+    if !occlusion_records.is_empty() {
+        let template = native.tag(templates.occlusion, None)?;
+        ensure!(
+            template.u16(4)? == OCCLUSION_STRIDE,
+            "The decorator occlusion buffer template's rows are not {OCCLUSION_STRIDE} bytes"
+        );
+        let buffer = buffer(
+            native,
+            graph,
+            templates.occlusion,
+            &occlusion_rows,
+            "decorator-occlusion",
+            false,
+        )?;
+        added.occlusion = Some(Occlusion {
+            buffer,
+            records: occlusion_records,
+        });
+    }
     Ok(added)
 }

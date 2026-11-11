@@ -6,6 +6,8 @@ mod files;
 mod handoff;
 mod helper;
 mod release;
+#[cfg(test)]
+mod tests;
 mod transaction;
 mod view;
 
@@ -41,6 +43,7 @@ pub(crate) enum UpdateStatus {
 enum InstallState {
     Idle,
     Downloading,
+    Canceling,
     Ready(Prepared),
     Preparing,
     Waiting(Handoff),
@@ -130,6 +133,12 @@ impl UpdateCheck {
             }
         };
         self.worker = None;
+        if matches!(self.install, InstallState::Canceling) {
+            // A download that finished just before cancellation can still own the update lock.
+            drop(result);
+            self.install = InstallState::Failed("Download canceled.".into());
+            return;
+        }
         self.install = match result {
             Ok(Work::Downloaded(prepared)) => InstallState::Ready(prepared),
             Ok(Work::Prepared(handoff)) => InstallState::Waiting(handoff),

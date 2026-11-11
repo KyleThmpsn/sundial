@@ -8,13 +8,25 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 pub mod animation;
+mod camera;
 pub mod completion;
 mod condition;
+mod feedback;
 pub mod hud;
 pub mod input;
+mod locator;
 mod numeric;
+pub mod owner;
+pub mod particle;
 mod plan;
+mod profile;
+mod program;
+pub mod query;
+mod signal;
 pub mod sound;
+pub mod spawn;
+mod table;
+pub use locator::Locators;
 pub use plan::{ActionKey, Bindings, Plan, Prepared};
 
 /// A checked event body still needs its containing graph to allocate this private resource.
@@ -157,7 +169,9 @@ impl Topology {
             classes,
             visited: BTreeSet::new(),
         };
-        let root = tree.node(0, 0, -1, 0)?;
+        let root = tree
+            .node(0, 0, -1, 0, false)?
+            .context("Source sequence root has no children")?;
         ensure!(
             tree.visited.len() == self.tables.iter().map(Vec::len).sum::<usize>(),
             "Source sequence contains unreachable nodes"
@@ -239,8 +253,11 @@ impl Topology {
                 put(&mut output.0, to + 0x10, &source.bytes::<4>(from)?)?;
                 if field == 0x158 {
                     // Control kinds are qualified independently of external event kinds.
-                    // Keep the source repeat byte without copying an external dispatch ID.
-                    put(&mut output.0, to + 0x32, &source.bytes::<2>(from + 0x1E)?)?;
+                    // Keep the source bytes after the kind byte without copying an external
+                    // dispatch ID. Source `+1D` and native `+31` hold the same unnamed control
+                    // byte, with matching value populations in both builds (0 to 10, 20, 50,
+                    // 160, 231 and 255). The repeat byte follows it.
+                    put(&mut output.0, to + 0x31, &source.bytes::<3>(from + 0x1D)?)?;
                     if source.u32(from - 4)? == 0x80800757 {
                         let maximum = condition::exclusive_maximum(source.f32(from + 0x44)?);
                         put(&mut output.0, to + 0x5C, &maximum.to_le_bytes())?;
@@ -286,13 +303,15 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
+    /// A source node, or none for an empty control that a parallel parent can leave out.
     fn node(
         &mut self,
         domain: usize,
         index: usize,
         parent: i16,
         depth: usize,
-    ) -> Result<native::Node> {
+        parallel: bool,
+    ) -> Result<Option<native::Node>> {
         ensure!(
             depth < 256,
             "Source sequence nesting exceeds the translation limit"
@@ -336,24 +355,52 @@ impl Tree<'_> {
                 condition::read(self.source, at + field, self.topology.inputs)?;
             }
             let rows = self.source.array(at + 0x20, 4, Some(0x8080052C))?;
-            ensure!(!rows.is_empty(), "Source sequence control has no children");
+            if rows.is_empty() {
+                // An untimed empty parallel schedules nothing and completes at once, so its
+                // parallel parent runs the same without it. Native controls need children.
+                ensure!(
+                    parallel
+                        && (class, self.source.u16(at + 0x1C)?) == (0x80800691, 1)
+                        && timing.flags == 0
+                        && timing
+                            .delay
+                            .iter()
+                            .chain(&timing.duration)
+                            .all(|v| *v == 0.),
+                    "Source sequence control has no children"
+                );
+                return Ok(None);
+            }
+            let parallel = (class, self.source.u8(at + 0x1C)?) == (0x80800691, 1);
             let mut children = Vec::new();
             for row in rows {
                 let domain = self.source.u16(row)? as usize;
                 ensure!(domain < 3, "Source sequence child domain differs");
-                children.push(self.node(
+                if let Some(child) = self.node(
                     domain,
                     self.source.u16(row + 2)? as usize,
                     i16::try_from(index)?,
                     depth + 1,
-                )?);
+                    parallel,
+                )? {
+                    children.push(child);
+                }
             }
-            match (class, self.source.u16(at + 0x1C)?) {
+            ensure!(
+                !children.is_empty(),
+                "Source sequence control has no translated children"
+            );
+            match (class, self.source.u8(at + 0x1C)?) {
                 (0x808007B0, 0) if self.source.u8(at + 0x1E)? == 1 => {
                     native::Kind::Repeat(children)
                 }
                 (0x808007B0, 0) => native::Kind::Serial(children),
-                (0x80800691, 1) => native::Kind::Parallel(children),
+                (0x80800691, 1) if self.source.u8(at + 0x1E)? == 1 => {
+                    native::Kind::RepeatParallel(children)
+                }
+                (0x80800691, 1) if self.source.u8(at + 0x1E)? == 0 => {
+                    native::Kind::Parallel(children)
+                }
                 (0x80800757, 6) => {
                     let input = self.source.u32(at + 0x48)?;
                     let bounds = [self.source.f32(at + 0x40)?, self.source.f32(at + 0x44)?];
@@ -391,10 +438,10 @@ impl Tree<'_> {
             }
         };
         // Byte offsets remain distinct when authored names are repeated. Restore names after writing.
-        Ok(native::Node {
+        Ok(Some(native::Node {
             name: u32::try_from(at)?,
             timing,
             kind,
-        })
+        }))
     }
 }

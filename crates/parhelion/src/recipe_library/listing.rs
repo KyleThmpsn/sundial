@@ -103,7 +103,7 @@ pub(super) fn claims(
 
 /// `read` applied to each of `paths` on up to [`MAX_WORKERS`] threads, each taking the next path
 /// no thread has taken. The results keep the order of `paths`.
-pub(super) fn in_parallel<T: Send>(paths: &[PathBuf], read: impl Fn(&Path) -> T + Sync) -> Vec<T> {
+pub(crate) fn in_parallel<T: Send>(paths: &[PathBuf], read: impl Fn(&Path) -> T + Sync) -> Vec<T> {
     let workers = thread::available_parallelism()
         .map_or(1, usize::from)
         .min(MAX_WORKERS)

@@ -34,12 +34,12 @@ pub(super) fn native_bindings(
             let transitions = state["transition_constraints"]
                 .as_array()
                 .context("Cloth state transitions")?;
+            // A state's simulations can hold several transition sets. The role names its own.
             ensure!(
-                !transitions.is_empty()
-                    && transitions
-                        .iter()
-                        .all(|v| v.as_u64() == Some(u64::from(constraint))),
-                "Cloth role selects a different transition constraint"
+                transitions
+                    .iter()
+                    .any(|v| v.as_u64() == Some(u64::from(constraint))),
+                "Cloth role selects a transition constraint its state does not hold"
             );
         }
     }

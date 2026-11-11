@@ -85,19 +85,19 @@ pub(super) fn author(
         write_localized_reference(
             &mut row,
             12,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             weapon.identity.name_hash,
         )?;
         write_localized_reference(
             &mut row,
             20,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             weapon.identity.flavor_hash,
         )?;
         write_localized_reference(
             &mut row,
             28,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             crate::presentation::text_hash(&weapon.namespace, "lore"),
         )?;
         write_u16(&mut row, 36, u16::MAX)?;
@@ -131,7 +131,7 @@ pub(super) fn author(
         write_localized_reference(
             &mut row,
             12,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             path.name.name_hash,
         )?;
         strings.extend_from_slice(&row);

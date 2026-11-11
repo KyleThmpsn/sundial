@@ -8,6 +8,17 @@ impl Source {
         definition: u32,
         assets: &mut BTreeMap<u32, Payload>,
     ) -> Result<Vec<Value>> {
+        Ok(self.item_dyes(definition, assets)?.0)
+    }
+
+    /// The item's dye layers, and the requests whose manifest no assignment map names. The Xbox
+    /// One build still lists some items whose dyes it no longer ships. Those requests fill no
+    /// local slot, so their draws take the unset-slot path, as the source runtime's do.
+    pub(super) fn item_dyes(
+        &self,
+        definition: u32,
+        assets: &mut BTreeMap<u32, Payload>,
+    ) -> Result<(Vec<Value>, Vec<Value>)> {
         let item = self.read(definition)?;
         let gear = item.pointer(0x60)?;
         let (table_tag, table) = self.table(0x80803420)?;
@@ -21,7 +32,7 @@ impl Source {
             }
         }
         if requested.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let mut assignments = BTreeMap::new();
         for tag in self.classes(0x80800341) {
@@ -49,10 +60,14 @@ impl Source {
             }
         }
         let mut result = Vec::new();
+        let mut absent = Vec::new();
         for (layer, channel, index, manifest) in requested {
-            let parent = *assignments
-                .get(&manifest)
-                .context("Missing dye assignment")?;
+            let Some(&parent) = assignments.get(&manifest) else {
+                absent.push(
+                    json!({"layer":layer,"channel":channel,"index":index,"manifest":manifest}),
+                );
+                continue;
+            };
             let parent_data = self.read(parent)?;
             let tag = parent_data.u32(0x10)?;
             ensure!(
@@ -90,6 +105,6 @@ impl Source {
             assets.insert(tag, data);
         }
         assets.insert(table_tag, table);
-        Ok(result)
+        Ok((result, absent))
     }
 }

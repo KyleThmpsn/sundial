@@ -5,6 +5,94 @@ use serde_json::{Value, json};
 mod choice;
 
 impl Source {
+    /// Talent names that exotic weapons' grids show and no other weapon's grid does, each with the
+    /// names of the weapons that show it. Rise of Iron gives an exotic's generic perks identities
+    /// of their own, such as Outbreak Prime's Outlaw, and signature perks such as Pocket Infinity
+    /// run actions legendary perks also run, so neither identities nor actions tell a signature
+    /// from a generic perk. The name does.
+    pub(super) fn exotic_talents(
+        &self,
+    ) -> Result<&BTreeMap<String, std::collections::BTreeSet<String>>> {
+        if let Some(names) = self.exotic_talents.get() {
+            return Ok(names);
+        }
+        let weapons = self
+            .weapons()?
+            .into_iter()
+            .map(|weapon| (weapon.definition, weapon.rarity, weapon.name))
+            .collect::<Vec<_>>();
+        let exotic = self.exotic_only(&weapons)?;
+        Ok(self.exotic_talents.get_or_init(|| exotic))
+    }
+
+    /// Talent names that exotic armor grids show and no other armor's grid does, each with the
+    /// names of the armor that shows it. Weapon grids do not count, so a name both an exotic armor
+    /// piece and a legendary weapon show stays an armor signature.
+    pub(super) fn exotic_armor_talents(
+        &self,
+    ) -> Result<&BTreeMap<String, std::collections::BTreeSet<String>>> {
+        if let Some(names) = self.exotic_armor_talents.get() {
+            return Ok(names);
+        }
+        let armor = self
+            .armor()?
+            .into_iter()
+            .map(|armor| (armor.definition, armor.rarity, armor.name))
+            .collect::<Vec<_>>();
+        let exotic = self.exotic_only(&armor)?;
+        Ok(self.exotic_armor_talents.get_or_init(|| exotic))
+    }
+
+    /// The talent names exotic items' grids show and no other item's grid in `items` does, from
+    /// each item's definition tag, rarity and name.
+    fn exotic_only(
+        &self,
+        items: &[(u32, u8, String)],
+    ) -> Result<BTreeMap<String, std::collections::BTreeSet<String>>> {
+        let (_, clients) = self.table(0x80803461)?;
+        let client_rows = clients.array(8, 16, None)?;
+        let mut labels = super::localization::Labels::new(self)?;
+        let mut exotic = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+        let mut other = std::collections::BTreeSet::new();
+        for (definition, rarity, item) in items {
+            let definition = self.read(*definition)?;
+            // An item without a talent holder shows no talent names.
+            if definition.u64(0x58)? == 0 {
+                continue;
+            }
+            let holder = definition.pointer(0x58)?;
+            ensure!(
+                definition.u32(holder - 4)? == 0x808017BD,
+                "Source talent holder type differs"
+            );
+            let row = *client_rows
+                .get(usize::from(definition.u16(holder)?))
+                .context("Source client talent grid")?;
+            let client = self.read(clients.u32(row + 8)?)?;
+            for node in client.array(8, 72, Some(0x8080348B))? {
+                for label in client.array(node, 48, Some(0x80803468))? {
+                    let name = labels
+                        .optional_text(self, &client, label)?
+                        .unwrap_or_default();
+                    let name = name.trim();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if *rarity == 5 {
+                        exotic
+                            .entry(name.to_owned())
+                            .or_default()
+                            .insert(item.clone());
+                    } else {
+                        other.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        exotic.retain(|name, _| !other.contains(name));
+        Ok(exotic)
+    }
+
     pub(super) fn runtime_assignments(
         &self,
         assets: &mut BTreeMap<u32, Payload>,
@@ -35,6 +123,13 @@ impl Source {
         assets: &mut BTreeMap<u32, Payload>,
     ) -> Result<Value> {
         let definition = self.read(definition_tag)?;
+        // A null holder pointer means the item has no talent grid, as the starting gear new
+        // characters wear does. It has no nodes to translate.
+        if definition.u64(0x58)? == 0 {
+            assets.insert(definition_tag, definition);
+            return Ok(json!({"ordinal":null,"shared_grid":null,"client_grid":null,
+                "stat_table":null,"nodes":[]}));
+        }
         let holder = definition.pointer(0x58)?;
         ensure!(
             definition.u32(holder - 4)? == 0x808017BD,

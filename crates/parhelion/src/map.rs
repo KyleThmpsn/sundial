@@ -24,6 +24,8 @@ pub mod diagnostics;
 mod encounters;
 #[cfg(feature = "d2-model-importer")]
 mod geometry;
+#[cfg(feature = "d2-model-importer")]
+mod lighting;
 pub(crate) mod mission;
 #[cfg(feature = "d2-model-importer")]
 mod picture;
@@ -33,6 +35,8 @@ mod placed;
 mod plan;
 #[cfg(feature = "d2-model-importer")]
 mod private_match;
+#[cfg(feature = "d2-model-importer")]
+pub mod reach;
 #[cfg(feature = "d2-model-importer")]
 mod registry;
 #[cfg(feature = "d2-model-importer")]
@@ -46,6 +50,8 @@ mod volumes;
 #[cfg(feature = "d2-model-importer")]
 mod world;
 
+#[cfg(feature = "d2-model-importer")]
+pub(crate) use geometry::newest_conversion;
 #[cfg(feature = "d2-model-importer")]
 pub(crate) use plan::Plan;
 #[cfg(feature = "d2-model-importer")]
@@ -189,6 +195,46 @@ pub struct MapSource {
     /// the level's static pieces.
     #[serde(default, skip_serializing_if = "Decorators::is_default")]
     pub decorators: Decorators,
+    /// Changes to the level's own fog, which its converted surfaces and sky draw.
+    #[serde(default, skip_serializing_if = "Fog::is_default")]
+    pub fog: Fog,
+}
+
+/// Changes to a level's fog. The default draws the source level's fog unchanged.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Fog {
+    /// Percent of each band's thickness. 0 draws no fog.
+    pub density: u16,
+    /// Meters farther away the fog begins. A negative value brings it closer.
+    pub distance: i32,
+    /// Percent of the fog's color and of its glow toward the fog light.
+    pub brightness: u16,
+}
+
+impl Default for Fog {
+    fn default() -> Self {
+        Self {
+            density: 100,
+            distance: 0,
+            brightness: 100,
+        }
+    }
+}
+
+impl Fog {
+    pub(crate) const MAX_PERCENT: u16 = 400;
+    pub(crate) const DISTANCE: std::ops::RangeInclusive<i32> = -500..=2000;
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn valid(&self) -> bool {
+        self.density <= Self::MAX_PERCENT
+            && self.brightness <= Self::MAX_PERCENT
+            && Self::DISTANCE.contains(&self.distance)
+    }
 }
 
 /// How a level's grass, bushes, vines and pebbles draw.
@@ -207,6 +253,19 @@ pub enum Decorators {
 impl Decorators {
     fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+}
+
+impl MapSource {
+    /// The vgmstream the build decodes the level's sounds with: the recipe's own while it exists,
+    /// otherwise the one the importer finds. A recipe saved with a decoder Parhelion unpacked
+    /// names that folder's old versioned path, which the importer's fixed tool folders replaced.
+    #[cfg(feature = "d2-model-importer")]
+    pub(crate) fn decoder(&self) -> Option<PathBuf> {
+        self.audio_decoder
+            .clone()
+            .filter(|path| path.is_file())
+            .or_else(|| parhelion_import::tools::located(parhelion_import::tools::Tool::Vgmstream))
     }
 }
 
@@ -285,6 +344,14 @@ impl MapRecipe {
             return Err(invalid(format!("Map {} loads no zone set", self.name)));
         }
         if let Some(source) = &self.source {
+            if !source.fog.valid() {
+                return Err(invalid(format!(
+                    "Fog density and brightness must be at most {}%, and its distance from {} to {} m",
+                    Fog::MAX_PERCENT,
+                    Fog::DISTANCE.start(),
+                    Fog::DISTANCE.end()
+                )));
+            }
             if !source.encounter_gates.is_empty() && source.encounter_starts.is_empty() {
                 return Err(invalid(
                     "Encounter gates require an initial encounter opening",

@@ -272,6 +272,24 @@ pub(super) fn asset_edits(
     program: &Program,
 ) -> AuthoringResult<Vec<NativeAssetPatch>> {
     let mut edits = program.native_asset_patches.clone();
+    // The native form binds its edits by graph. A status joins the edit patching its graph,
+    // whose settings validation keeps empty, and any other takes its copy with the asset.
+    if let Some(native) = &program.native {
+        for asset in native
+            .assets
+            .iter()
+            .filter(|asset| asset.script.is_none() && asset.hud_status.is_some())
+        {
+            if let Some(edit) = edits
+                .iter_mut()
+                .find(|edit| edit.source_graph == asset.graph)
+            {
+                edit.patches
+                    .extend(asset_patches(manager, &stock(manager)?, asset)?);
+            }
+        }
+        return Ok(edits);
+    }
     if program
         .actions
         .iter()
@@ -422,7 +440,35 @@ pub(super) fn author_images<'a>(
     programs: impl IntoIterator<Item = &'a Program>,
     packages: &mut crate::asset_packages::AssetPackages,
 ) -> AuthoringResult<BTreeMap<(String, u32), TagHash>> {
-    let assets = statuses(programs);
+    images(manager, statuses(programs), packages)
+}
+
+#[cfg(feature = "d2-model-importer")]
+pub(in crate::item) fn imported_images(
+    manager: &PackageManager,
+    statuses: &[HudStatus],
+    packages: &mut crate::asset_packages::AssetPackages,
+) -> AuthoringResult<BTreeMap<(String, u32), TagHash>> {
+    images(
+        manager,
+        statuses.iter().map(|status| (None, status)).collect(),
+        packages,
+    )
+}
+
+#[cfg(feature = "d2-model-importer")]
+pub(in crate::item) fn identity(
+    manager: &PackageManager,
+    status: &HudStatus,
+) -> AuthoringResult<u32> {
+    hash(&stock(manager)?, status)
+}
+
+fn images(
+    manager: &PackageManager,
+    assets: Vec<(Option<&Asset>, &HudStatus)>,
+    packages: &mut crate::asset_packages::AssetPackages,
+) -> AuthoringResult<BTreeMap<(String, u32), TagHash>> {
     let mut layers = BTreeMap::new();
     if assets.iter().all(|(_, status)| status.image.is_none()) {
         return Ok(layers);
@@ -538,17 +584,25 @@ fn decode_image(image: &str) -> AuthoringResult<image::RgbaImage> {
     crate::image_import::decode_png(&bytes).map_err(invalid)
 }
 
+type StatusReplacements = (Vec<ReplacementSpec>, Vec<(u32, String)>);
+
 /// The status table and name bank with every HUD status the programs show, none when no program
 /// has one. Each status's row copies the row of the stock status whose icon it shows, and names
-/// the layer its own image made, from [`author_images`], when it has one.
+/// the layer its own image made, from [`author_images`], when it has one. The name bank also
+/// takes `hosted`, the names other members' statuses take, which Sunrise can't merge, and the
+/// table, which it merges, takes only the build's own rows. Returns the replacements and the
+/// build's own names by hash.
 pub(super) fn replacements<'a>(
     manager: &PackageManager,
     programs: impl IntoIterator<Item = &'a Program>,
     layers: &BTreeMap<(String, u32), TagHash>,
-) -> AuthoringResult<Vec<ReplacementSpec>> {
-    let assets = statuses(programs);
-    if assets.is_empty() {
-        return Ok(Vec::new());
+    imported: &'a [HudStatus],
+    hosted: &[(u32, String)],
+) -> AuthoringResult<StatusReplacements> {
+    let mut assets = statuses(programs);
+    assets.extend(imported.iter().map(|status| (None, status)));
+    if assets.is_empty() && hosted.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
     }
     let stock = stock(manager)?;
     let mut statuses = BTreeMap::<u32, (String, u32, Option<TagHash>)>::new();
@@ -582,21 +636,38 @@ pub(super) fn replacements<'a>(
             Ok((hash, row))
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
-    let table = crate::hud_icon::assets::insert_rows(stock.table, stock.rows, rows)?;
-    let values = statuses
+    let own = statuses
         .iter()
-        .map(|(&hash, (name, _, _))| (hash, name.as_str()))
+        .map(|(&hash, (name, _, _))| (hash, name.clone()))
         .collect::<Vec<_>>();
-    let mut replacements = vec![
-        ReplacementSpec {
+    // Every member's names, in hash order, each once.
+    let mut names = own.iter().cloned().collect::<BTreeMap<_, _>>();
+    for (hash, name) in hosted {
+        if names
+            .insert(*hash, name.clone())
+            .is_some_and(|previous| previous != *name)
+        {
+            return Err(invalid(format!(
+                "Two members' HUD statuses took hash {hash:08X} with different names"
+            )));
+        }
+    }
+    let values = names
+        .iter()
+        .map(|(&hash, name)| (hash, name.as_str()))
+        .collect::<Vec<_>>();
+    let mut replacements = Vec::new();
+    if !rows.is_empty() {
+        let table = crate::hud_icon::assets::insert_rows(stock.table, stock.rows, rows)?;
+        replacements.push(ReplacementSpec {
             tag: TABLE,
             payload: synchronize_payload_size(table)?,
-        },
-        ReplacementSpec {
-            tag: NAMES,
-            payload: synchronize_payload_size(append_localized_header(&stock.names, &values)?)?,
-        },
-    ];
+        });
+    }
+    replacements.push(ReplacementSpec {
+        tag: NAMES,
+        payload: synchronize_payload_size(append_localized_header(&stock.names, &values)?)?,
+    });
     let mut locales = BTreeSet::new();
     for offset in (LOCALIZATION_DATA_TAG_START..LOCALIZATION_DATA_TAG_END).step_by(4) {
         let tag = TagHash(read_u32(&stock.names, offset)?);
@@ -620,5 +691,11 @@ pub(super) fn replacements<'a>(
             payload: synchronize_payload_size(append_localized_data(&data, &part, &values)?)?,
         });
     }
-    Ok(replacements)
+    Ok((replacements, own))
+}
+
+/// Whether `tag` is the HUD status table, which Sunrise merges, rather than its name bank or one
+/// of its locales.
+pub(super) fn is_table(tag: TagHash) -> bool {
+    tag == TABLE
 }

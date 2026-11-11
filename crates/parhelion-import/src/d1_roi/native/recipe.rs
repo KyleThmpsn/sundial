@@ -68,6 +68,7 @@ impl Assembly<'_> {
             graph["audio_assets"] = audio.clone();
         }
         crate::io::write_json(&self.folder.join("asset-graph.json"), &graph)?;
+        crate::graph::check_particle_bindings(&self.folder)?;
         self.native.finish()?;
         GraphReference::new(&self.folder, identity)
     }
@@ -104,7 +105,7 @@ impl Source {
             Vec::new()
         };
         progress("Reading source dyes and talents…".into());
-        let dyes = self.dyes(armor.definition, &mut assets)?;
+        let (dyes, absent_dyes) = self.item_dyes(armor.definition, &mut assets)?;
         let talents = self.item_talents(armor.definition, &mut assets)?;
         let source = json!({"source":"d1_roi","item":armor,"talents":talents,
             "builds":self.report.builds,"package_stamp":self.report.stamp});
@@ -316,10 +317,19 @@ impl Source {
         let mut graph: Value = serde_json::from_slice(&fs::read(&manifest)?)?;
         graph["source_talents"] = talents;
         graph["perk_translation"] = perks;
+        if let Some(human) = assembly.human.take() {
+            human.write(&reference.directory, &mut graph)?;
+        }
         graph["limitations"].as_array_mut().context("Armor limitations")?.extend([
             json!("Supported armor talents use private native effects."),
             json!("Native base stats remain the baseline. Source armor stat tiers, ability grants, progression and unsupported talent effects are not translated."),
         ]);
+        if !absent_dyes.is_empty() {
+            graph["limitations"].as_array_mut().context("Armor limitations")?.push(json!(
+                "The source build has no dye for some of this armor's dye requests, so those channels draw with the source's unset dye state."
+            ));
+            graph["absent_source_dyes"] = json!(absent_dyes);
+        }
         crate::io::write_json(&manifest, &graph)?;
         let attachments = std::mem::take(&mut reference.attachments);
         reference = GraphReference::new(&reference.directory, private_item)?;

@@ -136,9 +136,9 @@ pub const POLICIES: [ActionPolicy; 6] = [
     },
     ActionPolicy {
         kind: 4,
-        name: "Unobserved Policy 4",
-        summary: "Registered by the client. No surveyed action uses it.",
-        configuration_class: 0x00000000,
+        name: "Burst Bonus Rounds",
+        summary: "The action runs for one burst. Each missed shot among its first shots earns a bonus round, up to the configured number. No surveyed action uses it.",
+        configuration_class: 0x80803E08,
         actions: 0,
     },
     ActionPolicy {

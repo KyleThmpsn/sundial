@@ -585,6 +585,56 @@ fn controls(
     Ok(Payload(out))
 }
 
+/// The tag a rig's controls name at definition `+0xD0` for their per-control pose table.
+pub fn control_table(controls: &Payload) -> Result<(usize, u32)> {
+    let field = controls.pointer(24)? + 0xD0;
+    Ok((field, controls.u32(field)?))
+}
+
+/// A rig's per-control pose table grown by `added` appended controls, or none when it holds no
+/// per-control entries, as the Heavy Pike rig's empty table `80C70D41` holds none.
+///
+/// The table's root array at `+0x08` holds `80809073` rows of 0x38 bytes. Each row names its set
+/// at `+0x00` and carries two arrays of one 16-byte entry per control slot: `80800091` entries at
+/// `+0x18` and `80800096` entries at `+0x28`. The tank rig's table `80BFAF0C` holds a zero
+/// `80800091` entry and an identity rotation `80800096` entry for each of its 65 controls. Left at
+/// that length, every appended control's bone took a zero rotation in game while its translation
+/// stayed, so the parts riding those bones drew away from the hull. The appended controls take
+/// the entry every native control of the row shares.
+pub fn extend_control_table(
+    table: &Payload,
+    slots: usize,
+    added: usize,
+) -> Result<Option<Payload>> {
+    let mut out = table.0.clone();
+    let mut grown = false;
+    for row in table.array(8, 0x38, Some(0x80809073))? {
+        for (field, class) in [(row + 0x18, 0x80800091), (row + 0x28, 0x80800096)] {
+            let entries = table.array(field, 16, Some(class))?;
+            if entries.is_empty() {
+                continue;
+            }
+            ensure!(
+                entries.len() == slots,
+                "Control table holds {} entries for {slots} controls",
+                entries.len()
+            );
+            let shared = &table.0[entries[0]..entries[0] + 16];
+            ensure!(
+                entries.iter().all(|&at| table.0[at..at + 16] == *shared),
+                "A control table with distinct entries needs its own adapter"
+            );
+            let mut data = table.0[entries[0]..entries[0] + slots * 16].to_vec();
+            for _ in 0..added {
+                data.extend_from_slice(shared);
+            }
+            append(&mut out, field, u64::from(class), &data, 16)?;
+            grown = true;
+        }
+    }
+    Ok(grown.then_some(Payload(out)))
+}
+
 /// The renumbering an extension applied, read back from its skeletons: each native bone keeps
 /// its name, and the appended bones are the contiguous run of names the native skeleton lacks.
 pub fn renumbering(native: &Payload, extended: &Payload) -> Result<Renumbering> {

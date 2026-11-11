@@ -31,7 +31,8 @@ pub(crate) mod ui;
 
 pub use art::{ArtImage, ArtPart, ScreenArt};
 pub use edits::{
-    AttachedAbility, BankValue, EntryEdits, EntryIcon, ImportedAbility, SpawnSwap, damage_mode,
+    AttachedAbility, BankValue, EntryEdits, EntryIcon, ImportedAbility, SourceAbility, SpawnSwap,
+    damage_mode,
 };
 pub use icon::GeneratedIcon;
 pub use modifiers::{
@@ -39,6 +40,17 @@ pub use modifiers::{
     entry_place, holds_ability, place_entry,
 };
 pub use palette::{EffectGrade, PaletteEdit, TintEdit};
+
+/// What the build resolves for a subclass beside what every item resolves.
+#[derive(Clone)]
+pub(crate) struct Resolved {
+    /// Its own socket-entry list, when its abilities are not all its base's own.
+    pub(crate) list: Option<authoring::ResolvedList>,
+    /// Its screen pictures and where each comes from.
+    pub(crate) screen_art: Option<art::ResolvedArt>,
+    /// The generated icon the build draws for the icon's image.
+    pub(crate) drawn_icon: Option<crate::icon_edit::ImportedIcon>,
+}
 
 pub(crate) const EVERY_CLASS_TYPE_NAME: &str = "Guardian Subclass";
 
@@ -251,6 +263,68 @@ impl SubclassAbilities {
     #[must_use]
     pub fn choice(&self, entry: u8) -> Option<&SubclassChoice> {
         self.choices.iter().find(|choice| choice.entry == entry)
+    }
+
+    /// The edits of every authored ability, then of every authored path node.
+    fn all_edits(&self) -> impl Iterator<Item = &EntryEdits> {
+        self.choices.iter().map(|choice| &choice.edits).chain(
+            self.attunements
+                .iter()
+                .flat_map(|attunement| &attunement.nodes)
+                .map(|node| &node.edits),
+        )
+    }
+
+    /// Whether a custom perk of an authored entry has a program gated on a subclass damage type.
+    pub(crate) fn has_subclass_gate(&self) -> bool {
+        self.all_edits()
+            .flat_map(|edits| &edits.custom_perks)
+            .flat_map(|perk| &perk.effects)
+            .filter_map(|effect| effect.program.as_ref())
+            .any(sundial::package_authoring::sandbox_perk::program::Program::has_subclass_gate)
+    }
+
+    /// Gives every gated custom perk program of the authored entries the roster conditions of
+    /// `supers`, as `Program::expand_subclass_gates` describes. A D1 plan stamps the entries it
+    /// prepared, so it must be ready before they change and is stamped again with the expanded
+    /// entries. Only the build's copy is expanded. The saved recipe keeps its gates.
+    pub(crate) fn expand_subclass_gates(
+        &mut self,
+        supers: &std::collections::BTreeMap<u8, std::collections::BTreeSet<u32>>,
+    ) -> Result<(), String> {
+        if !self.has_subclass_gate() {
+            return Ok(());
+        }
+        if let Some(plan) = &self.d1 {
+            plan.ready(self)?;
+        }
+        let edits = self
+            .choices
+            .iter_mut()
+            .map(|choice| &mut choice.edits)
+            .chain(
+                self.attunements
+                    .iter_mut()
+                    .flat_map(|attunement| &mut attunement.nodes)
+                    .map(|node| &mut node.edits),
+            );
+        for perk in edits.flat_map(|edits| &mut edits.custom_perks) {
+            let name = &perk.name;
+            for program in perk
+                .effects
+                .iter_mut()
+                .filter_map(|effect| effect.program.as_mut())
+            {
+                program
+                    .expand_subclass_gates(supers)
+                    .map_err(|error| format!("{name}: {error}"))?;
+            }
+        }
+        if let Some(mut plan) = self.d1.take() {
+            plan.restamp(self)?;
+            self.d1 = Some(plan);
+        }
+        Ok(())
     }
 
     /// The ability in `entry`: the recipe's own, or the base's.

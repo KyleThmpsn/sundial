@@ -51,17 +51,6 @@ fn detail_half(value: f64) -> u16 {
     sign | magnitude as u16
 }
 
-pub fn load_raw(path: &Path, materials: BTreeMap<String, String>) -> Result<Part> {
-    Ok(Part {
-        header: Payload(fs::read(path.join("model.unlinked.bin"))?),
-        positions: Payload(fs::read(path.join("positions.bin"))?),
-        attributes: Payload(fs::read(path.join("attributes.bin"))?),
-        indices: Payload(fs::read(path.join("indices.bin"))?),
-        mapping: load(&path.join("mapping.json"))?,
-        materials,
-    })
-}
-
 pub fn load_part(
     path: &Path,
     materials: BTreeMap<String, String>,

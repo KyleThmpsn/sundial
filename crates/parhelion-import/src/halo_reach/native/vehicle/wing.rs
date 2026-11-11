@@ -87,10 +87,14 @@ pub(super) fn build(
     );
     let contacts = &scene.object.gameplay["contacts"];
     ensure!(
-        contacts["anti_gravity_count"] == 0
-            && contacts["wheels"].as_array().is_some_and(Vec::is_empty),
-        "Authored flight surfaces require a source without ground contact points"
+        contacts["wheels"].as_array().is_some_and(Vec::is_empty),
+        "Authored flight surfaces require a source without wheels"
     );
+    // Hover cushions, such as a vtol's landing points, hold a source above the ground. The
+    // flight surfaces replace them, so they are reported rather than translated.
+    let cushions = contacts["anti_gravity_count"]
+        .as_u64()
+        .context("Source anti-gravity point count")?;
     let mut low = [f32::INFINITY; 3];
     let mut high = [f32::NEG_INFINITY; 3];
     for p in &scene.models[0].model.primitives {
@@ -109,7 +113,14 @@ pub(super) fn build(
             .all(|v| v.is_finite() && *v > 0.01 && *v < 1000.),
         "Invalid source flight dimensions"
     );
-    let gravity = number(contacts, "gravity_scale")?;
+    // A source vtol's lift holds its weight at any attitude and airspeed: Reach `5192F4` keeps lift
+    // at gravity after the climb input ends and with altitude lock. The native flight body has no
+    // attitude-free lift, so the vtol flies weightless, holding altitude as a dropship does.
+    let gravity = if controls["kind"] == "vtol" {
+        0.
+    } else {
+        number(contacts, "gravity_scale")?
+    };
     let plan = surface::plan(size, controls, body, gravity, maneuvers, scene.metres())?;
     let surfaces = plan.surfaces;
     let count = surfaces.len();
@@ -276,7 +287,8 @@ pub(super) fn build(
             Row::elements(surface_allocations),
         )],
         markers,
-        json!({"surfaces":report,"anti_gravity_points":0,"wheel_points":0,"source_bounds_metres":[low,high],
+        &[],
+        json!({"surfaces":report,"anti_gravity_points":0,"untranslated_anti_gravity_points":cushions,"wheel_points":0,"source_bounds_metres":[low,high],
             "gravity_scale":gravity,"reference_gravity_metres_per_second_squared":12.713999,
             "stability":plan.report,
             "surface_inputs":inputs,"surface_channel_names":channel_names,

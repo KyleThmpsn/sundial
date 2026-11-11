@@ -29,6 +29,19 @@ pub(super) fn validate(template: &[u8; 0xc8]) -> Result<()> {
     Ok(())
 }
 
+/// The local section a response transfer caps, for the one form native ceilings express:
+/// function 2 with flags 0x11 and no seat. Other local forms, such as a transfer without flag
+/// 0x10, are reported untranslated by the threshold that holds them.
+fn ceiling_destination(transfer: &Value) -> Result<Option<usize>> {
+    let Some(target) = transfer::destination(transfer)? else {
+        return Ok(None);
+    };
+    Ok(
+        (transfer["function"] == 2 && flags(transfer)? == 0x11 && transfer["seat"] == "")
+            .then_some(target),
+    )
+}
+
 pub(super) fn ceilings(sections: &[Value]) -> Result<Vec<BTreeSet<u32>>> {
     let mut out = vec![BTreeSet::new(); sections.len()];
     for section in sections {
@@ -40,13 +53,9 @@ pub(super) fn ceilings(sections: &[Value]) -> Result<Vec<BTreeSet<u32>>> {
                 .as_array()
                 .context("Source response transfers")?
             {
-                let Some(target) = transfer::destination(transfer)? else {
+                let Some(target) = ceiling_destination(transfer)? else {
                     continue;
                 };
-                ensure!(
-                    transfer["function"] == 2 && flags(transfer)? == 0x11 && transfer["seat"] == "",
-                    "Source response transfer needs another native operation"
-                );
                 let fraction = scalar(transfer, "amount")?;
                 ensure!(
                     fraction <= 1.,
@@ -147,12 +156,23 @@ pub(super) fn build(
     {
         let flags = flags(response)?;
         let fraction = scalar(response, "threshold")?;
+        let delay = scalar(response, "delay_seconds")?;
         ensure!(
-            fraction <= 1.
-                && response["custom_behavior"] == 0
-                && scalar(response, "delay_seconds")? == 0.,
-            "Source delayed or labelled damage response needs explicit scheduling"
+            fraction <= 1. && delay.is_finite() && delay >= 0.,
+            "Source damage response timing is out of range"
         );
+        // Native threshold rows act when health crosses them. A source delay is not scheduled,
+        // so the response acts at its threshold. A labelled custom behavior, such as a turret's
+        // `detach_weapon`, has no native counterpart. Its effects, transitions and seat ejection
+        // still translate.
+        let mut untranslated = Vec::new();
+        if delay > 0. {
+            untranslated.push(json!({"delay_seconds":delay}));
+        }
+        if response["custom_behavior"] != 0 {
+            untranslated.push(json!({"custom_behavior":response["custom_behavior"],
+                "custom_label":response["custom_label"]}));
+        }
         if flags & 0x10000 != 0 {
             report.push(json!({"source_index":source_index,"source":response,"status":"Special death branch requires a native selection condition"}));
             continue;
@@ -169,7 +189,12 @@ pub(super) fn build(
             .as_array()
             .context("Source response damage transfers")?
         {
-            if let Some(target) = transfer::destination(transfer)? {
+            if transfer::destination(transfer)?.is_some()
+                && ceiling_destination(transfer)?.is_none()
+            {
+                untranslated.push(json!({"transfer":transfer}));
+            }
+            if let Some(target) = ceiling_destination(transfer)? {
                 let destination = *names
                     .get(target)
                     .context("Source response target exceeds section table")?;
@@ -210,31 +235,10 @@ pub(super) fn build(
             "unbound_regions":response["regions"].as_array().unwrap().iter()
                 .filter(|region| region["runtime_index"] == -1).collect::<Vec<_>>(),
             "source_skip_fraction":response["skip_fraction"],"source_flags":flags,
-            "pending_effects":pending,"chance_translated":scalar(response,"skip_fraction")? == 0.}));
+            "pending_effects":pending,"chance_translated":scalar(response,"skip_fraction")? == 0.,
+            "untranslated":untranslated}));
     }
-    for value in source["recharge_fractions"]
-        .as_array()
-        .context("Source recharge fractions")?
-    {
-        let fraction = value.as_f64().context("Source recharge checkpoint")? as f32;
-        ensure!(
-            fraction.is_finite() && (0.0..=1.0).contains(&fraction),
-            "Source recharge checkpoint is invalid"
-        );
-        if fraction >= 1. {
-            continue;
-        }
-        rows.push(Row {
-            name: hash(&format!(
-                "reach.section.{:08x}.recovery.{:08x}",
-                names[index],
-                fraction.to_bits()
-            )),
-            fraction,
-            mode: 1,
-            targets: vec![dynamic(payload, 0x80804c39, &[0, 4])?],
-        });
-    }
+    append_recharge(payload, source, names[index], &mut rows)?;
     for &bits in ceilings {
         let fraction = f32::from_bits(bits);
         rows.push(Row {
@@ -258,6 +262,37 @@ pub(super) fn build(
         rows.iter().map(|r| r.name).collect::<BTreeSet<_>>().len() == rows.len(),
         "Source threshold identities collide"
     );
+    write_thresholds(payload, section, template, ordinal, rows)?;
+    Ok(json!(report))
+}
+
+fn write_thresholds(
+    payload: &mut Payload,
+    section: usize,
+    template: &[u8],
+    ordinal: &mut usize,
+    rows: Vec<Row>,
+) -> Result<()> {
+    // Each row takes one bit of the entity's 64-bit threshold state. One-shot rows of a section
+    // at the same fraction fire together, so they share one row. A one-shot row with no native
+    // target does nothing and takes no bit. Ceiling rows stay apart, since other sections name
+    // them.
+    let mut merged: Vec<Row> = Vec::new();
+    for row in rows {
+        if row.mode == 1 && row.targets.is_empty() {
+            continue;
+        }
+        if row.mode == 1
+            && let Some(shared) = merged
+                .iter_mut()
+                .find(|other| other.mode == 1 && other.fraction.to_bits() == row.fraction.to_bits())
+        {
+            shared.targets.extend(row.targets);
+            continue;
+        }
+        merged.push(row);
+    }
+    let rows = merged;
     let native_rows = array(payload, section + 0x78, 0x80804bb9, 0xc8, rows.len())?;
     for (&at, row) in native_rows.iter().zip(rows) {
         put(&mut payload.0, at, template)?;
@@ -274,5 +309,37 @@ pub(super) fn build(
         pointers(payload, at + 0xb0, 0x80804c2c, &row.targets)?;
         *ordinal += 1;
     }
-    Ok(json!(report))
+    Ok(())
+}
+
+fn append_recharge(
+    payload: &mut Payload,
+    source: &Value,
+    name: u32,
+    rows: &mut Vec<Row>,
+) -> Result<()> {
+    for value in source["recharge_fractions"]
+        .as_array()
+        .context("Source recharge fractions")?
+    {
+        let fraction = value.as_f64().context("Source recharge checkpoint")? as f32;
+        ensure!(
+            fraction.is_finite() && (0.0..=1.0).contains(&fraction),
+            "Source recharge checkpoint is invalid"
+        );
+        if fraction >= 1. {
+            continue;
+        }
+        rows.push(Row {
+            name: hash(&format!(
+                "reach.section.{:08x}.recovery.{:08x}",
+                name,
+                fraction.to_bits()
+            )),
+            fraction,
+            mode: 1,
+            targets: vec![dynamic(payload, 0x80804c39, &[0, 4])?],
+        });
+    }
+    Ok(())
 }

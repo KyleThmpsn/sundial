@@ -290,6 +290,42 @@ pub(crate) fn resource(p: &Payload, at: usize, class: u32) -> Result<usize> {
     Ok(target)
 }
 
+/// A native item's investment stat values by stat definition index. Each row stores an 8-bit
+/// definition index and a reserved zero byte, with the value at +4. An item with no stat resource,
+/// or an empty one, has none.
+pub(crate) fn investment_stats(r: &mut Reader, hash: u32) -> Result<BTreeMap<u16, i32>> {
+    use sundial::package_authoring::investment_schema::{
+        ITEM_INVESTMENT_STAT_POINTER_OFFSET, ITEM_INVESTMENT_STAT_RESOURCE_CLASS,
+        ITEM_INVESTMENT_STAT_ROW_CLASS, ITEM_INVESTMENT_STAT_ROW_SIZE,
+    };
+    let tag = item_tag(r, hash)?;
+    let item = r.tag(tag, Some(0x80807BEA))?;
+    let mut values = BTreeMap::new();
+    if item.u64(ITEM_INVESTMENT_STAT_POINTER_OFFSET)? == 0 {
+        return Ok(values);
+    }
+    let at = resource(
+        &item,
+        ITEM_INVESTMENT_STAT_POINTER_OFFSET,
+        ITEM_INVESTMENT_STAT_RESOURCE_CLASS,
+    )?;
+    if item.bytes::<16>(at)? == [0; 16] {
+        return Ok(values);
+    }
+    for row in item.array(
+        at,
+        ITEM_INVESTMENT_STAT_ROW_SIZE,
+        Some(ITEM_INVESTMENT_STAT_ROW_CLASS),
+    )? {
+        ensure!(item.u8(row + 1)? == 0, "Native investment stat row");
+        values.insert(
+            u16::from(item.u8(row)?),
+            i32::from_le_bytes(item.bytes(row + 4)?),
+        );
+    }
+    Ok(values)
+}
+
 /// Shadowkeep stat definition indices by stat hash, from the installed investment globals.
 pub(crate) fn stat_definitions(r: &mut Reader) -> Result<BTreeMap<u32, u16>> {
     let tag = r
@@ -424,4 +460,54 @@ pub fn extract(r: &mut Reader, item_hash: u32) -> Result<Value> {
     Ok(
         json!({"item":format!("{item_hash:08X}"),"item_tag":format!("{:08X}",items.u32(matches[0]+16)?),"art_indices":indices,"art_rows":art_rows,"assignments":keys.iter().map(|k|format!("{k:08X}")).collect::<Vec<_>>(),"parents":parents,"models":models}),
     )
+}
+
+/// The component inputs a weapon's stat translator copies a translated value into, in the
+/// translation table its translation group selects, as the build selects it: its copy routes
+/// (`80803981`). Logic rows (`8080397C`) compute their outputs another way, so an input one of
+/// them also writes is left out, since a literal there would not be the value the weapon uses.
+/// An unlisted group uses table zero.
+pub(crate) fn translator_routes(r: &mut Reader, item: u32) -> Result<BTreeSet<(u32, u32)>> {
+    let manager = sundial::package_authoring::PackageManager::new(
+        &r.manager.package_dir,
+        r.manager.version,
+        Some(r.manager.platform),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let runtime =
+        sundial::package_authoring::runtime::load_weapon_runtime_entity_for_item_with_manager(
+            &manager, item,
+        )
+        .map_err(anyhow::Error::msg)?;
+    let bindings = sundial::package_authoring::entity::weapon_component_bindings(
+        &runtime.payload,
+        0x2F98_1564,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let [binding] = bindings.as_slice() else {
+        anyhow::bail!("The weapon has no single stat translator");
+    };
+    let p = r.tag(binding.owner_tag, Some(0x8080_9C36))?;
+    let d = p.pointer(24)?;
+    let tables = p.array(d + 0x48, 48, Some(0x8080_3975))?;
+    let keys = p.array(d + 0x238, 40, Some(0x8080_38C7))?;
+    ensure!(
+        !tables.is_empty() && tables.len() == keys.len(),
+        "Stat translator tables and keys differ"
+    );
+    let selected = keys
+        .iter()
+        .position(|&k| p.u32(k + 16).ok() == Some(runtime.weapon_translation_group_hash))
+        .unwrap_or(0);
+    let table = tables[selected];
+    let mut routes = BTreeSet::new();
+    for at in p.array(table + 16, 80, Some(0x8080_3981))? {
+        routes.insert((p.u32(at)?, p.u32(at + 4)?));
+    }
+    for row in p.array(table + 32, 40, Some(0x8080_397C))? {
+        for output in p.array(row, 12, Some(0x8080_3987))? {
+            routes.remove(&(p.u32(output)?, p.u32(output + 4)?));
+        }
+    }
+    Ok(routes)
 }

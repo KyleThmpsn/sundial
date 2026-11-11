@@ -117,7 +117,7 @@ impl Workbench {
         };
         let index = self.free_metadata_index(&self.documents[position].recipe, choices);
         let document = &mut self.documents[position];
-        let before = document.recipe.clone();
+        // The copy goes into a copy of the perk, so a failed insert leaves the perk as it was.
         let result = result.and_then(|program| {
             if document.pending_effect.is_some()
                 || (position == self.selected && self.editor.is_some())
@@ -125,12 +125,13 @@ impl Workbench {
                 return Err("Finish editing the source effect, then duplicate it again.".into());
             }
             let index = index.ok_or("There is no available identity for another effect.")?;
-            insert(&mut document.recipe, &pending.source, program, index)
+            let mut changed = document.recipe.clone();
+            insert(&mut changed, &pending.source, program, index)?;
+            Ok(changed)
         });
         match result {
-            Ok(()) => {
-                document.history.record_step(before);
-                document.modified = Some(SystemTime::now());
+            Ok(changed) => {
+                document.commit_step(changed);
                 self.persist_drafts();
             }
             Err(error) => self.error = Some(error),

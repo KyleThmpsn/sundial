@@ -16,6 +16,8 @@ pub(super) struct Body {
     pub mass: f32,
     pub center: [f32; 3],
     pub inertia: [[f64; 3]; 3],
+    /// The factor on every source part's mass and tensor, which the collision rows take as well.
+    pub mass_scale: f32,
     pub report: Value,
 }
 
@@ -38,9 +40,70 @@ impl Properties {
         })
     }
 
+    /// The same part at `scale` times its mass. The centre stays, and the tensor scales with the
+    /// mass, so the distribution keeps its shape.
+    pub(super) fn scaled(&self, scale: f32) -> Self {
+        Self {
+            mass: self.mass * scale,
+            center: self.center,
+            inertia: self.inertia.map(|row| row.map(|v| v * f64::from(scale))),
+        }
+    }
+
     pub(super) fn rotate(&mut self, frame: &[f32; 16]) {
         self.center = rig::point(frame, self.center, false);
         self.inertia = inertia::rotate(&self.inertia, frame);
+    }
+
+    /// The native collector (`004653F0` through `0188A860`) adds each admitted row's tensor
+    /// directly, without parallel-axis terms between row centres. Carrying each row's term about
+    /// the combined centre in its own tensor makes that plain sum equal the source body's
+    /// combined inertia. The row keeps its own centre, so the mass-weighted centre is unchanged.
+    pub(super) fn about(&self, center: [f32; 3]) -> Self {
+        let mut inertia = [[0.; 3]; 3];
+        inertia::add(&mut inertia, &self.inertia, self.mass, self.center, center);
+        Self {
+            inertia,
+            ..self.clone()
+        }
+    }
+}
+
+/// The mass-weighted centre of the initially enabled source bodies, at the object origin's height
+/// for a stationary source.
+pub(super) fn initial_center(scene: &Scene) -> Result<[f32; 3]> {
+    let mut mass = 0.;
+    let mut center = [0.; 3];
+    for part in physical(scene)?.into_iter().filter(|part| {
+        part.condition
+            .as_ref()
+            .is_none_or(|(_, states)| states.contains(&0))
+    }) {
+        let properties = properties(scene, part.body)?;
+        mass += properties.mass;
+        for (center, position) in center.iter_mut().zip(properties.center) {
+            *center += position * properties.mass;
+        }
+    }
+    ensure!(
+        mass.is_finite() && mass > 0.,
+        "Source vehicle has no intact physical mass"
+    );
+    Ok(anchored(scene, center.map(|v| v / mass)))
+}
+
+/// Reach keeps a turret fixed, while a native carrier body is free. A Shade with its mass centre
+/// 1.4 m up on its narrow base lay on its side in game (Dawn 1.7.2, 2026-11-06), and with the
+/// centre dropped to its origin, which Reach turrets keep at their base, it still lay on its side
+/// after a push. A stationary source's centre now mirrors below its origin by its source height,
+/// so it lies under the base and gravity turns the body back upright from any tilt short of
+/// inverted. Taking the row tensors about that centre also raises the body's resistance to tipping.
+/// Only stationary sources, which rest on their collision and never drive, take this centre.
+fn anchored(scene: &Scene, center: [f32; 3]) -> [f32; 3] {
+    if super::stationary(scene) {
+        [center[0], center[1], -center[2].abs()]
+    } else {
+        center
     }
 }
 
@@ -72,6 +135,10 @@ pub(super) fn properties(scene: &Scene, index: usize) -> Result<Properties> {
     );
     let worlds = rig::world(&model.bones)?;
     let world = &worlds[matches[0].0];
+    // The cooked centre already holds the centre of mass offset at `+0x38`, and the cooked tensor
+    // the inertia scale at `+0x20`: the cargo truck's hull centroid at z 0.644 less its offset
+    // 0.225 is its cooked 0.419, and the Mongoose's cooked tensor is a uniform multiple of its
+    // hull's that tracks its 1.5 scale.
     Ok(Properties {
         mass,
         center: rig::point(
@@ -177,7 +244,49 @@ pub(super) fn primary(payload: &Payload) -> Result<usize> {
     Ok(selected[0])
 }
 
-pub(super) fn build(payload: &mut Payload, scene: &Scene, bones: &Value) -> Result<Body> {
+/// The total mass of the initially enabled source parts.
+fn source_mass(scene: &Scene) -> Result<f32> {
+    let mut mass = 0.;
+    for part in physical(scene)?.into_iter().filter(|part| {
+        part.condition
+            .as_ref()
+            .is_none_or(|(_, states)| states.contains(&0))
+    }) {
+        mass += properties(scene, part.body)?.mass;
+    }
+    ensure!(
+        mass.is_finite() && mass > 0.,
+        "Source vehicle has no intact physical mass"
+    );
+    Ok(mass)
+}
+
+/// The factor that brings the source's intact mass to the carrier's own, for a carrier whose
+/// retained drive is tuned to its mass, else 1. The stock tank's tread drive keeps its engine,
+/// gears and tread grip, and skids the hull round against the treads' lateral friction, which
+/// grows with the load. The Scorpion at its source 21,775 kg, twice the tank's 10,378 kg, on
+/// treads 1.2 times as long, drove forward and back but never turned (Dawn 1.7.2, 2026-11-08).
+/// Its parts keep their centres and tensor shape at the carrier's mass.
+pub(super) fn native_mass_scale(payload: &Payload, scene: &Scene) -> Result<f32> {
+    let native = payload.f32(primary(payload)? + 0x60)?;
+    ensure!(
+        native.is_finite() && native > 0.,
+        "Native primary body has no mass"
+    );
+    Ok(native / source_mass(scene)?)
+}
+
+/// `mass_scale` multiplies every selected part's mass and tensor (`native_mass_scale`).
+pub(super) fn build(
+    payload: &mut Payload,
+    scene: &Scene,
+    bones: &Value,
+    mass_scale: f32,
+) -> Result<Body> {
+    ensure!(
+        mass_scale.is_finite() && mass_scale > 0.,
+        "Invalid vehicle mass scale"
+    );
     let source = &scene.object.gameplay["rigid_body"];
     let selected = physical(scene)?
         .into_iter()
@@ -204,7 +313,7 @@ pub(super) fn build(payload: &mut Payload, scene: &Scene, bones: &Value) -> Resu
             mass: weight,
             center: position,
             inertia: tensor,
-        } = properties(scene, part.body)?;
+        } = properties(scene, part.body)?.scaled(mass_scale);
         for axis in 0..3 {
             center[axis] += position[axis] * weight;
         }
@@ -216,19 +325,13 @@ pub(super) fn build(payload: &mut Payload, scene: &Scene, bones: &Value) -> Resu
         mass.is_finite() && mass > 0.,
         "Invalid selected vehicle mass"
     );
-    center = center.map(|v| v / mass);
-    let mut source_tensor = [[0.; 3]; 3];
+    center = anchored(scene, center.map(|v| v / mass));
+    // 4653F0 adds the enabled metadata tensors directly. Each collision row carries its
+    // parallel-axis term about this centre (`Properties::about`), so that plain sum is the
+    // source combined tensor, which flight authority then uses.
     let mut tensor = [[0.; 3]; 3];
     for (weight, position, inertia) in tensors {
-        inertia::add(&mut source_tensor, &inertia, weight, position, center);
-        // 4653F0 adds the enabled metadata tensors directly. Flight authority
-        // must use that actual matrix, including when a source body is split
-        // into several convex children for the native collector.
-        for row in 0..3 {
-            for column in 0..3 {
-                tensor[row][column] += inertia[row][column];
-            }
-        }
+        inertia::add(&mut tensor, &inertia, weight, position, center);
     }
     let (_, orientation) = super::super::seat::frame(bones, 0, ([0.; 3], [0., 0., 0., 1.]))?;
     let native_tensor = inertia::rotate(&tensor, &rig::transform([0.; 3], orientation));
@@ -263,15 +366,16 @@ pub(super) fn build(payload: &mut Payload, scene: &Scene, bones: &Value) -> Resu
         mass,
         center,
         inertia: tensor,
+        mass_scale,
         report: json!({
             "source":source["tag"],"selection":selection,"bodies":body_rows,
-            "mass":mass,"center_metres":center,"native_center":native_center,"native_row":at,
+            "mass":mass,"mass_scale":mass_scale,"source_mass":mass / mass_scale,"center_metres":center,"native_center":native_center,"native_row":at,
             "native_group":payload.u32(at+12)?,"native_body_name":format!("{:08X}",payload.u32(at)?),"initial_damage":"none",
-            "source_combined_inertia_kg_metres_squared":source_tensor,
-            "native_tensor_assembly":"sum_enabled_parts",
+            "source_combined_inertia_kg_metres_squared":tensor,
+            "native_tensor_assembly":"sum_enabled_parts_with_row_parallel_axis",
             "native_inertia_kg_metres_squared":native_tensor,
             "previous_mass":old_mass,"gameplay_verified":false,
-            "limits":["Enabled source convex shapes supply their mass, centre and additive tensor during native body construction. Flight authority uses that assembled tensor. The native sum does not add parallel-axis terms between independently conditioned parts. Source authoring scales are not applied twice."]
+            "limits":["Enabled source convex shapes supply their mass, centre and tensor during native body construction. Each row's tensor carries its parallel-axis term about the initial combined centre, so the native plain sum is the source combined tensor. After a damage condition changes the enabled set, the terms still refer to the initial centre. Source authoring scales are not applied twice."]
         }),
     })
 }

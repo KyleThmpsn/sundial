@@ -3,20 +3,16 @@ mod tests;
 
 mod unlocks;
 use unlocks::*;
-pub(crate) use unlocks::{
-    append_unlock, append_unlock_display, append_unlock_flag_bank_row, first_free_unlock_slot,
-    unlock_flag_bank_descriptor, unlock_sorted_index_position,
-    validate_authored_unlock_display_row, validate_authored_unlock_flag_bank_row,
-};
 
 mod conditions;
 pub(crate) mod presentation;
 use conditions::*;
 pub(crate) use conditions::{
-    add_direct_acquired_counts, classify_sunrise_count_pools, numeric_program_layout,
-    numeric_program_stack_depth, patch_project_acquired_count_programs,
-    patch_project_collection_objectives_with_members, presentation_ancestor_nodes,
-    shared_numeric_instruction_template, validate_shared_expression_table,
+    add_constant_acquired_counts, add_direct_acquired_counts, classify_sunrise_count_pools,
+    constant_acquired_counts, numeric_program_layout, numeric_program_stack_depth,
+    patch_project_acquired_count_programs, patch_project_collection_objectives_with_members,
+    presentation_ancestor_nodes, shared_numeric_instruction_template,
+    validate_shared_expression_table,
 };
 // Only imported ornaments patch a collection's objectives directly.
 #[cfg(feature = "d2-model-importer")]
@@ -26,7 +22,7 @@ mod collections;
 #[cfg(test)]
 use collections::*;
 pub(crate) use collections::{
-    append_collectible, append_collectible_display, collectible_clone_template,
+    acquires_by, append_collectible, append_collectible_display, collectible_clone_template,
     collection_unlock_index, donor_weapon_collection_page, gear_collection_page,
     node_collectible_children, template_presentation_parents,
     validate_authored_collectible_display_row, validate_authored_collectible_nested_isolation,
@@ -63,10 +59,7 @@ pub(crate) use sundial::package_authoring::investment_schema::{
     SHARED_EXPRESSION_POOL_PARALLEL_ROW_CLASS as SHARED_EXPRESSION_PARALLEL_ROW_CLASS,
 };
 use sundial::package_authoring::investment_schema::{
-    UNLOCK_FLAG_DEFINITION_ROW_CLASS, UNLOCK_FLAG_DEFINITION_ROW_SIZE,
-    UNLOCK_FLAG_DISPLAY_CONTENT_ROW_CLASS, UNLOCK_FLAG_DISPLAY_CONTENT_ROW_SIZE,
-    UNLOCK_FLAG_DISPLAY_ROW_CLASS, UNLOCK_FLAG_DISPLAY_ROW_SIZE,
-    UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS, UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE,
+    UNLOCK_FLAG_DEFINITION_ROW_SIZE, UNLOCK_FLAG_DISPLAY_ROW_SIZE,
 };
 
 use crate::{
@@ -138,24 +131,13 @@ pub(crate) const BADGES_ROOT_OBJECTIVE_INDEX: u16 = 1385;
 pub(crate) const NUMERIC_FLAG_INSTRUCTION: u8 = 1;
 pub(crate) const NUMERIC_AND_INSTRUCTION: u8 = 4;
 pub(crate) const NUMERIC_VALUE_INSTRUCTION: u8 = 10;
+/// Pushes its operand. 114 stock collectibles acquire through one constant 1.
+pub(crate) const NUMERIC_CONSTANT_INSTRUCTION: u8 = 11;
 pub(crate) const NUMERIC_POOL_INSTRUCTION: u8 = 12;
 pub(crate) const NUMERIC_ADD_INSTRUCTION: u8 = 17;
 const NESTED_ARRAY_MARKER: [u8; 4] = [0xBD, 0x9F, 0x80, 0x80];
 pub(crate) const UNLOCK_ROW_SIZE: usize = UNLOCK_FLAG_DEFINITION_ROW_SIZE;
-pub(crate) const UNLOCK_FLAG_BANK_ROW_SIZE: usize = 8;
-pub(crate) const UNLOCK_FLAG_BANK_ROW_CLASS: u32 = 0x8080_7D48;
 pub(crate) const UNLOCK_DISPLAY_ROW_SIZE: usize = UNLOCK_FLAG_DISPLAY_ROW_SIZE;
-
-struct UnlockTableLayout {
-    count: usize,
-    primary_header: usize,
-    primary_rows: usize,
-    primary_end: usize,
-    secondary_header: usize,
-    secondary_rows: usize,
-    order: Vec<usize>,
-    ordered_hashes: Vec<u32>,
-}
 
 #[derive(Clone, Debug)]
 struct CollectibleNestedClone {
@@ -169,7 +151,38 @@ struct CollectibleNestedClone {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CollectibleUnlockClone {
     pub(crate) source_index: usize,
-    pub(crate) authored_index: u16,
+    pub(crate) acquisition: Acquisition,
+}
+
+/// What an authored collectible's acquired condition reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Acquisition {
+    /// The flag of its own unlock definition row.
+    #[cfg(any(test, feature = "d2-model-importer"))]
+    Flag(u16),
+    /// A constant 1. Builds for Sunrise's mod loader acquire every collectible this way, so no
+    /// unlock flag or account slot is shared between the mods of the family.
+    Always,
+}
+
+impl Acquisition {
+    /// The unlock definition row the condition reads, if any.
+    pub(crate) fn flag(self) -> Option<u16> {
+        match self {
+            #[cfg(any(test, feature = "d2-model-importer"))]
+            Self::Flag(index) => Some(index),
+            Self::Always => None,
+        }
+    }
+
+    /// The one instruction the condition holds.
+    pub(crate) fn token(self) -> (u8, u16) {
+        match self {
+            #[cfg(any(test, feature = "d2-model-importer"))]
+            Self::Flag(index) => (NUMERIC_FLAG_INSTRUCTION, index),
+            Self::Always => (NUMERIC_CONSTANT_INSTRUCTION, 1),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -246,7 +259,7 @@ pub(crate) struct ProjectAuthoredRow {
     pub(crate) pages: crate::collection::CollectionPages,
     pub(crate) classes: crate::collection::Classes,
     pub(crate) source_acquired_flag: u16,
-    pub(crate) authored_unlock_index: u16,
+    pub(crate) acquisition: Acquisition,
     pub(crate) count_selection: SunriseAcquiredPoolSelection,
 }
 
@@ -254,14 +267,4 @@ pub(crate) struct ProjectAuthoredRow {
 struct NumericStackNode {
     contains_target: bool,
     additive_target_path: bool,
-}
-
-struct UnlockDisplayTableLayout {
-    count: usize,
-    primary_header: usize,
-    primary_rows: usize,
-    primary_end: usize,
-    content_header: usize,
-    content_rows: usize,
-    content_count: usize,
 }

@@ -35,9 +35,11 @@ pub fn parse(data: &[u8]) -> Result<Vec<Instruction<'_>>> {
             0x28 => (0x21, 0, 1),
             0x29 => (0x22, 1, 1),
             0x2A => (0x23, 0, 1),
-            // Matching source and shipped native dye programs use this log2
-            // instruction. Only its opcode number changes.
-            0x2C => (0x25, 0, 1),
+            // Source 28..35 is native 21..2E in order: the modern decoder in Alkahest
+            // names 2B, 2C and 2D by their native numbers 24, 25 and 26. Matching source
+            // and shipped native dye programs confirm 2C as log2. 2B is exp2 and 2D the
+            // four-lane length broadcast, both unary with no operand bytes.
+            0x2B..=0x2D => (op - 7, 0, 1),
             0x2E..=0x32 => (op - 7, 0, 1),
             0x35 => (0x2E, 0, 5),
             0x42 => (0x34, 1, 0),
@@ -152,6 +154,12 @@ impl Lowered {
     }
 }
 
+/// View extern 2 matrices by first row, modern then Shadowkeep. The modern View holds two more
+/// rows before its matrices. Paired modern and Shadowkeep view scopes write modern 08, 0C, 14 and
+/// 20 to the same buffer rows as native 06, 0A, 12 and 1E. Modern 04 is the first matrix of its
+/// layout, four rows before 08, as native 02 is before 06.
+const VIEW_MATRICES: [(u8, u8); 5] = [(4, 2), (8, 6), (0x0C, 0x0A), (0x14, 0x12), (0x20, 0x1E)];
+
 fn pop(stack: &mut Vec<Expression>) -> Result<Expression> {
     stack.pop().context("TFX stack underflow")
 }
@@ -240,10 +248,11 @@ pub fn lower(data: &[u8], b: &Bindings) -> Result<Lowered> {
                 // 33 and 13 shipped programs).
                 if let Some(native) = b.external_textures.get(&[i.op, i.args[0], i.args[1]]) {
                     e.code.extend(native);
-                } else if i.op == 0x4C && i.args == [2, 0x0C] {
-                    // Paired View scopes write the same matrix to cb12[4..8]. The
-                    // modern producer reads extern 2 at row 12, Shadowkeep at row 10.
-                    e.code.extend([0x3E, 2, 0x0A]);
+                } else if let Some(&(_, native)) = VIEW_MATRICES
+                    .iter()
+                    .find(|(modern, _)| i.op == 0x4C && i.args == [2, *modern])
+                {
+                    e.code.extend([0x3E, 2, native]);
                 } else if (i.op == 0x4B && i.args == [1, 26])
                     || (i.op == 0x4A
                         && matches!(i.args, [1, 0] | [1, 1] | [1, 4] | [1, 7] | [1, 8] | [1, 28]))

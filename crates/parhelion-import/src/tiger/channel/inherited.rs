@@ -72,6 +72,27 @@ pub(crate) fn default_span(namespaces: impl IntoIterator<Item = u32>) -> Result<
     })
 }
 
+/// The declaration ordinal at which `bank` inherits `name`, in whichever lookup namespace holds
+/// it. Vector providers address a bank's values by this ordinal, as stock first-person bank
+/// `81579906` does for ammunition `32CC5402` at `5D`.
+pub(crate) fn declaration(bank: &Payload, name: u32) -> Result<Option<u32>> {
+    let definition = bank.pointer(24)?;
+    ensure!(
+        bank.u32(definition - 4)? == 0x80809790,
+        "Inherited channel bank roots differ"
+    );
+    let rows = bank.array(definition + 0xd8, 112, Some(0x808097a1))?;
+    let found = lookup(bank, definition, &rows)?
+        .into_iter()
+        .filter(|row| row.1 == name)
+        .collect::<Vec<_>>();
+    ensure!(
+        found.len() <= 1,
+        "Inherited channel name repeats across namespaces"
+    );
+    Ok(found.first().map(|row| row.2))
+}
+
 fn mask(original: &Payload, field: usize, before: usize, after: usize) -> Result<Vec<u32>> {
     let rows = original.array(field, 4, Some(0x8080000b))?;
     if rows.is_empty() {

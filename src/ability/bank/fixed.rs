@@ -1,9 +1,56 @@
 //! Literal modifier bodies require a qualified bank-local witness and reciprocal pairs.
 use super::*;
 mod duration;
+pub(super) mod program;
 mod protection;
 pub(super) mod rate;
 pub use protection::constant_protection_definition;
+
+/// Words a literal body holds. The paired glide factors fill fifteen.
+pub const FIXED_WORDS: usize = 16;
+
+/// The paired glide factors: fifteen Float32 lanes the glide handler multiplies into its profile.
+pub(super) const GLIDE_CLASS: u32 = 0x8080_4258;
+
+/// A literal body stored with the words a shorter body never uses left as zeros.
+pub fn widened(words: [u32; 8]) -> [u32; FIXED_WORDS] {
+    let mut wide = [0; FIXED_WORDS];
+    wide[..8].copy_from_slice(&words);
+    wide
+}
+
+/// Serialized literal bodies keep at least eight words, so bodies written before the glide
+/// factors read and write as they always did.
+pub(crate) mod wide_words {
+    use super::FIXED_WORDS;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        words: &[u32; FIXED_WORDS],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let used = words
+            .iter()
+            .rposition(|&word| word != 0)
+            .map_or(0, |last| last + 1);
+        serializer.collect_seq(&words[..used.max(8)])
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u32; FIXED_WORDS], D::Error> {
+        let words = Vec::<u32>::deserialize(deserializer)?;
+        if !(8..=FIXED_WORDS).contains(&words.len()) {
+            return Err(serde::de::Error::custom(format!(
+                "A literal body holds 8 to {FIXED_WORDS} words, not {}",
+                words.len()
+            )));
+        }
+        let mut wide = [0; FIXED_WORDS];
+        wide[..words.len()].copy_from_slice(&words);
+        Ok(wide)
+    }
+}
 
 /// Selection metadata for the private row. A zero required key means no inner gate.
 /// Protection and active rates preserve source names under their qualified native storage routes.
@@ -15,52 +62,86 @@ pub struct FixedSelection {
     pub required_key: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FixedModifier {
     pub template_key: u32,
     pub class: u32,
-    pub words: [u32; 8],
+    pub words: [u32; FIXED_WORDS],
     pub selection: Option<FixedSelection>,
 }
+
+/// Melee bank integer literals the common handler (`00FC01F0`) writes into its recipient: the
+/// flag word (UInt16 replace at `+4E`, branch `00FC032D`), the HUD-hiding byte (`+52`,
+/// `00FC0381`), the HUD ability name key (`+48`, `00FC03AB`) and the key word of `80804509`.
+const FLAG_WORD: u32 = 0x8080_4536;
+const HUD_HIDDEN: u32 = 0x8080_4530;
+const HUD_NAME: u32 = 0x8080_4532;
+const KEY_WORD: u32 = 0x8080_4509;
+/// A contact effect (`0105C7AB`): two Float32, eight zero bytes, then the entity a hit attaches
+/// and a zero word. The handler appends both floats and the entity to a list capped at three.
+const CONTACT: u32 = 0x8080_442A;
+/// A movement-bank evade selector: the identity of the movement controller profile it enables,
+/// matched against profile `+0x10` (`80804106`). See `ability::movement::evade`.
+pub const EVADE_PROFILE: u32 = 0x8080_4121;
 
 impl FixedModifier {
     pub fn byte_len(self) -> Result<usize, String> {
         match self.class {
+            GLIDE_CLASS => Ok(60),
+            CONTACT => Ok(24),
+            FLAG_WORD | HUD_HIDDEN | HUD_NAME | KEY_WORD => Ok(4),
             0x80804399 => Ok(32),
             0x808044D6 => Ok(16),
             duration::CLASS => Ok(12),
             0x8080442E | 0x808044D4 | protection::CLASS => Ok(8),
             0x80804528
             | 0x8080411F
+            | EVADE_PROFILE
             | 0x808042A5
             | 0x8080411B
             | 0x80804127
             | 0x808044D2
-            | rate::CLASS => Ok(4),
+            | rate::CLASS
+            | program::CLASS => Ok(4),
             _ => Err("Unqualified fixed ability modifier class".into()),
         }
     }
 
     pub fn validate(self) -> Result<(), String> {
         let count = self.byte_len()? / 4;
+        // Integer fields carry keys, flags and tags, which need not be finite as Float32.
+        let floats = match self.class {
+            FLAG_WORD | HUD_HIDDEN | HUD_NAME | KEY_WORD | EVADE_PROFILE => 0,
+            CONTACT => 2,
+            _ => count,
+        };
         if [0, u32::MAX, 0x811C9DC5].contains(&self.template_key)
             || self.words[count..].iter().any(|&v| v != 0)
-            || self.words[..count]
+            || self.words[..floats]
                 .iter()
                 .any(|&v| !f32::from_bits(v).is_finite())
+            || (self.class == FLAG_WORD && self.words[0] > 0xFFFF)
+            || (self.class == HUD_HIDDEN && self.words[0] > 0xFF)
+            || (self.class == CONTACT
+                && (self.words[2..4] != [0; 2]
+                    || [0, u32::MAX].contains(&self.words[4])
+                    || self.words[5] != 0))
             || (self.class == 0x8080442E && self.words[0] > 2)
             || (self.class == 0x8080411F && self.words[0] > 2)
+            || (self.class == EVADE_PROFILE && [0, u32::MAX, 0x811C9DC5].contains(&self.words[0]))
             || (self.class == 0x80804127 && f32::from_bits(self.words[0]) <= 0.0)
             || (self.class == 0x808044D2 && self.words[0] > 1)
             || (matches!(self.class, 0x808044D4 | 0x808044D6)
                 && self.words[..count].iter().any(|&v| f32::from_bits(v) < 0.0))
-            || (matches!(self.class, 0x808044D2 | 0x808044D4 | 0x808044D6)
-                && self.selection
-                    != Some(FixedSelection {
-                        name: 0x811C9DC5,
-                        priority: 255,
-                        required_key: 0,
-                    }))
+            || (matches!(
+                self.class,
+                0x808044D2 | 0x808044D4 | 0x808044D6 | GLIDE_CLASS | program::CLASS
+            ) && self.selection
+                != Some(FixedSelection {
+                    name: 0x811C9DC5,
+                    priority: 255,
+                    required_key: 0,
+                }))
             || (self.class == protection::CLASS
                 && (self.words[0] != (-1.0f32).to_bits()
                     || !(0.0..=1.0).contains(&f32::from_bits(self.words[1]))
@@ -86,6 +167,8 @@ impl FixedModifier {
                         | 0x808044D2
                         | 0x808044D4
                         | 0x808044D6
+                        | GLIDE_CLASS
+                        | program::CLASS
                         | duration::CLASS
                         | protection::CLASS
                         | rate::CLASS
@@ -94,7 +177,9 @@ impl FixedModifier {
                     || [u32::MAX, 0x811C9DC5].contains(&s.required_key)
             })
             || (self.class == 0x80804399
-                && (self.words[1] > 1 || self.words[2..4] != [0; 2] || self.words[5..] != [0; 3]))
+                && (self.words[1] > 1
+                    || self.words[2..4] != [0; 2]
+                    || self.words[5..].iter().any(|&word| word != 0)))
         {
             return Err("Fixed ability modifier has unqualified fields".into());
         }
@@ -183,6 +268,7 @@ impl FixedModifier {
         Ok(match self.class {
             duration::CLASS => 72,
             protection::CLASS => protection::SIZE,
+            program::CLASS => program::SIZE,
             _ => (16 + self.byte_len()?).next_multiple_of(8),
         })
     }
@@ -202,6 +288,8 @@ impl FixedModifier {
             duration::write(out, owner, definition, instance)?;
         } else if self.class == protection::CLASS {
             protection::write(out, definition, self.words[1])?;
+        } else if self.class == program::CLASS {
+            program::write(out, definition, self.words[0])?;
         }
         Ok(())
     }

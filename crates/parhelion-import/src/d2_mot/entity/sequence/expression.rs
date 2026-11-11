@@ -75,7 +75,9 @@ pub(super) fn program(
     Ok(())
 }
 
-fn lower(code: &[u8], constants: usize, inputs: usize) -> Result<Vec<u8>> {
+/// Lower one modern numeric expression to Shadowkeep's opcodes. Instruction lengths do not
+/// change. Exactly one result is written, at the end.
+pub(crate) fn lower(code: &[u8], constants: usize, inputs: usize) -> Result<Vec<u8>> {
     let mut result = Vec::new();
     let mut cursor = 0;
     let mut depth = 0usize;

@@ -140,8 +140,8 @@ fn own_kept_members(run: &Path, target: &Path) -> Result<(), String> {
     fs::write(&path, bytes).map_err(|e| e.to_string())
 }
 
-/// Links the installed files of one importer mod into `run` by file name, where a build stages
-/// them, after checking each against its receipt.
+/// Links the installed files of one importer mod into `run` where a build stages them, in the
+/// folder named for the member, after checking each against its receipt.
 fn link_member(
     install: &Path,
     member: &crate::mod_family::Member,
@@ -149,11 +149,17 @@ fn link_member(
 ) -> Result<(), String> {
     let directory = mod_content::member_directory(install, &member.manifest.id);
     for artifact in &member.receipt.artifacts {
-        let name = artifact
+        let native = artifact
             .path
             .rsplit('/')
             .next()
             .ok_or("An importer artifact has no file name")?;
+        let name = crate::mod_family::staged_name(&member.manifest.id, native);
+        let destination = run.join(&name);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+        }
         let source = directory.join(&artifact.path);
         mod_content::checked_path(install, &source)?;
         let digest = digest_file(&source).map_err(|e| e.to_string())?;
@@ -165,7 +171,7 @@ fn link_member(
                 member.manifest.name
             ));
         }
-        link_file(&source, &run.join(name))?;
+        link_file(&source, &destination)?;
     }
     Ok(())
 }

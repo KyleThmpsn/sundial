@@ -12,7 +12,7 @@ use super::{
         choices,
         material::Material,
         model::{self, Primitive},
-        native::material::{CHANGE_COLORS, change_colors as change_colors_of},
+        native::material::{CHANGE_COLORS, change_color_inputs as change_colors_of},
         object::Object,
         resource::{Absent, Pages},
         rig,
@@ -22,38 +22,40 @@ use super::{
 };
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+mod lighting;
 mod pose;
+use super::mission::lifetime::Lifetimes;
 use super::mission::pose::{Pose, Poses};
 
 /// A scenario placement block: its rows, their size, its palette of one tag reference per row, and
 /// the palette's tag group.
-struct Block {
-    rows: usize,
-    size: usize,
-    palette: usize,
-    group: &'static str,
+pub(super) struct Block {
+    pub rows: usize,
+    pub size: usize,
+    pub palette: usize,
+    pub group: &'static str,
 }
 
 /// The placement blocks the level draws.
-const CRATES: Block = Block {
+pub(super) const CRATES: Block = Block {
     rows: 0x600,
     size: 0xD8,
     palette: 0x60C,
     group: "bloc",
 };
-const SCENERY: Block = Block {
+pub(super) const SCENERY: Block = Block {
     rows: 0xFC,
     size: 0xDC,
     palette: 0x108,
     group: "scen",
 };
-const CONTROLS: Block = Block {
+pub(super) const CONTROLS: Block = Block {
     rows: 0x1B0,
     size: 0xDC,
     palette: 0x1BC,
     group: "ctrl",
 };
-const MACHINES: Block = Block {
+pub(super) const MACHINES: Block = Block {
     rows: 0x180,
     size: 0xE4,
     palette: 0x18C,
@@ -68,6 +70,8 @@ const PLACEMENT_SCALE: usize = 0x20;
 const PLACEMENT_VARIANT: usize = 0x58;
 /// A placement the scenario never creates.
 const NEVER_PLACED: u32 = 1 << 6;
+/// A placement that requires an explicit creation request instead of loading with its BSP.
+const NOT_AUTOMATIC: u32 = 1;
 /// A placement's permutation data after its variant name, from Assembly's ReachMCC scenario
 /// layout: a flag for each of its four change colors that it sets itself, then the four colors,
 /// each a 32-bit color with alpha in the high byte, then red, green and blue. Readback of the
@@ -82,7 +86,7 @@ const OBJECT_CHANGE_COLORS: (usize, usize) = (0x134, 0x18);
 const INITIAL_PERMUTATION_SIZE: usize = 0x20;
 /// An object's default model variant name.
 const OBJECT_DEFAULT_VARIANT: usize = 0x60;
-const PALETTE_SIZE: usize = 0x10;
+pub(super) const PALETTE_SIZE: usize = 0x10;
 /// A device row's power and position groups, `-1` for none, and its device flags.
 const DEVICE_POWER_GROUP: usize = 0x70;
 const DEVICE_POSITION_GROUP: usize = 0x72;
@@ -96,9 +100,9 @@ const SKIES: usize = 0x88;
 const SKY_SIZE: usize = 0x30;
 const SKY_BSPS: usize = 0x2E;
 /// Gametype markers, which the level does not draw.
-const MARKERS: &str = r"objects\multi\";
+pub(super) const MARKERS: &str = r"objects\multi\";
 /// The groups of map variant objects the level draws: crates, scenery and controls.
-const VARIANT_GROUPS: [&str; 3] = ["bloc", "scen", "ctrl"];
+pub(super) const VARIANT_GROUPS: [&str; 3] = ["bloc", "scen", "ctrl"];
 /// A render model's geometry block, and a section's eight vertex buffer slots.
 const MODEL_GEOMETRY: usize = 100;
 const VERTEX_SLOTS: usize = 8;
@@ -125,8 +129,14 @@ pub struct Objects {
     pub hidden: BTreeMap<String, usize>,
     /// Loaded placements whose machine motion and collision lifecycle have no native binding.
     pub motion: BTreeMap<String, usize>,
+    /// Placements requiring an explicit request, including unused and unpaired script objects.
+    /// Their geometry and collision cannot become permanent static scenery merely with BSP load.
+    pub transient: BTreeMap<String, usize>,
+    pub(super) lifetimes: Lifetimes,
     /// Constant mission clip assignments, including objects excluded for conflicting poses.
     pub poses: Poses,
+    /// Baked scenery probes retained on unchanged scenario placements and explicit exclusions.
+    pub lighting: lighting::Report,
     /// The skies' render geometry about the origin, in meters and in the order Reach draws it,
     /// with materials among `materials`, and each vertex's color: the light Reach baked into
     /// the sky's vertex color stream. It is never stood on.
@@ -149,7 +159,7 @@ type ChangeColors = [Option<[f32; 3]>; 4];
 /// those permutations at random by weight and a random color between its bounds, and its change
 /// color functions can scale and darken the result at runtime, which a static surface leaves out.
 /// The row's colors are taken in the same space as the object's, a byte over 255 each.
-fn change_colors(
+pub(super) fn change_colors(
     cache: &Cache,
     tag: &Tag,
     row: Option<usize>,
@@ -209,7 +219,7 @@ fn solid(material: Option<&Material>) -> bool {
 }
 
 /// The column-major transform of forward, left and up `axes`, scaled, then moved to `position`.
-fn transform(position: [f32; 3], axes: [[f32; 3]; 3], scale: f32) -> [f32; 16] {
+pub(super) fn transform(position: [f32; 3], axes: [[f32; 3]; 3], scale: f32) -> [f32; 16] {
     let mut out = rig::IDENTITY;
     for (column, axis) in axes.into_iter().enumerate() {
         for k in 0..3 {
@@ -233,9 +243,31 @@ fn placement(position: [f32; 3], [yaw, pitch, roll]: [f32; 3], scale: f32) -> [f
     transform(position, [forward, left, up], scale)
 }
 
+/// The column-major transform in meters of the scenario placement at `row`, at its scale, or
+/// unscaled when it holds none.
+pub(super) fn placement_transform(cache: &Cache, row: usize) -> Result<[f32; 16]> {
+    let scale = match cache.f32(row + PLACEMENT_SCALE)? {
+        scale if scale > 0. => scale,
+        _ => 1.,
+    };
+    let position = cache
+        .floats::<3>(row + PLACEMENT_POSITION)?
+        .map(|value| value * METRES_PER_UNIT);
+    Ok(placement(
+        position,
+        cache.floats(row + PLACEMENT_ROTATION)?,
+        scale,
+    ))
+}
+
+/// The model variant name the scenario placement at `row` asks for, empty for its default.
+pub(super) fn variant_name(cache: &Cache, row: usize) -> Result<String> {
+    cache.string_id(cache.u32(row + PLACEMENT_VARIANT)?)
+}
+
 /// The render model `tag` draws with `variant`, or its default variant when it has none by that
 /// name, when it has a world model.
-fn model_of(
+pub(super) fn model_of(
     cache: &Cache,
     pages: &mut Pages,
     tag: &Tag,
@@ -539,11 +571,14 @@ pub(super) fn placement_bsps(cache: &Cache, row: usize) -> Result<u32> {
     )
 }
 
-/// Whether the scenario creates the placement at `row` in the structure BSPs `loaded`: it is not
-/// marked never placed, and it belongs to one of them ([`in_loaded_bsp`]). Sound scenery shares the
-/// placement layout of the other objects.
+/// Whether the static map retains the placement in `loaded`, including the shared sound and
+/// light placement layout. Loading a BSP cannot create a row marked Not Automatically. Script
+/// analysis can describe a request, but cannot establish that request's active runtime state.
 pub(super) fn placed_in(cache: &Cache, row: usize, loaded: u32) -> Result<bool> {
-    Ok(cache.u32(row + PLACEMENT_FLAGS)? & NEVER_PLACED == 0 && in_loaded_bsp(cache, row, loaded)?)
+    Ok(
+        cache.u32(row + PLACEMENT_FLAGS)? & (NEVER_PLACED | NOT_AUTOMATIC) == 0
+            && in_loaded_bsp(cache, row, loaded)?,
+    )
 }
 
 /// Reads the objects the scenario places in the structure BSPs its zone sets `zone_sets` load, and
@@ -558,6 +593,7 @@ pub fn read(
 ) -> Result<Objects> {
     let scenario = cache.only("scnr")?.address()?;
     let loaded = super::loaded_bsps(cache, zone_sets)?;
+    let mut lighting = lighting::Probes::read(cache, loaded)?;
     let mut objects = Objects {
         materials: Vec::new(),
         primitives: Vec::new(),
@@ -567,7 +603,10 @@ pub fn read(
         placed: BTreeMap::new(),
         hidden: BTreeMap::new(),
         motion: BTreeMap::new(),
+        transient: BTreeMap::new(),
+        lifetimes: super::mission::lifetime::read(mission)?,
         poses: super::mission::pose::read(mission)?,
+        lighting: lighting::Report::default(),
         sky: Vec::new(),
         absent: BTreeSet::new(),
         colored: BTreeMap::new(),
@@ -601,7 +640,11 @@ pub fn read(
             {
                 continue;
             }
-            let name = cache.string_id(cache.u32(row + PLACEMENT_VARIANT)?)?;
+            if cache.u32(row + PLACEMENT_FLAGS)? & NOT_AUTOMATIC != 0 {
+                *objects.transient.entry(tag.path.clone()).or_default() += 1;
+                continue;
+            }
+            let name = variant_name(cache, row)?;
             let colors = change_colors(cache, tag, Some(row), &name)?;
             let object = cache.i16(row + 2)?;
             let pose = u16::try_from(object)
@@ -620,19 +663,21 @@ pub fn read(
             else {
                 continue;
             };
-            let scale = match cache.f32(row + PLACEMENT_SCALE)? {
-                scale if scale > 0. => scale,
-                _ => 1.,
-            };
-            let position = cache
-                .floats::<3>(row + PLACEMENT_POSITION)?
-                .map(|value| value * METRES_PER_UNIT);
-            let transform = placement(position, cache.floats(row + PLACEMENT_ROTATION)?, scale);
+            let transform = placement_transform(cache, row)?;
             let bsps = placement_bsps(cache, row)?;
             let first = objects.primitives.len();
             objects.place(
                 &tag.path, model, *base, &colors, &transform, true, hidden, bsps,
             )?;
+            if block.group == SCENERY.group {
+                lighting.apply(
+                    cache,
+                    row,
+                    tag,
+                    pose.is_some(),
+                    &mut objects.primitives[first..],
+                )?;
+            }
             if pose.is_some() && objects.primitives.len() > first {
                 objects.props.push(objects.primitives.split_off(first));
             }
@@ -664,6 +709,7 @@ pub fn read(
         )?;
     }
     read_skies(cache, pages, scenario, loaded, &mut objects)?;
+    objects.lighting = lighting.report;
     Ok(objects)
 }
 

@@ -1,6 +1,21 @@
 //! Bind and draw the opaque and supported transparent material passes.
 use super::*;
 
+/// Shared offscreen pass setup for the renderer and its compiler helper.
+pub(super) unsafe fn begin(gl: &glow::Context) {
+    // SAFETY: the caller supplies its current context with a complete target bound.
+    unsafe {
+        gl.disable(glow::SCISSOR_TEST);
+        gl.disable(glow::BLEND);
+        gl.disable(glow::FRAMEBUFFER_SRGB);
+        gl.disable(glow::CULL_FACE);
+        gl.enable(glow::DEPTH_TEST);
+        // Equal passes so coincident emissive panels win by draw order.
+        gl.depth_func(glow::LEQUAL);
+        gl.depth_mask(true);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Pass {
     Color,
@@ -33,9 +48,6 @@ impl View {
         unsafe {
             gl.use_program(Some(linked.program));
             gl.uniform_1_i32(uniforms.deformed.as_ref(), i32::from(self.deformed));
-            // samplerBuffer and sampler2D uniforms must have distinct texture units even
-            // when the dynamic branch does not sample the deformation buffer.
-            gl.uniform_1_i32(uniforms.geometry.as_ref(), 11);
             if self.deformed
                 && let Some(deformation) = &uploaded.deformation
             {
@@ -59,17 +71,7 @@ impl View {
             gl.uniform_1_f32(uniforms.exposure.as_ref(), self.exposure);
             gl.uniform_1_i32(uniforms.style.as_ref(), self.style);
             gl.uniform_1_i32(uniforms.flat.as_ref(), i32::from(self.flat));
-            for (unit, location) in uniforms.samplers.iter().enumerate() {
-                gl.uniform_1_i32(location.as_ref(), unit as i32);
-            }
-            gl.uniform_1_i32(uniforms.scene_depth.as_ref(), 9);
-            for (unit, location) in uniforms.effect_textures.iter().enumerate() {
-                gl.uniform_1_i32(location.as_ref(), 6 + unit as i32);
-            }
-            for (unit, location) in uniforms.native_textures.iter().enumerate() {
-                let unit = crate::model_preview::effects::native::gl_unit(9 + unit);
-                gl.uniform_1_i32(location.as_ref(), unit as i32);
-            }
+            uniforms.bind_samplers(gl);
         }
     }
 }
@@ -199,7 +201,11 @@ pub(super) unsafe fn groups(
                 gl.depth_mask(true);
                 gl.uniform_1_i32(uniforms.effect.as_ref(), -1);
             }
-            let dye = dyes
+            let dye = group
+                .key
+                .dye_bank
+                .and_then(|i| frame.model.dye_banks.get(i))
+                .unwrap_or(&dyes)
                 .get(usize::from(group.key.slot))
                 .and_then(Option::as_ref);
             let textures = [
@@ -285,6 +291,7 @@ pub(super) unsafe fn groups(
                         Role::Detail => dye.and_then(|d| d.detail),
                         Role::DetailNormal => dye.and_then(|d| d.normal),
                         Role::Depth
+                        | Role::Scope(_)
                         | Role::Mask
                         | Role::Scene
                         | Role::SceneColor
@@ -327,31 +334,55 @@ pub(super) unsafe fn groups(
                 gl.uniform_1_i32_slice(uniforms.native_present.as_ref(), &present);
             }
             if let Pass::Depth(buffer) = pass {
-                gl.bind_buffer_range(
-                    glow::TRANSFORM_FEEDBACK_BUFFER,
-                    0,
-                    Some(buffer),
-                    first_depth * 4,
-                    group.count * 4,
-                );
-                gl.begin_transform_feedback(glow::POINTS);
-                gl.draw_arrays(glow::POINTS, group.first, group.count);
-                gl.end_transform_feedback();
-            } else if group.indexed {
-                gl.draw_elements(
-                    glow::TRIANGLES,
-                    group.count,
-                    glow::UNSIGNED_INT,
-                    group.first * std::mem::size_of::<u32>() as i32,
-                );
-                draws[1] += 1;
+                feedback(gl, buffer, group.first, group.count, first_depth);
             } else {
-                gl.draw_arrays(glow::TRIANGLES, group.first, group.count);
+                triangles(gl, group.first, group.count, group.indexed);
+                draws[1] += usize::from(group.indexed);
             }
             draws[0] += 1;
         }
     }
     draws
+}
+
+pub(super) unsafe fn feedback(
+    gl: &glow::Context,
+    buffer: glow::Buffer,
+    first: i32,
+    count: i32,
+    depth_offset: i32,
+) {
+    // SAFETY: the caller binds the vertex array and a program with one float feedback varying.
+    // The supplied output buffer covers depth_offset + count float entries.
+    unsafe {
+        let stride = std::mem::size_of::<f32>() as i32;
+        gl.bind_buffer_range(
+            glow::TRANSFORM_FEEDBACK_BUFFER,
+            0,
+            Some(buffer),
+            depth_offset * stride,
+            count * stride,
+        );
+        gl.begin_transform_feedback(glow::POINTS);
+        gl.draw_arrays(glow::POINTS, first, count);
+        gl.end_transform_feedback();
+    }
+}
+
+pub(super) unsafe fn triangles(gl: &glow::Context, first: i32, count: i32, indexed: bool) {
+    // SAFETY: the caller binds the program, target and vertex/index data covering this range.
+    unsafe {
+        if indexed {
+            gl.draw_elements(
+                glow::TRIANGLES,
+                count,
+                glow::UNSIGNED_INT,
+                first * std::mem::size_of::<u32>() as i32,
+            );
+        } else {
+            gl.draw_arrays(glow::TRIANGLES, first, count);
+        }
+    }
 }
 
 unsafe fn bind_legacy(
@@ -388,15 +419,10 @@ unsafe fn effect_state(
 ) {
     // SAFETY: called by groups with the current renderer context and target.
     unsafe {
-        if material.opaque() {
-            gl.disable(glow::BLEND);
-        } else {
+        if !material.opaque() {
             copy_effect_depth(gl, target, copied_depth);
-            gl.enable(glow::BLEND);
         }
-        gl.disable(glow::FRAMEBUFFER_SRGB);
-        gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
-        gl.depth_mask(material.opaque());
+        blend(gl, material.opaque(), material.modulates());
         gl.uniform_1_i32(
             uniforms.effect.as_ref(),
             if material.opaque() {
@@ -405,6 +431,25 @@ unsafe fn effect_state(
                 material.kind as i32
             },
         );
+    }
+}
+
+/// The native material pass state, also exercised before a helper exports its program binary.
+pub(super) unsafe fn blend(gl: &glow::Context, opaque: bool, modulates: bool) {
+    // SAFETY: the caller supplies the current renderer or compiler-helper context.
+    unsafe {
+        if opaque {
+            gl.disable(glow::BLEND);
+        } else {
+            gl.enable(glow::BLEND);
+        }
+        gl.disable(glow::FRAMEBUFFER_SRGB);
+        if modulates {
+            gl.blend_func_separate(glow::ZERO, glow::SRC_COLOR, glow::ZERO, glow::ONE);
+        } else {
+            gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+        }
+        gl.depth_mask(opaque);
     }
 }
 

@@ -47,6 +47,7 @@ pub(super) fn action_of(
         rows: Vec::new(),
         hud_status: None,
         script: None,
+        imported: None,
     };
     match effect.kind {
         1 => Ok(Action::Attach {

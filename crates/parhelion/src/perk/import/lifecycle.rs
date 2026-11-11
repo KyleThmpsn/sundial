@@ -19,11 +19,7 @@ pub(super) fn prepare(
         return Ok(None);
     }
     let presentation = presentation::read(reader, request.plug_hash).map_err(error)?;
-    let name = if request.name.trim().is_empty() {
-        presentation.name.clone()
-    } else {
-        request.name.into()
-    };
+    let name = plug_name(request, &presentation);
     for program in &mut translation.programs {
         program.name.clone_from(&name);
     }
@@ -55,82 +51,24 @@ pub(super) fn prepare(
         effect.program = Some(program);
         sandbox_perks.push(effect);
     }
-    let mut recipe = request.recipe.clone();
-    let socket = usize::from(request.socket_index);
-    if recipe
-        .overrides
-        .socket_columns
-        .get(socket)
-        .and_then(Option::as_ref)
-        .is_none()
-    {
-        let count = donor
-            .sockets
-            .len()
-            .max(recipe.overrides.socket_columns.len())
-            .max(socket + 1);
-        recipe.overrides.socket_columns.resize_with(count, || None);
-        recipe.overrides.socket_columns[socket] = Some(WeaponSocketColumnRecipe {
-            choices,
-            ..Default::default()
-        });
-    }
-    let icon = presentation
-        .icon_png
-        .as_deref()
-        .map(|bytes| {
-            crate::icon_edit::ImportedIcon::from_bytes(bytes).map(|image| {
-                super::super::Icon::Image {
-                    name: presentation.name.clone(),
-                    image,
-                }
-            })
-        })
-        .transpose()?;
-    recipe
-        .overrides
-        .socket_plug_variants
-        .push(WeaponSocketPlugVariantRecipe {
-            projectile: sandbox_perks
-                .iter()
-                .filter_map(|effect| effect.program.as_ref())
-                .find_map(|program| program.projectile_dependency()),
-            offer_everywhere: false,
-            replace_effects: true,
-            socket_index: request.socket_index,
-            choice_index: request.choice_index,
-            source_plug_hash: HexHash::new(request.source_plug_hash),
-            name: Some(name),
-            description: Some(presentation.description.clone()),
-            icon,
-            classification_donor_hash: None,
-            investment_stats: Vec::new(),
-            additional_sandbox_perks: Vec::new(),
-            sandbox_perks,
-        });
-    recipe.to_spec().map_err(error)?.validate().map_err(error)?;
     reader.finish().map_err(error)?;
-    let encoded = recipe.to_json_pretty().map_err(error)?;
     let provenance = json!({
         "status":"experimental lifecycle property candidate", "gameplay_verified":false,
         "presentation":presentation.report,
-        "prepared_recipe_sha256":digest(encoded.as_bytes()),
-        "baseline_recipe_sha256":digest(request.recipe.to_json_pretty().map_err(error)?.as_bytes()),
         "source":{"plug_hash":request.plug_hash,"controllers":assigned.iter().map(|a| json!({
             "action_tag":format!("{:08X}", a.action_tag),"perk_hash":format!("{:08X}", a.perk_hash),
             "controller_sha256":digest(&a.controller.0)})).collect::<Vec<_>>()},
         "omitted":omitted,
         "remaining":["In-game equip and unequip, the native consumer of each written property", "Stock donor gameplay isolation"]
     });
-    fs::write(output.join("prepared-weapon.parhelion.json"), encoded).map_err(error)?;
-    fs::write(
-        output.join("provenance.json"),
-        serde_json::to_vec_pretty(&provenance).map_err(error)?,
-    )
-    .map_err(error)?;
-    Ok(Some(Prepared {
-        baseline: request.recipe.clone(),
-        recipe,
-        provenance,
-    }))
+    let plug = Plug {
+        presentation: &presentation,
+        name,
+        projectile: sandbox_perks
+            .iter()
+            .filter_map(|effect| effect.program.as_ref())
+            .find_map(|program| program.projectile_dependency()),
+        sandbox_perks,
+    };
+    finish(request, output, donor, choices, plug, |_| {}, provenance).map(Some)
 }

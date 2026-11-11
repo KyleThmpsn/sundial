@@ -357,6 +357,43 @@ impl Workbench {
     }
 }
 
+/// Names for the graphs a program's imported groups bind by. That graph is a stock stand-in
+/// the build replaces with the group, so its own name would describe the wrong thing. The
+/// group has no native name and belongs to this perk alone, so it is named after the perk.
+/// The graph is found as the build finds it.
+pub(super) fn imported_labels(
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+) -> BTreeMap<u32, String> {
+    let graphs: BTreeSet<u32> = program
+        .imported_assets
+        .iter()
+        .filter_map(|imported| match program.native {
+            Some(_) => imported.graph,
+            None => program
+                .actions
+                .get(imported.action_index)
+                .and_then(|action| action.imported_envelope()),
+        })
+        .collect();
+    let owner = match program.name.split(" · Effect ").next().unwrap_or("").trim() {
+        "" => "Imported",
+        name => name,
+    };
+    let numbered = graphs.len() > 1;
+    graphs
+        .into_iter()
+        .enumerate()
+        .map(|(index, graph)| {
+            let label = if numbered {
+                format!("{owner} Attachment {}", index + 1)
+            } else {
+                format!("{owner} Attachment")
+            };
+            (graph, label)
+        })
+        .collect()
+}
+
 /// A saved native path remains useful while discovery is loading or lacks ancestry.
 pub(super) fn asset_label(asset: &Asset, labels: &BTreeMap<u32, String>, empty: &str) -> String {
     labels
@@ -1018,6 +1055,7 @@ impl Browser<'_> {
                         rows: Vec::new(),
                         hud_status: None,
                         script: None,
+                        imported: None,
                     });
                 }
                 asset_details(

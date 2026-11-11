@@ -7,6 +7,9 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+/// Reach Material Response 8, Airstrike.
+const AIRSTRIKE: i64 = 8;
+
 struct Read<'a> {
     cache: &'a Cache,
     queue: VecDeque<Tag>,
@@ -26,6 +29,14 @@ impl Read<'_> {
             {
                 self.queue.push_back(tag);
             }
+        }
+        Ok(())
+    }
+    /// Records the reference at `at` without following it.
+    fn record(&mut self, at: usize, role: &str) -> Result<()> {
+        if let Some(tag) = self.cache.reference(at, None)? {
+            self.edges
+                .push(json!({"owner":self.owner,"role":role,"tag":tag,"offset":at}));
         }
         Ok(())
     }
@@ -281,15 +292,81 @@ impl Read<'_> {
             ],
         )?;
         self.block_links(at + 0x104, 32, &[(0, "attachment")])?;
+        // A projectile's contacts play the sounds its material effects name, so that tag joins
+        // the closure. No translation reads another object's material effects, which stay edges.
+        if let Some(tag) = c
+            .reference(at + 0xc0, None)?
+            .filter(|tag| tag.group == "foot")
+        {
+            self.queue.push_back(tag);
+        }
+        // Material Response rows: a conditional row then a fallback row per material.
         let responses = c
             .block(at + 0x320, 0x34)?
             .into_iter()
-            .map(|r| Ok(json!({"raw":hex::encode(c.meta(r,0x34)?)})))
+            .map(|r| {
+                Ok(json!({
+            "raw":hex::encode(c.meta(r,0x34)?),"material":c.string_id(c.u32(r)?)?,
+            "material_index":c.i16(r+4)?,"flags":c.u16(r+6)?,"chance":c.f32(r+8)?,
+            "angle_radians":c.floats::<2>(r+0xc)?,"velocity":c.floats::<2>(r+0x14)?,
+            "response":c.i16(r+0x1c)?,"scale_effects_by":c.i16(r+0x1e)?,
+            "angular_noise_radians":c.f32(r+0x20)?,"velocity_noise":c.f32(r+0x24)?,
+            "initial_friction":c.f32(r+0x28)?,"parallel_friction":c.f32(r+0x2c)?,
+            "perpendicular_friction":c.f32(r+0x30)?}))
+            })
             .collect::<Result<Vec<_>>>()?;
+        // An Airstrike row hands the contact to the scenario's airstrike, so its definition and the
+        // bomb its fire effect creates join the closure.
+        if responses.iter().any(|row| row["response"] == AIRSTRIKE) {
+            self.airstrike()?;
+        }
         let conical_spread = c.block(at + 0x344, 12)?.into_iter().map(|r| Ok(json!({"yaw_count":c.i16(r)?,"pitch_count":c.i16(r+2)?,"distribution_exponent":c.f32(r+4)?,"spread_radians":c.f32(r+8)?}))).collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"flags":c.u32(at+0x168)?,"timer_start":c.i16(at+0x16c)?,"collision_radius":c.f32(at+0x170)?,"arming_seconds":c.f32(at+0x174)?,"timer_seconds":c.floats::<2>(at+0x184)?,"minimum_velocity":c.f32(at+0x18c)?,"maximum_range":c.f32(at+0x190)?,"super_detonation_count":c.i16(at+0x1a2)?,"super_detonation_seconds":c.f32(at+0x1a4)?,"air_gravity_scale":c.f32(at+0x2b8)?,"water_gravity_scale":c.f32(at+0x2c4)?,"initial_velocity":c.f32(at+0x2d0)?,"final_velocity":c.f32(at+0x2d4)?,"guided_angular_velocity":c.floats::<2>(at+0x2f0)?,"guided_angular_velocity_at_rest":c.f32(at+0x2f8)?,"acceleration_range":c.floats::<2>(at+0x2fc)?,"acceleration_inverse_width":c.f32(at+0x304)?,"responses":responses,"conical_spread":conical_spread,"length_unit_metres":super::rig::METRES_PER_UNIT}),
         )
+    }
+    /// Material effects (`foot`), as `effect::material` reads them. Each response type's sound
+    /// entries join the closure, so their recordings are exported. Its effect entries and every
+    /// secondary reference are recorded without being followed: the contact translation reads its
+    /// chosen effect from the cache, and a secondary reference has no established role. The sound
+    /// parts of an effect entry that can serve every material join the closure too.
+    fn material_effects(&mut self, at: usize) -> Result<Value> {
+        let c = self.cache;
+        for (index, row) in c.block(at, 0x24)?.into_iter().enumerate() {
+            let first = self.edges.len();
+            for entry in c.block(row + 0xc, 0x2c)? {
+                self.link(entry, "material_sound")?;
+                self.record(entry + 0x10, "material_secondary_sound")?;
+            }
+            for entry in c.block(row + 0x18, 0x2c)? {
+                self.record(entry, "material_effect")?;
+                self.record(entry + 0x10, "material_secondary_effect")?;
+                // The contact host plays the sound parts of an effect that can serve every
+                // material, one without a material name or for global material 0, so those
+                // sounds join the closure and their recordings are exported. The effect stays
+                // an edge.
+                if !(matches!(c.u32(entry + 0x20)?, 0 | u32::MAX) || c.i16(entry + 0x24)? == 0) {
+                    continue;
+                }
+                let Some(effect) = c.reference(entry, Some("effe"))? else {
+                    continue;
+                };
+                for event in c.block(effect.address()? + 0x2c, 0x40)? {
+                    for part in c.block(event + 0x1c, 0x64)? {
+                        if c.reference(part + 0x14, None)?
+                            .is_some_and(|tag| tag.group == "snd!")
+                        {
+                            self.link(part + 0x14, "material_effect_sound")?;
+                        }
+                    }
+                }
+            }
+            // A projectile response selects its type from 15, Impact (Detonate).
+            for edge in &mut self.edges[first..] {
+                edge["material_type"] = json!(index);
+            }
+        }
+        super::effect::material::read(c, at)
     }
     fn effect(&mut self, at: usize) -> Result<Value> {
         let c = self.cache;
@@ -332,9 +409,71 @@ impl Read<'_> {
             .into_iter()
             .map(|r| Ok(json!({"references":c.i32(r)?,"handle":c.u32(r+4)?})))
             .collect::<Result<Vec<_>>>()?;
+        // Vehicle Suspension (`+0x110`, rows of `0x30`, Assembly Reach `jmad` schema): each wheel's
+        // overlay animation by graph and animation index, a marker on the vehicle root, a contact
+        // marker on the wheel, the wheel's offset along vehicle up and the ground depths at full
+        // extension and full compression, then the same set for a destroyed region.
+        let suspension = c
+            .block(at + 0x110, 0x30)?
+            .into_iter()
+            .map(|r| {
+                let name = |offset: usize| c.string_id(c.u32(r + offset)?);
+                Ok(
+                    json!({"label":name(0)?,"graph_index":c.i16(r+4)?,"animation_index":c.i16(r+6)?,
+                    "function":name(8)?,"marker":name(0xc)?,"contact_marker":name(0x10)?,
+                    "mass_point_offset":c.f32(r+0x14)?,"full_extension_ground_depth":c.f32(r+0x18)?,
+                    "full_compression_ground_depth":c.f32(r+0x1c)?,
+                    "destroyed":{"region":name(0x20)?,"mass_point_offset":c.f32(r+0x24)?,
+                        "full_extension_ground_depth":c.f32(r+0x28)?,
+                        "full_compression_ground_depth":c.f32(r+0x2c)?}}),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(
-            json!({"clips":clips,"sounds":sounds,"resource_groups":groups,"playback":"See animations.json for decoded channels and supported source-scene playback"}),
+            json!({"clips":clips,"sounds":sounds,"resource_groups":groups,"vehicle_suspension":suspension,"playback":"See animations.json for decoded channels and supported source-scene playback"}),
         )
+    }
+    /// The airstrike definitions the cache's scenarios name at `scnr +0x2E0`, Airstrike Globals,
+    /// as edges from the projectile whose contact calls them.
+    fn airstrike(&mut self) -> Result<()> {
+        let c = self.cache;
+        for scenario in c.tags.iter().flatten().filter(|t| t.group == "scnr") {
+            let Ok(at) = scenario.address() else {
+                continue;
+            };
+            if let Some(tag) = c.reference(at + 0x2e0, Some("airs"))? {
+                self.edges
+                    .push(json!({"owner":self.owner,"role":"airstrike","tag":tag,
+                    "scenario":scenario,"offset":at + 0x2e0}));
+                self.queue.push_back(tag);
+            }
+        }
+        Ok(())
+    }
+    /// An airstrike definition's battery rows, `0x4C` bytes after the HREK field order: launch
+    /// radius, height, warmup, arrival, cooldown and duration, shots per launch and initial
+    /// launches, the fire effect, the fire offsets and the request weapon. The fire effect joins
+    /// the closure, and with it the projectile its part creates.
+    fn airstrike_definition(&mut self, at: usize) -> Result<Value> {
+        let c = self.cache;
+        let mut batteries = Vec::new();
+        for row in c.block(at, 0x4c)? {
+            self.link(row + 0x20, "airstrike_fire_effect")?;
+            self.record(row + 0x3c, "airstrike_request_weapon")?;
+            let offsets = c
+                .block(row + 0x30, 8)?
+                .into_iter()
+                .map(|offset| c.floats::<2>(offset))
+                .collect::<Result<Vec<_>>>()?;
+            batteries.push(json!({"raw":hex::encode(c.meta(row,0x4c)?),
+                "launch_radius":c.f32(row)?,"launch_height":c.f32(row+4)?,
+                "warmup_seconds":c.f32(row+8)?,"arrival_seconds":c.f32(row+0xc)?,
+                "cooldown_seconds":c.f32(row+0x10)?,"duration_seconds":c.f32(row+0x14)?,
+                "shots_per_launch":c.i32(row+0x18)?,"initial_launches":c.i32(row+0x1c)?,
+                "fire_effect":c.reference(row+0x20,Some("effe"))?,"fire_offsets":offsets,
+                "request_weapon":c.reference(row+0x3c,Some("weap"))?}));
+        }
+        Ok(json!({"batteries":batteries,"length_unit_metres":super::rig::METRES_PER_UNIT}))
     }
     fn damage(&mut self, at: usize) -> Result<Value> {
         let c = self.cache;
@@ -530,6 +669,8 @@ pub(super) fn read(cache: &Cache, scene: &super::Scene) -> Result<Value> {
                 json!({"raw":hex::encode(cache.meta(at,0x24)?)})
             }
             "jpt!" => reader.damage(at)?,
+            "airs" => reader.airstrike_definition(at)?,
+            "foot" => reader.material_effects(at)?,
             _ => unreachable!(),
         };
         nodes.insert(format!("{:08X}", tag.datum), json!({"tag":tag,"data":data}));

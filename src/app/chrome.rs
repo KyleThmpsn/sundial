@@ -107,6 +107,20 @@ impl SundialApp {
             });
         }
 
+        let appearance_visible =
+            self.runtime_choice
+                .inspection
+                .launch_copy()
+                .is_some_and(|runtime| {
+                    !runtime.dawn
+                        && runtime.version.as_deref().is_some_and(|version| {
+                            crate::package_runtime::runtime_version_at_least(version, &[0, 6])
+                        })
+                });
+        if !appearance_visible && self.view_mode == ViewMode::Appearance {
+            self.select_view(ViewMode::Characters);
+        }
+
         egui::Panel::left("characters")
             .resizable(false)
             .exact_size(MAIN_SIDEBAR_WIDTH)
@@ -114,10 +128,14 @@ impl SundialApp {
                 ui.spacing_mut().item_spacing.y = 3.0;
                 for (view, label) in [
                     (ViewMode::Characters, "Characters & Loadouts"),
+                    (ViewMode::Appearance, "Appearance"),
                     (ViewMode::ProfileInventory, "Profile Inventory"),
                     (ViewMode::CharacterInventory, "Character Inventory"),
                     (ViewMode::GameSettings, "Game Settings"),
                 ] {
+                    if view == ViewMode::Appearance && !appearance_visible {
+                        continue;
+                    }
                     if ui.selectable_label(self.view_mode == view, label).clicked() {
                         self.select_view(view);
                     }

@@ -279,6 +279,45 @@ pub(in crate::item) fn replaces_damage_socket(
     }))
 }
 
+/// Makes an authored column on the weapon's damage socket offer the recipe's damage type. The
+/// Damage Type field decides the element, but a saved column still names the plug of the element
+/// it was made with, a conversion's own or an earlier choice, and columns are written after the
+/// damage type, so that plug would bring its element back. A column that gives the socket another
+/// role, or names no damage plug or several, is left as authored.
+pub(in crate::item) fn follow_authored_damage(
+    data: &[u8],
+    columns: &mut [Option<ResolvedSocketColumn>],
+    damage_type: Option<ModernDamageType>,
+) -> AuthoringResult<()> {
+    let Some(plug) = damage_type
+        .filter(|damage| *damage != ModernDamageType::Kinetic)
+        .and_then(|damage| {
+            WeaponDamageCarrierFamily::PlugDriven.default_plug_item_index(damage.shared())
+        })
+    else {
+        return Ok(());
+    };
+    for (lane, _) in weapon_damage_socket_lanes(data)? {
+        let Some(Some(column)) = columns.get_mut(lane) else {
+            continue;
+        };
+        if column
+            .socket_type
+            .is_some_and(|socket_type| socket_type != ELEMENTAL_DAMAGE_SOCKET_TYPE)
+        {
+            continue;
+        }
+        let mut damage_plugs = column
+            .choices
+            .iter_mut()
+            .filter(|choice| damage_plug_type(**choice).is_some());
+        if let (Some(choice), None) = (damage_plugs.next(), damage_plugs.next()) {
+            *choice = plug;
+        }
+    }
+    Ok(())
+}
+
 /// Writes the authored slot and damage type. A weapon whose damage socket the authored sockets
 /// replace keeps its damage type another way once those sockets are written, and the damage type
 /// it should keep is returned for [`carry_damage_without_socket`].

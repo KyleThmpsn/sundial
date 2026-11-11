@@ -282,38 +282,25 @@ pub(super) fn filters(
     // A caller may offer more room than the shared width, never less: below it these
     // choices elide to a few letters and the toolbar stops saying what it filters by.
     let width = width.max(FILTER_WIDTH);
-    let before = (*purpose, *editing);
     let purpose_text = purpose.label();
-    controls::sized(ui, width, |ui| {
-        egui::ComboBox::from_id_salt("behavior-purpose")
-            .width(width)
-            .truncate()
-            .selected_text(purpose_text)
-            .show_ui(ui, |ui| {
-                for value in Purpose::ALL {
-                    ui.selectable_value(purpose, value, value.label());
-                }
-            })
-            .response
-            .on_hover_text(format!("Behavior Purpose: {purpose_text}"));
-        pickers::name_combo(ui, "behavior-purpose", "Behavior Purpose");
-    });
+    let purpose_changed = controls::filter(
+        ui,
+        ("behavior-purpose", "Behavior Purpose"),
+        width,
+        (purpose_text, &format!("Behavior Purpose: {purpose_text}")),
+        purpose,
+        Purpose::ALL.map(|value| (value, value.label(), "")),
+    );
     let editing_text = editing.label();
-    controls::sized(ui, width, |ui| {
-        egui::ComboBox::from_id_salt("behavior-editing")
-            .width(width)
-            .truncate()
-            .selected_text(editing_text)
-            .show_ui(ui, |ui| {
-                for value in EditingFilter::ALL {
-                    ui.selectable_value(editing, value, value.label());
-                }
-            })
-            .response
-            .on_hover_text(format!("Editing Support: {editing_text}"));
-        pickers::name_combo(ui, "behavior-editing", "Editing Support");
-    });
-    before != (*purpose, *editing)
+    let editing_changed = controls::filter(
+        ui,
+        ("behavior-editing", "Editing Support"),
+        width,
+        (editing_text, &format!("Editing Support: {editing_text}")),
+        editing,
+        EditingFilter::ALL.map(|value| (value, value.label(), "")),
+    );
+    purpose_changed || editing_changed
 }
 
 /// A native program's reading, with each object or effect it references named where the
@@ -343,6 +330,20 @@ pub(super) fn summary_with_assets(
     keys: Option<&KeyCatalog>,
     labels: Option<&BTreeMap<u32, String>>,
 ) -> String {
+    // An imported group reads as its own name, not the stand-in graph it binds by.
+    let imported = super::assets::imported_labels(program);
+    let merged;
+    let labels = if imported.is_empty() {
+        labels
+    } else {
+        merged = labels
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .chain(imported)
+            .collect::<BTreeMap<_, _>>();
+        Some(&merged)
+    };
     if let Some(native) = &program.native {
         return native
             .graph

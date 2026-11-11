@@ -19,7 +19,8 @@ pub(super) fn read(
             && p.u8(at + 0x9C)? <= 1
             && p.bytes::<3>(at + 0x9D)? == [0; 3]
             && p.bytes::<11>(at + 0x175)? == [0; 11]
-            && p.bytes::<7>(at + 0x181)? == [0; 7],
+            && p.u8(at + 0x181)? <= 1
+            && p.bytes::<6>(at + 0x182)? == [0; 6],
         "Source hit requires state, timeout, slot or extended ownership translation"
     );
     let mut bytes = vec![0; 0xD0];
@@ -32,6 +33,9 @@ pub(super) fn read(
     put(&mut bytes, 0xA0, &p.bytes::<4>(at + 0x98)?)?;
     bytes[0xA4] = p.u8(at + 0x9C)?;
     bytes[0xC1] = p.u8(at + 0x180)?;
+    // Source 76B97F and native 107DB28 accept only a struck object the owner can pick up when
+    // this byte is set, through the same pickup test (6CB070 and EBD3F0). Shoot to Loot sets it.
+    bytes[0xC3] = p.u8(at + 0x181)?;
     let mut graph = Graph {
         blocks: vec![Block {
             class: 0x80802F5F,

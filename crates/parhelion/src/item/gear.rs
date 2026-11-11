@@ -775,26 +775,13 @@ pub(super) fn resolve(
         icon_template_container: donor_icon_container,
         donor_icon_index: selected_icon.icon_index,
         donor_icon_container: selected_icon.icon_container,
-        presentation_donor: None,
-        damage_carrier_source: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        component_splice_sources: Vec::new(),
+        donors: super::resolve::Donors::default(),
         runtime_pattern_source,
         gear_art_pattern_source: runtime_pattern_source,
-        appearance_rig_donor: None,
-        pinned_appearance: None,
-        animation_pattern_source: None,
-        animation_action_sources: Vec::new(),
-        type_marker_pattern_source: None,
-        behavior_pattern_source: None,
         socket_column_indices,
         has_authored_shader,
-        subclass_list: None,
-        dye_rows: None,
-        nameplate,
-        screen_art: None,
-        drawn_icon: None,
+        // A shader's dye rows are planned after every item resolves (`dyes::plan`).
+        kind_model: nameplate.map(super::resolve::KindModel::Emblem),
     })
 }
 
@@ -1125,11 +1112,7 @@ pub(super) fn apply_presentation(
         super::armor::apply_class(definition, selected)?;
     }
     // Custom dyes replace the rows they edit, so their rows win over the recipe's own.
-    if let Some(arrays) = donor
-        .dye_rows
-        .as_ref()
-        .or(spec.overrides.render_dye_rows.as_ref())
-    {
+    if let Some(arrays) = donor.dye_rows().or(spec.overrides.render_dye_rows.as_ref()) {
         set_shader_dye_rows(definition, arrays)?;
     }
     write_u16(strings, ITEM_STRING_ICON_INDEX_OFFSET, authored_icon_index)?;
@@ -1140,28 +1123,28 @@ pub(super) fn apply_presentation(
     write_localized_reference(
         strings,
         ITEM_NAME_REFERENCE_OFFSET,
-        LOCALIZATION_DONOR_TABLE_INDEX as u32,
+        crate::package_profile::localization_table() as u32,
         identity.name_hash,
     )?;
     if spec.effective_type_name().is_some() {
         write_localized_reference(
             strings,
             ITEM_TYPE_REFERENCE_OFFSET,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             identity.type_hash,
         )?;
     }
     write_localized_reference(
         strings,
         ITEM_DESCRIPTION_REFERENCE_OFFSET,
-        LOCALIZATION_DONOR_TABLE_INDEX as u32,
+        crate::package_profile::localization_table() as u32,
         identity.flavor_hash,
     )?;
     if spec.text.inventory_hint.is_some() {
         write_localized_reference(
             strings,
             ITEM_DISPLAY_SOURCE_REFERENCE_OFFSET,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             identity.inventory_hint_hash,
         )?;
     } else {
@@ -1257,7 +1240,8 @@ pub(super) fn validate_payloads(
     let text_matches = matching_u32_offsets(definition, spec.donor_item_hash).is_empty()
         && matching_u32_offsets(definition, spec.identity.item_hash) == identity_offsets
         && matching_u32_offsets(strings, spec.donor_item_hash).is_empty()
-        && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)? == LOCALIZATION_DONOR_TABLE_INDEX as u32
+        && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET)?
+            == crate::package_profile::localization_table() as u32
         && read_u32(strings, ITEM_NAME_REFERENCE_OFFSET + 4)? == spec.identity.name_hash
         && read_u32(strings, ITEM_DESCRIPTION_REFERENCE_OFFSET + 4)? == spec.identity.flavor_hash
         && spec.effective_type_name().is_none_or(|_| {

@@ -290,6 +290,31 @@ impl SundialApp {
         }
     }
 
+    pub(super) fn handle_native_close_request(&mut self, ctx: &egui::Context) {
+        if ctx.input(|input| input.viewport().close_requested())
+            && !self.exit_confirmed
+            && !self.confirm_close()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
+    pub(super) fn confirm_close(&mut self) -> bool {
+        // The active dialog owns the decision, including a save review reached from Exit.
+        if self.confirmation.is_some() {
+            return false;
+        }
+        if let Some(message) = self.package_authoring_exit_blocker() {
+            self.set_status(message, true);
+            return false;
+        }
+        if self.has_unsaved_changes() {
+            self.confirmation = Some(ConfirmationDialog::Exit);
+            return false;
+        }
+        self.confirm_authoring_work_saved()
+    }
+
     /// Whether exiting may go ahead as far as Parhelion's work outside its recipe goes. Work
     /// whose last save failed is written again first, and while some is still unsaved this asks
     /// instead. A closed Parhelion keeps that work, so it is asked whether or not it is open.
@@ -301,8 +326,7 @@ impl SundialApp {
         else {
             return true;
         };
-        self.unsaved_authoring_work = Some(reason);
-        self.confirmation = Some(ConfirmationDialog::UnsavedAuthoringWork);
+        self.confirmation = Some(ConfirmationDialog::UnsavedAuthoringWork(reason));
         false
     }
 
@@ -329,8 +353,7 @@ impl SundialApp {
                 self.set_status(format!("Not saved: {error}"), true);
                 return;
             }
-            self.pending_save_action = Some(action);
-            self.confirmation = Some(ConfirmationDialog::ReviewSave);
+            self.confirmation = Some(ConfirmationDialog::ReviewSave(action));
         } else {
             self.perform_save_action(ctx, action);
         }

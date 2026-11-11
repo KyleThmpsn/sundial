@@ -3,7 +3,21 @@ use super::*;
 use base64::Engine;
 use sundial::package_authoring::sandbox_perk::program::HudStatus;
 
-pub(super) fn read(source: &Source, native: &mut Reader, name: u32) -> Result<Option<HudStatus>> {
+pub(crate) fn read(source: &Source, native: &mut Reader, name: u32) -> Result<Option<HudStatus>> {
+    display(source, native, name, false)
+}
+
+/// A source-faithful display, even when a later game reuses the identity with other artwork.
+pub(crate) fn source(source: &Source, native: &mut Reader, name: u32) -> Result<Option<HudStatus>> {
+    display(source, native, name, true)
+}
+
+fn display(
+    source: &Source,
+    native: &mut Reader,
+    name: u32,
+    original: bool,
+) -> Result<Option<HudStatus>> {
     // Both original HUD insertion methods discard the empty identity. Preserve it
     // without inventing a display row or dropping the attached status's other behavior.
     if name == 0x811C9DC5 {
@@ -11,7 +25,8 @@ pub(super) fn read(source: &Source, native: &mut Reader, name: u32) -> Result<Op
     }
     let statuses = native.tag(0x80D5FFD3, Some(0x80804A55))?;
     let rows = statuses.array(8, 112, Some(0x80804A59))?;
-    if rows.iter().any(|&a| statuses.u32(a).ok() == Some(name)) {
+    let retained = rows.iter().any(|&a| statuses.u32(a).ok() == Some(name));
+    if retained && !original {
         return Ok(None);
     }
     let mut matching = BTreeSet::new();
@@ -23,10 +38,12 @@ pub(super) fn read(source: &Source, native: &mut Reader, name: u32) -> Result<Op
             }
         }
     }
-    ensure!(
-        matching.len() == 1,
-        "Source HUD identity is missing or ambiguous"
-    );
+    // A name no source HUD table holds has no row to display, so the source shows nothing for it,
+    // as for the empty identity. Mortal Medicine's and Fists Flying's statuses name such rows.
+    if matching.is_empty() {
+        return Ok(None);
+    }
+    ensure!(matching.len() == 1, "Source HUD identity is ambiguous");
     let row = Payload(matching.into_iter().next().expect("one HUD row").to_vec());
     ensure!(
         row.bytes::<16>(8)? == [0xFF; 16] && row.bytes::<88>(24)? == [0; 88],
@@ -34,9 +51,10 @@ pub(super) fn read(source: &Source, native: &mut Reader, name: u32) -> Result<Op
     );
     // Rapid Hit supplies a generic buff row with a plain RGBA layer. The private builder
     // replaces its identity, every locale and its artwork, preserving the source icon.
+    let icon_template = if retained { name } else { 0xC35DD059 };
     let template = rows
         .iter()
-        .find(|&&a| statuses.u32(a).ok() == Some(0xC35DD059))
+        .find(|&&a| statuses.u32(a).ok() == Some(icon_template))
         .context("Native HUD image template is absent")?;
     ensure!(
         statuses.bytes::<20>(*template + 8)? == [0xFF; 20]
@@ -50,7 +68,7 @@ pub(super) fn read(source: &Source, native: &mut Reader, name: u32) -> Result<Op
     image.write_to(&mut png, image::ImageFormat::Png)?;
     Ok(Some(HudStatus {
         name: crate::d1_roi::localization::hashed_text(source, name)?,
-        icon: Some(0xC35DD059),
+        icon: Some(icon_template),
         image: Some(base64::engine::general_purpose::STANDARD.encode(png.into_inner())),
     }))
 }

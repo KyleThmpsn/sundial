@@ -160,8 +160,20 @@ pub(super) fn emit_with_offsets(
 }
 
 fn allocate(bytes: &mut Vec<u8>, block: &Block, root: bool) -> Result<(usize, usize), String> {
-    let (start, pointer) = if root || block.class == 0 {
+    let (start, pointer) = if root {
         (bytes.len(), bytes.len())
+    } else if block.class == 0 {
+        // Component loading walks physical records, including string allocations.
+        // String references address the text after the native length word.
+        let body = bytes
+            .len()
+            .checked_add(11)
+            .ok_or("Native string allocation overflow.")?
+            & !7;
+        bytes.resize(body, 0);
+        bytes[body - 4..body].copy_from_slice(&0x80800065_u32.to_le_bytes());
+        bytes.extend_from_slice(&(block.bytes.len() as u64).to_le_bytes());
+        (body + 8, body + 8)
     } else {
         let header = if block.count.is_some() { 20 } else { 4 };
         let start = bytes

@@ -5,7 +5,9 @@ mod audio;
 mod cloth;
 mod codec;
 pub mod connections;
+pub mod dependency;
 mod dye;
+pub mod effect;
 mod expression;
 mod icon;
 mod layout;
@@ -16,6 +18,7 @@ mod model;
 mod native;
 mod ornament;
 mod package;
+pub mod particle;
 mod procedure;
 pub mod sequence;
 mod shader;
@@ -27,6 +30,10 @@ pub use armor::Armor;
 pub use icon::Icon;
 pub use native::NativeOptions;
 pub use weapon::Weapon;
+
+/// The source name of Rise of Iron abilities, in a perk program's ability counterparts and in an
+/// imported ability's source identity.
+pub const ABILITY_SOURCE: &str = "d1_roi";
 
 use crate::tiger::{payload::Payload, reader::package_stamp};
 use anyhow::{Context, Result, ensure};
@@ -105,6 +112,10 @@ pub struct Source {
     /// Every equippable weapon, read once. An import reads the list for its export and again
     /// for its conversion, and each read visits every item definition.
     weapons: std::sync::OnceLock<Vec<Weapon>>,
+    /// Talent names that only exotic weapons' grids show, with the weapons showing each, read once.
+    exotic_talents: std::sync::OnceLock<BTreeMap<String, std::collections::BTreeSet<String>>>,
+    /// Talent names that only exotic armor grids show, with the armor showing each, read once.
+    exotic_armor_talents: std::sync::OnceLock<BTreeMap<String, std::collections::BTreeSet<String>>>,
 }
 
 #[derive(Debug)]
@@ -210,6 +221,8 @@ impl Source {
             blocks: Mutex::new(BTreeMap::new()),
             human_skeleton: Mutex::new(None),
             weapons: std::sync::OnceLock::new(),
+            exotic_talents: std::sync::OnceLock::new(),
+            exotic_armor_talents: std::sync::OnceLock::new(),
         };
         source.report.builds.sort();
         source.report.builds.dedup();

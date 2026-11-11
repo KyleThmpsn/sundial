@@ -75,11 +75,7 @@ fn replace_rows(
     use rusqlite::types::Value;
     use std::collections::BTreeMap;
     let mut query = db.prepare(&format!("SELECT * FROM {}", quote(table)))?;
-    let columns = query
-        .column_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
+    let columns = query.column_names().map(str::to_owned).collect::<Vec<_>>();
     let stored = query
         .query_map([], |row| {
             columns

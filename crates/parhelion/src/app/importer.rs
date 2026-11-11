@@ -25,6 +25,7 @@ mod ability;
 mod batch;
 mod browser;
 mod d1_roi;
+mod edits;
 mod filters;
 mod icons;
 mod melee;
@@ -50,6 +51,8 @@ pub(super) struct Importer {
     pub open: bool,
     pub enabled: bool,
     refresh: refresh::State,
+    /// The edited recipes imports left unsaved, which wait for the author's choice.
+    edits: edits::Review,
     settings: Settings,
     /// The shown source. The others keep their listings in `shelves`.
     source: Source,
@@ -59,8 +62,6 @@ pub(super) struct Importer {
     roi: Option<d1_roi::Inspected>,
     weapons: Vec<Weapon>,
     selected: BTreeSet<u32>,
-    /// The library recipes a reimport updates, keyed by source item, for the next import.
-    reimport: BTreeMap<u32, Saved>,
     browser: browser::Browser,
     view_path: Option<PathBuf>,
     icons: icons::Icons,
@@ -69,36 +70,79 @@ pub(super) struct Importer {
     models: models::Picker,
     perks: perks::Picker,
     abilities: ability::Picker,
-    receiver: Option<Receiver<Event>>,
-    scan_progress: Option<ScanProgress>,
-    scan_started: Option<Instant>,
+    /// The work the importer's worker is doing, `None` while it is idle.
+    task: Option<Task>,
     scan_error: Option<String>,
     /// Rows the last read of the shown listing left out.
     scan_warning: Option<String>,
-    import_started: Option<Instant>,
-    importing: Option<Progress>,
+    /// The last message the importer reports outside an operation's own progress, such as a
+    /// failed settings save or a worker that stopped.
     notice: String,
     outcome: Option<Outcome>,
-    cancel: Arc<AtomicBool>,
     /// Set by an import that found the packages changed after the shown listing was read, so
     /// the listing is read again when the import finishes.
     relisted: Arc<AtomicBool>,
     /// (donor count, weapon count) the no-donor set was computed for.
     donor_stamp: (usize, usize),
+    /// The source, row count and library size the imported rows were found for.
+    imported_stamp: Option<(Source, usize, usize)>,
     /// The shown source's outside tools. Cleared when a chosen path changes.
     tools: Option<tools::Checked>,
     /// Whether the Tools window is open.
     tools_open: bool,
     /// A running decompiler download or unpack.
     fetching: Option<Receiver<Result<(), String>>>,
-    /// Whether this session's sweep of every item's earlier conversions has started.
+    /// Whether this opening's sweep of every item's earlier conversions has started.
     swept: bool,
-    /// Whether the sweep is setting aside the conversions it removes.
-    sweeping: bool,
-    /// The sweep's removal of what it set aside, which runs on in the background.
-    removal: Option<thread::JoinHandle<Removed>>,
-    /// How far the sweep has got, through both.
-    cleanup: Status,
+    /// The sweep's removal of what it set aside, which runs on in the background beside other
+    /// importer work.
+    removal: Option<Removal>,
+}
+
+/// The importer's worker and what it is doing. Every start waits for an idle importer, so one
+/// runs at a time and its progress lives with it. The worker's last event, or its channel
+/// closing, ends the task.
+struct Task {
+    receiver: Receiver<Event>,
+    started: Instant,
+    work: Work,
+}
+
+impl Task {
+    fn new(receiver: Receiver<Event>, work: Work) -> Self {
+        Self {
+            receiver,
+            started: Instant::now(),
+            work,
+        }
+    }
+}
+
+/// One operation of the importer's worker.
+enum Work {
+    /// Reading the shown source's listing.
+    Scan(ScanProgress),
+    /// Converting a batch of items into library recipes. The Cancel button sets `cancel`.
+    Import {
+        progress: Progress,
+        cancel: Arc<AtomicBool>,
+    },
+    /// The session's sweep setting aside every item's unused conversions. `status` goes on to
+    /// report their removal.
+    SettingAside(Status),
+    /// Reading the D1 ability choices or preparing one for the open draft. Closing the ability
+    /// window or the importer sets `cancel`.
+    Ability { cancel: Arc<AtomicBool> },
+    /// Preparing a modern perk for the open draft.
+    Perk,
+    /// Preparing an imported model for the open draft, with the step its worker last reported.
+    Model { step: String },
+}
+
+/// The sweep's removal of the conversions it set aside, with the progress it reports.
+struct Removal {
+    handle: thread::JoinHandle<Removed>,
+    status: Status,
 }
 
 /// A running import: one slot per worker thread.
@@ -147,6 +191,8 @@ enum Event {
         /// The earlier conversions of the imported items that were removed, and the files the
         /// imported conversions share.
         removed: Option<String>,
+        /// Edited recipes the import converted and left unsaved, for the author's choice.
+        edited: Vec<edits::Pending>,
     },
     /// The session's sweep set aside every item's unused conversions, for removal.
     ConversionsSetAside(Result<SetAside, String>),
@@ -223,6 +269,7 @@ impl Default for Importer {
             open: false,
             enabled: settings.enabled,
             refresh: refresh::State::default(),
+            edits: edits::Review::default(),
             settings,
             source: Source::D2Modern,
             shelves: BTreeMap::new(),
@@ -230,7 +277,6 @@ impl Default for Importer {
             roi: None,
             weapons: Vec::new(),
             selected: BTreeSet::new(),
-            reimport: BTreeMap::new(),
             browser,
             view_path,
             icons: icons::Icons::default(),
@@ -239,52 +285,91 @@ impl Default for Importer {
             models: models::Picker::default(),
             perks: perks::Picker::default(),
             abilities: ability::Picker::default(),
-            receiver: None,
-            scan_progress: None,
-            scan_started: None,
+            task: None,
             scan_error: None,
             scan_warning: None,
-            import_started: None,
-            importing: None,
             notice,
             outcome: None,
-            cancel: Arc::new(AtomicBool::new(false)),
             relisted: Arc::new(AtomicBool::new(false)),
             donor_stamp: (usize::MAX, usize::MAX),
+            imported_stamp: None,
             tools: None,
             tools_open: false,
             fetching: None,
             swept: false,
-            sweeping: false,
             removal: None,
-            cleanup: Status::default(),
         }
     }
 }
 
 impl Importer {
     pub fn busy(&self) -> bool {
-        self.receiver.is_some()
+        self.task.is_some()
+    }
+
+    fn work(&self) -> Option<&Work> {
+        self.task.as_ref().map(|task| &task.work)
+    }
+
+    fn work_mut(&mut self) -> Option<&mut Work> {
+        self.task.as_mut().map(|task| &mut task.work)
+    }
+
+    /// Lets the sweep run again. Each opening of Parhelion does this, so conversions a closed
+    /// session left unused go without restarting Sundial.
+    pub(super) fn sweep_again(&mut self) {
+        self.swept = false;
     }
 
     /// Whether the importer is busy only setting aside the sweep's unused conversions.
     pub(super) fn setting_aside(&self) -> bool {
-        self.sweeping
+        matches!(self.work(), Some(Work::SettingAside(_)))
     }
 
     /// Whether the importer is busy only reading a source, which writes nothing outside the
     /// importer's own folder.
     pub(super) fn reading_source(&self) -> bool {
-        self.scan_progress.is_some()
+        matches!(self.work(), Some(Work::Scan(_)))
+    }
+
+    /// Cancels a running ability read or preparation, and returns whether one was running.
+    fn cancel_ability(&self) -> bool {
+        match self.work() {
+            Some(Work::Ability { cancel }) => {
+                cancel.store(true, Ordering::Relaxed);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// When the running import or draft preparation started. A read and the sweep show their
+    /// time elsewhere, or not at all.
+    fn import_started(&self) -> Option<Instant> {
+        self.task
+            .as_ref()
+            .filter(|task| !matches!(task.work, Work::Scan(_) | Work::SettingAside(_)))
+            .map(|task| task.started)
+    }
+
+    /// The line shown for work without progress of its own: a model preparation's step, or
+    /// otherwise the notice.
+    fn step(&self) -> &str {
+        match self.work() {
+            Some(Work::Model { step }) => step,
+            _ => &self.notice,
+        }
     }
 
     /// The sweep's label, with its step and how far it has got, and the lines its hover adds,
     /// while it runs.
     pub(super) fn cleanup_status(&self) -> Option<(String, Vec<String>)> {
-        if !self.sweeping && self.removal.is_none() {
-            return None;
-        }
-        let progress = self.cleanup.get();
+        let status = match (self.work(), &self.removal) {
+            (Some(Work::SettingAside(status)), _) => status,
+            (_, Some(removal)) => &removal.status,
+            _ => return None,
+        };
+        let progress = status.get();
         let mut details = Vec::new();
         if !progress.current.is_empty() {
             details.push(progress.current.clone());
@@ -297,11 +382,6 @@ impl Importer {
         if !sizes.is_empty() {
             details.push(sizes.join(" · "));
         }
-        details.push(
-            "Runs the first time Parhelion opens after Sundial starts. Stopping is safe, and the \
-             next run skips assets already merged."
-                .to_owned(),
-        );
         Some((
             format!("Cleaning Up Imports · {}", cleanup_step(&progress)),
             details,
@@ -315,23 +395,26 @@ impl Importer {
         if let Some((label, details)) = self.cleanup_status() {
             tasks.push((label, false, details));
         }
-        if let Some(progress) = self.scan_progress {
-            let label = match progress {
-                ScanProgress::ReadingItems {
-                    completed, total, ..
-                } => format!("Reading Source {completed} of {total}"),
-                _ => "Reading Source…".to_owned(),
-            };
-            tasks.push((label, true, Vec::new()));
-        }
-        if let Some(progress) = &self.importing {
-            let current = (progress.done + 1).min(progress.total);
-            let label = if progress.finishing {
-                "Cleaning Up Imports…".to_owned()
-            } else {
-                format!("Importing {current} of {}", progress.total)
-            };
-            tasks.push((label, true, Vec::new()));
+        match self.work() {
+            Some(Work::Scan(progress)) => {
+                let label = match progress {
+                    ScanProgress::ReadingItems {
+                        completed, total, ..
+                    } => format!("Reading Source {completed} of {total}"),
+                    _ => "Reading Source…".to_owned(),
+                };
+                tasks.push((label, true, Vec::new()));
+            }
+            Some(Work::Import { progress, .. }) => {
+                let current = (progress.done + 1).min(progress.total);
+                let label = if progress.finishing {
+                    "Cleaning Up Imports…".to_owned()
+                } else {
+                    format!("Importing {current} of {}", progress.total)
+                };
+                tasks.push((label, true, Vec::new()));
+            }
+            _ => {}
         }
         tasks
     }
@@ -374,6 +457,9 @@ impl PackageAuthoringApp {
                 self.log.push(LogEntry::error(error));
             }
         }
+        if self.importer.enabled {
+            self.draw_reimport_edits_preference(ui);
+        }
     }
 
     pub(super) fn draw_importer(&mut self, ctx: &egui::Context) {
@@ -381,6 +467,7 @@ impl PackageAuthoringApp {
         self.sweep_conversions(ctx);
         self.importer.refresh.observe(&self.recipe_entries);
         self.draw_import_refresh(ctx);
+        self.draw_import_edits(ctx);
         if self.importer.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -390,9 +477,9 @@ impl PackageAuthoringApp {
             self.importer.save_view();
         }
         if closed {
-            if self.importer.abilities.close() {
-                self.importer.cancel.store(true, Ordering::Relaxed);
-            }
+            // The ability window closes with the importer, and stops what it started.
+            self.importer.abilities.close();
+            self.importer.cancel_ability();
             return;
         }
         self.check_importer_tools(ctx);
@@ -404,6 +491,16 @@ impl PackageAuthoringApp {
         if self.importer.donor_stamp != stamp {
             self.importer.donor_stamp = stamp;
             self.importer.browser.no_donor = self.importer_no_donor();
+            self.importer.browser.dirty = true;
+        }
+        let stamp = Some((
+            self.importer.source,
+            self.importer.weapons.len(),
+            self.recipe_entries.len(),
+        ));
+        if self.importer.imported_stamp != stamp {
+            self.importer.imported_stamp = stamp;
+            self.importer.browser.imported = self.imported_rows();
             self.importer.browser.dirty = true;
         }
         if !self.importer.busy() && self.importer.catalog_target != self.packages {
@@ -470,32 +567,40 @@ impl PackageAuthoringApp {
         )
     }
 
-    /// Once a session, every item's conversions that no saved recipe names go. Importer work
-    /// waits while they are set aside, since a conversion in progress is not yet named, and their
-    /// removal runs on in the background. Saved recipes can still be opened, since the sweep
-    /// keeps whatever they name.
+    /// Each time Parhelion opens, every item's conversions that no saved recipe names go. Importer
+    /// work waits while they are set aside, since a conversion in progress is not yet named, and
+    /// their removal runs on in the background. A sweep waits for an earlier opening's removal to
+    /// finish. Saved recipes can still be opened, since the sweep keeps whatever they name.
     fn sweep_conversions(&mut self, ctx: &egui::Context) {
         if let Some(removal) = self
             .importer
             .removal
-            .take_if(|removal| removal.is_finished())
-            && let Some(message) = removal.join().ok().as_ref().and_then(describe_removal)
+            .take_if(|removal| removal.handle.is_finished())
+            && let Some(message) = removal
+                .handle
+                .join()
+                .ok()
+                .as_ref()
+                .and_then(describe_removal)
         {
             self.log.push(LogEntry::info(message));
         }
         if self.importer.removal.is_some() {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
-        if self.importer.swept || !self.importer_idle() {
+        // A conversion that waits for a choice about its recipe's edits is not yet named either.
+        if self.importer.swept
+            || self.importer.removal.is_some()
+            || !self.importer_idle()
+            || !self.importer.edits.pending.is_empty()
+        {
             return;
         }
         let Some(library) = self.sweeping_library() else {
             return;
         };
         self.importer.swept = true;
-        self.importer.sweeping = true;
-        self.importer.cleanup = Status::default();
-        let status = self.importer.cleanup.clone();
+        let status = Status::default();
         // Conversions reuse what the store kept from earlier imports, which earlier versions kept
         // in the `models` folder.
         if let Ok(root) = data_root() {
@@ -504,11 +609,15 @@ impl PackageAuthoringApp {
             parhelion_import::store::open(&imports);
         }
         let open: Vec<_> = serde_json::to_value(&self.recipe).into_iter().collect();
+        // Recipe backups follow the package backup retention.
+        let backups = self
+            .limit_package_backups
+            .then_some(self.package_backup_retention);
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
+        self.importer.task = Some(Task::new(receiver, Work::SettingAside(status.clone())));
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let aside = library.set_aside_reporting(None, &open, status);
+            let aside = library.set_aside_reporting(None, &open, backups, status);
             let _ = sender.send(Event::ConversionsSetAside(aside));
             ctx.request_repaint();
         });
@@ -519,19 +628,19 @@ impl PackageAuthoringApp {
         loop {
             let event = match self
                 .importer
-                .receiver
+                .task
                 .as_ref()
-                .map(|receiver| receiver.try_recv())
+                .map(|task| task.receiver.try_recv())
             {
                 Some(Ok(event)) => event,
                 Some(Err(TryRecvError::Disconnected)) => {
-                    self.importer.abilities.worker_stopped();
-                    self.importer.receiver = None;
-                    self.importer.sweeping = false;
-                    self.importer.scan_progress = None;
-                    self.importer.scan_started = None;
-                    self.importer.importing = None;
-                    self.importer.import_started = None;
+                    if let Some(Task {
+                        work: Work::Ability { .. },
+                        ..
+                    }) = self.importer.task.take()
+                    {
+                        self.importer.abilities.worker_stopped();
+                    }
                     self.importer.notice = "Import worker stopped unexpectedly.".into();
                     break;
                 }
@@ -539,9 +648,7 @@ impl PackageAuthoringApp {
             };
             match event {
                 Event::RoiInspected(result) => {
-                    self.importer.receiver = None;
-                    self.importer.scan_progress = None;
-                    self.importer.scan_started = None;
+                    self.importer.task = None;
                     self.importer.notice.clear();
                     match *result {
                         Ok(inspected) => {
@@ -554,63 +661,57 @@ impl PackageAuthoringApp {
                     }
                 }
                 Event::AbilitiesListed(listed) => {
-                    self.importer.receiver = None;
-                    self.importer.import_started = None;
+                    self.importer.task = None;
                     self.finish_roi_abilities(*listed);
                 }
                 Event::AbilityPrepared(prepared) => {
-                    self.importer.receiver = None;
-                    self.importer.import_started = None;
+                    self.importer.task = None;
                     self.finish_roi_ability(*prepared);
                 }
                 Event::PerkPrepared(prepared) => {
-                    self.importer.receiver = None;
-                    self.importer.import_started = None;
-                    self.importer.importing = None;
+                    self.importer.task = None;
                     self.finish_imported_perk(*prepared);
                 }
                 Event::ModelPrepared(prepared) => {
-                    self.importer.receiver = None;
-                    self.importer.import_started = None;
-                    self.importer.importing = None;
+                    self.importer.task = None;
                     self.finish_imported_model(*prepared);
                 }
-                Event::ScanProgress(progress) => self.importer.scan_progress = Some(progress),
+                Event::ScanProgress(next) => {
+                    if let Some(Work::Scan(progress)) = self.importer.work_mut() {
+                        *progress = next;
+                    }
+                }
+                // A step goes to its import slot or model preparation, and otherwise to the
+                // notice.
                 Event::Progress(slot, message) => {
-                    match self
-                        .importer
-                        .importing
-                        .as_mut()
-                        .and_then(|progress| progress.slots.get_mut(slot))
-                    {
-                        Some(Some((_, step))) => *step = message,
+                    match self.importer.task.as_mut().map(|task| &mut task.work) {
+                        Some(Work::Import { progress, .. }) => match progress.slots.get_mut(slot) {
+                            Some(Some((_, step))) => *step = message,
+                            _ => self.importer.notice = message,
+                        },
+                        Some(Work::Model { step }) => *step = message,
                         _ => self.importer.notice = message,
                     }
                 }
                 Event::Slot(slot, name) => {
-                    if let Some(entry) = self
-                        .importer
-                        .importing
-                        .as_mut()
-                        .and_then(|progress| progress.slots.get_mut(slot))
+                    if let Some(Work::Import { progress, .. }) = self.importer.work_mut()
+                        && let Some(entry) = progress.slots.get_mut(slot)
                     {
                         *entry = name.map(|name| (name, String::new()));
                     }
                 }
                 Event::Done(done) => {
-                    if let Some(progress) = self.importer.importing.as_mut() {
+                    if let Some(Work::Import { progress, .. }) = self.importer.work_mut() {
                         progress.done = done;
                     }
                 }
                 Event::Finishing => {
-                    if let Some(progress) = self.importer.importing.as_mut() {
+                    if let Some(Work::Import { progress, .. }) = self.importer.work_mut() {
                         progress.finishing = true;
                     }
                 }
                 Event::Scanned(result) => {
-                    self.importer.receiver = None;
-                    self.importer.scan_progress = None;
-                    self.importer.scan_started = None;
+                    self.importer.task = None;
                     match result {
                         Ok((mut weapons, origins, warning)) => {
                             let installed: BTreeSet<_> = self
@@ -650,7 +751,9 @@ impl PackageAuthoringApp {
                     errors,
                     cancelled,
                     removed,
+                    edited,
                 } => {
+                    self.importer.edits.pending.extend(edited);
                     if let Some(message) = removed {
                         self.log.push(LogEntry::info(message));
                     }
@@ -665,10 +768,7 @@ impl PackageAuthoringApp {
                     for error in &errors {
                         self.log.push(LogEntry::error(error.clone()));
                     }
-                    self.importer.cancel.store(false, Ordering::Relaxed);
-                    self.importer.receiver = None;
-                    self.importer.importing = None;
-                    self.importer.import_started = None;
+                    self.importer.task = None;
                     self.importer.notice.clear();
                     self.importer.outcome = Some(Outcome {
                         added: paths.len(),
@@ -683,12 +783,17 @@ impl PackageAuthoringApp {
                     }
                 }
                 Event::ConversionsSetAside(result) => {
-                    self.importer.receiver = None;
-                    self.importer.sweeping = false;
+                    let status = match self.importer.task.take().map(|task| task.work) {
+                        Some(Work::SettingAside(status)) => status,
+                        _ => Status::default(),
+                    };
                     self.importer.notice.clear();
                     match result {
                         Ok(aside) => {
-                            self.importer.removal = Some(thread::spawn(move || aside.remove()));
+                            self.importer.removal = Some(Removal {
+                                handle: thread::spawn(move || aside.remove()),
+                                status,
+                            });
                         }
                         Err(error) => eprintln!("Earlier conversions kept: {error}"),
                     }
@@ -865,7 +970,7 @@ impl PackageAuthoringApp {
                     .filter(|_| self.importer.weapons.is_empty())
                 {
                     self.draw_importer_scan_error(ui, idle, &error);
-                } else if self.importer.scan_progress.is_some() {
+                } else if self.importer.reading_source() {
                     ui.add_space(ui.available_height() * 0.3);
                     ui.vertical_centered(|ui| {
                         ui.label(egui::RichText::new("Reading Item Catalog").heading().weak());
@@ -1208,32 +1313,35 @@ impl PackageAuthoringApp {
             });
         });
         if import {
-            self.import_selected(ui.ctx());
+            self.import_selected(ui.ctx(), &BTreeMap::new());
         }
     }
 
-    fn draw_importer_activity(&mut self, ui: &mut egui::Ui) {
+    /// The running work's progress. A read and an import show their own, the sweep its step and
+    /// other work its step or the notice.
+    fn draw_importer_activity(&self, ui: &mut egui::Ui) {
+        let importer = &self.importer;
+        let elapsed = importer
+            .task
+            .as_ref()
+            .map(|task| task.started.elapsed().as_secs());
         style::block(ui.style()).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            if let Some(progress) = self.importer.scan_progress {
-                let elapsed = self
-                    .importer
-                    .scan_started
-                    .map(|started| started.elapsed().as_secs());
-                match progress {
+            if let Some(Work::Scan(progress)) = importer.work() {
+                match *progress {
                     ScanProgress::ReadingItems {
                         completed,
                         total,
                         weapons,
                     } => {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(self.importer.reading_label()).strong());
+                            ui.label(egui::RichText::new(importer.reading_label()).strong());
                             if let Some(elapsed) = elapsed {
                                 ui.label(egui::RichText::new(clock(elapsed)).weak());
                             }
                         });
                         // Other sources count their items only once the listing completes.
-                        let text = if self.importer.source == Source::D2Modern {
+                        let text = if importer.source == Source::D2Modern {
                             format!("{completed} / {total} · {weapons} items")
                         } else {
                             format!("{completed} / {total}")
@@ -1262,11 +1370,7 @@ impl PackageAuthoringApp {
                 }
                 return;
             }
-            let elapsed = self
-                .importer
-                .import_started
-                .map(|started| started.elapsed().as_secs());
-            if let Some(progress) = &self.importer.importing {
+            if let Some(Work::Import { progress, cancel }) = importer.work() {
                 let heading = if progress.finishing {
                     "Cleaning Up"
                 } else {
@@ -1284,10 +1388,10 @@ impl PackageAuthoringApp {
                     // Every item is done once the batch cleans up, so there is nothing to cancel.
                     if !progress.finishing {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.importer.cancel.load(Ordering::Relaxed) {
+                            if cancel.load(Ordering::Relaxed) {
                                 ui.label(egui::RichText::new("Cancelling…").weak());
                             } else if ui.button("Cancel").clicked() {
-                                self.importer.cancel.store(true, Ordering::Relaxed);
+                                cancel.store(true, Ordering::Relaxed);
                             }
                         });
                     }
@@ -1312,10 +1416,9 @@ impl PackageAuthoringApp {
             }
             ui.horizontal(|ui| {
                 ui.spinner();
-                if let Some((label, details)) = self
-                    .importer
+                if let Some((label, details)) = importer
                     .cleanup_status()
-                    .filter(|_| self.importer.setting_aside())
+                    .filter(|_| importer.setting_aside())
                 {
                     ui.label(label).on_hover_ui(|ui| {
                         for line in &details {
@@ -1323,11 +1426,8 @@ impl PackageAuthoringApp {
                         }
                     });
                 } else {
-                    ui.label(if self.importer.notice.is_empty() {
-                        "Working…"
-                    } else {
-                        &self.importer.notice
-                    });
+                    let step = importer.step();
+                    ui.label(if step.is_empty() { "Working…" } else { step });
                 }
             });
         });
@@ -1403,12 +1503,10 @@ impl PackageAuthoringApp {
         let Ok(root) = data_root() else { return };
         let native = PathBuf::from(&self.packages);
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
+        self.importer.task = Some(Task::new(receiver, Work::Scan(ScanProgress::CheckingCache)));
         self.importer.read_requested = true;
         self.importer.catalog_target = self.packages.clone();
         self.importer.icons = icons::Icons::default();
-        self.importer.scan_progress = Some(ScanProgress::CheckingCache);
-        self.importer.scan_started = Some(Instant::now());
         self.importer.scan_error = None;
         self.importer.outcome = None;
         self.importer.notice.clear();
@@ -1431,6 +1529,45 @@ impl PackageAuthoringApp {
         });
     }
 
+    /// The shown rows a library recipe was imported from, as the review finds a recipe's row. A
+    /// recipe whose namespace names no source item is found by the identity its row forms.
+    fn imported_rows(&self) -> BTreeSet<u32> {
+        let source = self.importer.source;
+        let entries = || {
+            self.recipe_entries
+                .iter()
+                .filter(move |entry| Source::of_namespace(&entry.namespace) == Some(source))
+        };
+        let named: BTreeSet<u32> = entries()
+            .filter_map(|entry| Source::named_item(&entry.namespace))
+            .collect();
+        let identities: BTreeSet<u32> = entries().map(|entry| entry.identity_hash).collect();
+        if named.is_empty() && identities.is_empty() {
+            return BTreeSet::new();
+        }
+        self.importer
+            .weapons
+            .iter()
+            .filter(|weapon| match source {
+                Source::HaloReach => identities.contains(&weapon.hash),
+                Source::Marathon => {
+                    identities.contains(&weapon.hash)
+                        || matches!(
+                            self.importer.origins.get(&weapon.hash),
+                            Some(Origin::Marathon(entry)) if named.contains(&entry.item)
+                        )
+                }
+                Source::D2Modern => {
+                    named.contains(&weapon.hash)
+                        || service::destination_hash(weapon.hash, &weapon.name)
+                            .is_ok_and(|hash| identities.contains(&hash))
+                }
+                Source::D1RiseOfIron => named.contains(&weapon.hash),
+            })
+            .map(|weapon| weapon.hash)
+            .collect()
+    }
+
     /// The namespace of the library recipe an earlier import of `source`'s item `hash` saved. An
     /// import of the item keeps it, as the review does, so it updates that recipe rather than
     /// adding a second item when the importer has named items another way since.
@@ -1444,15 +1581,15 @@ impl PackageAuthoringApp {
             .map(|entry| entry.namespace.clone())
     }
 
-    fn import_selected(&mut self, ctx: &egui::Context) {
-        // Saved namespaces apply to this import only.
-        let reimport = std::mem::take(&mut self.importer.reimport);
+    /// Imports the selected items. `reimport` names the library recipe each source item a
+    /// library reimport updates, and is empty for an import the importer's footer starts.
+    fn import_selected(&mut self, ctx: &egui::Context, reimport: &BTreeMap<u32, Saved>) {
         if self.importer.source == Source::D1RiseOfIron {
-            self.import_roi_selected(ctx, &reimport);
+            self.import_roi_selected(ctx, reimport);
             return;
         }
         if self.importer.source != Source::D2Modern {
-            self.import_foreign(ctx, &reimport);
+            self.import_foreign(ctx, reimport);
             return;
         }
         let Some(modern) = self.importer.settings.modern_packages.clone() else {
@@ -1540,6 +1677,8 @@ impl PackageAuthoringApp {
         let Some(library) = self.sweeping_library() else {
             return;
         };
+        // With no saved preference, edited recipes stay unsaved until the author is asked.
+        let choice = edits::Choice::preferred(self.reimport_edits);
         let workers = import_workers(names.len());
         let imports = data_root().ok().map(|root| root.join(service::IMPORTS));
         if let Some(imports) = &imports {
@@ -1548,18 +1687,21 @@ impl PackageAuthoringApp {
         // An open recipe keeps the conversion it names until it is saved or closed.
         let open: Vec<_> = serde_json::to_value(&self.recipe).into_iter().collect();
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.importer.task = Some(Task::new(
+            receiver,
+            Work::Import {
+                progress: Progress {
+                    total: names.len(),
+                    done: 0,
+                    slots: vec![None; workers],
+                    finishing: false,
+                },
+                cancel: cancel.clone(),
+            },
+        ));
         self.importer.outcome = None;
-        self.importer.import_started = Some(Instant::now());
-        self.importer.importing = Some(Progress {
-            total: names.len(),
-            done: 0,
-            slots: vec![None; workers],
-            finishing: false,
-        });
         self.importer.notice.clear();
-        self.importer.cancel.store(false, Ordering::Relaxed);
-        let cancel = self.importer.cancel.clone();
         let native = PathBuf::from(&self.packages);
         let ctx = ctx.clone();
         thread::spawn(move || {
@@ -1571,6 +1713,7 @@ impl PackageAuthoringApp {
                         errors: vec![format!("Prepare native import source: {error}")],
                         cancelled: cancel.load(Ordering::Relaxed),
                         removed: None,
+                        edited: Vec::new(),
                     });
                     ctx.request_repaint();
                     return;
@@ -1579,6 +1722,7 @@ impl PackageAuthoringApp {
             let mut paths = Vec::new();
             let mut errors = Vec::new();
             let mut items = BTreeSet::new();
+            let mut edited = Vec::new();
             let mut shared = parhelion_import::store::Shared::default();
             let mut done = 0;
             let report = batch::run(
@@ -1624,17 +1768,35 @@ impl PackageAuthoringApp {
                         if cancel.load(Ordering::Relaxed) {
                             return Ok(None);
                         }
-                        let saved = save_imported_recipe(&library, &existing, &recipe)?;
-                        items.extend(
-                            imports
-                                .as_deref()
-                                .and_then(|imports| item_folder(imports, &recipe)),
-                        );
-                        Ok(Some(saved))
+                        let mut found = None;
+                        let saved =
+                            save_import(&library, &existing, &recipe, &mut |saved, pristine| {
+                                if choice.is_none() {
+                                    found =
+                                        Some((saved.name.clone(), edits::changes(saved, pristine)));
+                                }
+                                choice
+                            })?;
+                        if saved.is_some() {
+                            items.extend(
+                                imports
+                                    .as_deref()
+                                    .and_then(|imports| item_folder(imports, &recipe)),
+                            );
+                        } else if let Some((name, changes)) = found {
+                            // The import goes on, and both conversions stay for the answer.
+                            edited.push(edits::Pending {
+                                name,
+                                recipe,
+                                changes,
+                            });
+                        }
+                        Ok(saved)
                     });
                     match saved {
-                        Ok(Some(path)) => {
+                        Ok(Some((path, note))) => {
                             paths.push(path);
+                            errors.extend(note.map(|note| format!("{}: {note}", names[index])));
                         }
                         Ok(None) => {}
                         Err(error) => errors.push(format!("{}: {error}", names[index])),
@@ -1656,6 +1818,7 @@ impl PackageAuthoringApp {
                 errors,
                 cancelled: report.cancelled,
                 removed,
+                edited,
             });
             ctx.request_repaint();
         });
@@ -1775,6 +1938,11 @@ fn describe_removal(removed: &Removed) -> Option<String> {
             size(removed.shared_bytes)
         ));
     }
+    match removed.perks {
+        0 => {}
+        1 => lines.push("Merged 1 duplicate imported perk.".to_owned()),
+        count => lines.push(format!("Merged {count} duplicate imported perks.")),
+    }
     match removed.linked {
         0 => {}
         1 => lines.push("Moved the embedded model out of 1 recipe.".to_owned()),
@@ -1815,6 +1983,7 @@ fn cleanup_step(progress: &recipe_library::Progress) -> String {
         Step::Removing => "Removing Conversions",
         Step::Sharing => "Merging Duplicate Assets",
         Step::Collecting => "Checking for Unused Assets",
+        Step::Perks => "Merging Duplicate Perks",
     };
     if progress.total == 0 {
         return step.to_owned();
@@ -1834,11 +2003,80 @@ fn import_workers(weapons: usize) -> usize {
 /// authored gameplay and narrative edits, or saves it as a new entry. The perk sockets always
 /// come from the conversion, with the base they were built on, so the entry they replace is
 /// first kept in the library's backups whenever the merge changes them.
+fn refresh_imported_kind(recipe: &WeaponRecipe, updated: &mut WeaponRecipe) -> Result<(), String> {
+    // The graph above came with the conversion's ornaments, or none when they were not
+    // imported, bound to the socket layout the conversion brings. Saved ornaments would have
+    // no socket left to offer them.
+    if !recipe.kind.is_weapon() {
+        updated.donor = recipe.donor.clone();
+        updated.presentation_donor = None;
+        if updated.overrides.rarity.is_none() {
+            updated.overrides.rarity = recipe.overrides.rarity;
+        }
+        if updated.overrides.nameplate.is_none() {
+            updated.overrides.nameplate = recipe.overrides.nameplate.clone();
+        }
+    } else {
+        updated.presentation_donor = recipe
+            .presentation_donor
+            .clone()
+            .or_else(|| Some(recipe.donor.clone()));
+        if updated.overrides.fired_graph.is_none() && updated.overrides.projectile.is_none() {
+            updated.overrides.fired_graph = recipe.overrides.fired_graph.clone();
+        }
+        // An exotic base lends its runtime but not its behavior or tier. The ordinary weapon
+        // whose behavior it takes belongs to the base the conversion chose, as its sockets do.
+        updated.overrides.behavior_donor = recipe.overrides.behavior_donor.clone();
+        // The base's content row the source key selects belongs to the conversion too.
+        updated.overrides.content_variant = recipe.overrides.content_variant.clone();
+        // A rarity the saved entry leaves to its base follows the conversion, which carries
+        // the source tier, or an ordinary tier for an exotic base lent without its behavior.
+        if updated.overrides.rarity.is_none() {
+            updated.overrides.rarity = recipe.overrides.rarity;
+        }
+        // Likewise a damage type the saved entry leaves to its base follows the conversion,
+        // which takes it from the source's damage talents.
+        if updated.overrides.modern_damage_type.is_none() {
+            updated.overrides.modern_damage_type = recipe.overrides.modern_damage_type;
+        }
+        // So do a slot and an ammunition type, which a Rise of Iron conversion takes from the
+        // source's own slot and damage type.
+        if updated.overrides.inventory_slot.is_none() {
+            updated.overrides.inventory_slot = recipe.overrides.inventory_slot;
+        }
+        if updated.overrides.ammo_type.is_none() {
+            updated.overrides.ammo_type = recipe.overrides.ammo_type;
+        }
+        melee::merge(recipe, updated)
+            .map_err(|error| format!("Import melee activation: {error:#}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn save_imported_recipe(
     library: &RecipeLibrary,
     existing: &[(PathBuf, u32)],
     recipe: &Path,
 ) -> Result<PathBuf, String> {
+    save_import(library, existing, recipe, &mut |_, _| {
+        Some(edits::Choice::Reapply)
+    })?
+    .map(|(path, _)| path)
+    .ok_or_else(|| "The import was cancelled".into())
+}
+
+/// Saves the converted recipe at `recipe` into the library. A saved recipe of the same item
+/// that was edited since its own conversion follows `choose`, asked with the saved recipe and the
+/// one its conversion prepared: its edits are reapplied to the new conversion or the conversion
+/// replaces it. Returns the saved path with a note about edits that could not be reapplied, or
+/// `None` when `choose` gave no answer.
+fn save_import(
+    library: &RecipeLibrary,
+    existing: &[(PathBuf, u32)],
+    recipe: &Path,
+    choose: &mut dyn FnMut(&WeaponRecipe, &WeaponRecipe) -> Option<edits::Choice>,
+) -> Result<Option<(PathBuf, Option<String>)>, String> {
     let recipe = WeaponRecipe::load_json(recipe).map_err(|error| error.to_string())?;
     let identity = recipe.identity.item_hash.parse_u32().unwrap_or_default();
     for (path, _) in existing.iter().filter(|(_, hash)| *hash == identity) {
@@ -1851,12 +2089,28 @@ fn save_imported_recipe(
         if baseline.kind != recipe.kind {
             return Err("Reimport would change this recipe's item kind".into());
         }
+        let pristine = edits::pristine(&baseline);
+        let choice = match &pristine {
+            Some(pristine) if edits::edited(&baseline, pristine) => {
+                let Some(choice) = choose(&baseline, pristine) else {
+                    return Ok(None);
+                };
+                choice
+            }
+            _ => edits::Choice::Reapply,
+        };
+        if choice == edits::Choice::Overwrite {
+            validate_projectile_selection(&recipe)?;
+            library.save_existing_with_backup(path, &baseline, &recipe)?;
+            return Ok(Some((path.clone(), None)));
+        }
         let mut updated = baseline.clone();
         // The conversion's socket layout replaces the saved one, so a converter fix reaches
         // every reimported item. It names the sockets and plugs of the base it was built on,
         // so a saved recipe on another base takes that base with it.
         updated.overrides.socket_columns = recipe.overrides.socket_columns.clone();
         updated.overrides.socket_plug_variants = recipe.overrides.socket_plug_variants.clone();
+        updated.overrides.damage_talent_socket = None;
         updated.overrides.base_sandbox_perks = recipe.overrides.base_sandbox_perks.clone();
         if updated.donor.item_hash != recipe.donor.item_hash {
             updated.donor = recipe.donor.clone();
@@ -1887,41 +2141,20 @@ fn save_imported_recipe(
             updated.overrides.icon_edit.imported_image =
                 recipe.overrides.icon_edit.imported_image.clone();
         }
-        // The graph above came with the conversion's ornaments, or none when they were not
-        // imported, bound to the socket layout the conversion brings. Saved ornaments would have
-        // no socket left to offer them.
-        if !recipe.kind.is_weapon() {
-            updated.donor = recipe.donor.clone();
-            updated.presentation_donor = None;
-            if updated.overrides.rarity.is_none() {
-                updated.overrides.rarity = recipe.overrides.rarity;
-            }
-            if updated.overrides.nameplate.is_none() {
-                updated.overrides.nameplate = recipe.overrides.nameplate.clone();
-            }
-        } else {
-            updated.presentation_donor = recipe
-                .presentation_donor
-                .clone()
-                .or_else(|| Some(recipe.donor.clone()));
-            if updated.overrides.fired_graph.is_none() && updated.overrides.projectile.is_none() {
-                updated.overrides.fired_graph = recipe.overrides.fired_graph.clone();
-            }
-            // An exotic base lends its runtime but not its behavior or tier. The ordinary weapon
-            // whose behavior it takes belongs to the base the conversion chose, as its sockets do.
-            updated.overrides.behavior_donor = recipe.overrides.behavior_donor.clone();
-            // A rarity the saved entry leaves to its base follows the conversion, which carries
-            // the source tier, or an ordinary tier for an exotic base lent without its behavior.
-            if updated.overrides.rarity.is_none() {
-                updated.overrides.rarity = recipe.overrides.rarity;
-            }
-            melee::merge(&recipe, &mut updated)
-                .map_err(|error| format!("Import melee activation: {error:#}"))?;
+        // Source HUD artwork fills a saved entry that has none of its own.
+        if updated.overrides.hud_icon.is_none() {
+            updated.overrides.hud_icon = recipe.overrides.hud_icon.clone();
         }
+        refresh_imported_kind(&recipe, &mut updated)?;
+        // Perk edits go back over the conversion's sockets when both stand on the same base.
+        let unplaced = pristine
+            .is_some_and(|pristine| !edits::reapply_sockets(&pristine, &baseline, &mut updated));
         keep_bundled_selection(&baseline, &mut updated);
+        crate::recipe::damage::apply(&mut updated)?;
         validate_projectile_selection(&updated)?;
         // Custom perks and socket edits live in the same fields as the generated layout, so
-        // taking the conversion's replaces them. The earlier entry stays recoverable.
+        // taking the conversion's replaces any that were not reapplied. The earlier entry stays
+        // recoverable.
         let replaced = baseline.overrides.socket_columns != updated.overrides.socket_columns
             || baseline.overrides.socket_plug_variants != updated.overrides.socket_plug_variants
             || baseline.overrides.base_sandbox_perks != updated.overrides.base_sandbox_perks
@@ -1932,10 +2165,13 @@ fn save_imported_recipe(
         } else {
             library.save_existing_if_unchanged(path, &baseline, &updated)?;
         }
-        return Ok(path.clone());
+        let note = (unplaced && replaced).then(|| {
+            "Its perk and socket edits no longer fit the new conversion. The conversion's were used, and the earlier recipe is in the library's backups.".to_owned()
+        });
+        return Ok(Some((path.clone(), note)));
     }
     validate_projectile_selection(&recipe)?;
-    library.save_new(&recipe)
+    library.save_new(&recipe).map(|path| Some((path, None)))
 }
 
 /// A saved selection of a projectile that the previous model carried as a byte for byte copy of a

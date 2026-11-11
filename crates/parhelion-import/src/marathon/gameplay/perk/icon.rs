@@ -67,33 +67,43 @@ impl Glyphs {
     }
 
     fn make(&self, r: &mut Reader, index: usize) -> Result<String> {
-        let row = *self
-            .rows
-            .get(index)
-            .context("Icon index outside the icon table")?;
-        let container = r.tag(r.ref64(&self.table, row + 0x10)?, Some(CONTAINER))?;
-        let layer = r.tag(container.u32(PRIMARY)?, Some(LAYER))?;
-        let lanes = layer.pointer(0x10)?;
-        ensure!(
-            lanes >= 4 && LANES.contains(&layer.u32(lanes - 4)?),
-            "Unsupported icon layer"
-        );
-        let lane = *layer
-            .array(lanes, 16, None)?
-            .first()
-            .context("The icon layer has no lanes")?;
-        let mut largest: Option<Layer> = None;
-        for at in layer.array(lane, 4, None)? {
-            let texture = texture(r, layer.u32(at)?)?;
-            if largest
-                .as_ref()
-                .is_none_or(|kept| texture.width > kept.width)
-            {
-                largest = Some(texture);
-            }
-        }
-        encode(&largest.context("The icon lane has no texture")?)
+        encode(&primary(r, &self.table, &self.rows, index)?)
     }
+}
+
+/// The primary artwork of inventory icon `index`, at the largest size its lane holds.
+pub(crate) fn inventory_icon(r: &mut Reader, index: usize) -> Result<Layer> {
+    let table = table(r, ICONS)?;
+    let rows = table.array(8, 32, Some(ICON_ROW))?;
+    primary(r, &table, &rows, index)
+}
+
+fn primary(r: &mut Reader, table: &Payload, rows: &[usize], index: usize) -> Result<Layer> {
+    let row = *rows
+        .get(index)
+        .context("Icon index outside the icon table")?;
+    let container = r.tag(r.ref64(table, row + 0x10)?, Some(CONTAINER))?;
+    let layer = r.tag(container.u32(PRIMARY)?, Some(LAYER))?;
+    let lanes = layer.pointer(0x10)?;
+    ensure!(
+        lanes >= 4 && LANES.contains(&layer.u32(lanes - 4)?),
+        "Unsupported icon layer"
+    );
+    let lane = *layer
+        .array(lanes, 16, None)?
+        .first()
+        .context("The icon layer has no lanes")?;
+    let mut largest: Option<Layer> = None;
+    for at in layer.array(lane, 4, None)? {
+        let texture = texture(r, layer.u32(at)?)?;
+        if largest
+            .as_ref()
+            .is_none_or(|kept| texture.width > kept.width)
+        {
+            largest = Some(texture);
+        }
+    }
+    largest.context("The icon lane has no texture")
 }
 
 /// A texture's top mip. The first half of a split mip chain starts at mip 0.

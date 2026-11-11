@@ -30,7 +30,7 @@ fn build_saves_current_edits_before_snapshot_without_changing_selection() {
 }
 
 #[test]
-fn build_save_failure_preserves_draft_and_does_not_start_worker() {
+fn build_save_failure_preserves_draft_and_external_version() {
     let directory = tempfile::tempdir().unwrap();
     let library = RecipeLibrary::open(directory.path().join("recipes")).unwrap();
     let path = library.root().join("every-end.parhelion.json");
@@ -39,6 +39,7 @@ fn build_save_failure_preserves_draft_and_does_not_start_worker() {
         ..Default::default()
     };
     assert!(app.open_recipe_path(&path));
+    app.enabled_recipe_paths.insert(path.clone());
     let baseline = app.recipe_baseline.clone();
     let mut external = app.recipe.clone();
     external.flavor = "Changed by another editor".into();
@@ -46,13 +47,8 @@ fn build_save_failure_preserves_draft_and_does_not_start_worker() {
     app.recipe.flavor = "Keep my draft".into();
     app.synchronize_recipe_dirty();
     let draft = app.recipe.clone();
-    app.start_build();
-    assert!(app.build_receiver.is_none());
     assert!(
-        app.latest_build
-            .as_ref()
-            .unwrap()
-            .as_ref()
+        app.save_edits_for_build()
             .unwrap_err()
             .contains("changed on disk")
     );

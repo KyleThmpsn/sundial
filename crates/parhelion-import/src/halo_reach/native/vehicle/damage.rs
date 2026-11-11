@@ -3,6 +3,8 @@ mod effect;
 pub(super) mod region;
 mod section;
 
+pub(in crate::halo_reach) use effect::{contact_cue, host as effect_host};
+
 use super::assembly::Assembly;
 use crate::{
     halo_reach::{Scene, cache::Cache, damage::Geometry, resource::Pages},
@@ -16,6 +18,28 @@ pub(super) fn hash(name: &str) -> u32 {
     name.bytes().fold(0x811c9dc5u32, |value, byte| {
         value.wrapping_mul(16777619) ^ u32::from(byte)
     })
+}
+
+/// The section the source routes indirect damage to, which holds the vehicle's primary health.
+/// Source vehicles name their first section, the body. One that names none, as the large truck
+/// cab does, has its body first as well, so that section is used.
+pub(super) fn primary_section(source: &Value) -> Result<usize> {
+    let sections = source["sections"]
+        .as_array()
+        .filter(|rows| !rows.is_empty())
+        .context("Source vehicle damage sections")?;
+    let index = source["indirect_section"]
+        .as_i64()
+        .context("Source indirect damage section")?;
+    if index == -1 {
+        return Ok(0);
+    }
+    let index = usize::try_from(index)?;
+    ensure!(
+        index < sections.len(),
+        "Source indirect damage section exceeds its sections"
+    );
+    Ok(index)
 }
 
 pub(super) fn definition(

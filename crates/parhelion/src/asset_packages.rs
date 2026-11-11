@@ -22,6 +22,16 @@ pub(crate) struct AssetPackages {
     pub reservations: Vec<Reservation>,
     /// A complete import graph uses its own last package. Native authoring uses `None`.
     pub owner: Option<sundial::package_authoring::mod_content::Importer>,
+    /// Clips already appended for shared human banks, by owner and payload digest. Recipes of one
+    /// source convert the same character and rider clips, and every resident copy costs tag
+    /// memory, so an identical clip takes one entry that every recipe's bank rows name.
+    pub shared_clips: std::collections::BTreeMap<
+        (
+            Option<sundial::package_authoring::mod_content::Importer>,
+            [u8; 32],
+        ),
+        tiger_pkg::TagHash,
+    >,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -224,11 +234,7 @@ impl AssetPackages {
         tags: Vec<NewTagSpec>,
         references: Vec<NewTagReferenceOverride>,
     ) -> AuthoringResult<Self> {
-        let mut assets = Self {
-            packages: Vec::new(),
-            reservations: Vec::new(),
-            owner: None,
-        };
+        let mut assets = Self::default();
         let index = assets.reserve_group(tags.iter().map(|tag| tag.payload.len()))?;
         assets.packages[index].tags = tags;
         assets.packages[index].references = references;

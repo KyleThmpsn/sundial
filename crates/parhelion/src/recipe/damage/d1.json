@@ -1,0 +1,118 @@
+[
+  {
+    "damage_type": "void",
+    "name": "Void Damage",
+    "description": "This weapon causes Void Damage.",
+    "icon": {
+      "source": "image",
+      "name": "Void Damage",
+      "image": {
+        "png_base64": "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"
+      }
+    },
+    "program": {
+      "name": "Void Damage",
+      "trigger": "native",
+      "duration_ms": 0,
+      "cooldown_ms": 0,
+      "chance_permyriad": 10000,
+      "actions": [
+        {
+          "operation": "set_damage_type",
+          "mode": 3
+        }
+      ],
+      "native_trigger": {
+        "kind": 0,
+        "bytes": "0x0000803FFF000000"
+      }
+    }
+  },
+  {
+    "damage_type": "solar",
+    "name": "Solar Damage",
+    "description": "This weapon causes Solar Damage.",
+    "icon": {
+      "source": "image",
+      "name": "Solar Damage",
+      "image": {
+        "png_base64": "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"
+      }
+    },
+    "program": {
+      "name": "Solar Damage",
+      "trigger": "native",
+      "duration_ms": 0,
+      "cooldown_ms": 0,
+      "chance_permyriad": 10000,
+      "actions": [
+        {
+          "operation": "set_damage_type",
+          "mode": 1
+        }
+      ],
+      "native_trigger": {
+        "kind": 0,
+        "bytes": "0x0000803FFF000000"
+      }
+    }
+  },
+  {
+    "damage_type": "arc",
+    "name": "Arc Damage",
+    "description": "This weapon causes Arc Damage.",
+    "icon": {
+      "source": "image",
+      "name": "Arc Damage",
+      "image": {
+        "png_base64": "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"
+      }
+    },
+    "program": {
+      "name": "Arc Damage",
+      "trigger": "native",
+      "duration_ms": 0,
+      "cooldown_ms": 0,
+      "chance_permyriad": 10000,
+      "actions": [
+        {
+          "operation": "set_damage_type",
+          "mode": 2
+        }
+      ],
+      "native_trigger": {
+        "kind": 0,
+        "bytes": "0x0000803FFF000000"
+      }
+    }
+  },
+  {
+    "damage_type": "kinetic",
+    "name": "Kinetic Damage",
+    "description": "This weapon causes kinetic damage.",
+    "icon": {
+      "source": "image",
+      "name": "Kinetic Damage",
+      "image": {
+        "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAOZUlEQVR4Ae3AA6AkWZbG8f937o3IzKdyS2Oubdu2bdu2bdu2bWmMnpZKr54yMyLu+Xa3anqmhztr1a/a5qr/NgRX/XciuOq/E8FV/50IrvrvRHDVfyeCq/47EVz134ngqv9OBFf9dyL4l70VsM1V/1o7wFvzwhH8y34F+AbgJbjqRfUSwNcBv8QLh2zzIrgO+C3gi4Dv5aoX5r2ATwFeG7iHFw7Z5kX0MsDvA98PfBSw4qoHmgNfC7wb8OrAX/EvI3jR/RXwXsAHAn8MPIKr7vdI4I+BDwDeA/grXjQE/zo/Dnw+8FLAXwLvxlXvDvwl8FLA5wE/yYsO2eZfKYCfBd6MK74D+AhgyX+NAK4FZsBxrtgF1sC9QPJfYwF8HfB+XPFzwFsB5kWHbPNvsAP8KfAorvgH4F2Bv+U/1vXA6wIvC7wU8CjgeqDw/DXgbuCJwN8Afwn8BnAP/7FeEvgh4LFc8UTgFYE9/nWQbf6NHg38KbDNFWvg44FvAMy/3UsA7wi8LfBY/mM8DvhJ4EeBv+PfTsCHA18GzLhiH3hF4An86yHb/Du8NfBTPKdfAN4HOMuLbg68C/BhwMvxn+vPgW8AfhhY8aI7A3w38KY8p7cGfoZ/G4J/n58GvoTn9GbA3wBvwr+sBz4UeDrwncDL8Z/v5YHvAp4KfDDQ8y97E+BvgTflOX0R8DP82yHb/DsV4NeA1+F5fSPwCcARz+vNgK8FHsp/r6cBHwn8As9rA/gy4EN5Xr8BvBHQ+LdDtvkPcA3wl8CNPK8nAu8B/BnPdiPwG8Cj+J/hCcDrA3fybK8AfD/wSJ7XHcDLAmf59yH4j3Ef8A7AxPN6FPCHwGcDHVfcCbw08OVA8t8ngS8HXga4kys64LOBPwQeyfOagHcEzvLvh2zzH+jjgS/jBfsb4L2Bv+bZXgX4XuDhvGhG4HZgD7jEFceAHeBmoONF8xTgPYE/4tleGvhu4KV4wT4e+Ar+YyDb/AcS8LPAm/OCTcAXAF8AjFyxAXwh8JGAeE63A78E/Cbwt8CTgYnnrwKPAl4ceF3gTYCbeU4Gvhb4VOCIKzrg04BPAyov2E8DbwuY/xjINv/BTgB/CTyYF+5vgPcG/ppne03ge4DTwA8A3wr8Jf8+Lwt8EPBuwFngvYHf4dleGvhu4KV44W4FXha4yH8cZJv/BK8M/B5QeeEm4AuALwBGrtgECrDHf6wdoAGHXNEBnwZ8GlB54Sbg1YE/4T8WwX+OPwY+i39ZBT4L+DPgFbjiENjjP94ecMgVrwD8OfBZQOVf9lnAn/AfD9nmP0kBfgN4LV40CXwd8OnAAf85toAvAD4cCF40vw28HpD8x0O2+Q82B1ZccRPwt8AJXnS3Ax8G/Bz/sd4C+AbgZl50F4GXBO7gigWw5D8OwX8sAT8NvD5X3AG8P/86NwM/C/wYcD3/ftcDPwb8LHAz/zrvB9zBFW8A/BT/sQj+Y70X8EbA9wJnuOIngW/jX+/tgccDHwyIfz0BHww8Hnh7/vW+DfgprrgG+F7gjYD35j8OwX+cLeCLueJ64LsBccXHAE/gX+92IIE5/3pzIIHb+dd7AvDRXCHgu4HruOKLgS3+YxD8x/k44Fqe7U2Bj+KKQ+BdgYEXzb3AuwEvBXwrsORfbwl8K/BSwLsB9/KiGYB3AY644mOAN+HZrgU+lv8YyDb/AbaAO4BjPKcBeGXgr7jik4Av5oX7eeC9gfP8y3YAA/v8y04B3wm8JS/cJwFfyhUvC/wR0POcLgE3AQf8+xD8x3g/4BjPqwd+GNjiii8H/ogX7FuBtwbO87wq8BbAtwOPAwbgErAHDMDjgG8H3gKoPK/zwNsC38QL9ofAV3DFFvDDQM/zOga8L/9+yDb/AZ4IPJIX7DuA9+eKRwB/DWzwnH4YeFfAPKcCvD/wacDNvGhuB74Q+Dag8ZwEfB/wbjynI+ClgSdzxXcC78ML9kTg0fz7EPz7vQLwSF64nmd7MvCJPKfHA+8HmOf0YOD3gG8GbuZFdzPwTcDvAQ/mORn4AOBxPKdPBJ7Ms1VeuEcBr8C/D8G/3zvyL/tKntM3Ar/Os70vcMRzegngj4FX4d/uVYA/AV6a57QE3p9n+3XgG3lOX8m/7B3590G2+Xf6W+AleMH+AHh1ntctwN8Cvw68Pc/p4cAfAaf5j3EOeFXgyTynHwdeH3hJ4Dae1+8Br84L9nfAS/JvR/Dvcx3wErxwP8Hzdxvw0cBX8pw64MeB0/zHOQ38ONDznL4S+CjgNp6/n+SFewngWv7tCP59Xo5/2c/wgn038Ic8p48BXor/eC8JfBzP6Q+B7+EF+xn+ZS/Pvx3Bv8/L8sLdDjyNF90m8In85/k4YJMX3dOA23jhXpZ/O4J/n0fwwv0N/zpvA5ziP88p4O341/lbXriH829H8O9zMy/c3/Cv8+b853sL/nX+hhfuFv7tqPz7XMMLdw//Oq/Ef76X51/nHl64M/zbUfn32eSFu8S/zi3853sQ/zqXeOG2+Lcj+PepvHD7vOjmQPCfT8AGL7p9XrjKvx3Bv8/EC7fNi24FJP/5DBzxotvmhZv4tyP49znkhTvGv85t/Od7Bv86x3jhDvi3I/j3uY8X7jr+df6E/3x/yr/OdbxwZ/m3I/j3uZ0X7qX41/l5/vP9PP86L8ULdxv/dgT/Pk/mhXsp/nV+CjjPf57zwE/yr/OSvHBP4d+O4N/nL3nhbgYeyovuEPhi/vN8BXDIi+6hwC28cH/Jvx3Bv89f8C97K16w9wZelef0NcBf8x/vb4Gv4Dm9KvDevGBvxb/sL/i3I/j3uQf4O164t+P5uwX4auBjeU4j8PbAOf7jnAPeHhh4Th8LfA1wC8/f2/LC/R1wD/92BP9+v8IL92rAS/OcBHwncAx4O+BVeE5PBV4XuId/v7PAGwFP5jm9KvB2wA7wnYB4Ti8NvDov3K/w70Pw7/ej/Ms+luf0ocDr8WzfAWzwnP4OeCXgD/m3+yPgFYG/5DltAN/Os70e8KE8p4/lX/aj/PsQ/Pv9GfAkXriBZ3sE8GU8p8cA3w6I53Qb8BrABwK38aK7Hfhg4DWAW3lOAr4DeAzP6cuAR/BsEy/ck4A/498H2eY/wEcCX8Pz9yTg5YADoAC/B7wKz9+3AB8GNJ5XBd4YeGvgVYBHAB1XjMCTgT8Cfgb4JWDieRXgG4AP4vn7I+A1gAZsAX8JPILn76OAr+XfB9nmP8AWcAdwjOc0AK8M/BVXfBLwxbxwPwe8D3Cef9k2V+zzLzsFfA/wZrxwnwJ8MVe8LPBHQM9zugTcBBzw70PwH+MA+Eqe1ycBf8UVLwN8Lv+ytwD+AXhXIHjh9oF9XrgA3g34B+DN+Jd9DvAyXPGXwCfzvL4SOODfD9nmP8gW8BTgWq74ReDNAQMbwF8Aj+Zf53HANwDfBSz511kA7wN8OPAY/nWeCLwccAgI+HngTbniXuDhwAH/fgT/cQ6AT+aKu4H3BswVXw08mn+9G4EJWPGvtwIacAP/eo8CvoorDLw3cDdXfDJwwH8MZJv/YL8MfDnw61zxtsBP8K/3o8BHAffw73Md8LXAO/Cv9/bAT3DF6wMfD7wx/3GQbf6DzYEVV9wE/C1wghfd7cCHAL/Af6w3B74RuJkX3UXgJYE7uGIOrPiPQ/Afb8UVBfg+4AQvmgS+Gngs8Av8x/t54LHAVwPJi+YE8P1A4YoV/7EI/vN8EvDavGj+Bngl4GOAA/7zHAAfA7wy8De8aF4L+CT+cyDb/Cd4ZeD3gMoLNwFfAHwBMHLFJlCAPf5j7QANOOSKDvg04NOAygvXgFcH/pj/WAT/8U4APwRUXri/AV4B+Gxg5IrXAf4euBv4VuDl+fcR8ArAtwF3A38PvBZXjMBnA68A/A0vXAF+GDjJfyxkm/9AAn4GeAtesAn4AuALgJErNoAvBD6K53U38MvAbwH/ADwBOOL52wAeDbw48DrAGwHX85wMfC3wqcARV3TApwGfBlResJ8H3hIw/zGQbf4DfTzwZbxgfwO8N/DXPNurAd8NPJwXjYF7gX1gjyt2gG3gWkC8aJ4CvBfwhzzbSwPfDbwUL9gnAF/Ofwxkm/8grwL8LlB5XhPwBcAXACNXzIHPAz4WCP57JPCVwGcAK67ogE8DPg2oPK8JeE3gj/j3Q7b5D3AN8JfAjTyvJwLvBvwFz3Yj8BvAo/if4YnA6wF38mwvB/wA8Cie153AywL38e9D8O9XgB8GbuR5fT3wssBf8JzuBD4OeBr//Z4GfBxwJ8/pL4CXBb6B53Uj8MNA4d+H4N/vC4DX4TndDbwJ8BHAEc/fLwCPAT4MuIf/ercDHwI8BvgFnr8j4MOBNwHu5jm9DvAF/Psg2/w7vDXwUzynnwfeBzjHi24OvDPw4cDL8Z/rz4FvAH4YWPGiOw18F/DmPKe3AX6afxtkm3+jRwN/CmxzxRr4OOAbAfNv9xLAOwJvCzyW/xiPA34S+FHg7/i3E/BhwJcDM67YB14ReAL/esg2/wY7wJ8Cj+KKfwDeGfh7/mNdB7we8LLASwGPAq4DKs/fBNwDPBH4G+AvgN8E7uE/1ksAPwS8GFc8EXhlYJd/HWSbf6UAfhZ4M674duAjgSX/NQK4FpgBx7jiErAG7gWS/xoL4OuA9+OKXwDeEkhedMg2/0qfB3w6cAB8APDD/P/2rsC3AFvA5wOfwYsO2eZf4e2BHwP+BngH4MlcBfAI4MeAlwLeAfhxXjTINi+ilwF+H/he4KOBNVc90Bz4auA9gVcD/op/GbLNi+A64LeALwS+j6temPcAPhV4HeAeXjhkm3/BHPgW4MuAv+eqF8WLA58IfCCw4gVDtvkXvDXwG8A+V/1rbAOvD/wULxiyzVX/bQiu+u9EcNV/J4Kr/jsRXPXfieCq/04EV/13IrjqvxPBVf+d+Ec6wAUU7VZjkwAAAABJRU5ErkJggg=="
+      }
+    },
+    "program": {
+      "name": "Kinetic Damage",
+      "trigger": "native",
+      "duration_ms": 0,
+      "cooldown_ms": 0,
+      "chance_permyriad": 10000,
+      "actions": [
+        {
+          "operation": "set_damage_type",
+          "mode": 0
+        }
+      ],
+      "native_trigger": {
+        "kind": 0,
+        "bytes": "0x0000803FFF000000"
+      }
+    }
+  }
+]

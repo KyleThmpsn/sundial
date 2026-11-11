@@ -50,7 +50,7 @@ pub(crate) use items::{
     InvestmentStatDisplayPoint, ItemArtArrangement, ItemDamageProfile, ItemDamageType, ItemDef,
     ItemInvestmentStat, ItemPackageMetadata, ItemRarity, ItemRenderOverride, ItemStackability,
     ItemStatDefinition, ItemStatGroup, ItemWeaponAmmoType, ItemWeaponInventorySlot,
-    format_in_game_investment_stat, interpolate_investment_stat_display,
+    interpolate_investment_stat_display,
 };
 use items::{
     GearKind, SocketCarriers, build_gear_type_options, build_socket_type_carriers,
@@ -520,6 +520,14 @@ impl Catalog {
         metadata: HashMap<u64, ItemPackageMetadata>,
     ) -> Self {
         Self::for_test_with_inventory(items, metadata, HashMap::new())
+    }
+
+    /// Fixture definitions stay empty while icons use an explicitly configured package source.
+    #[cfg(test)]
+    pub(crate) fn for_test_with_packages(install_path: PathBuf) -> Self {
+        let mut catalog = Self::for_test(Vec::new(), HashMap::new());
+        catalog.install_path = install_path;
+        catalog
     }
 
     #[cfg(test)]

@@ -34,6 +34,9 @@ pub(super) struct View {
     pub order: Order,
     #[serde(default)]
     pub show_installed: bool,
+    /// Imported items show unless the view hides them.
+    #[serde(default)]
+    pub hide_imported: bool,
     #[serde(default)]
     pub show_dummy: bool,
 }
@@ -61,6 +64,9 @@ pub(super) struct Browser {
     pub kind: String,
     pub show_dummy: bool,
     pub show_installed: bool,
+    pub show_imported: bool,
+    /// Shown rows a library recipe was imported from.
+    pub imported: BTreeSet<u32>,
     pub order: Order,
     pub dirty: bool,
     /// The list returns to the top on its next draw.
@@ -86,6 +92,8 @@ impl Default for Browser {
             kind: String::new(),
             show_dummy: false,
             show_installed: false,
+            show_imported: true,
+            imported: BTreeSet::new(),
             order: Order::Catalog,
             dirty: true,
             reset_scroll: false,
@@ -117,6 +125,7 @@ impl Browser {
             filters: self.filters.clone(),
             order: self.order,
             show_installed: self.show_installed,
+            hide_imported: !self.show_imported,
             show_dummy: self.show_dummy,
         }
     }
@@ -127,6 +136,7 @@ impl Browser {
         self.filters = view.filters;
         self.order = view.order;
         self.show_installed = view.show_installed;
+        self.show_imported = !view.hide_imported;
         self.show_dummy = view.show_dummy;
         self.dirty = true;
     }
@@ -134,6 +144,7 @@ impl Browser {
     fn matches(&self, weapon: &Weapon, query: &str) -> bool {
         (self.show_dummy || !weapon.dummy)
             && (self.show_installed || !weapon.present_in_native)
+            && (self.show_imported || !self.imported.contains(&weapon.hash))
             && (self.kind.is_empty() || weapon.weapon_type == self.kind)
             && self.filters.matches(weapon)
             && query.split_whitespace().all(|word| {
@@ -153,6 +164,7 @@ impl Browser {
             || !self.kind.is_empty()
             || self.filters.active()
             || self.show_installed
+            || !self.show_imported
             || self.show_dummy
     }
 
@@ -161,6 +173,7 @@ impl Browser {
         self.kind.clear();
         self.filters = self.filters.cleared();
         self.show_installed = false;
+        self.show_imported = true;
         self.show_dummy = false;
         self.dirty = true;
         self.reset_scroll = true;

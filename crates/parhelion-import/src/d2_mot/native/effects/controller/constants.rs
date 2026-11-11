@@ -3,7 +3,7 @@
 /// Modern scalar pushes may leave the other lanes zero. The native serialized
 /// row carries signed ones there, except for an entirely zero constant. Call
 /// after validating the program and its constant indices.
-pub(in crate::d2_mot::native::effects) fn broadcast(code: &[u8], rows: &mut [u8]) {
+pub(crate) fn broadcast(code: &[u8], rows: &mut [u8]) {
     let mut at = 0;
     while at < code.len() {
         let op = code[at];

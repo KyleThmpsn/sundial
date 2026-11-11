@@ -1,6 +1,65 @@
-//! Recover affine bone indexing from the vertex program's native matrix-row reads.
+//! Recover native palette representation and affine matrix-row bone indexing.
 use super::*;
 use program::{Operand, Program};
+
+pub(super) fn quaternion(code: &Program) -> bool {
+    for (at, row) in code
+        .instructions
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.code == 41)
+    {
+        let destination = &row.operands[0];
+        let amount = &row.operands[2];
+        if register(destination, 0).is_none() || amount.kind != 4 || amount.modifier != 0 {
+            continue;
+        }
+        for lane in 0..4 {
+            if destination.mask & (1 << lane) == 0 || amount.literal[amount.lanes[lane]] != 1 {
+                continue;
+            }
+            if shifted_palette(&code.instructions[at + 1..], destination, lane) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn shifted_palette(code: &[program::Instruction], destination: &Operand, lane: usize) -> bool {
+    // Follow the shifted lane only until it is overwritten. An unrelated shift
+    // must not select a different representation of the object palette.
+    for row in code {
+        let destinations = if matches!(row.code, 38 | 77 | 78) {
+            2
+        } else {
+            1
+        };
+        if row
+            .operands
+            .iter()
+            .skip(destinations)
+            .any(|value| palette_index(value, destination.indices[0].base, lane))
+        {
+            return true;
+        }
+        if row.operands.iter().take(destinations).any(|value| {
+            register(value, 0) == register(destination, 0) && value.mask & (1 << lane) != 0
+        }) {
+            return false;
+        }
+    }
+    false
+}
+
+fn palette_index(value: &Operand, temporary: u32, lane: usize) -> bool {
+    value.kind == 8
+        && value.indices[0].base == 11
+        && matches!(value.indices[1].base, 8 | 9)
+        && value.indices[1].relative.as_ref().is_some_and(|index| {
+            register(index, 0) == Some(temporary as usize) && index.lanes[0] == lane
+        })
+}
 
 pub(in crate::model_preview) fn apply(
     manager: &PackageManager,

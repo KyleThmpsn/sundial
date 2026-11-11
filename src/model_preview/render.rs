@@ -148,7 +148,7 @@ pub(crate) fn preview_image(
 ) -> ColorImage {
     let pose = model.pose(seconds);
     let workers =
-        std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2).clamp(1, 4));
+        std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2).clamp(1, 2));
     frame(
         model,
         camera,
@@ -930,6 +930,21 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
+    fn composite(&mut self, index: usize, color: [f32; 4], modulate: bool) {
+        let base = self.pixels[index];
+        if modulate {
+            if self.depth[index].is_finite() {
+                self.pixels[index] = std::array::from_fn(|i| base[i] * color[i]);
+            }
+            return;
+        }
+        self.pixels[index] = std::array::from_fn(|i| base[i] * (1.0 - color[3]) + color[i]);
+        // Additive light has zero blend alpha. Exported artwork still needs enough
+        // coverage to retain that emitted RGB on any background.
+        let alpha = color[3].max(color[..3].iter().copied().fold(0.0f32, f32::max).min(1.0));
+        self.coverage[index] = self.coverage[index] * (1.0 - alpha) + alpha;
+    }
+
     fn irradiance(&self) -> [f32; 4] {
         let (right, up) = screen_axes(self.camera);
         let key = self.scene.raster_light();
@@ -1014,7 +1029,7 @@ fn effect_color(
 }
 
 fn raster(
-    band: Band<'_>,
+    mut band: Band<'_>,
     triangle: &Prepared,
     style: Style,
     material: super::shader::Bindings<'_>,
@@ -1153,13 +1168,7 @@ fn raster(
                         },
                     )
                 };
-                let base = band.pixels[index];
-                band.pixels[index] = std::array::from_fn(|i| base[i] * (1.0 - color[3]) + color[i]);
-                // Additive light has zero blend alpha. Give exported artwork
-                // enough coverage to retain its emitted RGB on any background.
-                let alpha =
-                    color[3].max(color[..3].iter().copied().fold(0.0f32, f32::max).min(1.0));
-                band.coverage[index] = band.coverage[index] * (1.0 - alpha) + alpha;
+                band.composite(index, color, effect.1.modulates());
                 continue;
             }
             if let Some(particle) = particle_material {

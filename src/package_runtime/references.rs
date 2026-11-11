@@ -333,6 +333,14 @@ fn component_definition(data: &[u8]) -> Result<Option<(usize, u32)>, String> {
     let instance = relative_offset(16, 0, instance_relative)?;
     let schema = relative_offset(24, 0, schema_relative)?;
     bytes_at::<16>(data, instance)?;
+    let schema_marker = schema
+        .checked_sub(4)
+        .ok_or("Component schema has no class header")?;
+    // Some owners keep an ordinary mutable view here. A reciprocal instance
+    // prefix identifies its definition class before its owner-relative offset.
+    if u32_at(data, instance + 4)? != u32_at(data, schema_marker)? {
+        return Ok(None);
+    }
     let definition = usize::try_from(u64_at(data, instance + 8)?)
         .map_err(|_| "Component definition offset is too large")?;
     if definition == schema {

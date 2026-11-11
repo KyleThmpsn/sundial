@@ -6,8 +6,8 @@ use parhelion::{
     build_and_stage_snapshot_with_progress,
 };
 use parhelion_import::{
-    d2_mot::{payload::Payload, reader::Reader, service},
-    tiger::dye,
+    d2_mot::service,
+    tiger::{dye, payload::Payload, reader::Reader},
 };
 use serde_json::{Value, json};
 use std::{
@@ -28,12 +28,12 @@ fn source_shader_survives_import_and_native_package_staging()
     };
     let modern = configured("PARHELION_IMPORT_MODERN_PACKAGES")?;
     let native = configured("SUNDIAL_STOCK_PACKAGES")?;
-    let output = parhelion_import::d2_mot::reader::outside(
+    let output = parhelion_import::tiger::reader::outside(
         &configured("PARHELION_SHADER_OUTPUT")?,
         modern.parent().ok_or("Modern root")?,
     )?;
     let output =
-        parhelion_import::d2_mot::reader::outside(&output, native.parent().ok_or("Native root")?)?;
+        parhelion_import::tiger::reader::outside(&output, native.parent().ok_or("Native root")?)?;
     fs::create_dir_all(&output)?;
     let hashes = if let Some(path) = env::var_os("PARHELION_SHADER_MATRIX") {
         let matrix: Value = serde_json::from_slice(&fs::read(path)?)?;
@@ -114,9 +114,9 @@ fn verify_shader(hash: u32, matrix: bool) -> Result<(), Box<dyn std::error::Erro
         output
     };
     let output =
-        parhelion_import::d2_mot::reader::outside(&output, modern.parent().ok_or("Modern root")?)?;
+        parhelion_import::tiger::reader::outside(&output, modern.parent().ok_or("Modern root")?)?;
     let output =
-        parhelion_import::d2_mot::reader::outside(&output, native.parent().ok_or("Native root")?)?;
+        parhelion_import::tiger::reader::outside(&output, native.parent().ok_or("Native root")?)?;
     fs::create_dir_all(&output)?;
     let catalog = InvestmentCatalog::load_with_cache_path(
         native.parent().ok_or("Native root")?,

@@ -12,78 +12,271 @@ pub(super) struct Equipment {
 pub(super) enum Retained {
     /// No earlier draw of the component and stage wrote a dye, so the zeroed allocation remains.
     Zeroed,
-    /// Every earlier write stored this local slot's dye and color lane.
+    /// In every replay that draws it, the last write before it stored this local slot's dye and
+    /// color lane.
     Dye { slot: u8, secondary: bool },
-    /// Earlier writes differ, or none of them passes the same draw filters as this draw.
+    /// The replays that draw it disagree, or a record's detail category is outside the table.
     Unresolved,
 }
 
+/// What the gear-dye extern holds at each unset-slot draw of a source model.
+pub(super) struct RetainedDraws {
+    /// By mesh ordinal and draw index.
+    states: BTreeMap<(usize, usize), Retained>,
+    /// Stage, dye byte and material of draws that see different states.
+    split: BTreeSet<(usize, u8, u32)>,
+}
+
+impl RetainedDraws {
+    pub fn get(&self, mesh: usize, draw: usize) -> Retained {
+        self.states
+            .get(&(mesh, draw))
+            .copied()
+            .unwrap_or(Retained::Unresolved)
+    }
+
+    /// What keeps apart the materials of draws that share a material and dye byte but see
+    /// different states. Empty when every such draw sees the same one.
+    pub fn variant(&self, stage: usize, dye: u8, material: u32, state: Retained) -> String {
+        if !self.split.contains(&(stage, dye, material)) {
+            return String::new();
+        }
+        match state {
+            Retained::Zeroed => "-zeroed".to_owned(),
+            Retained::Dye { slot, secondary } => {
+                format!("-retained-{slot}-{}", u8::from(secondary))
+            }
+            Retained::Unresolved => "-unresolved".to_owned(),
+        }
+    }
+}
+
+/// How a source gear component's records reach its color passes. Every pass of one component and
+/// stage shares the gear-dye extern, which `00884FE0` finds through the draw context at `+20`.
+#[derive(Clone, Copy)]
+pub(super) enum Route {
+    /// Armor, the type-0 lane route `0086FF80`. Its first pass, through `00885610`, writes depth
+    /// and stencil without the dye writer. The color passes then draw records whose flags masked
+    /// by `0x90` are zero, then those for which it is `0x10`.
+    Lanes,
+    /// Weapon parts, the type-1 route `0087E6F0`. One pass draws records whose flags have bit
+    /// `0x100` clear, or bit `0x200` clear in view 8, which are two different views.
+    Parts,
+}
+
+impl Route {
+    /// The route's views, each its color passes in order as flag mask and value.
+    fn views(self) -> &'static [&'static [(u16, u16)]] {
+        match self {
+            Self::Lanes => &[&[(0x90, 0), (0x90, 0x10)]],
+            Self::Parts => &[&[(0x100, 0)], &[(0x200, 0)]],
+        }
+    }
+}
+
+/// Whether detail predicate `007F7E20` draws a record of `category` at normal-table row `row`, or
+/// `None` for a category outside its ten columns. The table at `0127B010` draws each category over
+/// one interval of the 17 rows. Mask mode, which view types 0, 1, 2 and 12 select, shifts the
+/// category's mask at `0127B168` by the row and reads the window from result table `0127B180`.
+/// A window wholly inside a mask gives `10` and draws the record fully, and every such state draws
+/// exactly the categories of one table row. Other nonzero results dither a record while one detail
+/// level fades into the next.
+fn drawn(row: u32, category: i8) -> Option<bool> {
+    const INTERVALS: [(u32, u32); 10] = [
+        (0, 1),
+        (0, 5),
+        (0, 10),
+        (0, 14),
+        (2, 5),
+        (2, 10),
+        (2, 14),
+        (6, 10),
+        (6, 14),
+        (11, 14),
+    ];
+    let (first, last) = *INTERVALS.get(usize::try_from(category).ok()?)?;
+    Some((first..=last).contains(&row))
+}
+
+/// One record of a stage as `007F7EA0` visits it: the detail category comes from the head of its
+/// run, `+1F`, whose length is at `+20`.
+struct Record {
+    mesh: usize,
+    index: usize,
+    flags: u16,
+    category: i8,
+    byte: u8,
+    material: u32,
+}
+
+/// What the extern holds between records.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Zeroed,
+    Dye(u8, bool),
+    /// A write whose category is outside the table may or may not have run.
+    Unknown,
+}
+
 impl Equipment {
-    /// What the gear-dye extern holds for each unset-slot draw of a source model, by stage, dye
-    /// byte and material. Source `00862CB2` allocates the extern zeroed for each art component and
-    /// stage, and `007F8010` draws the component's meshes in order. `00884FE0` rewrites it when the
-    /// dye byte changes: channels 0 to 2 copy their own local slot, channel 4 copies slot 0, and an
-    /// unset slot writes only specular and normal W. `007F7EA0` draws a part only if its group
-    /// (`+1F`) and flags (`+1C`) pass the view's filters, so an earlier write certainly precedes a
-    /// draw only when it shares both. Per-part visibility bits (`+1A`) are taken as set, as in the
-    /// default appearance.
+    /// What the gear-dye extern holds for each unset-slot draw of a source model. Source
+    /// `00862CB2` allocates the extern zeroed for each art component and stage, and `007F8010`
+    /// draws the component's meshes in order in each pass of its route. `00884FE0` rewrites the
+    /// extern when the dye byte changes: channels 0 to 2 copy their own local slot, channel 4 copies
+    /// slot 0, and an unset slot writes only specular and normal W. A record is drawn when its run's
+    /// detail category passes the predicate and its flags (`+1C`) pass the pass's filter.
+    ///
+    /// Each detail row the table distinguishes and each view of the route is replayed, and a draw
+    /// takes the state every replay that draws it agrees on. The rows are the states in which no
+    /// record is dithered. While one detail level fades into the next, mask mode can draw records
+    /// of both levels, and an unset-slot draw there can follow a write the steady rows never put
+    /// before it. Per-part visibility bits (`+1A`) are taken as set, as in the default appearance.
     pub fn retained(
         &self,
         source: &Payload,
         meshes: &[usize],
-    ) -> Result<BTreeMap<(usize, u8, u32), Retained>> {
-        let mut result = BTreeMap::new();
+        route: Route,
+    ) -> Result<RetainedDraws> {
+        let mut states = BTreeMap::<(usize, usize), Retained>::new();
+        let mut keys = BTreeMap::new();
         for stage in 0..19 {
-            let mut writes = Vec::new();
-            for &mesh in meshes {
-                let parts = source.array(mesh + 0x48, 36, Some(0x80801AEF))?;
-                let range = usize::from(source.u16(mesh + 0x58 + stage * 2)?)
-                    ..usize::from(source.u16(mesh + 0x5A + stage * 2)?);
-                for &part in parts
-                    .get(range)
-                    .context("Source stage exceeds its draw records")?
-                {
-                    let byte = source.u8(part + 0x1E)?;
-                    let channel = byte >> 1;
-                    let filter = (source.u16(part + 0x1C)?, source.u8(part + 0x1F)?);
-                    let write = match channel {
-                        0..=2 => Some(channel),
-                        4 => Some(0),
-                        _ => None,
-                    }
-                    .filter(|slot| self.dyes.contains_key(slot));
-                    if let Some(slot) = write {
-                        // Channel 4 stores the primary color at +40.
-                        writes.push((filter, (slot, channel != 4 && byte & 1 != 0)));
-                        continue;
-                    }
-                    if self.dyes.contains_key(&channel) {
-                        continue;
-                    }
-                    let state = match writes.first() {
-                        // Other channels do not share this extern's absent-slot path.
-                        _ if channel > 2 && !self.dyes.is_empty() => Retained::Unresolved,
-                        _ if channel > 2 => Retained::Zeroed,
-                        None => Retained::Zeroed,
-                        Some(&(_, (slot, secondary)))
-                            if writes.iter().all(|w| w.1 == (slot, secondary))
-                                && writes.iter().any(|w| w.0 == filter) =>
-                        {
-                            Retained::Dye { slot, secondary }
+            let records = stage_records(source, meshes, stage)?;
+            for passes in route.views() {
+                for row in 0..17 {
+                    let mut held = Held::Zeroed;
+                    for &(mask, value) in *passes {
+                        for record in &records {
+                            let drawn = drawn(row, record.category);
+                            if drawn == Some(false) || record.flags & mask != value {
+                                continue;
+                            }
+                            let Some(state) = self.unset_draw(record, drawn, &mut held) else {
+                                continue;
+                            };
+                            let entry = states.entry((record.mesh, record.index)).or_insert(state);
+                            if *entry != state {
+                                *entry = Retained::Unresolved;
+                            }
+                            keys.insert(
+                                (record.mesh, record.index),
+                                (stage, record.byte, record.material),
+                            );
                         }
-                        Some(_) => Retained::Unresolved,
-                    };
-                    let entry = result
-                        .entry((stage, byte, source.u32(part)?))
-                        .or_insert(state);
-                    if *entry != state {
-                        *entry = Retained::Unresolved;
                     }
                 }
             }
         }
-        Ok(result)
+        let mut seen = BTreeMap::new();
+        let mut split = BTreeSet::new();
+        for (draw, key) in keys {
+            let state = states[&draw];
+            if *seen.entry(key).or_insert(state) != state {
+                split.insert(key);
+            }
+        }
+        Ok(RetainedDraws { states, split })
     }
+
+    /// The dye a draw reads and its color lane: its own local slot's when set, or the one an
+    /// earlier draw left in the extern.
+    fn dye_source(&self, dye: u8, retained: Retained) -> (Option<u32>, bool) {
+        match (self.dyes.get(&(dye / 2)).copied(), retained) {
+            (Some(tag), _) => (Some(tag), !dye.is_multiple_of(2)),
+            (None, Retained::Dye { slot, secondary }) => (self.dyes.get(&slot).copied(), secondary),
+            (None, _) => (None, false),
+        }
+    }
+
+    /// The extern state an unset-slot draw sees, or `None` when the record writes the extern
+    /// or reads a set slot. A write updates `held`, and a write whose detail row fades leaves
+    /// it unknown.
+    fn unset_draw(
+        &self,
+        record: &Record,
+        drawn: Option<bool>,
+        held: &mut Held,
+    ) -> Option<Retained> {
+        let channel = record.byte >> 1;
+        let write = match channel {
+            0..=2 => Some(channel),
+            4 => Some(0),
+            _ => None,
+        }
+        .filter(|slot| self.dyes.contains_key(slot));
+        if let Some(slot) = write {
+            // Channel 4 stores the primary color at +40.
+            *held = if drawn.is_some() {
+                Held::Dye(slot, channel != 4 && record.byte & 1 != 0)
+            } else {
+                Held::Unknown
+            };
+            return None;
+        }
+        if self.dyes.contains_key(&channel) {
+            return None;
+        }
+        Some(match *held {
+            // Other channels do not share this extern's absent-slot path.
+            _ if channel > 2 && !self.dyes.is_empty() => Retained::Unresolved,
+            _ if channel > 2 => Retained::Zeroed,
+            _ if drawn.is_none() => Retained::Unresolved,
+            Held::Zeroed => Retained::Zeroed,
+            Held::Dye(slot, secondary) => Retained::Dye { slot, secondary },
+            Held::Unknown => Retained::Unresolved,
+        })
+    }
+}
+
+/// The gear-dye extern fields a draw's expression reads.
+fn dye_input(
+    selected: bool,
+    retained: Retained,
+    data: Option<&Payload>,
+    secondary: bool,
+) -> expression::Dye<'_> {
+    match (selected, retained, data) {
+        (true, _, Some(dye)) => expression::Dye::Selected { dye, secondary },
+        (false, Retained::Zeroed | Retained::Dye { .. }, data) => {
+            expression::Dye::Unset(data.map(|dye| (dye, secondary)))
+        }
+        _ => expression::Dye::Unresolved,
+    }
+}
+
+/// Every draw record of one stage across the source meshes, in draw order. Each mesh's stage
+/// range at `+58`/`+5A` holds runs whose first record gives the run length (`+20`) and the
+/// detail category (`+1F`) the whole run shares.
+fn stage_records(source: &Payload, meshes: &[usize], stage: usize) -> Result<Vec<Record>> {
+    let mut records = Vec::new();
+    for (mesh, &at) in meshes.iter().enumerate() {
+        let parts = source.array(at + 0x48, 36, Some(0x80801AEF))?;
+        let end = usize::from(source.u16(at + 0x5A + stage * 2)?);
+        let mut head = usize::from(source.u16(at + 0x58 + stage * 2)?);
+        ensure!(
+            head <= end && end <= parts.len(),
+            "Source stage exceeds its draw records"
+        );
+        while head < end {
+            let run = usize::from(source.u8(parts[head] + 0x20)?);
+            ensure!(
+                run > 0 && head + run <= end,
+                "Source draw run leaves its stage"
+            );
+            let category = i8::from_ne_bytes([source.u8(parts[head] + 0x1F)?]);
+            for (index, &part) in parts.iter().enumerate().skip(head).take(run) {
+                records.push(Record {
+                    mesh,
+                    index,
+                    flags: source.u16(part + 0x1C)?,
+                    category,
+                    byte: source.u8(part + 0x1E)?,
+                    material: source.u32(part)?,
+                });
+            }
+            head += run;
+        }
+    }
+    Ok(records)
 }
 
 pub(super) struct Draw {
@@ -262,23 +455,11 @@ impl Assembly<'_> {
         let source = self.source.read(tag)?;
         // The palette holds one dye per local slot. A draw through an unset slot reads what an
         // earlier draw of its component and stage left in the gear-dye extern.
-        let selected = equipment.dyes.get(&(dye / 2)).copied();
-        let (dye_tag, secondary) = match (selected, retained) {
-            (Some(tag), _) => (Some(tag), dye % 2 != 0),
-            (None, Retained::Dye { slot, secondary }) => {
-                (equipment.dyes.get(&slot).copied(), secondary)
-            }
-            (None, _) => (None, false),
-        };
+        let selected = equipment.dyes.contains_key(&(dye / 2));
+        let (dye_tag, secondary) = equipment.dye_source(dye, retained);
         let dye_data = dye_tag.map(|tag| self.source.read(tag)).transpose()?;
         let detail = self.detail_textures(dye_data.as_ref())?;
-        let dye_input = match (selected, retained, dye_data.as_ref()) {
-            (Some(_), _, Some(dye)) => expression::Dye::Selected { dye, secondary },
-            (None, Retained::Zeroed | Retained::Dye { .. }, data) => {
-                expression::Dye::Unset(data.map(|dye| (dye, secondary)))
-            }
-            _ => expression::Dye::Unresolved,
-        };
+        let dye_input = dye_input(selected, retained, dye_data.as_ref(), secondary);
         let mut out = vec![0; 0x408];
         put(&mut out, 8, &source.bytes::<32>(8)?)?;
         // Platform pipeline cache bits are not authored D3D state selectors.
@@ -359,6 +540,7 @@ impl Assembly<'_> {
                     layout,
                     depth: depth.filter(|_| index == 4),
                     reticle_mask: program.reticle_mask.filter(|_| index == 4),
+                    bloom_limit: pass == 7 && index == 4,
                 },
             )?;
             patches.push((to, shader));
@@ -398,7 +580,10 @@ impl Assembly<'_> {
                 to + 0x80,
                 &(if values.is_empty() { u32::MAX } else { 0 }).to_le_bytes(),
             )?;
-            evidence.push(json!({"stage":stage,"object_inputs":objects,"defaulted_source_globals":program.defaulted_globals}));
+            if !program.defaulted_frame.is_empty() {
+                self.approximations.insert("Source frame wind and displacement inputs take the values of a frame without wind, so wind does not move the parts that read them.".to_owned());
+            }
+            evidence.push(json!({"stage":stage,"object_inputs":objects,"defaulted_source_globals":program.defaulted_globals,"defaulted_frame_fields":program.defaulted_frame}));
         }
         put(&mut out, 0x368, &u32::MAX.to_le_bytes())?;
         put(&mut out, 0x3E8, &u32::MAX.to_le_bytes())?;

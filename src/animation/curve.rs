@@ -1,6 +1,10 @@
 //! Signed-short curve tracks with byte time deltas and two four-bit tangents per component.
-//! The axis/angle quaternion and Hermite tangent math follows TagTool's CurveCodec:
+//! The Hermite tangent math follows TagTool's CurveCodec:
 //! <https://github.com/TheGuardians/TagTool/blob/ce2dc6ac13072b160752af618ea1dc143e2727ac/TagTool/Animations/Codecs/CurveCodec.cs>
+//! A rotation key stores the quaternion's `w`, `x` and `y`. `z` is derived from the unit norm, and
+//! the stored `x` sample's low bit marks it negative. TagTool's axis/angle reading of the same three
+//! samples does not return the binds that stock weapon clips rest at, such as a machine gun's feed
+//! cover, while this reading does and matches the same motion stored in quantized codec 2.
 //! The package tables and bone maps are Shadowkeep-specific and checked independently.
 use crate::package_payload::{bytes_at, native_array_at, rows_fit, u16_at, u32_at, u64_at};
 
@@ -94,14 +98,14 @@ impl<'a> Values<'a> {
             *value = f32::from(self.get(at + axis)?) / 32767.0;
         }
         if matches!(channel, Channel::Rotation) {
-            let [i, j, encoded, _] = point;
-            if i * i + j * j > 1.001 || encoded.abs() > 1.001 {
+            let [w, x, y, _] = point;
+            let stored = w * w + x * x + y * y;
+            if stored > 1.001 {
                 return Err("Animation curve contains an invalid packed rotation.".into());
             }
-            let z = (1.0 - i * i - j * j).max(0.0).sqrt() * if encoded < 0.0 { -1.0 } else { 1.0 };
-            let w = encoded.abs().min(1.0) * 2.0 - 1.0;
-            let radius = (1.0 - w * w).max(0.0).sqrt();
-            point = [i * radius, j * radius, z * radius, w];
+            let z = (1.0 - stored).max(0.0).sqrt();
+            let negative = self.get(at + 1)? & 1 == 1;
+            point = [x, y, if negative { -z } else { z }, w];
         }
         Ok(point)
     }

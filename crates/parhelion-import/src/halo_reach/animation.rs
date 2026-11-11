@@ -1,4 +1,5 @@
 //! Preserve resource members and decode source motion without inventing controller behavior.
+pub(super) mod aim;
 pub(super) mod character;
 mod codec;
 pub(super) mod first_person;
@@ -120,7 +121,7 @@ fn export_local(
         groups.push(json!({"index":index,"handle":handle,"members":members}));
     }
     Ok(
-        json!({"tag":tag,"skeleton":skeleton,"clips":node["data"]["clips"],"routes":route::read(cache, tag.address()?)?,"sounds":node["data"]["sounds"],"groups":groups,"native_playback":false}),
+        json!({"tag":tag,"skeleton":skeleton,"clips":node["data"]["clips"],"routes":route::read(cache, tag.address()?)?,"sounds":node["data"]["sounds"],"vehicle_suspension":node["data"]["vehicle_suspension"],"groups":groups,"native_playback":false}),
     )
 }
 

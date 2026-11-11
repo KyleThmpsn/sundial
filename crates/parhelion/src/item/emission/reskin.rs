@@ -196,22 +196,8 @@ fn private_parts(
     if keys.is_empty() {
         return Err(invalid("The appearance lists no gear-art assignments"));
     }
-    let table = match replacements
-        .iter()
-        .find(|replacement| replacement.tag == art::ASSIGNMENT_TABLE)
-    {
-        Some(replacement) => replacement.payload.clone(),
-        None => read(manager, art::ASSIGNMENT_TABLE.0)?,
-    };
-    let (count, _, map_rows, _) = array(&table, 8)?;
-    let map = (0..count)
-        .map(|i| {
-            Ok((
-                read_u32(&table, map_rows + i * 8)?,
-                read_u32(&table, map_rows + i * 8 + 4)?,
-            ))
-        })
-        .collect::<AuthoringResult<BTreeMap<u32, u32>>>()?;
+    let table = art::assignment_table(manager, replacements)?;
+    let map = art::assignments(&table)?;
     let mut nodes = Vec::new();
     let mut entries = Vec::new();
     let mut substitutions = BTreeMap::new();
@@ -244,34 +230,13 @@ fn private_parts(
         |_, _| Ok(()),
         None,
     )?;
-    let row_index = art::prepare_row_at(emission, item, donor_row)?;
-    let (_, _, rows, _) = array(&emission.item_metadata, 8)?;
-    art::rewrite(
-        &mut emission.item_metadata,
-        rows + row_index * 32,
-        rows + donor_row * 32,
-        |singles, slots| {
-            for key in singles
-                .iter_mut()
-                .chain(slots.iter_mut().flat_map(|(_, keys)| keys))
-            {
-                if let Some(private) = substitutions.get(key) {
-                    *key = *private;
-                }
-            }
-            Ok(())
-        },
+    art::substitute_row(
+        emission,
+        (item, ordinal),
+        donor_row,
+        &art_rows,
+        &substitutions,
     )?;
-    let arrangement =
-        u16::try_from(row_index).map_err(|_| invalid("Gear-art row index overflow"))?;
-    let updated = art_rows
-        .iter()
-        .map(|row| WeaponArtArrangementOverride {
-            character_class: row.character_class,
-            arrangement,
-        })
-        .collect::<Vec<_>>();
-    set_weapon_art_arrangements(&mut emission.host_new_tags[ordinal].payload, &updated)?;
     let entries = entries
         .iter()
         .map(|(key, symbol)| {
@@ -284,10 +249,7 @@ fn private_parts(
             ))
         })
         .collect::<AuthoringResult<Vec<_>>>()?;
-    let replacement = art::insert_assignments(&table, &entries)?;
-    replacements.retain(|existing| existing.tag != art::ASSIGNMENT_TABLE);
-    replacements.push(replacement);
-    Ok(())
+    art::replace_assignments(replacements, &table, &entries)
 }
 
 /// Private copies of one gear part: the entity and the relation that the assignment map names,

@@ -62,7 +62,7 @@ pub(crate) fn type_keys(manager: &PackageManager, entity: &[u8]) -> AuthoringRes
     crate::hud_icon::runtime::field_values(manager, entity, TYPE_FIELD)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Row {
     pub hash: u32,
     pub bucket: u32,

@@ -1,4 +1,4 @@
-//! Filesystem lifecycle beside packages emitted by SunriseStudio 007dd7a6.
+//! Filesystem lifecycle beside packages emitted by SunriseStudio 007dd7a6 and 3a0e6f7.
 //! Failure inventory recorded before the implementation:
 //! - Different entries in one package are incorrectly treated as a conflict.
 //! - Shared entries replace complete tables or disable Studio's row merge.
@@ -30,8 +30,14 @@
 //! - Readers show one mod's version of an entry Sunrise merges, or keep it after removal.
 //! - Removal leaves merge data behind or changes the other mod's files.
 //!
+//! Failure inventory for mods Studio 3a0e6f7 writes:
+//! - A version 4 manifest, or its list of the mod's own packages, leaves the whole mod out.
+//! - Version 3 merge data is ignored, so readers stop following Sunrise's merge for the mod.
+//! - Its reference map is changed or removed with Parhelion's files.
+//!
 //! The checked-in synthetic binaries are an independent format oracle. Their upstream revision,
-//! generation recipe and hashes are in fixtures/studio/provenance.json. No game data is used.
+//! generation recipe and hashes are in fixtures/studio/provenance.json and
+//! fixtures/studio/3a0e6f7/provenance.json. No game data is used.
 use super::*;
 
 const STOCK: &str = "w64_investment_globals_client_058c_3.pkg";
@@ -39,7 +45,30 @@ const PATCH: &str = "w64_investment_globals_client_058c_4.pkg";
 const SIDECAR: &str = "w64_investment_globals_client_058c_4.merge";
 const FOREIGN: &str = "dev.studio.fixture";
 
+/// Which Studio build wrote the other mod's manifest and merge data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Studio {
+    /// Version 2 merge data and manifest.
+    At007dd7a6,
+    /// Version 3 merge data beside every package, a version 4 manifest that lists the mod's own
+    /// package, and a reference map.
+    At3a0e6f7,
+}
+
+impl Studio {
+    fn revision(self) -> &'static str {
+        match self {
+            Self::At007dd7a6 => "007dd7a6f10164243369350e63c42168229c35ab",
+            Self::At3a0e6f7 => "3a0e6f7",
+        }
+    }
+}
+
 fn studio_fixture() -> Fixture {
+    studio_fixture_of(Studio::At007dd7a6)
+}
+
+fn studio_fixture_of(studio: Studio) -> Fixture {
     let mut fixture = fixture();
     fs::write(
         fixture.target.join(STOCK),
@@ -69,7 +98,7 @@ fn studio_fixture() -> Fixture {
         .staged_bytes
         .insert(PATCH.into(), authored.bytes().to_vec());
     write_manifest(&fixture);
-    write_studio(&fixture, false);
+    write_studio_of(&fixture, false, studio);
     fixture
 }
 
@@ -80,6 +109,14 @@ fn studio_directory(fixture: &Fixture) -> PathBuf {
 }
 
 fn write_studio(fixture: &Fixture, overlap: bool) {
+    write_studio_of(fixture, overlap, Studio::At007dd7a6);
+}
+
+fn write_studio_of(fixture: &Fixture, overlap: bool, studio: Studio) {
+    assert!(
+        !(overlap && studio == Studio::At3a0e6f7),
+        "the 3a0e6f7 fixture holds the disjoint patch's merge data only"
+    );
     let directory = studio_directory(fixture);
     for folder in ["packages", "patches", "scripts", "sdk"] {
         fs::create_dir_all(directory.join(folder)).unwrap();
@@ -118,13 +155,41 @@ fn write_studio(fixture: &Fixture, overlap: bool) {
         b"{\"owner\":\"studio\"}",
     )
     .unwrap();
+    if studio == Studio::At3a0e6f7 {
+        // The same package bytes, with the manifest and merge data 3a0e6f7 writes beside them.
+        fs::write(
+            directory.join("mod.json"),
+            include_bytes!("fixtures/studio/3a0e6f7/mod.json"),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("refmap.bin"),
+            include_bytes!("fixtures/studio/3a0e6f7/refmap.bin"),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("patches").join(SIDECAR),
+            include_bytes!("fixtures/studio/3a0e6f7/w64_investment_globals_client_058c_4.merge"),
+        )
+        .unwrap();
+        // 3a0e6f7 writes merge data beside every package it builds, so Sunrise reads all of it.
+        fs::write(
+            directory.join("packages/w64_sunrise_0aaa_0.merge"),
+            include_bytes!("fixtures/studio/3a0e6f7/w64_sunrise_0aaa_0.merge"),
+        )
+        .unwrap();
+    }
 }
 
 #[test]
 fn studio_disjoint_package_edits_survive_install_update_recovery_and_removal() {
     let mut evidence = Vec::new();
-    for schema in [8, 18] {
-        let mut fixture = studio_fixture();
+    for (studio, schema) in [
+        (Studio::At007dd7a6, 8),
+        (Studio::At007dd7a6, 18),
+        (Studio::At3a0e6f7, 18),
+    ] {
+        let mut fixture = studio_fixture_of(studio);
         let root = fixture.target.parent().unwrap().to_path_buf();
         let runtime = mod_content::runtime_directory(&root);
         let config = runtime.join("mod_config.json");
@@ -151,6 +216,17 @@ fn studio_disjoint_package_edits_survive_install_update_recovery_and_removal() {
         let standalone = reader.read_tag(tiger_pkg::TagHash::new(0x0aaa, 0)).unwrap();
         assert!(!standalone.is_empty());
         drop(reader);
+        // 007dd7a6's fixture has no merge data beside its new package, so Sunrise ignores all of
+        // it. 3a0e6f7's has it beside every package, so readers keep the mod and use every file.
+        let notices = mod_content::notices(&root)
+            .unwrap()
+            .expect("a reader has read the content");
+        if studio == Studio::At3a0e6f7 {
+            assert!(
+                notices.iter().all(|notice| !notice.contains(FOREIGN)),
+                "{notices:?}"
+            );
+        }
         let studio_patch = studio_directory(&fixture).join("patches").join(PATCH);
         let package = PackageD2PreBL::open(studio_patch.to_str().unwrap()).unwrap();
         assert_eq!(package.read_entry(1).unwrap(), b"Studio edit disjoint");
@@ -171,7 +247,8 @@ fn studio_disjoint_package_edits_survive_install_update_recovery_and_removal() {
         );
         assert_eq!(fs::read(cache).unwrap(), b"loader-owned cache");
         evidence.push(
-            json!({"schema":schema,"foreign_before_and_after":before,"stock":stock,
+            json!({"studio_revision":studio.revision(),"reader_notices":notices,
+            "schema":schema,"foreign_before_and_after":before,"stock":stock,
             "parhelion_readback":readback,"studio_entry_one":"Studio edit disjoint",
             "account_sha256":hex::encode(Sha256::digest(original_account)),
             "operations":["install","interrupted update","recovery","update","uninstall"]}),
@@ -180,8 +257,8 @@ fn studio_disjoint_package_edits_survive_install_update_recovery_and_removal() {
     crate::test_support::artifact(
         "sunrise-studio-coexistence.json",
         &json!({
-            "studio_revision":"007dd7a6f10164243369350e63c42168229c35ab",
             "fixture_provenance":serde_json::from_str::<serde_json::Value>(include_str!("fixtures/studio/provenance.json")).unwrap(),
+            "fixture_3a0e6f7_provenance":serde_json::from_str::<serde_json::Value>(include_str!("fixtures/studio/3a0e6f7/provenance.json")).unwrap(),
             "cases":evidence,"native_loader":"not executed","combined_gameplay":"not executed"
         }),
     );

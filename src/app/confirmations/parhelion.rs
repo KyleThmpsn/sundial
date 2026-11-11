@@ -19,7 +19,7 @@ impl SundialApp {
     }
 
     pub(in crate::app) fn draw_parhelion_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation != Some(ConfirmationDialog::OpenParhelion) {
+        if !matches!(self.confirmation, Some(ConfirmationDialog::OpenParhelion)) {
             return;
         }
         let Some(accepted) = introduction(ctx) else {

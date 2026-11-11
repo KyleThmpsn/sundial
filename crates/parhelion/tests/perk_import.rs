@@ -4,7 +4,10 @@
 use std::{env, fs, path::PathBuf};
 use sundial::package_authoring::sandbox_perk::action::native::NodeKind as NativeNodeKind;
 
-use parhelion_import::d2_mot::{gameplay::perks, payload::Payload, reader::Reader};
+use parhelion_import::{
+    d2_mot::gameplay::perks,
+    tiger::{payload::Payload, reader::Reader},
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sundial::package_authoring::{

@@ -25,7 +25,7 @@ impl Workbench {
                 .socket_plug_variants
                 .first()
                 .map_or_else(PerkRecipe::new, |variant| {
-                    templates::from_variant(variant, catalog)
+                    crate::perk::PerkRecipe::from_variant(variant, catalog)
                 });
             let mut document = Document::new(perk, None);
             document.mod_item = Some(recipe.namespace.clone());

@@ -22,7 +22,7 @@ use std::{
     path::Path,
 };
 
-mod audio;
+pub(crate) mod audio;
 pub mod closure;
 mod gameplay;
 mod graph;
@@ -104,7 +104,7 @@ fn put(p: &mut Payload, at: usize, value: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn event_resources(
+pub(crate) fn event_resources(
     source: &Reader,
     owner: &Payload,
     systems: &mut BTreeSet<u32>,
@@ -311,11 +311,12 @@ pub fn convert(source: &mut Reader, native: &mut Reader, request: &Request<'_>) 
                     0.0,
                     sound,
                 )?;
-                differences.extend(report.into_iter().filter(|row| {
-                    sounds.is_empty()
-                        || row["difference"]
-                            != "Projectile audio uses the native compatibility cue."
-                }));
+                // The source's own audio replaces the native cue on its sound events.
+                differences.extend(
+                    report.into_iter().filter(|row| {
+                        sounds.is_empty() || row["kind"] != compatibility::SOUND_EVENT
+                    }),
+                );
                 for event in original.array(original.pointer(24)? + 0x1D8, 24, Some(0x808091F1))? {
                     let at = original.pointer(event + 16)?;
                     if original.u32(at - 4)? == 0x80806640

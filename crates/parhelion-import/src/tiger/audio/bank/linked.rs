@@ -16,6 +16,44 @@ type Definitions<'a> = (BTreeMap<u32, Definition<'a>>, BTreeMap<u32, u32>);
 /// its own, its layer controllers.
 const LAYER_CONTAINER: u8 = 9;
 
+/// The Wwise 113 hierarchy type of an actor-mixer, whose body ends with its child list.
+const ACTOR_MIXER: u8 = 7;
+
+/// Where an actor-mixer's trailing child list starts: a UInt32 count followed by that many
+/// relocated object identities.
+fn children(definition: &Definition<'_>) -> Option<usize> {
+    let body = definition.body;
+    (0..=body.len().saturating_sub(4) / 4).find_map(|count| {
+        let start = body.len().checked_sub(4 + 4 * count)?;
+        let stored = u32::from_le_bytes(body.get(start..start + 4)?.try_into().ok()?);
+        (stored as usize == count
+            && (0..count).all(|index| {
+                definition
+                    .references
+                    .iter()
+                    .any(|r| r.0 == start + 4 + 4 * index && matches!(r.1, Kind::Object))
+            }))
+        .then_some(start)
+    })
+}
+
+/// Bank generation writes a shared actor-mixer into every bank that holds one of its children,
+/// listing only that bank's children. Copies that agree apart from that list are one object.
+fn same_parent(a: &Definition<'_>, b: &Definition<'_>) -> bool {
+    if a.kind != ACTOR_MIXER || b.kind != ACTOR_MIXER {
+        return false;
+    }
+    let (Some(x), Some(y)) = (children(a), children(b)) else {
+        return false;
+    };
+    x == y
+        && a.body[..x] == b.body[..y]
+        && a.references
+            .iter()
+            .filter(|r| r.0 < x)
+            .eq(b.references.iter().filter(|r| r.0 < y))
+}
+
 /// Banks have already been normalized to Wwise 113. Compare object-local bytes
 /// and typed relocations, excluding unrelated bank headers and physical offsets.
 fn definitions(bank: &Bank) -> Result<Definitions<'_>> {
@@ -127,6 +165,10 @@ fn definitions(bank: &Bank) -> Result<Definitions<'_>> {
 pub struct Namespace {
     objects: BTreeMap<u32, u32>,
     banks: BTreeMap<u32, u32>,
+    /// Elements that stop, pause and resume actions name and no bank of the closure defines,
+    /// with the private identities their definitions would have had.
+    #[serde(default)]
+    absent: BTreeMap<u32, u32>,
 }
 
 impl Namespace {
@@ -146,7 +188,7 @@ impl Namespace {
             for (id, definition) in objects {
                 if let Some((owner, existing)) = shared.get(&id) {
                     ensure!(
-                        *existing == definition,
+                        *existing == definition || same_parent(existing, &definition),
                         "conflicting linked audio object {id:08X} in banks {owner:08X} and {:08X}",
                         bank.bank_id
                     );
@@ -188,9 +230,18 @@ impl Namespace {
             .map(|reference| reference.value)
             .collect::<BTreeSet<_>>();
         unique.insert(0);
+        let absent = banks
+            .iter()
+            .flat_map(|bank| &bank.refs)
+            .filter(|reference| {
+                matches!(reference.kind, Kind::Stopped) && !owned.contains(&reference.value)
+            })
+            .map(|reference| reference.value)
+            .collect::<BTreeSet<_>>();
         let mut result = Self {
             objects: BTreeMap::new(),
             banks: BTreeMap::new(),
+            absent: BTreeMap::new(),
         };
         for id in owned {
             let private = hash(&format!("{name}/object/{id:08x}"));
@@ -199,6 +250,14 @@ impl Namespace {
                 "linked audio object identity collision"
             );
             result.objects.insert(id, private);
+        }
+        for id in absent {
+            let private = hash(&format!("{name}/object/{id:08x}"));
+            ensure!(
+                unique.insert(private),
+                "linked audio object identity collision"
+            );
+            result.absent.insert(id, private);
         }
         for bank in banks {
             ensure!(
@@ -258,6 +317,11 @@ impl Namespace {
                     .get(&reference.value)
                     .copied()
                     .unwrap_or(reference.value),
+                Kind::Stopped => *self
+                    .objects
+                    .get(&reference.value)
+                    .or_else(|| self.absent.get(&reference.value))
+                    .context("stopped audio element is outside the namespace")?,
                 Kind::Bank => self.bank(reference.value)?,
                 Kind::Media => *media
                     .get(&reference.value)

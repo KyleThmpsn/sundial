@@ -12,6 +12,7 @@ use crate::d2_mot::payload::Payload;
 use anyhow::{Context, Result, ensure};
 pub(crate) use assembly::inputs as scalar_inputs;
 pub use assembly::{Bindings, Native, Resource, Selectors, emit};
+pub(crate) use expression::lower as lower_expression;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 

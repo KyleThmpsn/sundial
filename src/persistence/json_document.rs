@@ -3,7 +3,7 @@ pub(crate) mod encoding;
 use serde_json::Value;
 use std::{fs, io, path::Path};
 pub(crate) fn load_workspace_json(path: &Path) -> Result<Value, String> {
-    let raw = fs::read_to_string(path).map_err(|error| {
+    let raw = fs::read(path).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             format!(
                 "No Project Sunrise settings.json was found in the selected installation. Expected: {}. Choose your Sunrise install, the directory containing destiny2.exe, and confirm Project Sunrise is installed there",
@@ -13,9 +13,17 @@ pub(crate) fn load_workspace_json(path: &Path) -> Result<Value, String> {
             format!("Could not read {}: {error}", path.display())
         }
     })?;
+    parse_workspace_json(path, &raw)
+}
+
+/// Parses bytes already read from `path`, so a caller that validates a file and then writes those
+/// same bytes elsewhere never reads it twice. `path` only names the file in errors.
+pub(crate) fn parse_workspace_json(path: &Path, raw: &[u8]) -> Result<Value, String> {
+    let raw = std::str::from_utf8(raw)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     // Sunrise accepts a leading UTF-8 BOM because common Windows editors add one. Match the
     // loader before handing the document to serde_json, which otherwise treats it as a token.
-    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
     crate::strict_json::from_str(raw)
         .map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))
 }

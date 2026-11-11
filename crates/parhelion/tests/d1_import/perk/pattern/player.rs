@@ -205,8 +205,13 @@ pub(super) fn unit(reader: &Source, stock: &mut Reader, input: u16) -> CheckResu
                     .into_iter()
                     .filter(|&at| data.u32(at + 32).ok() == Some(u32::from(input)))
                     .collect::<Vec<_>>();
-                assert_eq!(rows.len(), 1);
-                let row = rows[0];
+                // Shadowkeep stores each input's tier row twice. Repeats must agree on the tier
+                // count and every field the scale reads, so the conversion stays unambiguous.
+                let row = *rows.first().ok_or("Player-stat input has no tier row")?;
+                for &other in &rows[1..] {
+                    assert_eq!(data.bytes::<8>(other + 16)?, data.bytes::<8>(row + 16)?);
+                    assert_eq!(data.bytes::<13>(other + 36)?, data.bytes::<13>(row + 36)?);
+                }
                 let tiers = data.u64(row + 16)?;
                 assert_eq!(tiers, 17);
                 assert_eq!(i32::from_le_bytes(data.bytes::<4>(row + 36)?), -3);

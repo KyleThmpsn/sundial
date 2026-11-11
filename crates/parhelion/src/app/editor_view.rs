@@ -182,6 +182,19 @@ impl PackageAuthoringApp {
         }
         if let Some((_, error)) = &self.invalid_weapon_name {
             ui.colored_label(ui.visuals().error_fg_color, error);
+        } else if self.recipe_path.is_some()
+            && !self.recipe_requires_initial_save
+            && self.recipe.namespace != self.recipe_baseline.namespace
+        {
+            // The name sets the identity, so the saved item and this one are different items.
+            crate::app::style::warning(
+                ui,
+                &format!(
+                    "Renaming gives this {} a new identity. Installing it removes saved copies of {} from the account.",
+                    self.recipe.kind.noun(),
+                    self.recipe_baseline.name
+                ),
+            );
         }
     }
 
@@ -302,7 +315,7 @@ impl PackageAuthoringApp {
     }
 
     /// Slot, damage, ammo, rarity and power cap for a weapon.
-    fn draw_weapon_profile(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
+    pub(super) fn draw_weapon_profile(&mut self, ui: &mut egui::Ui, donor: Option<&WeaponDonor>) {
         ui.add_space(4.0);
         // A behavior copied from Hard Light or Borealis owns the damage type.
         let damage_locked = self
@@ -314,8 +327,16 @@ impl PackageAuthoringApp {
             .any(crate::weapon::behavior::source_switches_element);
         let variable_available =
             donor.is_some_and(|gameplay| variable_damage_supported(&gameplay.summary));
+        #[cfg(feature = "d2-model-importer")]
+        let variable_available =
+            variable_available && crate::recipe::damage::original(&self.recipe.overrides).is_none();
         let mut inventory_slot_changed = false;
         let mut damage_changed = false;
+        #[cfg(feature = "d2-model-importer")]
+        let previous_damage = (
+            self.recipe.overrides.modern_damage_type,
+            self.recipe.overrides.variable_damage.clone(),
+        );
         style::tiles(ui, |ui, width| {
             for field in 0..6 {
                 style::tile_column(ui, (width, ("weapon-field", field)), |column| match field {
@@ -343,6 +364,25 @@ impl PackageAuthoringApp {
                 });
             }
         });
+        #[cfg(feature = "d2-model-importer")]
+        {
+            let error_id = egui::Id::new(("damage-talent-error", &self.recipe.namespace));
+            if damage_changed {
+                match crate::recipe::damage::apply(&mut self.recipe) {
+                    Ok(()) => {
+                        ui.ctx().data_mut(|data| data.remove::<String>(error_id));
+                    }
+                    Err(error) => {
+                        self.recipe.overrides.modern_damage_type = previous_damage.0;
+                        self.recipe.overrides.variable_damage = previous_damage.1;
+                        ui.ctx().data_mut(|data| data.insert_temp(error_id, error));
+                    }
+                }
+            }
+            if let Some(error) = ui.ctx().data(|data| data.get_temp::<String>(error_id)) {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+        }
         draw_combat_profile_diagnostics(ui, &self.recipe.overrides, donor);
         if inventory_slot_changed && let Some(gameplay_donor) = donor {
             reconcile_presentation_donor(
@@ -1459,23 +1499,23 @@ fn package_identity_fields(
         IdentityField::new("Item Table Index", build.item_index.to_string()),
     ];
     if let Some(collection) = &build.collection {
-        fields.extend([
-            IdentityField::new(
-                "Collectible Table Index",
-                collection.collectible_index.to_string(),
-            ),
-            IdentityField::new(
-                "Unlock Definition Index",
-                collection.unlock_definition_index.to_string(),
-            ),
-            IdentityField::new(
-                "Unlock Flag",
-                format!(
-                    "Bank {} · Slot {}",
-                    collection.unlock_bank, collection.unlock_slot
+        fields.push(IdentityField::new(
+            "Collectible Table Index",
+            collection.collectible_index.to_string(),
+        ));
+        match collection.unlock {
+            Some(unlock) => fields.extend([
+                IdentityField::new(
+                    "Unlock Definition Index",
+                    unlock.definition_index.to_string(),
                 ),
-            ),
-        ]);
+                IdentityField::new(
+                    "Unlock Flag",
+                    format!("Bank {} · Slot {}", unlock.bank, unlock.slot),
+                ),
+            ]),
+            None => fields.push(IdentityField::new("Unlock Flag", "Always Acquired")),
+        }
     }
     fields
 }

@@ -93,6 +93,25 @@ impl Program {
     }
 }
 
+impl NativeAssetResourcePatch {
+    /// The stock modifier row this edit rewrites, read as its amount and operation.
+    #[must_use]
+    pub fn modifier(&self) -> Option<ModifierRow> {
+        modifier(self)
+    }
+
+    /// Writes the amount and operation of the modifier row this edit rewrites. The row's
+    /// selector and the stock instance it points back to stay as they are.
+    pub fn set_modifier(&mut self, operation: u8, amount: f32) -> Result<(), String> {
+        if modifier(self).is_none() || operation > 1 || !amount.is_finite() {
+            return Err("This edit does not rewrite one modifier row.".into());
+        }
+        self.bytes[0x28..0x2C].copy_from_slice(&amount.to_bits().to_le_bytes());
+        self.bytes[0x2C] = operation;
+        Ok(())
+    }
+}
+
 fn modifier(patch: &NativeAssetResourcePatch) -> Option<ModifierRow> {
     // A Property Modifiers settings row points back to its 3B05 instance. The resource
     // binding, complete row extents and matching instance prefixes distinguish this form.

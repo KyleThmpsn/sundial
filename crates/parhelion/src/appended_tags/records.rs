@@ -49,6 +49,14 @@ impl Drop for Checkpoint {
     }
 }
 
+pub(super) fn exposed_end(private: bool) -> Option<usize> {
+    POOLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)[usize::from(private)]
+    .as_ref()
+    .map(|pool| pool.exposed_end)
+}
+
 pub(super) fn clear() {
     *POOLS
         .lock()

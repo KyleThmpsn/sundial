@@ -31,8 +31,35 @@ use sundial::package_authoring::investment_schema::{
     OBJECTIVE_STRING_ROW_CLASS, OBJECTIVE_STRING_ROW_SIZE,
 };
 
+/// The collectible row naming `donor` on stock page `template`, which an added page's members
+/// copy. An importer's entries placed first take the rows of stock entries
+/// (`collection::front`), so when one holds the donor's place the row comes from the stock table
+/// `stock`.
+fn template_child(
+    nodes: &[u8],
+    stock: &[u8],
+    template: usize,
+    donor: usize,
+) -> AuthoringResult<[u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]> {
+    let row =
+        |table: &[u8]| -> AuthoringResult<Option<[u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]>> {
+            let (_, children) =
+                crate::progression::presentation::collectible_children(table, template)?;
+            Ok(children
+                .into_iter()
+                .find(|child| usize::from(u16::from_le_bytes([child[0], child[1]])) == donor))
+        };
+    match row(nodes)? {
+        Some(child) => Ok(child),
+        None => {
+            row(stock)?.ok_or_else(|| invalid("Collections page has no matching child template"))
+        }
+    }
+}
+
 pub(super) fn append(
     graph: &mut SunriseBadgeGraph,
+    stock_nodes: &[u8],
     plan: &placements::Plan,
     rows: &[ProjectAuthoredRow],
     weapons: &[WeaponCloneSpec],
@@ -125,24 +152,11 @@ pub(super) fn append(
             source + PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
         )?);
         let template_child = if page.children.is_empty() {
-            let (child_count, _, child_rows, child_class) =
-                array_at(&graph.nodes, source + PRESENTATION_NODE_COLLECTIBLES_OFFSET)?;
-            if child_class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS {
-                return Err(invalid("Collections child template has the wrong class"));
-            }
-            let child = (0..child_count)
-                .find(|i| {
-                    read_u16(
-                        &graph.nodes,
-                        child_rows + i * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
-                    )
-                    .ok()
-                        == u16::try_from(page.donor).ok()
-                })
-                .ok_or_else(|| invalid("Collections page has no matching child template"))?;
-            Some(crate::tag_payload::read_array::<4>(
+            Some(template_child(
                 &graph.nodes,
-                child_rows + child * PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE,
+                stock_nodes,
+                usize::from(page.template),
+                page.donor,
             )?)
         } else {
             None
@@ -215,7 +229,11 @@ pub(super) fn append(
                 usize::from(page.parent),
                 usize::from(page.sibling),
                 count,
-                crate::collection::first(None),
+                crate::collection::leads(
+                    None,
+                    usize::from(page.parent),
+                    PRESENTATION_NODE_CHILD_NODES_OFFSET,
+                ),
             )?;
         } else {
             let descriptor = node_rows
@@ -259,7 +277,7 @@ pub(super) fn append(
                 &mut graph.node_strings,
                 rows + usize::from(page.index) * PRESENTATION_NODE_STRING_ROW_SIZE
                     + PRESENTATION_NODE_STRING_NAME_REFERENCE_OFFSET,
-                LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                crate::package_profile::localization_table() as u32,
                 hash,
             )?;
         }
@@ -269,22 +287,29 @@ pub(super) fn append(
 
 /// Adds each ornament set to its class's stock Universal Ornaments in set order. A set joins
 /// before the stock sets or after them, so leading sets go in last to first.
-fn attach_ornament_sets(
-    nodes: &mut Vec<u8>,
-    mut sets: Vec<(u16, u16, usize)>,
-) -> AuthoringResult<()> {
-    let first = crate::collection::first(None);
-    if first {
-        sets.reverse();
-    }
+fn attach_ornament_sets(nodes: &mut Vec<u8>, sets: Vec<(u16, u16, usize)>) -> AuthoringResult<()> {
+    let mut by_parent = BTreeMap::<u16, Vec<(u16, usize)>>::new();
     for (parent, sibling, index) in sets {
-        append_presentation_node_child(
-            nodes,
+        by_parent.entry(parent).or_default().push((sibling, index));
+    }
+    for (parent, mut sets) in by_parent {
+        let first = crate::collection::leads(
+            None,
             usize::from(parent),
-            usize::from(sibling),
-            index,
-            first,
-        )?;
+            PRESENTATION_NODE_CHILD_NODES_OFFSET,
+        );
+        if first {
+            sets.reverse();
+        }
+        for (sibling, index) in sets {
+            append_presentation_node_child(
+                nodes,
+                usize::from(parent),
+                usize::from(sibling),
+                index,
+                first,
+            )?;
+        }
     }
     Ok(())
 }
@@ -331,20 +356,21 @@ fn brand_page(
         row + PRESENTATION_NODE_STRING_ICON_OFFSET,
         badge_icon_index,
     )?;
+    let badge = crate::badge::Identity::current();
     for (offset, hash) in [
         (
             PRESENTATION_NODE_STRING_NAME_REFERENCE_OFFSET,
-            crate::badge::SUNRISE_BADGE_NAME_HASH,
+            badge.name_hash,
         ),
         (
             PRESENTATION_NODE_STRING_DESCRIPTION_REFERENCE_OFFSET,
-            crate::badge::SUNRISE_BADGE_DESCRIPTION_HASH,
+            badge.description_hash,
         ),
     ] {
         write_localized_reference(
             &mut graph.node_strings,
             row + offset,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
             hash,
         )?;
     }
@@ -410,7 +436,8 @@ fn append_objective(
     let source = rows + template * OBJECTIVE_ROW_SIZE;
     let hash = read_u32(&graph.objectives, source)?;
     let secondary = read_u64(&graph.objectives, source + 0x38)? != 0;
-    let fields = [0x08, 0x38, 0x48];
+    // Every array an objective row owns moves with the rows inserted before it.
+    let fields = [0x08, 0x18, 0x38, 0x48];
     graph.objectives = append_fixed_rows_without_donor_dependencies(
         std::mem::take(&mut graph.objectives),
         count,
@@ -429,8 +456,8 @@ fn append_objective(
         count,
         OBJECTIVE_STRING_ROW_SIZE,
         OBJECTIVE_STRING_ROW_CLASS,
-        &[],
-        &[],
+        &[0x30],
+        &[0x30],
         &[template],
         &[hash],
         &[objective_hash],

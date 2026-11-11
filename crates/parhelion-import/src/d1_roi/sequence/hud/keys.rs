@@ -3,6 +3,7 @@ use super::*;
 use crate::tiger::reader::Reader;
 
 /// Checked native name dictionary. No numeric source ordinal is treated as a native key.
+#[derive(Clone)]
 pub struct Keys {
     names: BTreeMap<u32, u16>,
 }

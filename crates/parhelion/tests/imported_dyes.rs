@@ -2,7 +2,7 @@
 #![cfg(feature = "d2-model-importer")]
 
 use parhelion::{BatchBuildRequest, BatchBuildSnapshot, ItemKind, WeaponRecipe};
-use parhelion_import::d2_mot::{payload::Payload, reader::Reader};
+use parhelion_import::tiger::{payload::Payload, reader::Reader};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, env, fs, path::PathBuf};
 

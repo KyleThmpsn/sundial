@@ -282,8 +282,7 @@ impl PackageAuthoringApp {
             recipe.namespace,
         ));
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
-        self.importer.import_started = Some(Instant::now());
+        self.importer.task = Some(Task::new(receiver, Work::Perk));
         self.importer.perks.notice.clear();
         let ctx = ctx.clone();
         thread::spawn(move || {

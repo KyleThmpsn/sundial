@@ -8,8 +8,8 @@
 //! Saved recipes are the library's, its activities, and the snapshots that recovery, builds and
 //! reinstalls read again: recipe backups, and the recipes of staged runs, kept installs and
 //! package backups. A sweep of every item first saves the library's embedded recipes again and
-//! removes the recipe backups past their retention (see `backups`), so the restored assets are
-//! named and the old backups no longer keep the conversions they name.
+//! removes each recipe's backed-up copies beyond the package backup retention (see `backups`), so
+//! the restored assets are named and the old copies no longer keep the conversions they name.
 //!
 //! A sweep reads the snapshots without the library's write lease, then takes it and reads again
 //! only the files that changed, so a long read never holds up a save. What each file names is kept
@@ -24,9 +24,12 @@
 //! The conversions that stay then share their large payloads through the models folder's store
 //! (`parhelion_import::store`), and a sweep of every item deletes stored files that no
 //! conversion links any more.
+//!
+//! Removal also merges the custom perk library's untouched imports that are one perk in
+//! different layouts (`perk::library::Library::merge_duplicate_imports`).
 use super::*;
 use parhelion_import::{
-    d2_mot::service::{IMPORTERS, IMPORTS},
+    d2_mot::service::{self, IMPORTERS, IMPORTS},
     store,
 };
 use std::{
@@ -41,7 +44,7 @@ mod embedded;
 
 /// The folder kinds the importers reserve in an item's model folder. Others, such as a folder
 /// named by hand, are never removed.
-const KINDS: [&str; 15] = [
+const KINDS: [&str; 16] = [
     "ability",
     "appearance",
     "armor",
@@ -49,6 +52,7 @@ const KINDS: [&str; 15] = [
     "d1-roi",
     "emblem",
     "gear",
+    "map",
     "marathon",
     "modern",
     "perk",
@@ -74,6 +78,13 @@ const LEGACY_FOLDERS: [&str; 8] = [
 ];
 /// Files the modern importer keeps in the item folder, which outlive any one graph.
 const ITEM_FILES: [&str; 2] = ["result.json", "timings.json"];
+/// The kinds whose newest finished conversion stays although no saved recipe names it, since the
+/// next import or stage of the item starts from it, each with the file a finished one holds: a
+/// modern source export, and a map's conversion, which a stage reads again.
+const FINISHED: [(&str, &str); 2] = [("source", "export.json"), ("map", "cache.json")];
+/// The kinds whose conversions a stage reads under a hold on the item's conversions
+/// (`service::Hold`). A sweep sets one aside only while it holds them itself.
+const HELD: [&str; 1] = ["map"];
 /// Data folders whose `recipes` folders hold snapshots.
 const SNAPSHOT_ROOTS: [&str; 3] = ["backups", "installed", "staging"];
 /// The deepest snapshot is a package backup's, `backups/packages/<backup>/recipes/<id>/`.
@@ -99,13 +110,16 @@ pub(crate) struct Removed {
     pub linked: usize,
     /// Library recipes saved naming their graphs moved into their places.
     pub arranged: usize,
-    /// Recipe backups past their retention, removed before the snapshots were read.
+    /// Backed-up recipe copies beyond each recipe's retention, removed before the snapshots
+    /// were read.
     pub backups: usize,
     /// The bytes freed, by removed conversions and by stored files no conversion links.
     pub bytes: u64,
     /// Payloads now linked to a stored copy, and the bytes they no longer hold.
     pub shared: usize,
     pub shared_bytes: u64,
+    /// Untouched perk imports removed because another one is the same perk.
+    pub perks: usize,
     pub errors: Vec<String>,
 }
 
@@ -142,6 +156,8 @@ pub(crate) enum Step {
     Sharing,
     /// Deleting stored files no conversion links.
     Collecting,
+    /// Merging untouched perk imports that are one perk in different layouts.
+    Perks,
 }
 
 /// A sweep's progress, shared with whoever shows it.
@@ -189,6 +205,8 @@ struct Sharing {
     store: PathBuf,
     /// The data folder's `cache`, which holds `UNLINKED` and `CHECKED`.
     cache: PathBuf,
+    /// The data folder's custom perk library.
+    perks: PathBuf,
     items: Vec<PathBuf>,
     /// A conversion made after the sweep began may still be in progress.
     began: SystemTime,
@@ -240,6 +258,17 @@ impl SetAside {
             status.update(|progress| progress.done += 1);
         }
         if let Some(sharing) = sharing {
+            // Each import's perks enter the library once per base layout, so the same perk can
+            // arrive from several weapons. Untouched copies merge here.
+            if sharing.perks.is_dir() {
+                status.start(Step::Perks, 0);
+                match crate::perk::library::Library::open(sharing.perks.clone())
+                    .and_then(|library| library.merge_duplicate_imports())
+                {
+                    Ok(merged) => removed.perks = merged,
+                    Err(error) => removed.errors.push(error),
+                }
+            }
             if unlinked {
                 mark(&sharing.cache.join(UNLINKED), &mut removed.errors);
                 let _ = fs::remove_file(sharing.cache.join(CHECKED));
@@ -443,26 +472,28 @@ impl Roots {
 impl RecipeLibrary {
     /// Sets aside the conversions that no saved recipe and none of `open`, recipe documents
     /// still being edited, names. It looks in `items`, item model folders, or in every item
-    /// folder when that is `None`. The newest finished modern source export stays, since the
-    /// next import of the item starts from it. Nothing is set aside when a saved recipe cannot
-    /// be read.
+    /// folder when that is `None`. The newest finished modern source export and map conversion
+    /// stay (`FINISHED`), since the next import or stage of the item starts from them. Nothing is
+    /// set aside when a saved recipe cannot be read.
     pub(crate) fn set_aside_unused_conversions(
         &self,
         items: Option<&BTreeSet<PathBuf>>,
         open: &[serde_json::Value],
     ) -> Result<SetAside, String> {
-        self.set_aside_with(items, open, Status::default(), || {})
+        self.set_aside_with(items, open, None, Status::default(), || {})
     }
 
     /// Sets aside as `set_aside_unused_conversions` does, reporting to `status` here and in
-    /// `SetAside::remove`.
+    /// `SetAside::remove`. A sweep of every item first keeps only the `backups` newest backed-up
+    /// copies of each recipe, the package backup retention, or every copy when that is `None`.
     pub(crate) fn set_aside_reporting(
         &self,
         items: Option<&BTreeSet<PathBuf>>,
         open: &[serde_json::Value],
+        backups: Option<usize>,
         status: Status,
     ) -> Result<SetAside, String> {
-        self.set_aside_with(items, open, status, || {})
+        self.set_aside_with(items, open, backups, status, || {})
     }
 
     /// `between` runs after the first read and before the write lease is taken.
@@ -470,6 +501,7 @@ impl RecipeLibrary {
         &self,
         items: Option<&BTreeSet<PathBuf>>,
         open: &[serde_json::Value],
+        keep_backups: Option<usize>,
         status: Status,
         between: impl FnOnce(),
     ) -> Result<SetAside, String> {
@@ -484,7 +516,7 @@ impl RecipeLibrary {
         let (linked, backups) = if items.is_none() {
             (
                 self.link_embedded_recipes(&status, &mut errors),
-                self.prune_recipe_backups(began, &mut errors),
+                self.prune_recipe_backups(keep_backups, &mut errors),
             )
         } else {
             (0, 0)
@@ -542,6 +574,7 @@ impl RecipeLibrary {
         aside.sharing = Some(Sharing {
             store: folders.imports,
             cache: folders.data.join("cache"),
+            perks: folders.data.join("perks"),
             items,
             began,
             every: leftovers,
@@ -798,26 +831,52 @@ fn set_aside(
                 path,
             });
         } else if let Some((kind, index)) = conversion(name) {
-            // A finished export, with when it finished. Freed indices are reserved again, so the
-            // highest index is not always the newest export.
-            let finished = (kind == "source")
-                .then(|| fs::metadata(path.join("export.json")).and_then(|m| m.modified()))
-                .and_then(Result::ok);
-            conversions.push((path, index, finished));
+            // A finished export or map conversion, with when it finished. Freed indices are
+            // reserved again, so the highest index is not always the newest.
+            let marker = FINISHED
+                .iter()
+                .find(|(finished, _)| *finished == kind)
+                .map(|(_, marker)| *marker);
+            let finished = marker.and_then(|marker| {
+                fs::metadata(path.join(marker))
+                    .and_then(|m| m.modified())
+                    .ok()
+            });
+            conversions.push((path, marker, index, finished));
         }
     }
-    let newest_export = conversions
-        .iter()
-        .filter_map(|(path, index, finished)| Some((finished.as_ref()?, *index, path)))
-        .max()
-        .map(|(_, _, path)| path.clone());
-    let unused: Vec<_> = conversions
-        .into_iter()
-        .map(|(path, _, _)| path)
-        .filter(|path| {
-            newest_export.as_ref() != Some(path) && !named.contains(&key(&path.to_string_lossy()))
-        })
+    let mut newest = BTreeMap::new();
+    for (path, marker, index, finished) in &conversions {
+        if let (Some(marker), Some(finished)) = (marker, finished) {
+            let candidate = (*finished, *index, path);
+            newest
+                .entry(*marker)
+                .and_modify(|best: &mut (SystemTime, u32, &PathBuf)| {
+                    if candidate > *best {
+                        *best = candidate;
+                    }
+                })
+                .or_insert(candidate);
+        }
+    }
+    let newest: BTreeSet<PathBuf> = newest
+        .into_values()
+        .map(|(_, _, path)| path.clone())
         .collect();
+    let mut unused: Vec<_> = conversions
+        .into_iter()
+        .map(|(path, ..)| path)
+        .filter(|path| !newest.contains(path) && !named.contains(&key(&path.to_string_lossy())))
+        .collect();
+    // Held through the moves below. A conversion being read stays until a later sweep.
+    let hold = unused
+        .iter()
+        .any(|path| held(path))
+        .then(|| service::hold_for_sweep(&item))
+        .flatten();
+    if hold.is_none() {
+        unused.retain(|path| !held(path));
+    }
     let legacy = if item.join("asset-graph.json").is_file()
         && !named.contains(&key(&item.to_string_lossy()))
     {
@@ -985,6 +1044,14 @@ fn item_name(folder: &Path) -> String {
     } else {
         parent
     }
+}
+
+/// Whether `path` is a conversion of a kind a stage reads under a hold (`HELD`).
+fn held(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(conversion)
+        .is_some_and(|(kind, _)| HELD.contains(&kind))
 }
 
 /// The index of a folder an importer reserved, such as `d1-roi-3`.

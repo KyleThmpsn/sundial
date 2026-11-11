@@ -733,7 +733,8 @@ impl<'a, 's> Engine<'a, 's> {
         self.write_pointer(at, FieldKind::OwnedArray, &pointer);
     }
 
-    /// Writes one pointer at `at`, then relocates the array it owns. `holder` owns the shapes.
+    /// Writes one pointer at `at`, then relocates the array or object it owns. `holder` owns the
+    /// shapes.
     fn emit(
         &mut self,
         at: usize,
@@ -745,10 +746,18 @@ impl<'a, 's> Engine<'a, 's> {
         if write {
             self.write_pointer(at, field.kind, pointer);
         }
-        if field.kind != FieldKind::OwnedArray || pointer.null {
+        if pointer.null {
             return Ok(());
         }
-        self.walk(pointer.source, holder, pointer.field, field.reference)
+        match field.kind {
+            FieldKind::RowPointer => Ok(()),
+            FieldKind::OwnedArray => {
+                self.walk(pointer.source, holder, pointer.field, field.reference)
+            }
+            FieldKind::ObjectPointer => {
+                self.walk_object(pointer.source, holder, pointer.raw, field.reference)
+            }
+        }
     }
 
     /// Writes one merged op: its descriptor, its rows and its key checks.
@@ -935,6 +944,35 @@ impl<'a, 's> Engine<'a, 's> {
                 let at = array.data + index * element.stride as usize + item.row_offset as usize;
                 self.relocate(source, holder, at, item)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Relocates the pointers in one object once, from a version 3 object shape. `holder` owns
+    /// the shapes.
+    fn walk_object(
+        &mut self,
+        source: usize,
+        holder: usize,
+        object: usize,
+        shape: u16,
+    ) -> Result<(), Status> {
+        if shape == NO_ELEMENT_SHAPE || !self.visited.insert((source, object)) {
+            return Ok(());
+        }
+        let layout = self.inputs[holder]
+            .sidecar
+            .and_then(|sidecar| sidecar.shape(u32::from(shape)))
+            .ok_or(Status::Format)?;
+        if !fits(
+            self.source_bytes(source),
+            object as u64,
+            u64::from(layout.stride),
+        ) {
+            return Err(Status::Format);
+        }
+        for item in &layout.fields {
+            self.relocate(source, holder, object + item.row_offset as usize, item)?;
         }
         Ok(())
     }

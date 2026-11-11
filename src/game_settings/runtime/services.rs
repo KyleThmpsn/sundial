@@ -56,6 +56,13 @@ pub(super) const FIELDS: &[Field] = &[
         help: "Minimum severity for this Sunrise channel.",
     },
     Field {
+        path: "/multiplayer_enabled",
+        label: "Allow Multiplayer",
+        group: "External Server",
+        kind: Kind::Bool(false),
+        help: "Lets Sunrise use an external server or listen beyond this computer. Without it, Sunrise refuses settings that turn either on.",
+    },
+    Field {
         path: "/client/external_server/enabled",
         label: "Use External Server",
         group: "External Server",
@@ -149,6 +156,7 @@ pub(super) const FIELDS: &[Field] = &[
 ];
 
 pub(super) fn validate(document: &Value, json_account: bool) -> Result<(), String> {
+    validate_multiplayer_opt_in(document)?;
     let topology = optional_value(document, "/server/gameplay/topology")?
         .and_then(Value::as_str)
         .unwrap_or("embedded");
@@ -174,6 +182,32 @@ pub(super) fn validate(document: &Value, json_account: bool) -> Result<(), Strin
     if json_account {
         super::entitlements::validate(document)?;
         super::character_page::validate(document)?;
+    }
+    Ok(())
+}
+
+/// Settings schema 19 refuses to load when an external server, a role or a listener beyond the
+/// loopback address is set without `multiplayer_enabled`, so Sunrise would not start with them.
+/// Only the keys Sundial edits, and the BAP listener beside them, are checked here.
+fn validate_multiplayer_opt_in(document: &Value) -> Result<(), String> {
+    if crate::game_settings::schema_version(document).is_none_or(|schema| schema < 19)
+        || optional_value(document, "/multiplayer_enabled")?.and_then(Value::as_bool) == Some(true)
+    {
+        return Ok(());
+    }
+    let external = optional_value(document, "/client/external_server/enabled")?
+        .and_then(Value::as_bool)
+        == Some(true);
+    let beyond_loopback = |path: &str| -> Result<bool, String> {
+        Ok(optional_value(document, path)?
+            .and_then(Value::as_str)
+            .is_some_and(|address| address != "127.0.0.1"))
+    };
+    if external
+        || beyond_loopback("/server/gameplay/bind_address")?
+        || beyond_loopback("/server/bap_bind")?
+    {
+        return Err("Turn on Allow Multiplayer to use an external server or a bind address other than 127.0.0.1. Sunrise refuses these settings without it".into());
     }
     Ok(())
 }

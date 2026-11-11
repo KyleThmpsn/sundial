@@ -80,9 +80,8 @@ fn movement_tags(survey: &Value) -> BTreeMap<String, String> {
     reason = "The opt-in corpus oracle keeps conversion, independent comparisons and artifact emission in one repeatable sweep"
 )]
 fn exact_pairs_convert_and_report_native_differences() {
-    let Some(corpus) = corpus() else {
-        return;
-    };
+    // Run explicitly, this oracle fails without its corpus rather than passing on nothing.
+    let corpus = corpus().expect("PARHELION_MOVEMENT_CORPUS names the exported projectile corpus");
     let pairs = read_json(corpus.join("field-map.json"));
     let modern = movement_tags(&read_json(corpus.join("modern/projectiles.json")));
     let native = movement_tags(&read_json(corpus.join("shadowkeep/projectiles.json")));
@@ -238,101 +237,4 @@ fn records_of(p: &Payload) -> Vec<(usize, u32)> {
         at += 8;
     }
     out
-}
-
-/// Rewrite one exported modern movement owner. Opt in with `PARHELION_MOVEMENT_SOURCE` (the
-/// modern owner), `PARHELION_MOVEMENT_TEMPLATE` (a native owner beside its allocation, named
-/// `<tag>-allocation.bin` or by `PARHELION_MOVEMENT_TEMPLATE_ALLOCATION`),
-/// `PARHELION_MOVEMENT_CORPUS` (the corpus directory with the resource maps) and
-/// `PARHELION_MOVEMENT_OUTPUT` (a directory).
-#[test]
-#[ignore = "needs the PARHELION_MOVEMENT_SOURCE family of paths"]
-fn rewrite_one_owner() {
-    let Some(source) = std::env::var_os("PARHELION_MOVEMENT_SOURCE") else {
-        return;
-    };
-    let template = PathBuf::from(std::env::var_os("PARHELION_MOVEMENT_TEMPLATE").unwrap());
-    let allocation = std::env::var_os("PARHELION_MOVEMENT_TEMPLATE_ALLOCATION")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            template.with_file_name(format!(
-                "{}-allocation.bin",
-                template.file_stem().unwrap().to_string_lossy()
-            ))
-        });
-    let resources = resources(&corpus().expect("PARHELION_MOVEMENT_CORPUS"));
-    let output = PathBuf::from(std::env::var_os("PARHELION_MOVEMENT_OUTPUT").unwrap());
-    fs::create_dir_all(&output).unwrap();
-    let source = Payload(fs::read(source).unwrap());
-    let template = Payload(fs::read(&template).unwrap());
-    let template_allocation = Payload(fs::read(allocation).unwrap());
-    let mut result = emit(
-        &source,
-        &template,
-        &template_allocation,
-        &resources,
-        0x81FE0100,
-        0x81FE0101,
-    )
-    .unwrap();
-    let mut unmapped = Vec::new();
-    if let Some(entity) = std::env::var_os("PARHELION_MOVEMENT_ENTITY") {
-        let mut metadata = BTreeMap::new();
-        for dialect in ["modern", "shadowkeep"] {
-            let directory = corpus().unwrap().join("interfaces").join(dialect);
-            for entry in fs::read_dir(directory).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().is_some_and(|ext| ext == "bin") {
-                    let tag = u32::from_str_radix(path.file_stem().unwrap().to_str().unwrap(), 16)
-                        .unwrap();
-                    metadata.insert(tag, Payload(fs::read(path).unwrap()));
-                }
-            }
-        }
-        let interfaces = result.interfaces(&source, &metadata).unwrap();
-        result.objects.extend(interfaces.objects);
-        unmapped = interfaces.unmapped;
-        let graph =
-            crate::d2_mot::entity::links::Graph::read(&Payload(fs::read(entity).unwrap()), true)
-                .unwrap();
-        let source_owner = source.u32(source.pointer(16).unwrap()).unwrap();
-        let mapped: BTreeMap<_, _> = result
-            .objects
-            .iter()
-            .map(|row| (row.source, row.target))
-            .collect();
-        assert_eq!(
-            mapped.len(),
-            result.objects.len(),
-            "ambiguous movement objects"
-        );
-        for object in graph
-            .objects()
-            .filter(|object| object.owner == source_owner)
-        {
-            assert!(
-                mapped.contains_key(&object),
-                "unmapped entity endpoint {object:?}"
-            );
-        }
-    }
-    fs::write(output.join("owner.bin"), &result.owner.0).unwrap();
-    fs::write(output.join("allocation.bin"), &result.allocation.0).unwrap();
-    let report = serde_json::json!({
-        "objects": result.objects,
-        "unmapped_interfaces": unmapped,
-        "siblings": result.siblings.iter().map(|(at, tag)| serde_json::json!({"offset": at, "tag": format!("{tag:08X}")})).collect::<Vec<_>>(),
-        "installable": false,
-        "gameplay_verified": false,
-    });
-    fs::write(
-        output.join("report.json"),
-        serde_json::to_vec_pretty(&report).unwrap(),
-    )
-    .unwrap();
-    println!(
-        "rewrote {} records into {} bytes",
-        result.objects.len(),
-        result.owner.0.len()
-    );
 }

@@ -389,7 +389,14 @@ impl Plan {
                     .count(),
         );
         budget.validate()?;
-        let mut next = crate::collection::BASE_NODE_COUNT + badges.len() * 4;
+        // Each custom badge and each importer's source badge takes four nodes before the pages,
+        // in the order the Collections build appends them.
+        let source_badges = weapons
+            .iter()
+            .filter_map(crate::badge::source_badge)
+            .collect::<BTreeSet<_>>();
+        let mut next =
+            crate::collection::BASE_NODE_COUNT + (badges.len() + source_badges.len()) * 4;
         let mut pages = BTreeMap::new();
         for destination in destinations {
             let template_destination = if destination.stock_exemplar().is_some() {

@@ -119,6 +119,9 @@ pub(in crate::model_preview) fn owners(
                 emitter_only,
                 &disabled,
             )?;
+            if cancel.stored_pose && pending.is_empty() {
+                break model;
+            }
             let resources = &resources[owner.resources.clone()];
             let _animation = timing::stage("animation");
             model.clips = animation::clips(manager, resources);
@@ -184,20 +187,22 @@ impl Owner {
                 component.map(Vec::as_slice),
                 &inputs,
                 &mut model,
-                !disabled.contains_key(&tag),
+                !cancel.stored_pose && !disabled.contains_key(&tag),
             );
             let result = match result {
                 Err(error) if cloth && !disabled.contains_key(&tag) => {
-                    model
-                        .notices
-                        .push(format!("Cloth: {error}. Showing stored geometry."));
+                    model.notices.push(if cancel.stored_pose {
+                        format!("Cloth: {error}. Initializing the native display geometry.")
+                    } else {
+                        format!("Cloth: {error}. Showing stored geometry.")
+                    });
                     append(
                         manager,
                         tag,
                         component.map(Vec::as_slice),
                         &inputs,
                         &mut model,
-                        false,
+                        cancel.stored_pose,
                     )
                 }
                 result => result,

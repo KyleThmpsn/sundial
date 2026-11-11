@@ -16,6 +16,7 @@ mod catalog_insert;
 mod controls;
 mod diagnostics;
 mod discovery;
+mod drafts;
 mod duplicate;
 mod engine;
 mod forms;
@@ -184,6 +185,32 @@ impl Document {
             && self.pending_effect.is_none()
             && !self.changed()
     }
+
+    /// Takes `recipe` as the document's when it differs, the replaced recipe joining the history
+    /// as part of the gesture under way, and returns whether it changed. Every edit of a
+    /// document's recipe goes through here or [`Self::commit_step`]. The editor draws into one
+    /// copy and commits it after the frame, which needs nothing else to write the document's
+    /// recipe while it draws, so header actions wait for the frame's end.
+    fn commit(&mut self, recipe: PerkRecipe, ctx: &egui::Context) -> bool {
+        if recipe == self.recipe {
+            return false;
+        }
+        self.history
+            .record(std::mem::replace(&mut self.recipe, recipe), ctx);
+        self.modified = Some(SystemTime::now());
+        true
+    }
+
+    /// [`Self::commit`] as a history step of its own, for an action rather than a gesture.
+    fn commit_step(&mut self, recipe: PerkRecipe) -> bool {
+        if recipe == self.recipe {
+            return false;
+        }
+        self.history
+            .record_step(std::mem::replace(&mut self.recipe, recipe));
+        self.modified = Some(SystemTime::now());
+        true
+    }
 }
 
 fn parse_baseline(bytes: Option<&[u8]>) -> Option<PerkRecipe> {
@@ -218,25 +245,16 @@ pub(in crate::app) struct Workbench {
     /// The installed runtime, named by warnings about what it reads.
     pub(in crate::app) branding: crate::branding::Branding,
     initialized: bool,
-    draft_baseline: Option<Vec<u8>>,
-    drafts_writable: bool,
-    /// Why the last draft write failed, or where a window that lost the drafts file keeps its own.
-    drafts_error: Option<String>,
-    /// When the last draft write failed. While set the latest drafts exist only here, and
-    /// autosave tries them again.
-    drafts_retry: Option<std::time::Instant>,
-    /// Drafts file entries that do not open and could not be kept in a file of their own. Every
-    /// write of the drafts file carries them, so autosave never drops them.
-    unopened_drafts: Vec<serde_json::Value>,
-    /// This window's own drafts file, named after it, once another window wrote the shared
-    /// drafts file since this one last did. Autosave writes there for the rest of the session.
-    drafts_set_aside: Option<String>,
+    /// How `documents` reach the drafts file beside `library`.
+    drafts: drafts::Drafts,
     library: Option<Library>,
     entries: Vec<Entry>,
     /// Saved item import identities, shared by library entries and open drafts.
     imported_perks: BTreeSet<String>,
     /// None uses the build feature's initial value until the checkbox is drawn.
     show_imported_perks: Option<bool>,
+    /// Whether the list includes perks built on ornaments, which only change an item's look.
+    show_ornaments: bool,
     /// Each saved perk's problem, by path, with the modified time and size it was checked at.
     /// A library holds hundreds of perks, too many to check on every frame.
     library_issues: BTreeMap<PathBuf, (Option<SystemTime>, usize, Option<String>)>,
@@ -285,7 +303,18 @@ pub(in crate::app) struct Workbench {
     type_plugs: Option<BTreeMap<String, u32>>,
     /// The stock New from Perk rows, built once per catalog from `templates`.
     template_rows: Option<Vec<templates::Row>>,
-    authored_templates: Option<Vec<templates::AuthoredTemplate>>,
+    /// The perks of saved recipes and of the open recipe, read when the workbench or Select
+    /// Custom Perk first opens.
+    authored_templates: Option<Vec<crate::perk::library::saved::SavedPerk>>,
+    /// The New from Perk rows and listing built from `template_rows` and `authored_templates`.
+    template_browse: templates::Browse,
+    /// The open recipe's namespace and perks as `authored_templates` holds them.
+    template_draft: Option<(String, Vec<WeaponSocketPlugVariantRecipe>)>,
+    /// The saved recipes' perks a worker is reading, with the generation it started in.
+    template_load: Option<(u64, Receiver<crate::perk::library::saved::Loaded>)>,
+    /// Counts each change of the saved recipes or the catalog, so perks read before one are
+    /// read again.
+    template_generation: u64,
     editing_effect: Option<u16>,
     editing_program_action: Option<usize>,
     discovery: discovery::Discovery,
@@ -370,7 +399,7 @@ impl Workbench {
 
 impl Workbench {
     pub(in crate::app) fn saved_weapons_changed(&mut self) {
-        self.authored_templates = None;
+        self.forget_authored_templates();
     }
 
     /// The perk's first problem, one that keeps it from being applied or chosen. Warnings, which
@@ -452,11 +481,7 @@ impl Workbench {
         self.editing_effect = None;
         self.editing_program_action = None;
         if let Some(document) = self.documents.get_mut(self.selected) {
-            let restored = document.restored();
-            if restored != document.recipe {
-                document.history.record_step(document.recipe.clone());
-            }
-            document.recipe = restored;
+            document.commit_step(document.restored());
             document.pending_effect = None;
             document.modified = None;
         }
@@ -485,7 +510,7 @@ impl Workbench {
         self.plug_set_counts = None;
         self.type_plugs = None;
         self.template_rows = None;
-        self.authored_templates = None;
+        self.forget_authored_templates();
         self.editing_effect = None;
         self.editing_program_action = None;
     }
@@ -539,6 +564,19 @@ impl Workbench {
         }
     }
 
+    /// Hands the selected perk to the native catalog's insertion picker, unless an effect is
+    /// open. A perk carries its native programs, so it is copied only when it changed.
+    fn refresh_insertion_destination(&mut self) {
+        let destination = self
+            .documents
+            .get(self.selected)
+            .filter(|document| self.editor.is_none() && document.pending_effect.is_none())
+            .map(|document| &document.recipe);
+        if self.engine.insertion.destination.as_ref() != destination {
+            self.engine.insertion.destination = destination.cloned();
+        }
+    }
+
     /// Advances every background job the workbench owns before a frame is drawn.
     fn poll_background_work(
         &mut self,
@@ -547,7 +585,8 @@ impl Workbench {
         choices: &[WeaponSandboxPerkChoice],
     ) {
         self.poll_duplicate(ctx, choices);
-        self.retry_drafts(ctx);
+        self.drafts
+            .poll(self.library.as_ref(), &self.documents, ctx);
         self.engine.export.poll();
         self.verification.poll();
         self.poll_stock_programs();
@@ -660,11 +699,7 @@ impl Workbench {
         // Taken before the call, because `show` borrows the catalog mutably while the object
         // page needs the same index the Markers view read.
         let marker_index = self.engine.markers.index();
-        self.engine.insertion.destination = self
-            .documents
-            .get(self.selected)
-            .filter(|document| self.editor.is_none() && document.pending_effect.is_none())
-            .map(|document| document.recipe.clone());
+        self.refresh_insertion_destination();
         self.engine.show(
             ctx,
             choices,
@@ -690,11 +725,9 @@ impl Workbench {
         if let Some(request) = self.engine.insertion.requested.take()
             && let Some(document) = self.documents.get_mut(self.selected)
         {
-            let before = document.recipe.clone();
-            match request.apply(&mut document.recipe) {
-                Ok(()) => {
-                    document.history.record_step(before);
-                    document.modified = Some(SystemTime::now());
+            match request.applied(&document.recipe) {
+                Ok(changed) => {
+                    document.commit_step(changed);
                     self.message =
                         Some("Inserted the native configuration into the current perk.".into());
                     self.open = true;
@@ -807,8 +840,9 @@ impl Workbench {
                                 let Some(document) = self.documents.get(self.selected) else {
                                     return;
                                 };
+                                // The forms edit this one copy, which the document takes after
+                                // the frame (`Document::commit`).
                                 let mut recipe = document.recipe.clone();
-                                let before = recipe.clone();
                                 let document_id = recipe.id.clone();
                                 let header_height =
                                     self.draw_document_header(ui, &mut recipe, catalog);
@@ -836,19 +870,15 @@ impl Workbench {
                                             );
                                         });
                                 }
-                                if recipe != before {
-                                    if let Some(document) = self
-                                        .documents
-                                        .iter_mut()
-                                        .find(|document| document.recipe.id == document_id)
-                                    {
-                                        document.history.record(before, ctx);
-                                        document.recipe = recipe;
-                                        document.modified = Some(SystemTime::now());
-                                    }
+                                if self
+                                    .documents
+                                    .iter_mut()
+                                    .find(|document| document.recipe.id == document_id)
+                                    .is_some_and(|document| document.commit(recipe, ctx))
+                                {
                                     self.message = None;
                                     self.message_path = None;
-                                    self.persist_drafts();
+                                    self.drafts.schedule();
                                 }
                             },
                         );

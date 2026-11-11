@@ -49,8 +49,8 @@ pub(super) fn load_connection(
     let schema = Schema::read(connection)?;
     validate_schema(connection)?;
     super::validation::validate(connection)?;
-    if schema == Schema::V3 {
-        validate_character_creation(connection)?;
+    if schema.has_appearance() {
+        validate_character_creation(connection, schema)?;
     }
 
     let primary_soid: i64 = connection
@@ -115,10 +115,14 @@ fn database_is_uninitialized(connection: &Connection) -> Result<bool, SqliteAcco
     Ok(table_count == 0)
 }
 
-fn validate_character_creation(db: &Connection) -> Result<(), SqliteAccountError> {
+fn validate_character_creation(db: &Connection, schema: Schema) -> Result<(), SqliteAccountError> {
     let error = |error| SqliteAccountError::sqlite("read character creation state from", error);
     let mut statement = db
-        .prepare("SELECT appearance_header, appearance_header_valid FROM characters")
+        .prepare(if schema.has_appearance_validity() {
+            "SELECT appearance_header, appearance_header_valid FROM characters"
+        } else {
+            "SELECT appearance_header FROM characters"
+        })
         .map_err(error)?;
     let mut rows = statement.query([]).map_err(error)?;
     while let Some(row) = rows.next().map_err(error)? {
@@ -129,7 +133,9 @@ fn validate_character_creation(db: &Connection) -> Result<(), SqliteAccountError
                 "expected exactly 36 bytes",
             ));
         }
-        row_bool(row, 1, "characters.appearance_header_valid")?;
+        if schema.has_appearance_validity() {
+            row_bool(row, 1, "characters.appearance_header_valid")?;
+        }
     }
     if table_count(db, "starter_character")? != 1 {
         return Err(SqliteAccountError::invalid_data(

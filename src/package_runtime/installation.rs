@@ -78,8 +78,9 @@ impl RuntimeInspection {
             let defaults = dll.as_ref().ok().and_then(|b| embedded_defaults(b));
             let bundled_schema = defaults.as_ref().and_then(crate::game_settings::schema_version);
             let dawn = identity.as_ref().is_some_and(|(name, _)| *name == "Dawn");
+            // Builds that bundle account schema 3 or later read the trace level.
             let trace_logging = !dawn && dll.as_ref().ok().and_then(|bytes| embedded_account_schema(bytes))
-                == Some(crate::persistence::sqlite_account::Schema::V3);
+                .is_some_and(crate::persistence::sqlite_account::Schema::has_appearance);
             // Each runtime reads its settings and account from its own named folder.
             let settings_path = directory.join(runtime_folder(dawn)).join("settings.json");
             let settings = fs::read(&settings_path);

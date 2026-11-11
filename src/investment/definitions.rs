@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::{
     InvestmentStatDisplayPoint, ItemDamageProfile, ItemDamageType, ItemRarity, ItemWeaponAmmoType,
-    ItemWeaponInventorySlot, format_in_game_investment_stat, interpolate_investment_stat_display,
+    ItemWeaponInventorySlot, interpolate_investment_stat_display,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,17 @@ impl From<ItemDamageType> for WeaponDamageType {
             ItemDamageType::Arc => Self::Arc,
             ItemDamageType::Solar => Self::Solar,
             ItemDamageType::Void => Self::Void,
+        }
+    }
+}
+
+impl From<WeaponDamageType> for ItemDamageType {
+    fn from(value: WeaponDamageType) -> Self {
+        match value {
+            WeaponDamageType::Kinetic => Self::Kinetic,
+            WeaponDamageType::Arc => Self::Arc,
+            WeaponDamageType::Solar => Self::Solar,
+            WeaponDamageType::Void => Self::Void,
         }
     }
 }
@@ -164,6 +175,16 @@ impl From<ItemWeaponAmmoType> for WeaponAmmoType {
     }
 }
 
+impl From<WeaponAmmoType> for ItemWeaponAmmoType {
+    fn from(value: WeaponAmmoType) -> Self {
+        match value {
+            WeaponAmmoType::Primary => Self::Primary,
+            WeaponAmmoType::Special => Self::Special,
+            WeaponAmmoType::Heavy => Self::Heavy,
+        }
+    }
+}
+
 impl WeaponInventorySlot {
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -222,6 +243,19 @@ impl From<ItemRarity> for WeaponRarity {
             ItemRarity::Rare => Self::Rare,
             ItemRarity::Legendary => Self::Legendary,
             ItemRarity::Exotic => Self::Exotic,
+        }
+    }
+}
+
+impl From<WeaponRarity> for ItemRarity {
+    fn from(value: WeaponRarity) -> Self {
+        match value {
+            WeaponRarity::Unknown => Self::Unknown,
+            WeaponRarity::Common => Self::Common,
+            WeaponRarity::Uncommon => Self::Uncommon,
+            WeaponRarity::Rare => Self::Rare,
+            WeaponRarity::Legendary => Self::Legendary,
+            WeaponRarity::Exotic => Self::Exotic,
         }
     }
 }
@@ -361,13 +395,6 @@ impl WeaponInvestmentStat {
             investment_value,
         )
         .unwrap_or(investment_value)
-    }
-
-    /// Formats the in-game value using the unit used by the Shadowkeep weapon UI when known.
-    #[must_use]
-    pub fn in_game_display_label(&self, investment_value: i32) -> String {
-        let display_value = self.in_game_display_value(investment_value);
-        format_in_game_investment_stat(self.definition_hash.map(u64::from), display_value)
     }
 }
 

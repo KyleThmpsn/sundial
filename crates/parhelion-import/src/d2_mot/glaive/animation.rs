@@ -922,7 +922,7 @@ pub(super) fn apply(inputs: &Inputs) -> Result<Value> {
         .array(sprint_choice, 64, None)?
         .first()
         .context("sprint layer entry")?;
-    let [sway_slot] = lp.array(sprint_entry, 8, Some(LAYER_CLIPS))?[..] else {
+    let [sway_slot] = lp.array(sprint_entry, 12, Some(LAYER_CLIPS))?[..] else {
         anyhow::bail!("the sprint layer plays several clips");
     };
     let sway_carrier = *bank
@@ -1203,7 +1203,7 @@ fn holding_routes(
         lp.array(generic_entry + 16, 8, None)?.is_empty(),
         "the generic layer's entry has conditions"
     );
-    let generic_clips = lp.array(generic_entry, 8, Some(LAYER_CLIPS))?;
+    let generic_clips = lp.array(generic_entry, 12, Some(LAYER_CLIPS))?;
     ensure!(
         generic_clips.len() == 1,
         "the generic layer's entry plays several clips"
@@ -1408,7 +1408,7 @@ fn layer_clip_uses(layers: &Layers, bank: &Bank) -> Result<LayerClipUses> {
         for row in layers.layers(family)? {
             for (index, choice) in lp.array(row, 16, None)?.into_iter().enumerate() {
                 for entry in lp.array(choice, 64, None)? {
-                    for at in lp.array(entry, 8, Some(LAYER_CLIPS))? {
+                    for at in lp.array(entry, 12, Some(LAYER_CLIPS))? {
                         let clip = *bank
                             .clips
                             .get(lp.u32(at)? as usize)

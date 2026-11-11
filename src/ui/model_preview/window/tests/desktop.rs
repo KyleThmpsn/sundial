@@ -53,9 +53,9 @@ fn native_popout_resizes_tracks_shaders_and_closes_independently() {
             ctx.set_fonts(fonts);
             let state = shared(ctx);
             let mut preview = state.lock().unwrap();
-            preview.open = true;
-            preview.owner = Some(weapon_source(ctx));
-            preview.source_viewport = Some(egui::ViewportId::ROOT);
+            preview.window.open = true;
+            preview.window.owner = Some(weapon_source(ctx));
+            preview.window.source_viewport = Some(egui::ViewportId::ROOT);
             Ok(Box::new(Check {
                 packages,
                 output,
@@ -142,7 +142,7 @@ impl eframe::App for Check {
             return;
         }
         if self.phase == 2 {
-            if !shared(ctx).lock().unwrap().open {
+            if !shared(ctx).lock().unwrap().window.open {
                 self.completed.store(true, Ordering::SeqCst);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -167,9 +167,9 @@ impl Check {
         }
         let state = shared(ctx);
         let mut preview = state.lock().unwrap();
-        assert!(preview.error.is_none(), "{:?}", preview.error);
+        assert!(preview.shown.error.is_none(), "{:?}", preview.shown.error);
         if crate::model_preview::gpu::available()
-            && let Some(model) = &preview.model
+            && let Some(model) = &preview.shown.model
         {
             assert!(
                 preview.gpu.fallback(model).is_none(),
@@ -178,35 +178,36 @@ impl Check {
             );
         }
         if preview.pending.is_some()
-            || preview.model.is_none()
-            || preview.request.as_ref().map(|r| &r.selection) != preview.selection.as_ref()
+            || preview.shown.model.is_none()
+            || preview.window.request.as_ref().map(|r| &r.selection)
+                != preview.shown.selection.as_ref()
         {
             return;
         }
         self.settled += 1;
         self.begin_rotation(&mut preview);
         if self.phase == 0 && !crate::model_preview::gpu::available() {
-            preview.playing = true;
-            if preview.texture.is_none() {
+            preview.shown.frames.playing = true;
+            if preview.shown.frames.texture.is_none() {
                 return;
             }
         }
         if self.phase == 1 {
             if std::env::var_os("SUNDIAL_PREVIEW_APPEARANCE").is_none() {
-                assert!(preview.model.as_ref().unwrap().has_shader_animation());
+                assert!(preview.shown.model.as_ref().unwrap().has_shader_animation());
             }
-            preview.playing = false;
-            preview.seconds = 2.5;
+            preview.shown.frames.playing = false;
+            preview.shown.frames.seconds = 2.5;
         }
         if self.settled > 3 {
             self.finish_rotation(&mut preview);
             if self.phase == 0 && !crate::model_preview::gpu::available() {
-                let size = preview.texture.as_ref().unwrap().size();
+                let size = preview.shown.frames.texture.as_ref().unwrap().size();
                 assert!(size[0] >= 600, "playing preview is undersized: {size:?}");
                 std::fs::write(
                     self.output.join("software-resolution.json"),
                     serde_json::to_vec_pretty(&serde_json::json!({
-                        "playing": preview.playing, "frame_size": size,
+                        "playing": preview.shown.frames.playing, "frame_size": size,
                         "artifact": "model-popout-after-0.ppm"
                     }))
                     .unwrap(),

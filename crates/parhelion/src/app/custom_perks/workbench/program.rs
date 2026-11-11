@@ -15,6 +15,7 @@ use sundial::package_authoring::sandbox_perk::{
 };
 
 mod changes;
+pub(super) use changes::private_changes;
 
 #[derive(Default)]
 pub(super) struct Keys {
@@ -259,12 +260,6 @@ fn native_action_text(node: &NativeNode) -> String {
 
 const REMOVAL_KEY_NOTE: &str = "installed ending conditions";
 
-/// The reactivation row carries one name in every reading. Repeat Interval and Cooldown are
-/// the names of the timer tiles inside Timing, not of the row.
-pub(super) fn rearm_label(_program: &Program) -> &'static str {
-    "Reactivation"
-}
-
 /// Where a spawn places its object, as the card's readings say it.
 fn position_phrase(position: Position) -> &'static str {
     match position {
@@ -443,10 +438,38 @@ fn brief_condition(
 
 /// The locked reading of one action block: its name, then what it is set to.
 pub(super) fn action_reading(program: &Program, index: usize, keys: Option<&KeyCatalog>) -> String {
-    match changes::reading(program, index) {
+    let reading = match changes::reading(program, index) {
         Some(reading) => format!("{}\n{}", reading.title, reading.lines.join("\n")),
         None => action_text(&program.actions[index], keys),
+    };
+    match repeated_property(program, index) {
+        Some(first) => format!(
+            "{reading}\nRepeats action {}. Each application counts.",
+            first + 1
+        ),
+        None => reading,
     }
+}
+
+/// The earlier action an ability property application repeats, if any. Applying a key that is
+/// already active raises its application count, and the bank applies the key that many times
+/// unless the property sets a cap, so a repeat is a second application, not a duplicate.
+fn repeated_property(program: &Program, index: usize) -> Option<usize> {
+    let Action::AbilityProperty {
+        target,
+        key,
+        option,
+    } = &program.actions[index]
+    else {
+        return None;
+    };
+    if option.byte() != 0 {
+        return None;
+    }
+    program.actions[..index].iter().position(|earlier| {
+        matches!(earlier, Action::AbilityProperty { target: t, key: k, option: o }
+            if t.byte() == target.byte() && k == key && o.byte() == option.byte())
+    })
 }
 
 /// The fields of an action without its owning program's private resource edits.

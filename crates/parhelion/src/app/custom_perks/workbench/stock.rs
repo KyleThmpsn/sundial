@@ -23,8 +23,8 @@ pub(super) enum Preparation {
 
 impl Workbench {
     /// Collects finished conversions. It runs every frame, whether or not the card that asked
-    /// is drawn: a conversion that finished while its document was not selected used to stay
-    /// Reading, which kept the workbench busy and the window from closing.
+    /// is drawn, so a conversion that finishes while its document is not selected leaves
+    /// Reading and doesn't keep the workbench busy or the window from closing.
     pub(super) fn poll_stock_programs(&mut self) {
         for prepared in &mut self.stock_programs {
             if matches!(&prepared.state, State::Reading(worker) if worker.is_finished())

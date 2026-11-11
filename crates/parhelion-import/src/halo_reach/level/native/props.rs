@@ -2,6 +2,7 @@
 //! area's world compound, so these entities contain only the render component.
 use super::*;
 use crate::halo_reach::model::Primitive;
+use crate::presentation::geometry;
 use crate::tiger::entity::{compiled, links::NativeRows, owner_slots};
 
 #[derive(Clone, Copy, serde::Serialize)]
@@ -130,19 +131,22 @@ fn entity(
     Ok(symbol)
 }
 
-/// The lighting probe of a prop standing at `middle`, in the level's coordinates, as the vertex
+/// The lighting probe of a prop whose middle at the height of its top is `middle`, in the level's
+/// coordinates, as the vertex
 /// lighting records its surfaces read ([`native::material::PROBE_CONSTANTS`]): the atlas texel of
 /// the lightmapped ground straight below it, as placed models take theirs
 /// ([`super::ground_light`]), else the atlas's neutral texel. A texel's colors divide by the atlas
 /// scale the surfaces decode with, and its sun visibility is squared, as vertex records carry it.
 fn probe(
     level: &super::super::Level,
+    coverage: &[coverage::Coverage],
     atlas: &crate::halo_reach::level::lightmap::Atlas,
     grid: &HashMap<(i32, i32), Vec<(usize, usize)>>,
     scale: f32,
     middle: [f32; 3],
 ) -> [[f32; 4]; 3] {
-    let ground = super::ground_below(level, grid, middle).unwrap_or_else(|| atlas.neutral());
+    let ground =
+        super::ground_below(level, coverage, grid, middle).unwrap_or_else(|| atlas.neutral());
     let sample = atlas.texel(ground);
     let scale = scale.max(1e-6);
     let [lr, lg, lb] = sample.lobe.map(|v| v / scale);
@@ -227,6 +231,7 @@ pub(super) fn build(
     templates: &super::Templates,
     placements: &[Vec<Primitive>],
     level: &super::super::Level,
+    coverage: &[coverage::Coverage],
     lightmap: Option<&native::material::Lightmap>,
     loaded: u32,
     offset: [f32; 3],
@@ -235,7 +240,7 @@ pub(super) fn build(
     if placements.is_empty() {
         return Ok((Vec::new(), json!([])));
     }
-    let middles = placements
+    let (middles, tops): (Vec<[f32; 3]>, Vec<[f32; 3]>) = placements
         .iter()
         .map(|primitives| {
             let (low, high) = bounds(
@@ -243,17 +248,17 @@ pub(super) fn build(
                     .iter()
                     .flat_map(|primitive| primitive.vertices.iter().map(|v| v.position)),
             );
-            std::array::from_fn::<f32, 3, _>(|axis| (low[axis] + high[axis]) * 0.5)
+            let middle = std::array::from_fn::<f32, 3, _>(|axis| (low[axis] + high[axis]) * 0.5);
+            (middle, [middle[0], middle[1], high[2]])
         })
-        .collect::<Vec<_>>();
+        .unzip();
     let lit = lightmap.zip(level.lightmap.as_ref());
     let probes = match lit {
         Some((lightmap, atlas)) => {
-            let indexed = middles.iter().copied().enumerate().collect::<Vec<_>>();
-            let grid = super::ground_faces(level, &indexed);
-            middles
-                .iter()
-                .map(|&middle| Some(probe(level, atlas, &grid, lightmap.scale, middle)))
+            let indexed = tops.iter().copied().enumerate().collect::<Vec<_>>();
+            let grid = super::ground_faces(level, coverage, &indexed);
+            tops.iter()
+                .map(|&top| Some(probe(level, coverage, atlas, &grid, lightmap.scale, top)))
                 .collect::<Vec<_>>()
         }
         None => vec![None; placements.len()],
@@ -296,10 +301,17 @@ pub(super) fn build(
             lightmap: lit.as_ref(),
             vertex_data: None,
             statics: false,
+            paired_faces: &Default::default(),
             prefix: "prop-",
+            prepass: false,
         },
         report,
     )?;
+    let clipped = used
+        .iter()
+        .filter(|(_, material)| native::material::clipped_caster(material))
+        .map(|(&key, _)| key)
+        .collect();
     let stages = used
         .iter()
         .map(|(&key, material)| {
@@ -366,7 +378,20 @@ pub(super) fn build(
                     .collect(),
             ));
         }
-        let mut encoded = geometry::encode_with_stages(&mesh, &template, row, &stages)?;
+        let mut encoded = geometry::encode_with_clipped_shadows(
+            &mesh, &template, row, &stages, &clipped, None, None,
+        )?;
+        let companion_keys = |suffix: &str| {
+            used.keys()
+                .copied()
+                .filter(|key| graph.contains(&format!("prop-material-{key:08X}-{suffix}")))
+                .collect()
+        };
+        geometry::append_lighting(
+            &mut encoded,
+            &companion_keys("baked"),
+            &companion_keys("glow"),
+        )?;
         // A prop's single detail level remains visible at every native distance band.
         let rows = Payload(encoded.header.clone()).array(0xc8, 32, None)?;
         for row in rows {

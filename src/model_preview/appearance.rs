@@ -206,6 +206,25 @@ pub(super) fn append(result: &mut Model, model: Model, label: &str) -> Result<()
         })
         .collect();
     let first_triangle = result.triangles.len();
+    let bank_base = result.dye_banks.len();
+    for mut bank in model.dye_banks {
+        for dye in bank.iter_mut().flatten() {
+            dye.detail = dye.detail.and_then(|i| texture_map[i]);
+            dye.normal = dye.normal.and_then(|i| texture_map[i]);
+        }
+        result.dye_banks.push(bank);
+    }
+    result.triangle_dye_banks.resize(first_triangle, None);
+    result
+        .triangle_dye_banks
+        .extend((0..model.triangles.len()).map(|i| {
+            model
+                .triangle_dye_banks
+                .get(i)
+                .copied()
+                .flatten()
+                .map(|b| b + bank_base)
+        }));
     let effect_base = result.effects.len();
     for mut material in model.effects {
         material.remap_textures(&texture_map);
@@ -448,7 +467,7 @@ pub(super) fn apply_colors(
     Ok(())
 }
 
-fn load_detail(manager: &PackageManager, tag: u32, model: &mut Model) -> Option<usize> {
+pub(super) fn load_detail(manager: &PackageManager, tag: u32, model: &mut Model) -> Option<usize> {
     if let Some(index) = model.textures.iter().position(|t| t.tag == tag) {
         return Some(index);
     }
@@ -470,6 +489,17 @@ fn load_detail(manager: &PackageManager, tag: u32, model: &mut Model) -> Option<
 }
 
 fn assignment_hashes(table: &[u8], index: u16) -> Result<BTreeSet<u32>, String> {
+    selected_hashes(table, index, |_, _| Some(0), true)
+}
+
+/// Region alternatives are selected before resolving model assignments. Direct arrangements
+/// retain both variants for the general item viewer, or one for a character's gender.
+pub(super) fn selected_hashes(
+    table: &[u8],
+    index: u16,
+    select: impl Fn(u32, usize) -> Option<usize>,
+    both_direct: bool,
+) -> Result<BTreeSet<u32>, String> {
     let (count, rows) = array(table, 8, 0x8080_5DFB, 0x20, 65536)?;
     if usize::from(index) >= count {
         return Err("Appearance row is outside the installed table".into());
@@ -477,17 +507,32 @@ fn assignment_hashes(table: &[u8], index: u16) -> Result<BTreeSet<u32>, String> 
     let row = rows + usize::from(index) * 0x20;
     let mut hashes = BTreeSet::new();
     if u64_at(table, row + 0x10)? == 0 {
-        hashes.insert(u32_at(table, row + 8)?);
-        hashes.insert(u32_at(table, row + 12)?);
+        if both_direct {
+            hashes.insert(u32_at(table, row + 8)?);
+            hashes.insert(u32_at(table, row + 12)?);
+        } else if let Some(selected) = select(u32::MAX, 2) {
+            if selected >= 2 {
+                return Err("Character art variant exceeds its arrangement".into());
+            }
+            hashes.insert(u32_at(table, row + 8 + selected * 4)?);
+        }
     } else {
         let (count, rows) = array(table, row + 0x10, 0x8080_5DFE, 8, 4096)?;
         for index in 0..count {
             let resource = pointer(table, rows + index * 8)?;
             let (count, rows) = array(table, resource + 8, 0x8080_5E01, 4, 65536)?;
+            if count == 0 {
+                continue;
+            }
             // Each region lists alternatives, not simultaneous geometry. Use its base
             // attachment until socket-driven region selection is supported.
-            if count != 0 {
-                hashes.insert(u32_at(table, rows)?);
+            if let Some(selected) = select(u32_at(table, resource)?, count) {
+                if selected >= count {
+                    return Err(
+                        "Character region selection exceeds its installed alternatives".into(),
+                    );
+                }
+                hashes.insert(u32_at(table, rows + selected * 4)?);
             }
         }
     }

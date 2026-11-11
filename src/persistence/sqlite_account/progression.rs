@@ -1,5 +1,5 @@
 //! Sparse native unlock and family-5 state, projected through the existing progression editor.
-use super::SqliteAccountError;
+use super::{SqliteAccountError, writer::Preserved};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
@@ -81,6 +81,10 @@ impl Progression {
     }
     pub(super) fn save(&self, db: &Connection) -> Result<(), SqliteAccountError> {
         let before = Self::load(db)?;
+        // Unlocking a collection adds thousands of rows at once, so the preserved rows are
+        // indexed when the first one is added.
+        let mut unlocks = None;
+        let mut family = None;
         for (&(character, bank, slot, lane), &value) in &self.unlocks {
             if before.unlocks.get(&(character, bank, slot, lane)) != Some(&value) {
                 if before.unlocks.contains_key(&(character, bank, slot, lane)) {
@@ -89,7 +93,12 @@ impl Progression {
                     insert_preserved(
                         db,
                         "unlocks",
-                        &self.native_unlocks,
+                        unlocks.get_or_insert_with(|| {
+                            Preserved::new(
+                                &self.native_unlocks,
+                                &["character_slot", "bank", "slot", "lane"],
+                            )
+                        }),
                         &[
                             ("character_slot", character),
                             ("bank", bank),
@@ -132,7 +141,9 @@ impl Progression {
                 insert_preserved(
                     db,
                     "family5",
-                    &self.native_family,
+                    family.get_or_insert_with(|| {
+                        Preserved::new(&self.native_family, &["kind", "slot"])
+                    }),
                     &[("kind", kind), ("slot", slot)],
                     &[("position", position), ("value", value)],
                 )?;
@@ -145,22 +156,21 @@ impl Progression {
         Ok(())
     }
 }
+/// Inserts a row, keeping the unknown columns of the preserved row `keys` names. `rows` is
+/// indexed by the names of `keys`, in their order.
 fn insert_preserved(
     db: &Connection,
     table: &str,
-    rows: &[super::writer::NativeRow],
+    rows: &Preserved<'_>,
     keys: &[(&str, i32)],
     values: &[(&str, i32)],
 ) -> Result<(), SqliteAccountError> {
-    let mut row = rows
-        .iter()
-        .find(|row| {
-            keys.iter().all(|(name, value)| {
-                row.get(*name) == Some(&super::snapshot::Cell::Integer(i64::from(*value)))
-            })
-        })
-        .cloned()
-        .unwrap_or_default();
+    let mut row = rows.get(
+        &keys
+            .iter()
+            .map(|&(_, value)| i64::from(value))
+            .collect::<Vec<_>>(),
+    );
     for &(name, value) in keys.iter().chain(values) {
         row.insert(
             name.into(),

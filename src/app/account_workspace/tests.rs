@@ -1,5 +1,6 @@
 //! Account workspace routing and source-selection tests.
 
+mod appearance;
 mod dawn_progression;
 mod dawn_rewards;
 mod dawn_saving;

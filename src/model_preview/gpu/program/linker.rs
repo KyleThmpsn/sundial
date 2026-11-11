@@ -5,20 +5,24 @@
 //! worker's compile ended, 23.9 s for one imported weapon's 15 programs. A helper is this
 //! executable started with [`ARGUMENT`], so a driver's locks in it never reach the painter.
 //! Windows only, through WGL.
-use super::{Source, binary_now};
+use super::{Source, cache::Cache, limit_compiler_threads};
+mod message;
 use eframe::glow::{self, HasContext};
+use message::{read_result, read_text, write_result, write_text};
 use std::{
     io::{BufReader, BufWriter, Read, Write},
-    os::windows::process::CommandExt,
+    os::windows::{io::AsRawHandle, process::CommandExt},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
+    Foundation::{CloseHandle, HANDLE},
     Graphics::{
         Gdi::GetDC,
         OpenGL::{
@@ -27,16 +31,30 @@ use windows_sys::Win32::{
             wglDeleteContext, wglGetProcAddress, wglMakeCurrent,
         },
     },
-    System::LibraryLoader::{GetProcAddress, LoadLibraryA},
+    System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        },
+        LibraryLoader::{GetProcAddress, LoadLibraryA},
+    },
     UI::WindowsAndMessaging::{CreateWindowExW, WS_POPUP},
 };
 
 /// The argument that starts this executable as a program compiler.
 const ARGUMENT: &str = "--preview-program-compiler";
 /// Helper processes, each compiling one program at a time.
-const HELPERS: usize = 3;
+const HELPERS: usize = 2;
 /// Starts no console window for a helper.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+/// How long a helper may take to make its context and say whether it worked.
+const READY_DEADLINE: Duration = Duration::from_secs(30);
+/// How long one program may take to compile in a helper. The slowest measured preview program
+/// took seconds. A helper past this is stopped and its program fails, rather than leaving the
+/// preview waiting for an answer that never comes.
+const COMPILE_DEADLINE: Duration = Duration::from_secs(90);
 
 const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
 const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
@@ -50,8 +68,41 @@ pub(super) type Done = (u64, Result<glow::ProgramBinary, String>);
 pub(super) struct Linker {
     jobs: mpsc::Sender<Job>,
     done: mpsc::Receiver<Done>,
-    /// Set once every helper has stopped, so jobs left with them will never finish.
-    stopped: Arc<AtomicBool>,
+    /// Helpers still exchanging jobs. Startup can briefly have none while another starts.
+    running: Arc<Mutex<usize>>,
+    helpers: Vec<Watch>,
+}
+
+/// One helper process and when the answer it owes is due, which the paint thread checks.
+struct Watch {
+    child: Arc<Mutex<Child>>,
+    /// While the helper owes an answer, the time it must arrive by.
+    due: Arc<Mutex<Option<Instant>>>,
+    /// Set when the helper was stopped for missing its deadline.
+    late: Arc<AtomicBool>,
+}
+
+impl Watch {
+    /// Stops the helper once its answer is overdue. Its pipes close, so the thread waiting on
+    /// it fails the job and ends.
+    fn enforce(&self) {
+        let overdue = self
+            .due
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some_and(|due| Instant::now() >= due);
+        if overdue && !self.late.swap(true, Ordering::AcqRel) {
+            self.stop();
+        }
+    }
+
+    fn stop(&self) {
+        let _ = self
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .kill();
+    }
 }
 
 impl Linker {
@@ -83,7 +134,7 @@ impl Linker {
         let queue = Arc::new(Mutex::new(queue));
         let (finished, done) = mpsc::channel();
         let running = Arc::new(Mutex::new(0usize));
-        let stopped = Arc::new(AtomicBool::new(false));
+        let mut helpers = Vec::new();
         for _ in 0..HELPERS {
             let Ok(mut child) = Command::new(&program)
                 .arg(ARGUMENT)
@@ -91,7 +142,7 @@ impl Linker {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
+                .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
                 .spawn()
             else {
                 continue;
@@ -100,24 +151,38 @@ impl Linker {
                 let _ = child.kill();
                 continue;
             };
+            close_with_this_process(&child);
+            let watch = Watch {
+                child: Arc::new(Mutex::new(child)),
+                due: Arc::new(Mutex::new(None)),
+                late: Arc::new(AtomicBool::new(false)),
+            };
             *running.lock().unwrap_or_else(PoisonError::into_inner) += 1;
             let queue = Arc::clone(&queue);
             let finished = finished.clone();
-            let (helpers, all_stopped) = (Arc::clone(&running), Arc::clone(&stopped));
+            let count = Arc::clone(&running);
+            let (child, due, late) = (
+                Arc::clone(&watch.child),
+                Arc::clone(&watch.due),
+                Arc::clone(&watch.late),
+            );
             let spawned = std::thread::Builder::new()
                 .name("preview program helper".into())
                 .spawn(move || {
-                    exchange(&queue, &finished, input, output);
+                    exchange(&queue, &finished, (input, output), (&due, &late));
+                    let mut child = child.lock().unwrap_or_else(PoisonError::into_inner);
                     let _ = child.kill();
                     let _ = child.wait();
-                    let mut helpers = helpers.lock().unwrap_or_else(PoisonError::into_inner);
-                    *helpers -= 1;
-                    if *helpers == 0 {
-                        all_stopped.store(true, Ordering::Release);
-                    }
+                    drop(child);
+                    let mut count = count.lock().unwrap_or_else(PoisonError::into_inner);
+                    *count -= 1;
                 });
-            if spawned.is_err() {
-                *running.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+            match spawned {
+                Ok(_) => helpers.push(watch),
+                Err(_) => {
+                    *running.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+                    watch.stop();
+                }
             }
         }
         if *running.lock().unwrap_or_else(PoisonError::into_inner) == 0 {
@@ -126,7 +191,8 @@ impl Linker {
         Some(Self {
             jobs,
             done,
-            stopped,
+            running,
+            helpers,
         })
     }
 
@@ -135,14 +201,28 @@ impl Linker {
         !self.stopped() && self.jobs.send((id, source)).is_ok()
     }
 
-    /// The jobs finished since the last call.
+    /// The jobs finished since the last call. A helper whose answer is overdue is stopped here,
+    /// and its job fails on a later call.
     pub fn finished(&self) -> Vec<Done> {
+        for helper in &self.helpers {
+            helper.enforce();
+        }
         self.done.try_iter().collect()
     }
 
     /// Whether every helper has stopped.
     pub fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
+        *self.running.lock().unwrap_or_else(PoisonError::into_inner) == 0
+    }
+}
+
+impl Drop for Linker {
+    fn drop(&mut self) {
+        // No paint callback polls these deadlines after fallback. Stop the processes now,
+        // leaving their exchange threads to drain the closed pipes and reap them.
+        for helper in &self.helpers {
+            helper.stop();
+        }
     }
 }
 
@@ -162,16 +242,24 @@ fn helper_program() -> Option<PathBuf> {
 
 /// Feeds one helper jobs from the shared queue and returns their results, one at a time, until
 /// the helper fails or the queue closes. The helper first says whether its context started.
+/// Each answer is due by a deadline in `due`, which [`Watch::enforce`] holds the helper to.
 fn exchange(
     queue: &Mutex<mpsc::Receiver<Job>>,
     finished: &mpsc::Sender<Done>,
-    input: std::process::ChildStdin,
-    output: std::process::ChildStdout,
+    (input, output): (std::process::ChildStdin, std::process::ChildStdout),
+    (due, late): (&Mutex<Option<Instant>>, &AtomicBool),
 ) {
+    let owe = |deadline: Option<Duration>| {
+        *due.lock().unwrap_or_else(PoisonError::into_inner) =
+            deadline.map(|deadline| Instant::now() + deadline);
+    };
     let mut input = BufWriter::new(input);
     let mut output = BufReader::new(output);
     let mut ready = [0u8];
-    if output.read_exact(&mut ready).is_err() || ready[0] != 1 {
+    owe(Some(READY_DEADLINE));
+    let started = output.read_exact(&mut ready).is_ok() && ready[0] == 1;
+    owe(None);
+    if !started {
         return;
     }
     loop {
@@ -179,12 +267,22 @@ fn exchange(
         let Ok((id, source)) = job else {
             return;
         };
+        owe(Some(COMPILE_DEADLINE));
         let sent = write_text(&mut input, &source.vertex)
             .and_then(|()| write_text(&mut input, &source.fragment))
             .and_then(|()| input.flush());
+        let answer = sent.and_then(|()| read_result(&mut output));
+        owe(None);
         // A helper that stops mid-job fails that job, rather than leaving it unanswered.
-        let (result, lost) = match sent.and_then(|()| read_result(&mut output)) {
+        let (result, lost) = match answer {
             Ok(result) => (result, false),
+            Err(_) if late.load(Ordering::Acquire) => (
+                Err(format!(
+                    "The preview program compiler did not answer within {} s and was stopped",
+                    COMPILE_DEADLINE.as_secs()
+                )),
+                true,
+            ),
             Err(error) => (
                 Err(format!("The preview program compiler stopped: {error}")),
                 true,
@@ -196,36 +294,44 @@ fn exchange(
     }
 }
 
-fn write_text(writer: &mut impl Write, text: &str) -> std::io::Result<()> {
-    let length = u32::try_from(text.len()).map_err(std::io::Error::other)?;
-    writer.write_all(&length.to_le_bytes())?;
-    writer.write_all(text.as_bytes())
-}
-
-fn read_bytes(reader: &mut impl Read) -> std::io::Result<Vec<u8>> {
-    let mut length = [0u8; 4];
-    reader.read_exact(&mut length)?;
-    let mut bytes = vec![0; u32::from_le_bytes(length) as usize];
-    reader.read_exact(&mut bytes)?;
-    Ok(bytes)
-}
-
-/// A binary as its format and bytes, or an error as its text, after a byte saying which.
-fn read_result(reader: &mut impl Read) -> std::io::Result<Result<glow::ProgramBinary, String>> {
-    let mut kind = [0u8];
-    reader.read_exact(&mut kind)?;
-    if kind[0] == 1 {
-        let mut format = [0u8; 4];
-        reader.read_exact(&mut format)?;
-        let buffer = read_bytes(reader)?;
-        return Ok(Ok(glow::ProgramBinary {
-            buffer,
-            format: u32::from_le_bytes(format),
-        }));
+/// Puts a helper in a job object that ends its processes when this process ends, so a helper
+/// stuck in its driver cannot outlive Sundial. Best effort: a helper left outside the job still
+/// exits once its input closes.
+fn close_with_this_process(child: &Child) {
+    /// A job handle, usable from any thread, kept open for the life of the process.
+    struct Job(HANDLE);
+    // SAFETY: a kernel object handle is not tied to the thread that opened it.
+    unsafe impl Send for Job {}
+    // SAFETY: the handle is only passed to thread-safe kernel calls.
+    unsafe impl Sync for Job {}
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+    let job = JOB.get_or_init(|| {
+        // SAFETY: the job is created unnamed with default security, and its limits come from a
+        // fully initialized structure of the size passed.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if set == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            Some(Job(job))
+        }
+    });
+    if let Some(job) = job {
+        // SAFETY: both handles are open, the child's for as long as `child` lives.
+        unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle()) };
     }
-    Ok(Err(
-        String::from_utf8_lossy(&read_bytes(reader)?).into_owned()
-    ))
 }
 
 /// Runs this process as a program compiler when it was started as one, returning its exit code.
@@ -237,11 +343,11 @@ pub(super) fn serve() -> Option<i32> {
     if arguments.first().map(String::as_str) != Some(ARGUMENT) {
         return None;
     }
-    let numbers: Vec<i32> = arguments[1..]
-        .iter()
-        .filter_map(|value| value.parse().ok())
-        .collect();
-    let &[major, minor, profile] = numbers.as_slice() else {
+    let [_, major, minor, profile] = arguments.as_slice() else {
+        return Some(2);
+    };
+    let (Ok(major), Ok(minor), Ok(profile)) = (major.parse(), minor.parse(), profile.parse())
+    else {
         return Some(2);
     };
     let mut input = BufReader::new(std::io::stdin().lock());
@@ -252,6 +358,10 @@ pub(super) fn serve() -> Option<i32> {
         let _ = output.write_all(&[0]).and_then(|()| output.flush());
         return Some(1);
     };
+    // SAFETY: this helper's sole context is current on its compilation thread.
+    unsafe { limit_compiler_threads(&gl) };
+    // SAFETY: the helper's sole context remains current while its cache is used.
+    let cache = unsafe { Cache::new(&gl) };
     if output
         .write_all(&[1])
         .and_then(|()| output.flush())
@@ -260,27 +370,16 @@ pub(super) fn serve() -> Option<i32> {
         return Some(1);
     }
     loop {
-        let (Ok(vertex), Ok(fragment)) = (read_bytes(&mut input), read_bytes(&mut input)) else {
+        let Ok(vertex) = read_text(&mut input) else {
             return Some(0);
         };
-        let source = Source::from_text(
-            String::from_utf8_lossy(&vertex).into_owned(),
-            String::from_utf8_lossy(&fragment).into_owned(),
-        );
-        // SAFETY: the helper's context is current on this thread.
-        let result = unsafe { binary_now(&gl, &source) };
-        let written = match result {
-            Ok(binary) => output
-                .write_all(&[1])
-                .and_then(|()| output.write_all(&binary.format.to_le_bytes()))
-                .and_then(|()| {
-                    output.write_all(&(binary.buffer.len() as u32).to_le_bytes())?;
-                    output.write_all(&binary.buffer)
-                }),
-            Err(error) => output
-                .write_all(&[0])
-                .and_then(|()| write_text(&mut output, &error)),
+        let Ok(fragment) = read_text(&mut input) else {
+            return Some(0);
         };
+        let source = Source::from_text(vertex, fragment);
+        // SAFETY: the helper's context is current on this thread.
+        let result = unsafe { cache.binary(&gl, &source) };
+        let written = write_result(&mut output, &result);
         if written.and_then(|()| output.flush()).is_err() {
             return Some(0);
         }

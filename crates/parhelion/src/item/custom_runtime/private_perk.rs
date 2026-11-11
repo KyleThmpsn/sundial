@@ -3,6 +3,8 @@
 use super::*;
 mod component;
 mod replication;
+mod share;
+pub(in crate::item) use share::CompiledRuntimes;
 
 #[derive(Default)]
 pub(in crate::item) struct PrivateRuntimeEdits<'a> {
@@ -58,6 +60,7 @@ pub(in crate::item) fn program_names_imported_particles(
     program.owned_programs().any(|program| {
         program.imported_labels.is_some()
             || !program.imported_assets.is_empty()
+            || program.assets().any(|asset| asset.imported.is_some())
             || program
                 .native_asset_patches
                 .iter()
@@ -576,16 +579,18 @@ fn private_damage_profiles(
 ) -> AuthoringResult<()> {
     for edit in &program.damage_profiles {
         use sundial::package_authoring::ability_damage;
-        let offset = compiled
-            .graph_offsets
-            .get(edit.action_index)
-            .copied()
-            .flatten()
-            .ok_or_else(|| invalid("The direct effect has no compiled resource reference"))?;
-        if read_u32(&compiled.payload, offset)? != edit.template {
+        let lanes = compiled.bound_lanes(edit.action_index, edit.template);
+        if lanes.is_empty() {
             return Err(invalid(
-                "The direct effect changed its profile during compilation",
+                "The direct effect has no compiled resource reference",
             ));
+        }
+        for &lane in &lanes {
+            if read_u32(&compiled.payload, lane)? != edit.template {
+                return Err(invalid(
+                    "The direct effect changed its profile during compilation",
+                ));
+            }
         }
         let (mut payload, shape) = if edit.health.is_some() {
             ability_damage::read_healing_profile(manager, edit.template)
@@ -596,7 +601,7 @@ fn private_damage_profiles(
         let private =
             allocator.assigned_tag(tags.len(), "Private perk", "outgoing damage profile")?;
         if let Some(health) = &edit.health {
-            ability_damage::set_health_response(&mut payload, shape, health.amounts())
+            ability_damage::set_health_response(&mut payload, shape, health.mode, health.amounts())
                 .map_err(invalid)?;
         } else {
             ability_damage::set_fixed_amount(&mut payload, shape, f32::from_bits(edit.amount_bits))
@@ -609,7 +614,9 @@ fn private_damage_profiles(
             payload,
             storage: crate::NewTagStorageMode::InheritTemplate,
         });
-        write_u32(&mut compiled.payload, offset, private.0)?;
+        for lane in lanes {
+            write_u32(&mut compiled.payload, lane, private.0)?;
+        }
     }
     Ok(())
 }
@@ -685,6 +692,26 @@ pub(super) fn append_private_program_runtime(
         let asset = program
             .asset(*index)
             .ok_or_else(|| invalid("A compiled asset has no authored component settings."))?;
+        // An imported projectile of the plug's weapon takes the place of the native projectile
+        // the program compiled against, at the tag its asset group was allocated.
+        if let Some(symbol) = &asset.imported {
+            let tag = particle_symbols
+                .and_then(|symbols| symbols.get(symbol))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "Imported projectile {symbol} was not allocated with this weapon's imported assets"
+                    ))
+                })?;
+            for &offset in offsets {
+                if read_u32(&compiled.payload, offset)? != asset.graph {
+                    return Err(invalid(
+                        "An imported projectile's native projectile moved during compilation",
+                    ));
+                }
+                write_u32(&mut compiled.payload, offset, tag.0)?;
+            }
+            continue;
+        }
         let Some(graph) = private_asset(manager, program, asset, allocator, tags)? else {
             continue;
         };
@@ -697,20 +724,18 @@ pub(super) fn append_private_program_runtime(
     // edits.
     let edits = super::hud_status::asset_edits(manager, program)?;
     for (edit_index, edit) in edits.iter().enumerate() {
-        let offset = compiled
-            .graph_offsets
-            .get(edit.action_index)
-            .copied()
-            .flatten()
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Native asset edit {edit_index} has no compiled graph reference"
-                ))
-            })?;
-        if read_u32(&compiled.payload, offset)? != edit.source_graph {
+        let lanes = compiled.bound_lanes(edit.action_index, edit.source_graph);
+        if lanes.is_empty() {
             return Err(invalid(format!(
-                "Native asset edit {edit_index} changed its source graph during compilation"
+                "Native asset edit {edit_index} has no compiled graph reference"
             )));
+        }
+        for &lane in &lanes {
+            if read_u32(&compiled.payload, lane)? != edit.source_graph {
+                return Err(invalid(format!(
+                    "Native asset edit {edit_index} changed its source graph during compilation"
+                )));
+            }
         }
         let mut patches = resolve_program_patches(&edit.patches, particle_symbols)?;
         let components = edit
@@ -799,35 +824,11 @@ pub(super) fn append_private_program_runtime(
             allocator,
             tags,
         )?;
-        write_u32(&mut compiled.payload, offset, private.0)?;
-    }
-    for imported in &program.imported_assets {
-        let offset = compiled
-            .graph_offsets
-            .get(imported.action_index)
-            .copied()
-            .flatten()
-            .ok_or_else(|| invalid("Imported attachment has no compiled entity operand"))?;
-        let asset = program
-            .actions
-            .get(imported.action_index)
-            .and_then(|action| action.asset())
-            .ok_or_else(|| invalid("Imported attachment has no entity action"))?;
-        if read_u32(&compiled.payload, offset)? != asset.graph {
-            return Err(invalid(
-                "Imported attachment envelope changed during compilation",
-            ));
+        for lane in lanes {
+            write_u32(&mut compiled.payload, lane, private.0)?;
         }
-        let tag = particle_symbols
-            .and_then(|symbols| symbols.get(&imported.symbol))
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Imported attachment {} was not allocated",
-                    imported.symbol
-                ))
-            })?;
-        write_u32(&mut compiled.payload, offset, tag.0)?;
     }
+    bind_imported_assets(program, particle_symbols, &mut compiled)?;
     let action =
         allocator.assigned_tag(tags.len(), "Custom effect action", "custom effect action")?;
     rebind_program_callbacks(&mut compiled.payload, action)?;
@@ -930,8 +931,14 @@ fn private_asset(
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<Option<TagHash>> {
     // A guided program's HUD status without settings joins its action's asset edits below.
-    // The native form has no per-action edits, so its asset takes the private copy here.
-    let native_status = program.native.is_some() && asset.hud_status.is_some();
+    // A native program's joins them only where they patch its graph, and otherwise its
+    // asset takes the private copy here.
+    let native_status = program.native.is_some()
+        && asset.hud_status.is_some()
+        && !program
+            .native_asset_patches
+            .iter()
+            .any(|edit| edit.source_graph == asset.graph);
     if asset.values.is_empty()
         && asset.damage_type.is_none()
         && asset.rows.is_empty()
@@ -988,6 +995,49 @@ pub(super) fn rebind_program_callbacks(payload: &mut [u8], owner: TagHash) -> Au
         write_u32(payload, reference.reference_offset, owner.0)?;
         let at = reference.reference_offset + 8;
         payload[at..at + 8].copy_from_slice(&(reference.target_offset as u64).to_le_bytes());
+    }
+    Ok(())
+}
+
+fn bind_imported_assets(
+    program: &sundial::package_authoring::sandbox_perk::program::Program,
+    particle_symbols: Option<&BTreeMap<String, TagHash>>,
+    compiled: &mut sundial::package_authoring::sandbox_perk::program::Compiled,
+) -> AuthoringResult<()> {
+    for imported in &program.imported_assets {
+        // A complete native program binds the group by its envelope graph.
+        let graph = match program.native {
+            Some(_) => imported.graph,
+            None => program
+                .actions
+                .get(imported.action_index)
+                .and_then(|action| action.imported_envelope()),
+        }
+        .ok_or_else(|| invalid("Imported attachment has no entity action"))?;
+        let lanes = compiled.bound_lanes(imported.action_index, graph);
+        if lanes.is_empty() {
+            return Err(invalid(
+                "Imported attachment has no compiled entity operand",
+            ));
+        }
+        for &lane in &lanes {
+            if read_u32(&compiled.payload, lane)? != graph {
+                return Err(invalid(
+                    "Imported attachment envelope changed during compilation",
+                ));
+            }
+        }
+        let tag = particle_symbols
+            .and_then(|symbols| symbols.get(&imported.symbol))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "Imported attachment {} was not allocated",
+                    imported.symbol
+                ))
+            })?;
+        for lane in lanes {
+            write_u32(&mut compiled.payload, lane, tag.0)?;
+        }
     }
     Ok(())
 }

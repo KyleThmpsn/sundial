@@ -185,9 +185,11 @@ pub(super) fn layout(payload: &[u8]) -> Result<Layout, String> {
         }
         if i64_at(payload, definition_row + ROW_GATE)? != 0 {
             let gate = pointer(payload, definition_row + ROW_GATE)?;
-            if gate < instance + 4 || u32_at(payload, gate - 4)? != GATE_CLASS {
+            if gate < instance + 4
+                || !crate::runtime::native_type_inherits(u32_at(payload, gate - 4)?, GATE_BASE)
+            {
                 return Err(format!(
-                    "Bank row {index}'s gate is not a {GATE_CLASS:08X} block in the instance \
+                    "Bank row {index}'s gate is not a {GATE_BASE:08X} block in the instance \
                      region"
                 ));
             }
@@ -320,7 +322,7 @@ pub(super) fn handler_slot_in(
         return Ok(Some(HandlerIndex::new(next)));
     }
     let (class, kind) = match modifier {
-        Modifier::Attack(_) => (attack::CLASS, "movement attack"),
+        Modifier::Attack(body) => (body.class(), "attack"),
         Modifier::Group(_) => (group::CLASS, "grouped ability property"),
         Modifier::Fixed(body) => (body.class, "fixed ability property"),
         Modifier::Charges(_) => (CHARGE_DEFINITION_CLASS, "charge"),
@@ -448,14 +450,18 @@ pub fn row_modifiers(payload: &[u8]) -> Result<Vec<(usize, bool)>, String> {
 }
 
 /// Keys used as membership predicates can be reserved without defining a property of their own.
-/// A new property under such a key would also activate the existing conditional rows.
+/// A new property under such a key would also activate the existing conditional rows. Only key
+/// gates name a key. Another gate class holds a value instead.
 pub fn membership_keys(payload: &[u8]) -> Result<BTreeSet<u32>, String> {
     let layout = layout(payload)?;
     let mut keys = BTreeSet::new();
     for index in 0..layout.definition_rows.count {
         let row = layout.definition_rows.first + index * DEFINITION_ROW_SIZE;
         if i64_at(payload, row + ROW_GATE)? != 0 {
-            keys.insert(u32_at(payload, pointer(payload, row + ROW_GATE)?)?);
+            let gate = pointer(payload, row + ROW_GATE)?;
+            if u32_at(payload, gate - 4)? == GATE_CLASS {
+                keys.insert(u32_at(payload, gate)?);
+            }
         }
     }
     Ok(keys)

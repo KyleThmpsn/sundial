@@ -36,6 +36,19 @@ fn owners(graph: &[u8]) -> AuthoringResult<Vec<u32>> {
         .collect()
 }
 
+/// Registration metadata the graph names. A composed graph keeps metadata of registrations
+/// whose implementation is not one of its private owners, so component residency misses them,
+/// and its stock companion enrolls none.
+fn metadata(graph: &[u8]) -> AuthoringResult<Vec<TagHash>> {
+    let (count, _, start, class) = crate::tag_payload::array_at(graph, 0x58)?;
+    if count > 0 && class != 0x80809C22 {
+        return Err(invalid("Replicated graph registration array differs"));
+    }
+    (0..count)
+        .map(|index| read_u32(graph, start + index * 40 + 32).map(TagHash))
+        .collect()
+}
+
 /// Native rows carry an opaque trailing word. Use an intact row that is owned by
 /// its actual graph, rather than deriving that word from class or allocation IDs.
 fn record(manager: &PackageManager, tag: u32) -> AuthoringResult<(Vec<u8>, Vec<u32>)> {
@@ -291,6 +304,7 @@ impl Plan {
             metadata: (),
         });
         let mut required = assets::replication::requirements(&nodes, manager)?;
+        required.extend(metadata(&graph)?);
         required.extend_from_slice(resources);
         required.extend(symbols.values().copied());
         required.push(companion);

@@ -73,6 +73,7 @@ fn native_pickups_and_world_objects_spawn_without_becoming_weapon_patterns() {
             rows: Vec::new(),
             hud_status: None,
             script: None,
+            imported: None,
         };
         let mut program = Program {
             trigger: Trigger::WeaponKill,

@@ -1,7 +1,7 @@
 //! Named HUD Boolean overrides retain resource lifetime and signed merge priority.
 use super::*;
 use crate::{
-    d1_roi::{Source, ability::dependency},
+    d1_roi::{Source, dependency},
     presentation::append,
 };
 mod keys;

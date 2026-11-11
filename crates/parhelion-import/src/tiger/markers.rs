@@ -74,6 +74,8 @@ pub const SOURCE: Layout = Layout {
 
 /// The marker-set component, by the class of its instance struct.
 pub const NATIVE_COMPONENT: u32 = 0x8080_8506;
+/// `fx_ejection`, the casing locator of stock firing flows and Rise of Iron firing presentations.
+pub const EJECTION: u32 = 0x9216_EEA9;
 /// The array descriptor, relative to the component's data struct.
 const NATIVE_DESCRIPTOR: usize = 0xB0;
 
@@ -167,6 +169,39 @@ pub fn validate(bytes: &[u8]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `template`, a native character marker set, with `markers` as its rows. A character set binds
+/// each row to one of its activation groups, at row `+0`, and a bone of the body palette, at
+/// `+4`. Stock sets such as `80BFAD0A` gate one group on each gender and repeat every name once
+/// per group. The groups are the caller's, so each row's group must be one of the `groups` it
+/// wrote and its bone one of the palette's `bones`.
+pub fn replace_grouped(
+    template: &Payload,
+    markers: &[Marker],
+    groups: usize,
+    bones: u32,
+) -> Result<Payload> {
+    ensure!(
+        markers.iter().all(
+            |m| usize::try_from(m.binding[0]).is_ok_and(|g| g < groups) && m.binding[1] < bones
+        ),
+        "character marker binds outside its activation groups or the body palette"
+    );
+    // Rows are written as root bindings, then take their own group and bone.
+    let rooted = markers
+        .iter()
+        .map(|marker| Marker {
+            binding: [0, 0],
+            ..*marker
+        })
+        .collect::<Vec<_>>();
+    let mut payload = replace(template, &rooted)?;
+    for (row, marker) in read_native(&payload)?.into_iter().zip(markers) {
+        payload.0[row.row..row.row + 4].copy_from_slice(&marker.binding[0].to_le_bytes());
+        payload.0[row.row + 4..row.row + 8].copy_from_slice(&marker.binding[1].to_le_bytes());
+    }
+    Ok(payload)
 }
 
 /// The markers of a source marker-set payload. Unlike the native component, the descriptor's

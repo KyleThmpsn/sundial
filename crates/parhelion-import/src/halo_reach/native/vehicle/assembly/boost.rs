@@ -27,7 +27,10 @@ struct Attachment<'a> {
     profiles: Vec<trail::Profile>,
 }
 
-fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>>> {
+/// The source boost and wingtip effects that carry contrails, and the paths of those without one,
+/// such as the Sabre's boost light volume, which this route does not translate. Each contrail part
+/// names its marker group by its primary location index at `+4`.
+fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<(Vec<Attachment<'a>>, Vec<String>)> {
     let effects = scene
         .object
         .attachments
@@ -40,25 +43,18 @@ fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>
                 )
         })
         .collect::<Vec<_>>();
-    if effects.is_empty() {
-        return Ok(Vec::new());
-    }
     let mut result = Vec::new();
+    let mut skipped = Vec::new();
     let mut scales = BTreeSet::new();
     for effect in effects {
         let scale = effect["primary_scale"]
             .as_str()
             .context("Source trail scale")?;
-        ensure!(scales.insert(scale), "Source trail scale is ambiguous");
         let tag: Tag = serde_json::from_value(effect["tag"].clone())?;
         let at = tag.address()?;
         let locations = cache.block(at + 0x20, 8)?;
-        ensure!(
-            locations.len() == 1,
-            "Source boost effect needs one marker group"
-        );
-        let name = cache.string_id(cache.u32(locations[0])?)?;
         let mut profiles = Vec::new();
+        let mut used = BTreeSet::new();
         for event in cache.block(at + 0x2c, 0x40)? {
             for part in cache.block(event + 0x1c, 0x64)? {
                 if let Some(reference) = cache.reference(part + 0x14, None)?
@@ -68,11 +64,23 @@ fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>
                         cache.i16(part + 6)? == -1,
                         "Boost contrail selects a separate location"
                     );
+                    used.insert(cache.i16(part + 4)?);
                     profiles.extend(trail::read(cache, &reference)?);
                 }
             }
         }
-        ensure!(!profiles.is_empty(), "Source boost effect has no contrail");
+        if profiles.is_empty() {
+            skipped.push(tag.path.clone());
+            continue;
+        }
+        ensure!(scales.insert(scale), "Source trail scale is ambiguous");
+        let [location] = used.into_iter().collect::<Vec<_>>()[..] else {
+            anyhow::bail!("Source boost contrails use several marker groups");
+        };
+        let location = locations
+            .get(usize::try_from(location).context("Source boost contrail location")?)
+            .context("Source boost contrail location is outside its effect")?;
+        let name = cache.string_id(cache.u32(*location)?)?;
         let model = &scene.models[0].model;
         let mut selected = Vec::new();
         for marker in model.markers.iter().filter(|marker| marker.name == name) {
@@ -91,7 +99,7 @@ fn attachments<'a>(cache: &Cache, scene: &'a Scene) -> Result<Vec<Attachment<'a>
             profiles,
         });
     }
-    Ok(result)
+    Ok((result, skipped))
 }
 
 impl Assembly {
@@ -110,9 +118,16 @@ impl Assembly {
         pages: &mut Pages,
         motion: &motion::Motion,
     ) -> Result<Trails> {
-        let source = attachments(cache, scene)?;
+        let (source, skipped) = attachments(cache, scene)?;
         if source.is_empty() {
-            return Ok(Trails::default());
+            return Ok(Trails {
+                report: if skipped.is_empty() {
+                    Value::Null
+                } else {
+                    json!({"untranslated_effects":skipped})
+                },
+                ..Trails::default()
+            });
         }
         let owner = flow::OWNER;
         ensure!(
@@ -262,7 +277,7 @@ impl Assembly {
         self.payloads.insert(marker_owner, payload);
         Ok(Trails {
             events: BTreeMap::from([(owner, flow.events.into_iter().collect())]),
-            report: json!({"owner":format!("{owner:08X}"),"attachments":report,
+            report: json!({"owner":format!("{owner:08X}"),"attachments":report,"untranslated_effects":skipped,
                 "thrust_threshold":threshold,"input":flow.input,"gate":flow.gates[0],
                 "parallel_entry":0,"independent_flow":true,"gameplay_verified":false,
                 "limits":["Source profiles and bitmaps use ordinary CPU samples with camera-facing quads. Thrust gates are authored independently of the vehicle carrier. Connected source ribbon topology and light volumes are not translated."]}),

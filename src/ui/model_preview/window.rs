@@ -47,7 +47,7 @@ pub(super) fn source_id(ui: &egui::Ui, kind: &str) -> egui::Id {
 pub(super) fn owned_by(ctx: &egui::Context, owner: egui::Id) -> bool {
     shared(ctx)
         .lock()
-        .is_ok_and(|preview| preview.open && preview.owner == Some(owner))
+        .is_ok_and(|preview| preview.window.open && preview.window.owner == Some(owner))
 }
 
 pub(super) fn launcher(
@@ -80,7 +80,7 @@ pub(super) fn launcher(
     if response.clicked() {
         open(ui.ctx(), &mut preview, owner);
     }
-    if preview.open && preview.owner == Some(owner) {
+    if preview.window.open && preview.window.owner == Some(owner) {
         update_request(ui.ctx(), &mut preview, request);
     }
     response
@@ -157,7 +157,7 @@ pub(super) fn corner_launcher(
     if response.as_ref().is_some_and(egui::Response::clicked) {
         open(ui.ctx(), &mut preview, owner);
     }
-    if preview.open && preview.owner == Some(owner) {
+    if preview.window.open && preview.window.owner == Some(owner) {
         update_request(ui.ctx(), &mut preview, Some(request));
     }
     response
@@ -174,11 +174,12 @@ pub(super) fn open_request(ctx: &egui::Context, owner: egui::Id, request: Reques
 
 /// Opens the viewer for `owner`, in front.
 fn open(ctx: &egui::Context, preview: &mut Preview, owner: egui::Id) {
-    preview.open = true;
-    preview.owner = Some(owner);
-    preview.source_viewport = Some(ctx.viewport_id());
-    preview.paused = false;
-    preview.focus_requested = true;
+    let window = &mut preview.window;
+    window.open = true;
+    window.owner = Some(owner);
+    window.source_viewport = Some(ctx.viewport_id());
+    window.paused = false;
+    window.focus_requested = true;
     ctx.request_repaint_of(viewport_id());
 }
 
@@ -187,10 +188,10 @@ pub fn pause_source(ctx: &egui::Context, paused: bool) {
     super::still::pause(ctx, paused);
     let shared = shared(ctx);
     if let Ok(mut preview) = shared.lock()
-        && preview.source_viewport == Some(ctx.viewport_id())
-        && preview.paused != paused
+        && preview.window.source_viewport == Some(ctx.viewport_id())
+        && preview.window.paused != paused
     {
-        preview.paused = paused;
+        preview.window.paused = paused;
         ctx.request_repaint_of(viewport_id());
     }
 }
@@ -198,18 +199,16 @@ pub fn pause_source(ctx: &egui::Context, paused: bool) {
 /// Stops the current model read so suspending package access does not wait for it.
 pub fn stop_reads(ctx: &egui::Context) {
     let shared = shared(ctx);
-    if let Ok(mut preview) = shared.lock()
-        && let Some(load) = preview.load.take()
-    {
-        load.stop();
+    if let Ok(mut preview) = shared.lock() {
+        preview.shown.stop_load();
     }
 }
 
 pub(super) fn follow(ctx: &egui::Context, owner: egui::Id, request: Request) {
     let shared = shared(ctx);
     if let Ok(mut preview) = shared.lock()
-        && preview.open
-        && preview.owner == Some(owner)
+        && preview.window.open
+        && preview.window.owner == Some(owner)
     {
         update_request(ctx, &mut preview, Some(request));
     }
@@ -224,7 +223,7 @@ fn details_viewport_id() -> egui::ViewportId {
 }
 
 fn update_request(ctx: &egui::Context, preview: &mut Preview, request: Option<Request>) {
-    let changed = match (&preview.request, &request) {
+    let changed = match (&preview.window.request, &request) {
         (Some(old), Some(new)) => {
             old.selection != new.selection
                 || old.name != new.name
@@ -234,7 +233,7 @@ fn update_request(ctx: &egui::Context, preview: &mut Preview, request: Option<Re
         (None, None) => false,
         _ => true,
     };
-    preview.request = request;
+    preview.window.request = request;
     if changed {
         ctx.request_repaint_of(viewport_id());
     }
@@ -248,15 +247,15 @@ pub fn show(ctx: &egui::Context) {
         let Ok(mut preview) = shared.lock() else {
             return;
         };
-        if !preview.open {
+        if !preview.window.open {
             preview.discard_closed_result(ctx);
             return;
         }
-        let title = preview.request.as_ref().map_or_else(
+        let title = preview.window.request.as_ref().map_or_else(
             || "Model Preview".into(),
             |request| format!("Model Preview: {}", request.name),
         );
-        (title, preview.details_open)
+        (title, preview.window.details.open)
     };
     let viewer = shared.clone();
     ctx.show_viewport_deferred(
@@ -271,7 +270,7 @@ pub fn show(ctx: &egui::Context) {
             let Ok(mut preview) = viewer.lock() else {
                 return;
             };
-            if std::mem::take(&mut preview.focus_requested) {
+            if std::mem::take(&mut preview.window.focus_requested) {
                 child.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
             let mut open = true;
@@ -288,13 +287,14 @@ pub fn show(ctx: &egui::Context) {
             }
             #[cfg(test)]
             tests::capture_screenshot(child);
-            if preview.details_open {
+            if preview.window.details.open {
                 let shown = preview
+                    .shown
                     .model
                     .as_ref()
                     .map(|model| Arc::as_ptr(model) as usize);
-                if preview.details_shown != shown {
-                    preview.details_shown = shown;
+                if preview.window.details.shown != shown {
+                    preview.window.details.shown = shown;
                     child.request_repaint_of(details_viewport_id());
                 }
             }
@@ -327,15 +327,17 @@ fn show_details(ctx: &egui::Context, shared: Arc<Mutex<Preview>>) {
             let Ok(mut preview) = shared.lock() else {
                 return;
             };
-            if std::mem::take(&mut preview.details_focus_requested) {
+            if std::mem::take(&mut preview.window.details.focus_requested) {
                 child.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
             // The heading follows the viewer, which can move between host frames.
-            let name = preview
+            let window = &preview.window;
+            let name = window
+                .source
                 .navigation
                 .last()
                 .map(|(_, name)| name.clone())
-                .or_else(|| preview.request.as_ref().map(|request| request.name.clone()))
+                .or_else(|| window.request.as_ref().map(|request| request.name.clone()))
                 .unwrap_or_default();
             let mut open = true;
             if class == egui::ViewportClass::EmbeddedWindow {
@@ -357,8 +359,7 @@ fn show_details(ctx: &egui::Context, shared: Arc<Mutex<Preview>>) {
                 || child.input(|i| i.viewport().close_requested())
                 || child.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             if close {
-                preview.details_open = false;
-                preview.details_shown = None;
+                preview.window.details = Details::default();
                 child.request_repaint_of(viewport_id());
                 child.request_repaint_of(egui::ViewportId::ROOT);
             }
@@ -368,19 +369,18 @@ fn show_details(ctx: &egui::Context, shared: Arc<Mutex<Preview>>) {
 
 impl Preview {
     fn draw_request(&mut self, ui: &mut egui::Ui) {
-        let Some(mut request) = self.request.clone() else {
+        let Some(mut request) = self.window.request.clone() else {
             ui.weak("No model selected");
             self.discard_closed_result(ui.ctx());
             return;
         };
-        if self.paused
+        if self.window.paused
             || !request.enabled
             || request.access.as_ref().is_some_and(|a| a.is_suspended())
         {
             ui.heading(&request.name);
             ui.weak("Paused while packages are unavailable");
-            self.last_tick = None;
-            self.rotation_tick = None;
+            self.hold_clocks();
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(200));
             return;
@@ -389,17 +389,20 @@ impl Preview {
             *generation = request.access.as_ref().map(|a| a.generation());
         }
         let (selection, name) = self.resolve_request(&request);
-        self.preserve_camera = request.preserve_camera;
-        self.sync_with_access(ui.ctx(), selection, request.access);
+        self.sync_with_access(ui.ctx(), selection, request.access, request.preserve_camera);
         self.draw(ui, &name);
     }
 
     fn resolve_request(&mut self, request: &Request) -> (Selection, String) {
-        if self.source_selection.as_ref() != Some(&request.selection) {
-            self.source_selection = Some(request.selection.clone());
-            self.navigation.clear();
+        let source = &mut self.window.source;
+        // Resources opened from another selection have no place under this one.
+        if source.selection.as_ref() != Some(&request.selection) {
+            *source = Source {
+                selection: Some(request.selection.clone()),
+                navigation: Vec::new(),
+            };
         }
-        if let Some((tag, name)) = self.navigation.last() {
+        if let Some((tag, name)) = source.navigation.last() {
             let target = match &request.selection.1 {
                 Target::Local(appearance, _) => Target::Local(appearance.clone(), Some(*tag)),
                 _ => Target::Object(*tag),
@@ -410,36 +413,14 @@ impl Preview {
         }
     }
 
+    /// Ends the window and its selection. The camera, lighting and other view choices stay for
+    /// the next time it opens. The reader is stopped rather than paying for an object nobody
+    /// will look at, and its pending receiver is still drained on later frames so a reopen never
+    /// overlaps two reads.
     fn close(&mut self) {
         self.gpu.cancel_exports();
-        self.open = false;
-        self.request = None;
-        self.source_selection = None;
-        self.navigation.clear();
-        self.details_open = false;
-        self.details_shown = None;
-        self.asset_entry = None;
-        self.owner = None;
-        self.model = None;
-        self.texture = None;
-        self.asset_textures.clear();
-        self.stop_audio();
-        self.audio_pending = None;
-        self.audio_status = None;
-        self.selection = None;
-        self.error = None;
-        self.rendered = None;
-        self.last_tick = None;
-        self.rotation_tick = None;
-        self.playing = false;
-        self.status = None;
-        self.load_started = None;
-        self.load_time = None;
-        // Stop the reader rather than paying for an object nobody will look at. The pending
-        // receiver is still drained on later frames so a reopen never overlaps two reads.
-        if let Some(load) = self.load.take() {
-            load.stop();
-        }
+        self.window = Window::default();
+        self.show_selection(None);
     }
 
     fn discard_closed_result(&mut self, ctx: &egui::Context) {

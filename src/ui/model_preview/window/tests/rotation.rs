@@ -38,12 +38,18 @@ fn view_option_rotates_without_starving_software_or_overriding_manual_controls()
         ..Camera::default()
     };
     *shared(&check.ctx).lock().unwrap() = Preview {
-        open: true,
-        selection: Some(request.selection.clone()),
-        request: Some(request),
-        model: Some(model),
+        shown: Shown {
+            selection: Some(request.selection.clone()),
+            model: Some(model),
+            ..Shown::default()
+        },
+        window: Window {
+            open: true,
+            request: Some(request),
+            source_viewport: Some(egui::ViewportId::ROOT),
+            ..Window::default()
+        },
         camera: initial,
-        source_viewport: Some(egui::ViewportId::ROOT),
         ..Preview::default()
     };
     check.wait_image();
@@ -61,7 +67,7 @@ fn view_option_rotates_without_starving_software_or_overriding_manual_controls()
     assert_eq!(orbit.pitch, initial.pitch);
     assert_eq!(orbit.zoom, initial.zoom);
     assert_eq!(orbit.pan, initial.pan);
-    assert_eq!(shared(&check.ctx).lock().unwrap().seconds, 0.0);
+    assert_eq!(shared(&check.ctx).lock().unwrap().shown.frames.seconds, 0.0);
     let changed = baseline
         .pixels
         .iter()
@@ -90,7 +96,7 @@ fn view_option_rotates_without_starving_software_or_overriding_manual_controls()
     check.display_controls();
     std::fs::write(check.output.join("rotation-receipt.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "configured_native_appearance": 930, "triangles": shared(&check.ctx).lock().unwrap().model.as_ref().unwrap().triangles.len(),
+            "configured_native_appearance": 930, "triangles": shared(&check.ctx).lock().unwrap().shown.model.as_ref().unwrap().triangles.len(),
             "initial_yaw": initial.yaw, "orbit_yaw": orbit.yaw, "changed_pixels": changed,
             "software_uploads_during_orbit": orbit_uploads,
             "manual_drag_paused_orbit": true, "package_resume_has_no_jump": true,
@@ -196,6 +202,8 @@ impl Check {
         let texture = shared(&self.ctx)
             .lock()
             .unwrap()
+            .shown
+            .frames
             .texture
             .as_ref()
             .map(egui::TextureHandle::id);
@@ -267,9 +275,15 @@ impl Check {
         let state = shared(&self.ctx);
         let preview = state.lock().unwrap();
         self.image.is_some()
-            && preview.rendered.is_some_and(|(camera, scene, size, _)| {
-                camera == preview.camera && scene == preview.scene && Some(size) == self.canvas_size
-            })
+            && preview
+                .shown
+                .frames
+                .rendered
+                .is_some_and(|(camera, scene, size, _)| {
+                    camera == preview.camera
+                        && scene == preview.scene
+                        && Some(size) == self.canvas_size
+                })
     }
 
     fn advance_until_uploads(&mut self, count: usize) {
@@ -290,6 +304,8 @@ impl Check {
         let texture = shared(&self.ctx)
             .lock()
             .unwrap()
+            .shown
+            .frames
             .texture
             .as_ref()
             .unwrap()

@@ -1,11 +1,14 @@
 //! Adds the authored items an account has no other way to obtain after a package install.
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::account::{
     AuthoredGrantOutcome, AuthoredGrantReport, AuthoredGrantTarget, AuthoredItemGrant,
 };
 use crate::app::account_workspace::{self as account, WorkspaceDocument};
-use crate::persistence::json_account::inventory::{InventoryItemLocation, NewInventoryItem};
+use crate::persistence::json_account::inventory::{
+    InventoryItemLocation, NewInventoryItem, ProfileItemAction,
+};
 use sundial_account::{CharacterAbilities, CharacterMetadataUpdate};
 
 /// The ability entries a subclass starts with. Every stock list shares one layout, so the same
@@ -21,23 +24,74 @@ const DEFAULT_ABILITIES: CharacterAbilities = CharacterAbilities {
 type BucketOf<'a> = dyn FnMut(u32) -> Result<Option<u8>, String> + 'a;
 
 /// Adds each grant the account lacks and has room for, then saves once with a verified backup.
-/// Copies the account already holds are skipped, so a repeat install adds nothing new.
+/// Copies the account already holds are skipped, so a repeat install adds nothing new and leaves
+/// each character's equipped subclass and ability choices as the player left them.
 pub(crate) fn grant_authored_items(
     install: &Path,
     grants: &[AuthoredItemGrant],
     bucket_of: &mut BucketOf<'_>,
 ) -> Result<AuthoredGrantReport, String> {
-    let preferences = crate::app::settings::load_preferences().preferences;
     let runtime = crate::package_runtime::installed_runtime(install)?;
-    let settings_path = super::authored_runtime_settings_path(install, &preferences, &runtime)?;
     // The runtime owns its account while it is up, and its journal would be written over.
     crate::app::settings::require_game_closed(crate::app::platform::destiny_is_running())?;
+    let (settings_path, original, mut document, report) =
+        plan_grants(install, &runtime, grants, &BTreeSet::new(), bucket_of)?;
+    if report.added.is_empty() && report.equipped.is_empty() {
+        return Ok(report);
+    }
+    save_grants(
+        install,
+        &runtime,
+        &settings_path,
+        &original,
+        &mut document,
+        report,
+    )
+}
+
+/// What [`grant_authored_items`] would add and equip once the reviewed cleanup has run, read
+/// from the account as it is now without saving, so an installation review can show it before
+/// anything changes. Saved rows of `removed`, the definitions that cleanup deletes, take no room
+/// in any inventory here, as they will take none when the grants run after it.
+pub(crate) fn preview_authored_grants(
+    install: &Path,
+    runtime: &crate::package_runtime::RuntimeSnapshot,
+    grants: &[AuthoredItemGrant],
+    removed: &BTreeSet<u32>,
+    bucket_of: &mut BucketOf<'_>,
+) -> Result<AuthoredGrantReport, String> {
+    plan_grants(install, runtime, grants, removed, bucket_of).map(|(_, _, _, report)| report)
+}
+
+/// Applies the grants to the active account in memory: its settings path, original document,
+/// changed document and what changed. The saved rows of `removed` are deleted from the document
+/// first, as the reviewed cleanup deletes them before installation grants.
+fn plan_grants(
+    install: &Path,
+    runtime: &crate::package_runtime::RuntimeSnapshot,
+    grants: &[AuthoredItemGrant],
+    removed: &BTreeSet<u32>,
+    bucket_of: &mut BucketOf<'_>,
+) -> Result<
+    (
+        std::path::PathBuf,
+        serde_json::Value,
+        WorkspaceDocument,
+        AuthoredGrantReport,
+    ),
+    String,
+> {
+    let preferences = crate::app::settings::load_preferences().preferences;
+    let settings_path = super::authored_runtime_settings_path(install, &preferences, runtime)?;
     let dawn = runtime.brand() == crate::package_runtime::RuntimeBrand::Dawn;
     let original = crate::persistence::json_document::load_workspace_json(&settings_path)?;
     let mut document = WorkspaceDocument::load(original.clone(), &settings_path, dawn);
     if let Some(reason) = document.account_editing_blocked() {
         return Err(reason.to_owned());
     }
+    // Installation grants after the reviewed cleanup, so a review grants on the account with the
+    // rows that cleanup deletes already gone, and their room counts as free.
+    remove_rows(&mut document, removed)?;
     let mut report = AuthoredGrantReport {
         account_path: if document.uses_json_account() {
             settings_path.clone()
@@ -62,12 +116,53 @@ pub(crate) fn grant_authored_items(
             }
         }
     }
-    if report.added.is_empty() && report.equipped.is_empty() {
-        return Ok(report);
+    Ok((settings_path, original, document, report))
+}
+
+/// Deletes every saved inventory and profile row of `removed` from the document in memory, as the
+/// reviewed cleanup deletes them before installation grants anything.
+fn remove_rows(document: &mut WorkspaceDocument, removed: &BTreeSet<u32>) -> Result<(), String> {
+    if removed.is_empty() {
+        return Ok(());
     }
-    crate::package_runtime::verify_installed_runtime(install, &runtime)?;
+    for character in 0..account::character_count(document) {
+        // Removal indexes the stored rows, Dawn's Postmaster rows included.
+        let indices = account::character_inventory_storage(document, character)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| removed.contains(&item.definition_hash))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !indices.is_empty() {
+            account::remove_character_inventory_items(document, character, indices)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let rows = account::profile_items(document)
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    // From the last row back, so each removal leaves the earlier rows' places as they were.
+    for row in rows.into_iter().rev() {
+        if removed.contains(&row.definition_hash) {
+            account::apply_profile_item_action(document, row.location, ProfileItemAction::Remove)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn save_grants(
+    install: &Path,
+    runtime: &crate::package_runtime::RuntimeSnapshot,
+    settings_path: &Path,
+    original: &serde_json::Value,
+    document: &mut WorkspaceDocument,
+    mut report: AuthoredGrantReport,
+) -> Result<AuthoredGrantReport, String> {
+    crate::package_runtime::verify_installed_runtime(install, runtime)?;
     report.backup_path = Some(if document.uses_json_account() {
-        crate::app::settings::save_json(&settings_path, document.json(), &original, false)
+        crate::app::settings::save_json(settings_path, document.json(), original, false)
             .map_err(String::from)?
             .backup
     } else {
@@ -82,7 +177,8 @@ pub(crate) fn grant_authored_items(
 }
 
 /// Adds a copy to each character of the class that holds none and has room in its bucket, and
-/// equips it when asked.
+/// equips the added copy when asked. A character that already holds the item keeps what it has
+/// equipped: the player may have switched away from it since the first install.
 fn grant_characters(
     document: &mut WorkspaceDocument,
     grant: &AuthoredItemGrant,
@@ -94,11 +190,7 @@ fn grant_characters(
         if account::character_metadata(document, character)?.class_type != class_type {
             continue;
         }
-        let snapshots = account::equipped_item_snapshots(document, character)?;
-        let worn = snapshots.iter().any(|item| {
-            item.slot == "subclass" && item.definition_hash == Some(u64::from(grant.item_hash))
-        });
-        let equipped = snapshots
+        let equipped = account::equipped_item_snapshots(document, character)?
             .into_iter()
             .filter_map(|item| {
                 item.definition_hash
@@ -120,14 +212,6 @@ fn grant_characters(
             .chain(stored.iter().map(|item| &item.definition_hash))
             .any(|hash| *hash == grant.item_hash)
         {
-            let held = visible
-                .iter()
-                .find(|item| item.definition_hash == grant.item_hash)
-                .map(|item| item.location);
-            if let Some(location) = held.filter(|_| equip && !worn) {
-                equip_subclass(document, location)?;
-                report.equipped.push(outcome);
-            }
             continue;
         }
         let mut used = 0;
@@ -151,7 +235,9 @@ fn grant_characters(
         .map_err(|error| error.to_string())?;
         report.added.push(outcome);
         if equip {
-            equip_subclass(document, location)?;
+            if equip_subclass(document, location)? {
+                report.abilities_reset.push(outcome);
+            }
             report.equipped.push(outcome);
         }
     }
@@ -160,21 +246,22 @@ fn grant_characters(
 
 /// Moves a held subclass into the subclass slot, and its predecessor into the inventory. Where
 /// the account keeps ability choices on the character, they start over at the defaults, as they
-/// do when the app swaps a subclass.
+/// do when the app swaps a subclass, and this returns `true`.
 fn equip_subclass(
     document: &mut WorkspaceDocument,
     location: InventoryItemLocation,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     account::swap_inventory_item_with_equipment(document, location, "subclass")
         .map_err(|error| error.to_string())?;
-    if !document.uses_subclass_plug_abilities() {
-        account::apply_character_updates(
-            document,
-            location.character_index,
-            vec![CharacterMetadataUpdate::SetAbilities(DEFAULT_ABILITIES)],
-        )?;
+    if document.uses_subclass_plug_abilities() {
+        return Ok(false);
     }
-    Ok(())
+    account::apply_character_updates(
+        document,
+        location.character_index,
+        vec![CharacterMetadataUpdate::SetAbilities(DEFAULT_ABILITIES)],
+    )?;
+    Ok(true)
 }
 
 /// Adds one stack unless the profile already holds the item or its bucket is full.

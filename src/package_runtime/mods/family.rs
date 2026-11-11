@@ -115,6 +115,8 @@ pub struct ImportContent {
 }
 
 impl ImportContent {
+    /// `packages` are the ids of the receipt's `packages/` files. The allocation lists exactly
+    /// those, since the next build reserves it, and never a stock package the importer patches.
     pub(super) fn validate(&self, packages: &BTreeSet<u16>) -> Result<(), String> {
         if !valid_sha256(&self.fingerprint)
             || !valid_sha256(&self.inputs)
@@ -124,6 +126,29 @@ impl ImportContent {
         {
             return Err(
                 "The importer receipt has invalid fingerprints or package allocations".into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// For an importer whose resources the main mod holds: the allocation names some of the main
+    /// mod's added `packages`, each once, and none another coupled importer's in `claimed`.
+    pub(super) fn validate_within(
+        &self,
+        packages: &BTreeSet<u16>,
+        claimed: &mut BTreeSet<u16>,
+    ) -> Result<(), String> {
+        if !valid_sha256(&self.fingerprint)
+            || !valid_sha256(&self.inputs)
+            || self.allocation.is_empty()
+            || self
+                .allocation
+                .iter()
+                .any(|id| !packages.contains(id) || !claimed.insert(*id))
+        {
+            return Err(
+                "The coupled importer content has invalid fingerprints or package allocations"
+                    .into(),
             );
         }
         Ok(())

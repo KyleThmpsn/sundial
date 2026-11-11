@@ -8,7 +8,10 @@ use parhelion::{
     BatchBuildRequest, BatchBuildSnapshot, ItemKind, WeaponRecipe,
     build_and_stage_snapshot_with_progress,
 };
-use parhelion_import::d2_mot::{payload::Payload, reader, reader::Reader, service, shadowkeep};
+use parhelion_import::{
+    d2_mot::service,
+    tiger::{payload::Payload, reader, reader::Reader, shadowkeep},
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,

@@ -1,6 +1,8 @@
 //! Versioned saved recipes for every supported authored item kind.
 
 mod compile;
+#[cfg(feature = "d2-model-importer")]
+pub(crate) mod damage;
 mod document;
 mod error;
 pub use error::RecipeError;
@@ -279,6 +281,17 @@ pub struct WeaponDonorReference {
     pub expected_name: Option<String>,
 }
 
+/// Another row of the base weapon's own content owner, chosen by its content key, whose firing
+/// presentation the weapon uses: the rows stock weapons leave unselected included.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentVariantRecipe {
+    pub key: HexHash,
+    /// The row's projectile and shot display come too. Otherwise the weapon keeps its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub projectile: bool,
+}
+
 /// One gameplay component, such as the barrel, whose values come from another weapon while the
 /// weapon keeps its own runtime.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -364,6 +377,11 @@ pub struct WeaponSocketColumnRecipe {
     /// Omitted keeps every choice reusable and adds no set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reusable_choices: Option<u16>,
+    /// Whether the item tooltip leaves the socket's plugs out of its perk rows, as stock does
+    /// for stat intrinsics, masterworks and Armor 2.0 mods. Omitted keeps the socket's own
+    /// setting, which an added socket starts without.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hide_perks_in_tooltip: Option<bool>,
 }
 
 /// Runtime edits applied through a private clone of one finished sandbox perk on a socket plug.
@@ -752,6 +770,9 @@ pub struct WeaponRecipeOverrides {
     /// default and perk-selected runtime variants. Does not rebalance magazine or reserve stats.
     pub ammo_type: Option<RecipeAmmoType>,
     pub modern_damage_type: Option<RecipeDamageType>,
+    /// The private damage talent added when an imported weapon has no retained damage choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_talent_socket: Option<u16>,
     /// Reload-hold element switching. Compilation pins Hard Light's Fundamentals plug into the
     /// first trait socket, so the appearance donor must be Hard Light or Borealis.
     /// [`Self::modern_damage_type`] is then the element the weapon rests on and must be in the set.
@@ -794,6 +815,11 @@ pub struct WeaponRecipeOverrides {
     /// carries, such as `pulse_rifle` on a scout rifle. Absent keeps the base weapon's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_marker_donor: Option<WeaponDonorReference>,
+    /// Another row of the base weapon's content owner whose firing presentation, and optionally
+    /// projectile, the weapon uses. A Destiny 1 import names the row its source weapon's key
+    /// selects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_variant: Option<ContentVariantRecipe>,
     /// Another weapon whose behavior the weapon's block takes in place of the base weapon's own.
     /// One in the base's content owner lends its firing graph, firing values, state and behavior
     /// records, labels and type markers. One in another owner lends its records and labels only,
@@ -1343,11 +1369,11 @@ impl WeaponRecipe {
 
 /// Derives the canonical authoring namespace shown by Parhelion's recipe editor.
 pub fn namespace_for_weapon_name(name: &str) -> Result<String, RecipeError> {
-    let slug = slug_from_text(name);
+    let mut slug = slug_from_text(name);
     if slug.is_empty() {
-        return Err(RecipeError::Validation(
-            "Weapon name must contain at least one ASCII letter or digit".to_owned(),
-        ));
+        slug = text_slug(name).ok_or_else(|| {
+            RecipeError::Validation("Weapon name must contain at least one letter or digit".into())
+        })?;
     }
     let max_slug_length = 64 - PARHELION_NAMESPACE_PREFIX.len();
     if slug.len() > max_slug_length {
@@ -1356,6 +1382,20 @@ pub fn namespace_for_weapon_name(name: &str) -> Result<String, RecipeError> {
         )));
     }
     Ok(format!("{PARHELION_NAMESPACE_PREFIX}{slug}"))
+}
+
+/// The slug of a name with letters or digits but none in ASCII, such as one written entirely in
+/// Japanese: `u` and the first 16 hex digits of the SHA-256 of its trimmed text. It is the same
+/// for the same text and distinct for different text. Names with any ASCII letter or digit keep
+/// their word slug, so no existing identity moves. `None` without a letter or digit.
+fn text_slug(name: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let name = name.trim();
+    if !name.chars().any(char::is_alphanumeric) {
+        return None;
+    }
+    let digest = Sha256::digest(name.as_bytes());
+    Some(format!("u{}", hex::encode(&digest[..8])))
 }
 
 /// Lowercase ASCII words joined by hyphens. Spaces, dashes, underscores and slashes separate

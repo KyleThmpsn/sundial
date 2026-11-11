@@ -61,8 +61,8 @@ pub(super) struct Cells {
     descriptors: Vec<u8>,
     clusters: Vec<u8>,
     regions: Vec<tome::Region>,
-    /// Explicit probe choices for the lighting clusters appended after the crossing clusters.
-    lighting_probes: Vec<u16>,
+    /// Native probes for the lighting clusters appended after the crossing clusters.
+    lighting_probes: Vec<super::lighting::Probe>,
     /// Probe choices for the crossing clusters that hold probes, by cluster.
     crossing_probes: BTreeMap<u32, u16>,
 }
@@ -70,8 +70,9 @@ pub(super) struct Cells {
 impl Cells {
     /// A lighting cell: a cluster of its own with cluster 0's row, no crossing, at its middle. A
     /// lit object finds the cell it stands in through its connected-region query, and the
-    /// occlusion record assigns each cluster a probe ([`Cells::assignments`]).
-    fn push_lighting(&mut self, lighting::Cell { bounds, probe }: lighting::Cell) {
+    /// occlusion record assigns each cluster a probe ([`Cells::lighting`]).
+    fn push_lighting(&mut self, cell: lighting::Cell, probes: &[[f32; 4]]) {
+        let bounds = cell.bounds;
         let cluster = (self.clusters.len() / 20) as u32;
         let mut row = self.clusters[..20].to_vec();
         for (k, value) in bounds.center().into_iter().enumerate() {
@@ -79,18 +80,25 @@ impl Cells {
         }
         self.clusters.extend(row);
         self.regions.push(tome::Region { bounds, cluster });
-        self.lighting_probes.push((probe + 1) as u16);
+        self.lighting_probes.push(super::lighting::Probe::anchored(
+            probes[cell.probe],
+            cell.gradient,
+        ));
     }
 
     /// Each cluster's probe in the occlusion record, whose probes after the first are `probes`.
     /// Cluster 0, the space outside every cell and crossing, takes the record's first probe, the
     /// open-ground fallback every stock record holds. A crossing takes a probe it holds, chosen
     /// as a lighting cell chooses its own ([`lighting::region_probe`]), and otherwise the probe
-    /// nearest its middle. Lighting cells retain the in-cell probe chosen during adaptive
-    /// subdivision.
-    pub(super) fn assignments(&self, probes: &[[f32; 4]]) -> Vec<u16> {
+    /// nearest its middle. Each lighting cell appends its own gradient-bearing row, anchored at
+    /// the source sample chosen during adaptive subdivision.
+    pub(super) fn lighting(&self, probes: &[[f32; 4]]) -> AuthoringResult<super::lighting::Plan> {
+        if probes.len() + self.lighting_probes.len() + 1 >= usize::from(u16::MAX) {
+            return Err(invalid("The map's lighting probes exceed the native range"));
+        }
         let first_lighting = self.clusters.len() / 20 - self.lighting_probes.len();
-        self.clusters
+        let clusters = self
+            .clusters
             .chunks_exact(20)
             .enumerate()
             .map(|(cluster, row)| {
@@ -98,7 +106,7 @@ impl Cells {
                     return 0;
                 }
                 if cluster >= first_lighting {
-                    return self.lighting_probes[cluster - first_lighting];
+                    return (probes.len() + cluster - first_lighting + 1) as u16;
                 }
                 if let Some(&probe) = self.crossing_probes.get(&(cluster as u32)) {
                     return probe;
@@ -116,7 +124,14 @@ impl Cells {
                     .min_by(|a, b| a.0.total_cmp(&b.0))
                     .map_or(0, |(_, index)| index as u16 + 1)
             })
-            .collect()
+            .collect();
+        let probes = probes
+            .iter()
+            .copied()
+            .map(super::lighting::Probe::from)
+            .chain(self.lighting_probes.iter().copied())
+            .collect();
+        Ok(super::lighting::Plan { probes, clusters })
     }
 
     fn push(&mut self, bounds: Bounds, phase: u8, descriptor: usize) {
@@ -279,7 +294,8 @@ impl Layout {
                     .filter(|(_, e)| {
                         matches!(
                             e.reference,
-                            0x8080_7320
+                            0x8080_7268
+                                | 0x8080_7320
                                 | 0x8080_7DAE
                                 | 0x8080_8A54
                                 | 0x8080_9162
@@ -475,6 +491,9 @@ impl Layout {
             .collect();
         for spec in tags {
             match self.classes.get(&spec.template_tag).copied() {
+                // World-change selection passes the same area ordinal to the spatial and
+                // occlusion registries. A donor selector cannot identify a different area.
+                Some(0x8080_7268) => write_u32(&mut spec.payload, 0x70, bubble as u32)?,
                 Some(0x8080_8A54) => write_u64(&mut spec.payload, 8, 1u64 << bubble)?,
                 Some(0x8080_9EF9) => {
                     spec.payload = remove_dependencies(
@@ -565,41 +584,57 @@ impl Layout {
         Ok(())
     }
 
-    fn return_gate(&self, bubble: usize, previous_entry: Option<[f32; 3]>) -> Option<Bounds> {
-        let previous = self.plan.bubbles.get(bubble.checked_sub(1)?)?;
+    fn return_gates(
+        &self,
+        bubble: usize,
+        previous_entry: Option<[f32; 3]>,
+    ) -> AuthoringResult<Vec<Bounds>> {
+        let previous = &self.plan.bubbles[bubble - 1];
         let area = &self.plan.bubbles[bubble];
-        if let Some(entry) = previous.commit.first() {
-            return area
-                .preload
-                .iter()
-                .min_by(|a, b| {
+        if !previous.commit.is_empty() {
+            let mut gates: Vec<Bounds> = Vec::new();
+            for entry in &previous.commit {
+                if let Some(&gate) = area.preload.iter().min_by(|a, b| {
                     distance(**a, entry.center()).total_cmp(&distance(**b, entry.center()))
-                })
-                .copied();
+                }) && !gates
+                    .iter()
+                    .any(|old| old.minimum == gate.minimum && old.maximum == gate.maximum)
+                {
+                    gates.push(gate);
+                }
+            }
+            return Ok(gates);
         }
-        // An opening area has no automatic entry volume. A return gate sits outside the
-        // current area's commit volume on the side facing that opening area's source spawn.
-        // The commit volume itself remains neutral after arrival, preventing an immediate return.
-        let point = previous_entry?;
-        let mut gate = *area
-            .commit
+        // An opening area has no automatic entry volume. Every entrance needs a return slab
+        // outside its commit, facing the opening area's source spawn. Arrival stays neutral.
+        let missing = || invalid("The opening area's return crossing cannot be located");
+        let point = previous_entry.ok_or_else(missing)?;
+        if area.commit.is_empty() {
+            return Err(missing());
+        }
+        area.commit
             .iter()
-            .min_by(|a, b| distance(**a, point).total_cmp(&distance(**b, point)))?;
-        let axis = (0..2)
-            .filter(|&k| point[k] < gate.minimum[k] || point[k] > gate.maximum[k])
-            .max_by(|&a, &b| {
-                let separation =
-                    |k: usize| (point[k] - point[k].clamp(gate.minimum[k], gate.maximum[k])).abs();
-                separation(a).total_cmp(&separation(b))
-            })?;
-        if point[axis] < gate.minimum[axis] {
-            gate.maximum[axis] = gate.minimum[axis];
-            gate.minimum[axis] -= 16.;
-        } else {
-            gate.minimum[axis] = gate.maximum[axis];
-            gate.maximum[axis] += 16.;
-        }
-        Some(gate)
+            .map(|&bounds| {
+                let mut gate = bounds;
+                let axis = (0..2)
+                    .filter(|&k| point[k] < gate.minimum[k] || point[k] > gate.maximum[k])
+                    .max_by(|&a, &b| {
+                        let separation = |k: usize| {
+                            (point[k] - point[k].clamp(gate.minimum[k], gate.maximum[k])).abs()
+                        };
+                        separation(a).total_cmp(&separation(b))
+                    })
+                    .ok_or_else(missing)?;
+                if point[axis] < gate.minimum[axis] {
+                    gate.maximum[axis] = gate.minimum[axis];
+                    gate.minimum[axis] -= 16.;
+                } else {
+                    gate.minimum[axis] = gate.maximum[axis];
+                    gate.maximum[axis] += 16.;
+                }
+                Ok(gate)
+            })
+            .collect()
     }
 
     /// The clusters of area `bubble`'s spatial tome: its crossings, then lighting cells over the
@@ -653,12 +688,8 @@ impl Layout {
             }
         }
         if bubble > 0 {
-            if let Some(bounds) = self.return_gate(bubble, previous_entry) {
+            for bounds in self.return_gates(bubble, previous_entry)? {
                 cells.push(bounds, 2, 0);
-            } else if self.plan.bubbles[bubble - 1].commit.is_empty() {
-                return Err(invalid(
-                    "The opening area's return crossing cannot be located",
-                ));
             }
         }
         // The native location query caches a sphere, while the crossing trigger queries
@@ -700,7 +731,7 @@ impl Layout {
         }
         let root = object_extent(area, visible);
         for cell in lighting::cells(area, root, probes, structure, &cells.regions)? {
-            cells.push_lighting(cell);
+            cells.push_lighting(cell, probes);
         }
         Ok(cells)
     }

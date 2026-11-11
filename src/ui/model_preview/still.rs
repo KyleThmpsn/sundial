@@ -2,6 +2,7 @@
 //! made. The model is read in the background once per appearance, and a change to its surface
 //! colors draws it again without reading it again.
 use super::*;
+mod cache;
 mod camera;
 mod playback;
 pub use camera::zoom_controls;
@@ -11,15 +12,32 @@ pub(super) use playback::control as playback_control;
 /// vehicle a Sparrow summons.
 #[derive(Clone, PartialEq)]
 enum Subject {
+    Character(model_preview::character::Character),
     Appearance(Appearance),
     Object(u32),
     Local(LocalAppearance),
 }
 
 impl Subject {
+    fn camera(&self) -> Camera {
+        match self {
+            Self::Character(_) => Camera {
+                yaw: -std::f32::consts::FRAC_PI_2,
+                pitch: 0.06,
+                ..Camera::default()
+            },
+            _ => Camera::default(),
+        }
+    }
+
     /// Whether `other` is the same model, which keeps the angle it was turned to.
     fn same_model(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Character(a), Self::Character(b)) => {
+                a.portrait == b.portrait
+                    && a.appearance.race == b.appearance.race
+                    && a.appearance.gender == b.appearance.gender
+            }
             (Self::Appearance(own), Self::Appearance(other)) => {
                 own.arrangement == other.arrangement
             }
@@ -32,6 +50,16 @@ impl Subject {
     /// Names the subject in timing records.
     fn label(&self) -> String {
         match self {
+            Self::Character(character) => format!(
+                "character {}/{} {}",
+                character.appearance.race,
+                character.appearance.gender,
+                if character.portrait {
+                    "portrait"
+                } else {
+                    "body"
+                }
+            ),
             Self::Appearance(appearance) => format!("appearance {}", appearance.arrangement),
             Self::Object(tag) => format!("object 0x{tag:08X}"),
             Self::Local(appearance) => format!("imported {appearance:?}"),
@@ -54,6 +82,7 @@ struct Still {
     /// The appearance the model shows. An older one stays up while a newer one loads.
     shown: Option<Wanted>,
     model: Option<Arc<Model>>,
+    cached: Option<cache::View>,
     /// The box around what the shown model draws, kept so each frame can fit it.
     bounds: Option<([f32; 3], [f32; 3])>,
     /// The read in flight. A new read waits for it, so two never overlap.
@@ -222,6 +251,27 @@ pub fn show_local(
     )
 }
 
+/// Uses the same background reads, renderer, camera and package guards as inspected gear.
+pub(crate) fn show_character(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    packages: &Path,
+    character: model_preview::character::Character,
+    size: egui::Vec2,
+    access: Arc<crate::catalog::PackageInspectionAccess>,
+) -> egui::Response {
+    show_subject(
+        ui,
+        id,
+        packages,
+        Some(Subject::Character(character)),
+        &[],
+        size,
+        None,
+        Some(access),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn show_subject(
     ui: &mut egui::Ui,
@@ -257,22 +307,14 @@ fn show_subject(
         .is_some_and(|(old, new)| {
             // An inspected still is one per window, so another item's model never stands in
             // for the next item's while it loads.
-            old.0 != new.0 || old.3 != new.3 || (new.3.is_some() && !old.1.same_model(&new.1))
+            old.0 != new.0
+                || old.3 != new.3
+                || (matches!(new.1, Subject::Character(_)) && old != new)
+                || (new.3.is_some() && !old.1.same_model(&new.1))
         })
     {
-        // No geometry or image from an older package snapshot may remain visible. The GPU
-        // state stays: it replaces and deletes the old upload when the next model is drawn,
-        // which a fresh state could not do for the old one's GL objects.
-        if let Some(load) = still.load.take() {
-            load.stop();
-        }
-        still.model = None;
-        still.bounds = None;
-        still.error = None;
-        still.texture = None;
-        still.rendered = None;
-        still.rendered_seconds = None;
-        still.software = image_job::Job::default();
+        // No geometry or image from an older package snapshot may remain visible.
+        still.change_source(wanted.as_ref().expect("compared preview source"));
     }
     still.access = access;
     still.wanted = wanted;
@@ -299,6 +341,12 @@ fn show_subject(
     );
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Model Preview"));
+    if matches!(
+        still.wanted.as_ref().map(|source| &source.1),
+        Some(Subject::Character(_))
+    ) {
+        return response.on_hover_cursor(egui::CursorIcon::Grab);
+    }
     let response = if let Some(model) = &still.model {
         if model.notices.is_empty() {
             response
@@ -316,6 +364,33 @@ fn show_subject(
 }
 
 impl Still {
+    /// Drops the shown model and stops its read, so nothing of it stays visible. The GPU state
+    /// stays: it replaces and deletes the old upload when the next model is drawn, which a fresh
+    /// state could not do for the old one's GL objects.
+    fn clear_model(&mut self) {
+        if let Some(load) = self.load.take() {
+            load.stop();
+        }
+        self.model = None;
+        self.cached = None;
+        self.bounds = None;
+        self.error = None;
+        self.texture = None;
+        self.restart_frames();
+    }
+
+    /// Forgets what was drawn of the model and restarts its clock, for a model just read. The
+    /// texture stays, so the previous image covers the frame until this model's first one.
+    fn restart_frames(&mut self) {
+        self.rendered = None;
+        self.rendered_seconds = None;
+        self.software.reset();
+        self.fps = fps::Counter::default();
+        self.software_frames = 0;
+        self.seconds = 0.0;
+        self.last_tick = None;
+    }
+
     fn receive(&mut self) {
         let Some((source, receiver)) = &self.pending else {
             return;
@@ -341,20 +416,14 @@ impl Still {
                     .as_ref()
                     .is_none_or(|shown| shown.0 != source.0 || !shown.1.same_model(&source.1))
                 {
-                    self.camera = Camera::default();
+                    self.camera = source.1.camera();
                     self.playing = None;
                 }
                 self.bounds = Some(render::drawn_bounds(&model, render::Style::Textured));
                 self.model = Some(Arc::new(model));
                 self.shown = Some(source);
                 self.error = None;
-                self.rendered = None;
-                self.seconds = 0.0;
-                self.last_tick = None;
-                self.rendered_seconds = None;
-                self.software = image_job::Job::default();
-                self.fps = fps::Counter::default();
-                self.software_frames = 0;
+                self.restart_frames();
             }
             Err(error) if error == model_preview::CANCELLED => {}
             Err(error) => {
@@ -404,6 +473,9 @@ impl Still {
                     return Err(model_preview::CANCELLED.into());
                 }
                 let model = match &subject {
+                    Subject::Character(character) => {
+                        model_preview::character::load_reported(&packages, character, &load)
+                    }
                     Subject::Appearance(appearance) => {
                         model_preview::appearance::load_reported(&packages, appearance, &load)
                     }
@@ -457,16 +529,7 @@ impl Still {
             return false;
         }
         self.requested = None;
-        if let Some(load) = self.load.take() {
-            load.stop();
-        }
-        self.model = None;
-        self.bounds = None;
-        self.error = None;
-        self.texture = None;
-        self.rendered = None;
-        self.rendered_seconds = None;
-        self.software = image_job::Job::default();
+        self.clear_model();
         true
     }
 
@@ -565,19 +628,30 @@ impl Still {
         if self.model.is_none() {
             self.draw_placeholder(&painter, rect);
         }
-        // An older model stays up while the one the page asks for loads, and while the software
-        // renderer draws the first image of a newly read one, which would otherwise pass for it.
+        // Keep preparation visible while geometry loads or the renderer prepares its first frame.
         let rendering = self.model.is_some() && !drawn;
         if (self.shown != self.wanted || rendering) && !paused {
+            let character = matches!(
+                self.wanted.as_ref().map(|source| &source.1),
+                Some(Subject::Character(_))
+            );
             let spinner = egui::Rect::from_min_size(
-                rect.left_bottom() + egui::vec2(10.0, -26.0),
+                if character && !drawn {
+                    rect.center() - egui::vec2(72.0, 8.0)
+                } else {
+                    rect.left_bottom() + egui::vec2(10.0, -26.0)
+                },
                 egui::vec2(16.0, 16.0),
             );
             egui::Spinner::new().paint_at(ui, spinner);
             painter.text(
                 spinner.right_center() + egui::vec2(6.0, 0.0),
                 egui::Align2::LEFT_CENTER,
-                "Loading Model",
+                if rendering && self.shown == self.wanted {
+                    "Preparing Preview"
+                } else {
+                    "Loading Model"
+                },
                 egui::FontId::proportional(12.0),
                 ui.visuals().weak_text_color(),
             );
@@ -611,11 +685,14 @@ impl Still {
         // The software image's whole pixels, which the fit also uses so two previews of one size
         // frame a model alike however fractional their rectangles.
         let pixels = render_size(rect.size(), ui.ctx().pixels_per_point());
+        let fitting = self
+            .fit_angle
+            .map_or_else(|| self.home_camera(), |angle| fit_camera(Some(angle)));
         let fit = self.bounds.map_or(1.0, |bounds| {
             render::fitted_zoom(
                 model,
                 bounds,
-                fit_camera(self.fit_angle),
+                fitting,
                 pixels.map(|side| side as f32),
                 STILL_FILL,
             )
@@ -625,9 +702,9 @@ impl Still {
             ..self.camera
         };
         let gpu = model_preview::gpu::available() && self.gpu.fallback(model).is_none();
-        // Until the GPU draws the model, while its programs link and its images upload, the
-        // software image stands in. It is painted first, so the GPU's first frame covers it.
-        if !(gpu && self.gpu.drawn(model)) {
+        // Shader preparation and software rasterization are both CPU work. Start the
+        // rasterizer only for a non-GL backend or a confirmed GPU failure.
+        if !gpu {
             self.draw_software(
                 ui,
                 painter,
@@ -711,6 +788,39 @@ impl Still {
     }
 }
 
+/// Brief help belongs to an explicit hover target, not the entire character viewport.
+pub(crate) fn info(ui: &mut egui::Ui, id: egui::Id) -> egui::Response {
+    let state = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<Arc<Mutex<Still>>>(id));
+    let backend =
+        state
+            .as_ref()
+            .and_then(|state| state.lock().ok())
+            .map_or("Preparing Preview", |still| {
+                if !model_preview::gpu::available() {
+                    "Software Preview"
+                } else if let Some(model) = &still.model {
+                    if still.gpu.fallback(model).is_some() {
+                        "Software Preview"
+                    } else if still.gpu.drawn(model) {
+                        "GPU Preview"
+                    } else {
+                        "Preparing GPU Preview"
+                    }
+                } else {
+                    "Preparing GPU Preview"
+                }
+            });
+    crate::ui::help::hover_info(
+        ui,
+        "Preview Info",
+        format!(
+            "{backend}\nDrag to rotate · Scroll to zoom\nShift-drag to pan · Double-click to reset"
+        ),
+    )
+}
+
 /// A fixed angle for placing points on a model. Each looks along one model axis, so a dragged
 /// point moves along the other two and never drifts in depth.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -792,7 +902,7 @@ pub fn frame(ctx: &egui::Context, id: egui::Id) {
             .clone()
     });
     if let Ok(mut still) = state.lock() {
-        still.camera = Camera::default();
+        still.camera = still.home_camera();
     }
 }
 

@@ -60,6 +60,11 @@ impl SundialApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
+        // While Parhelion is open or a catalog is loading, a refresh could pair the account
+        // Parhelion wrote with the previous build's catalog. The account follows the catalog.
+        if self.package_authoring_open || self.catalog_task.is_some() {
+            return;
+        }
         if !should_poll_pending_workspace_refresh(
             focused,
             self.has_unsaved_changes(),
@@ -204,23 +209,15 @@ impl SundialApp {
         settings_layout: SettingsLayout,
     ) {
         self.pending_future_schema = None;
-        let document = match load_workspace_json(&settings_path) {
-            Ok(document) => document,
-            Err(error) => {
-                self.set_status(error, true);
-                return;
-            }
-        };
-        if let Some(schema_version) = game_settings::future_schema_version(&document) {
-            self.pending_future_schema = Some(PendingFutureSchemaLoad {
+        self.begin_install_load(
+            ctx,
+            PendingInstallLoad {
                 install_path: path,
                 settings_path,
                 settings_layout,
-                schema_version,
-            });
-            return;
-        }
-        self.begin_install_load(ctx, path, settings_path, settings_layout, document);
+                accepted_future_schema: None,
+            },
+        );
     }
 
     pub(super) fn load_future_schema_install(
@@ -228,37 +225,48 @@ impl SundialApp {
         ctx: &egui::Context,
         pending: PendingFutureSchemaLoad,
     ) {
-        match load_workspace_json(&pending.settings_path) {
-            Ok(document) => self.begin_install_load(
-                ctx,
-                pending.install_path,
-                pending.settings_path,
-                pending.settings_layout,
-                document,
-            ),
-            Err(error) => self.set_status(error, true),
-        }
+        self.begin_install_load(
+            ctx,
+            PendingInstallLoad {
+                install_path: pending.install_path,
+                settings_path: pending.settings_path,
+                settings_layout: pending.settings_layout,
+                accepted_future_schema: Some(pending.schema_version),
+            },
+        );
     }
 
-    pub(super) fn begin_install_load(
-        &mut self,
-        ctx: &egui::Context,
-        path: PathBuf,
-        settings_path: PathBuf,
-        settings_layout: SettingsLayout,
-        document: Value,
-    ) {
-        let install_path = path.clone();
+    fn read_install_settings(&mut self, pending: &PendingInstallLoad) -> Option<Value> {
+        let document = match load_workspace_json(&pending.settings_path) {
+            Ok(document) => document,
+            Err(error) => {
+                self.set_status(error, true);
+                return None;
+            }
+        };
+        if let Some(schema_version) = game_settings::future_schema_version(&document)
+            && Some(schema_version) != pending.accepted_future_schema
+        {
+            self.pending_future_schema = Some(PendingFutureSchemaLoad {
+                install_path: pending.install_path.clone(),
+                settings_path: pending.settings_path.clone(),
+                settings_layout: pending.settings_layout,
+                schema_version,
+            });
+            return None;
+        }
+        Some(document)
+    }
+
+    fn begin_install_load(&mut self, ctx: &egui::Context, pending: PendingInstallLoad) {
+        if self.read_install_settings(&pending).is_none() {
+            return;
+        }
         self.start_catalog_task(
             ctx,
-            install_path,
+            pending.install_path.clone(),
             false,
-            CatalogTaskKind::LoadInstall(PendingInstallLoad {
-                install_path: path,
-                settings_path,
-                settings_layout,
-                document,
-            }),
+            CatalogTaskKind::LoadInstall(pending),
         );
     }
 
@@ -266,16 +274,14 @@ impl SundialApp {
         &mut self,
         pending: PendingInstallLoad,
         mut manifest: Manifest,
-    ) {
-        let PendingInstallLoad {
-            install_path,
-            settings_path,
-            settings_layout,
-            document,
-        } = pending;
-        self.install_path = install_path;
-        self.settings_path = settings_path;
-        self.settings_layout = settings_layout;
+    ) -> bool {
+        // Settings can change while the catalog loads, including the schema the user reviewed.
+        let Some(document) = self.read_install_settings(&pending) else {
+            return false;
+        };
+        self.install_path = pending.install_path;
+        self.settings_path = pending.settings_path;
+        self.settings_layout = pending.settings_layout;
         self.runtime_state = RuntimeState::inspect(&self.install_path);
         manifest.adopt_package_access(&self.manifest, self.package_authoring_open);
         self.manifest = manifest;
@@ -287,24 +293,19 @@ impl SundialApp {
         let warning = validate_workspace_document(&document).err();
         self.selected_character = 0;
         self.replace_loaded_document(document);
-        match self.save_preferences() {
-            Ok(()) => match warning {
-                Some(warning) => self.set_status(
-                    format!(
-                        "Install loaded with an unexpected setting: {warning}. Correct invalid settings before saving JSON edits. A safety copy is made beside settings.json"
-                    ),
-                    true,
+        match warning {
+            Some(warning) => self.set_status(
+                format!(
+                    "Install loaded with an unexpected setting: {warning}. Correct invalid settings before saving JSON edits. A safety copy is made beside settings.json"
                 ),
-                None if self.runtime_state.detected() => {
-                    self.set_status(runtime_state::WARNING_MESSAGE, true);
-                }
-                None => self.set_status("Sunrise install and settings loaded", false),
-            },
-            Err(error) => self.set_status(
-                format!("Install loaded, but its location could not be remembered: {error}"),
                 true,
             ),
+            None if self.runtime_state.detected() => {
+                self.set_status(runtime_state::WARNING_MESSAGE, true);
+            }
+            None => self.set_status("Sunrise install and settings loaded", false),
         }
+        true
     }
 
     pub(super) fn start_catalog_task(
@@ -384,8 +385,13 @@ impl SundialApp {
                                     "Install not loaded because settings changed during loading. Save or reload, then choose the install again.",
                                     true,
                                 );
-                            } else {
-                                self.apply_install_load(pending, manifest);
+                            } else if self.apply_install_load(pending, manifest)
+                                && let Err(error) = self.save_preferences()
+                            {
+                                self.set_status(
+                                    format!("Install loaded, but its location could not be remembered: {error}"),
+                                    true,
+                                );
                             }
                         }
                         (CatalogTaskKind::Rebuild, Ok(mut manifest)) => {
@@ -404,6 +410,7 @@ impl SundialApp {
                                 "Catalog rebuilt from the installed game packages",
                                 false,
                             );
+                            self.refresh_account_after_authoring();
                         }
                         (CatalogTaskKind::LoadInstall(_), Err(error)) => {
                             self.set_status(format!("Install not loaded: {error}"), true);
@@ -411,6 +418,7 @@ impl SundialApp {
                         (CatalogTaskKind::Rebuild, Err(error)) => {
                             self.manifest.resume_package_access();
                             self.set_status(format!("Catalog not rebuilt: {error}"), true);
+                            self.refresh_account_after_authoring();
                         }
                     }
                     break;
@@ -433,6 +441,34 @@ impl SundialApp {
         );
     }
 
+    /// Loads the account Parhelion changed once its catalog is in place, without waiting for
+    /// focus or for the game to close. Parhelion refuses to change either while the game runs,
+    /// so the account on disk is the one it wrote unless the game has since started. Unsaved
+    /// Sundial edits are kept, and the usual refresh loads the change after they are resolved.
+    pub(super) fn refresh_account_after_authoring(&mut self) {
+        if !std::mem::take(&mut self.package_authoring_account_changed) {
+            return;
+        }
+        self.workspace_refresh_pending = true;
+        self.next_workspace_refresh_poll = Instant::now();
+        if self.has_unsaved_changes() {
+            return;
+        }
+        match load_workspace_json(&self.settings_path) {
+            Ok(json) => {
+                let document = self.load_workspace_document(json);
+                self.workspace_refresh_pending = false;
+                if document != self.persisted_document {
+                    self.install_reloaded_document(document, true);
+                }
+            }
+            Err(error) => self.set_status(
+                format!("Could not load the account Parhelion changed: {error}"),
+                true,
+            ),
+        }
+    }
+
     pub(super) fn reload_catalog_after_authoring(&mut self, ctx: &egui::Context) {
         self.set_status("Loading the updated package catalog…", false);
         self.start_catalog_task(
@@ -441,5 +477,8 @@ impl SundialApp {
             false,
             CatalogTaskKind::Rebuild,
         );
+        if self.catalog_task.is_none() {
+            self.refresh_account_after_authoring();
+        }
     }
 }

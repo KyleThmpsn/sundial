@@ -26,6 +26,20 @@ fn framing(mesh: &geometry::Mesh) -> Option<&geometry::Framing> {
         .find_map(|surface| surface.lens.as_ref()?.framing.as_ref())
 }
 
+/// The aperture window of the sight whose model carries `surface`. A reticle draw is kept only
+/// beside an aperture on its own model. See [`reticle::windowed`].
+fn sight_window<'a>(
+    mesh: &'a geometry::Mesh,
+    surface: &geometry::Surface,
+) -> Option<&'a [[f32; 3]]> {
+    mesh.surfaces
+        .values()
+        .filter(|other| other.model == surface.model)
+        .find_map(|other| other.lens.as_ref())
+        .map(|lens| lens.window.as_slice())
+        .filter(|window| !window.is_empty())
+}
+
 pub(super) fn bind_channels(
     source: &mut Reader,
     native: &mut Reader,
@@ -323,15 +337,26 @@ pub(super) fn build(
         // Aimed glass draws in the reticle pass, so it takes the reticle template's header, whose
         // word +0x0C (4) and flags +0x14 the glass template lacks. A glass-template material in
         // that pass did not draw in gameplay.
+        // The depth prepass takes the stock weapon parts' technique, vertex-only `80EFB192`, or the
+        // stock pixel-bearing depth technique `80EF5148` where its pixels discard: a source alpha
+        // test, an aperture cutout or the full-aim hiding of an enclosed sight. Weapons drawn with
+        // the shadow technique there were cut by walls in first person.
         let template = match surface.stage {
             2 => 0x80ba7713,
             8 if surface.framed.is_some() => 0x8152C441,
             8 => 0x815246aa,
             17 => 0x8152C441,
-            4 | 13 => 0x80ec271d,
+            13 if shader_tags[1].is_none() && surface.cutout.is_none() && !hidden => 0x80efb192,
+            13 => 0x80ef5148,
+            4 => 0x80ec271d,
             _ => 0x80ec270d,
         };
         let shell = native.tag(template, Some(0x808071e8))?;
+        let vertex_only = shell.u32(0x2c8)? == u32::MAX;
+        ensure!(
+            !vertex_only || (surface.stage == 13 && shell.u32(0x08)? == 2),
+            "Native vertex-only technique {template:08X} differs"
+        );
         if surface.stage == 17 {
             reticle::validate(native, &material, &shell)?;
         }
@@ -426,15 +451,28 @@ pub(super) fn build(
             (None, _) if hidden && surface.stage == 17 => reticle::unmasked(pixel_text)?,
             (None, _) => pixel_text,
         };
+        // An unframed reticle stays inside its aperture as the source eye sees it.
+        let window =
+            sight_window(mesh, surface).filter(|_| surface.stage == 17 && aim_row.is_none());
+        let pixel_text = match window {
+            Some(window) => reticle::windowed(pixel_text, window)?,
+            None => pixel_text,
+        };
         let pixel_name = format!("pixel-{key:08X}");
-        let pixel_code = program(
-            native,
-            graph,
-            &pixel_name,
-            shell.u32(0x2c8)?,
-            &pixel_text,
-            false,
-        )?;
+        // A vertex-only technique draws no pixel program. The empty one still fixes the
+        // vertex program's outputs.
+        let pixel_code = if vertex_only {
+            shader::compile(&pixel_text, false)?.0
+        } else {
+            program(
+                native,
+                graph,
+                &pixel_name,
+                shell.u32(0x2c8)?,
+                &pixel_text,
+                false,
+            )?
+        };
         let inspection = inspect(&pixel_code, surface.stage).with_context(|| {
             format!(
                 "Marathon material {:08X}, model {:08X}, stage {}: inspecting translated pixel shader {}",
@@ -527,6 +565,7 @@ pub(super) fn build(
                 &vertex_values,
                 vertex_context.clone(),
                 framed.filter(|_| aim_row.is_some()),
+                window.is_some(),
             )?)
         } else {
             None
@@ -579,10 +618,10 @@ pub(super) fn build(
         if let Some(vertex) = reticle_vertex.or(glass_vertex) {
             vertex.append(&mut bytes)?;
         }
-        let mut patches = vec![
-            json!({"offset":0x48,"symbol":vertex_name}),
-            json!({"offset":0x2c8,"symbol":pixel_name}),
-        ];
+        let mut patches = vec![json!({"offset":0x48,"symbol":vertex_name})];
+        if !vertex_only {
+            patches.push(json!({"offset":0x2c8,"symbol":pixel_name}));
+        }
         if uses_colors {
             let symbol = resources::colors(native, graph, mesh)?;
             let mut row = 0u32.to_le_bytes().to_vec();
@@ -591,8 +630,13 @@ pub(super) fn build(
             let at = Payload(bytes.clone()).array(0x50, 8, None)?[0];
             patches.push(json!({"offset":at+4,"symbol":symbol}));
         }
-        let bindings = resources::bindings(source, native, graph, &material, &inspection)?;
-        bindings.append(native, &mut bytes, &mut patches)?;
+        let bindings = if vertex_only {
+            resources::Bindings::none()
+        } else {
+            let bindings = resources::bindings(source, native, graph, &material, &inspection)?;
+            bindings.append(native, &mut bytes, &mut patches)?;
+            bindings
+        };
         if aim_row.is_some() {
             values.push([0; 16]);
         }
@@ -651,40 +695,43 @@ pub(super) fn build(
                 .all(|slot| lowered.samplers.contains(slot)),
             "Translated shader has an unbound sampler"
         );
-        append(&mut bytes, 0x2e8, 0x80800009, &lowered.code, 1)?;
         let authored: Vec<_> = context
             .authored
             .iter()
             .map(|(&input, &constant)| super::inputs::Binding { constant, input })
             .collect();
-        append(
-            &mut bytes,
-            0x2f8,
-            0x80800090,
-            &context.constants.into_iter().flatten().collect::<Vec<_>>(),
-            16,
-        )?;
-        let has_values = !values.is_empty();
-        append(
-            &mut bytes,
-            0x318,
-            0x80800090,
-            &values.into_iter().flatten().collect::<Vec<_>>(),
-            16,
-        )?;
-        put(
-            &mut bytes,
-            0x338,
-            &u32::try_from(objects.len())?.to_le_bytes(),
-        )?;
-        // Native writable storage requires a nonempty initial output table.
-        // The compiled reads were checked against this table before emission.
-        bytes[0x33c] = if has_values { 0x10 } else { 0 };
-        put(
-            &mut bytes,
-            0x348,
-            &(if has_values { 0u32 } else { u32::MAX }).to_le_bytes(),
-        )?;
+        // A vertex-only technique keeps its empty pixel stage.
+        if !vertex_only {
+            append(&mut bytes, 0x2e8, 0x80800009, &lowered.code, 1)?;
+            append(
+                &mut bytes,
+                0x2f8,
+                0x80800090,
+                &context.constants.into_iter().flatten().collect::<Vec<_>>(),
+                16,
+            )?;
+            let has_values = !values.is_empty();
+            append(
+                &mut bytes,
+                0x318,
+                0x80800090,
+                &values.into_iter().flatten().collect::<Vec<_>>(),
+                16,
+            )?;
+            put(
+                &mut bytes,
+                0x338,
+                &u32::try_from(objects.len())?.to_le_bytes(),
+            )?;
+            // Native writable storage requires a nonempty initial output table.
+            // The compiled reads were checked against this table before emission.
+            bytes[0x33c] = if has_values { 0x10 } else { 0 };
+            put(
+                &mut bytes,
+                0x348,
+                &(if has_values { 0u32 } else { u32::MAX }).to_le_bytes(),
+            )?;
+        }
         graph.add(
             &format!("material-{key:08X}"),
             template,
@@ -696,7 +743,7 @@ pub(super) fn build(
             graph.nodes.last_mut().context("Authored material node")?["material_inputs"] =
                 json!(authored);
         }
-        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"specialized_inputs":planned.evidence.iter().filter(|row| row["output"].as_u64().is_some_and(|i| planned.constants.contains_key(&(i as usize)))).collect::<Vec<_>>(),"pixel_bindings":inspection,"aperture_cutout":surface.cutout.as_ref().map(|lens|json!({"center":lens.center,"axes":lens.axes,"edges":lens.outline})),"hidden_at_full_aim":aim_row.is_some() && surface.stage != 17 && surface.framed.is_none(),"aimed_glass":surface.framed.is_some(),"reticle_unmasked":hidden && surface.stage == 17,"aimed_framing":framed.filter(|_| surface.stage == 17 && aim_row.is_some()).map(|framing|json!({"view_tangent":framing.tangent,"eye":framing.eye,"window":framing.window})),"reticle_plane":reticle_plane,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"ambient_visibility":if surface.stage==0{json!("Source target-two W vertex term replaced by native per-object visibility from TEXCOORD0.w")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null}}));
+        reports.push(json!({"material":format!("{:08X}",surface.material),"model":format!("{:08X}",surface.model),"source_stage":surface.stage,"native_stage":surface.native_stage(),"pixel":shader_tags[1].map(|t|format!("{t:08X}")),"textures":bindings.textures,"vertex_colors":uses_colors,"inputs":lowered.evidence,"specialized_inputs":planned.evidence.iter().filter(|row| row["output"].as_u64().is_some_and(|i| planned.constants.contains_key(&(i as usize)))).collect::<Vec<_>>(),"pixel_bindings":inspection,"aperture_cutout":surface.cutout.as_ref().map(|lens|json!({"center":lens.center,"axes":lens.axes,"edges":lens.outline})),"hidden_at_full_aim":aim_row.is_some() && surface.stage != 17 && surface.framed.is_none(),"aimed_glass":surface.framed.is_some(),"reticle_unmasked":hidden && surface.stage == 17,"aimed_framing":framed.filter(|_| surface.stage == 17 && aim_row.is_some()).map(|framing|json!({"view_tangent":framing.tangent,"eye":framing.eye,"window":framing.window})),"reticle_window":window,"reticle_plane":reticle_plane,"surface_flags":if surface.stage==0{json!("Source standard surface flags adapted to native 0/0.33 encoding")}else{Value::Null},"ambient_visibility":if surface.stage==0{json!("Source target-two W vertex term replaced by native per-object visibility from TEXCOORD0.w")}else{Value::Null},"atmosphere":if surface.stage==8{json!("Source unfogged surface with native exposure")}else{Value::Null}}));
     }
     write_json(&graph.root.join("material-report.json"), &json!(reports))?;
     Ok(reports)

@@ -134,11 +134,16 @@ type Job<R> = Box<dyn FnOnce() -> Result<R> + Send>;
 /// Workers that evaluate pure jobs beside the caller's own serial work, with the caller's
 /// cancellation scope. [`Background::finish`] returns the results in submission order, and the
 /// caller commits graph mutations from them only then.
+///
+/// Dropping it without [`Background::finish`], as a failed or cancelled operation does, skips the
+/// jobs still queued and waits for the running ones, so none of its file writes overlap the
+/// operation that follows, such as a retry writing the same outputs.
 pub(crate) struct Background<R> {
     jobs: Option<mpsc::Sender<(usize, Job<R>)>>,
     results: mpsc::Receiver<(usize, Result<R>)>,
     workers: Vec<std::thread::JoinHandle<()>>,
     submitted: usize,
+    abandoned: Arc<AtomicBool>,
 }
 
 impl<R: Send + 'static> Background<R> {
@@ -147,17 +152,22 @@ impl<R: Send + 'static> Background<R> {
         let (jobs, queue) = mpsc::channel::<(usize, Job<R>)>();
         let queue = Arc::new(Mutex::new(queue));
         let (sender, results) = mpsc::channel();
+        let abandoned = Arc::new(AtomicBool::new(false));
         let workers = (0..workers()?)
             .map(|_| {
                 let queue = queue.clone();
                 let sender = sender.clone();
                 let token = token.clone();
+                let abandoned = abandoned.clone();
                 std::thread::spawn(move || {
                     loop {
                         let job = queue.lock().ok().and_then(|queue| queue.recv().ok());
                         let Some((index, job)) = job else {
                             return;
                         };
+                        if abandoned.load(Ordering::Relaxed) {
+                            return;
+                        }
                         let result = match &token {
                             Some(token) => run(token.clone(), job),
                             None => job(),
@@ -174,6 +184,7 @@ impl<R: Send + 'static> Background<R> {
             results,
             workers,
             submitted: 0,
+            abandoned,
         })
     }
 
@@ -204,6 +215,16 @@ impl<R: Send + 'static> Background<R> {
         }
         done.sort_by_key(|(index, _)| *index);
         done.into_iter().map(|(_, result)| result).collect()
+    }
+}
+
+impl<R> Drop for Background<R> {
+    fn drop(&mut self) {
+        self.abandoned.store(true, Ordering::Relaxed);
+        drop(self.jobs.take());
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
     }
 }
 

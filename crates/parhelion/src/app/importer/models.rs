@@ -295,8 +295,8 @@ impl PackageAuthoringApp {
                 });
                 if self.importer.busy() {
                     ui.spinner();
-                    ui.label(&self.importer.notice);
-                    if let Some(started) = self.importer.import_started {
+                    ui.label(self.importer.step());
+                    if let Some(started) = self.importer.import_started() {
                         let seconds = started.elapsed().as_secs();
                         ui.label(format!("Elapsed: {}:{:02}", seconds / 60, seconds % 60));
                     }
@@ -337,9 +337,12 @@ impl PackageAuthoringApp {
             .and_then(|hash| self.donor_summaries.iter().find(|donor| donor.hash == hash))
             .cloned();
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
-        self.importer.import_started = Some(Instant::now());
-        self.importer.notice = "Preparing model…".into();
+        self.importer.task = Some(Task::new(
+            receiver,
+            Work::Model {
+                step: "Preparing model…".into(),
+            },
+        ));
         self.importer.models.notice.clear();
         let ctx = ctx.clone();
         thread::spawn(move || {

@@ -1,4 +1,6 @@
-//! The rows the behavior pickers list, and how they are filtered, grouped and ordered.
+//! The rows the behavior pickers list: the stock configurations the catalog read, the bare node
+//! kinds the picker builds itself and the workbench's own rows, and how the toolbar's filters
+//! group and order them.
 use super::*;
 use sundial::package_authoring::sandbox_perk::program::Asset;
 
@@ -751,4 +753,243 @@ pub(super) fn group_rows<'a>(
         result.sort_by_key(|group| !pickers::matches(query, group.title));
     }
     result
+}
+
+/// The toolbar's choices, as the list reads them.
+pub(super) struct Filters {
+    /// The search, trimmed and lowercased, with "orb of power" searched as "orb of light".
+    pub(super) query: String,
+    pub(super) stock: StockUse,
+    pub(super) detail: Detail,
+    pub(super) order: Order,
+    pub(super) category: Category,
+    pub(super) show_all: bool,
+}
+
+/// The search as the rows are matched against it.
+pub(super) fn search_words(query: &str) -> String {
+    query
+        .trim()
+        .to_lowercase()
+        .replace("orb of power", "orb of light")
+}
+
+/// What the rows are read from.
+pub(super) struct Inputs<'a> {
+    pub(super) catalog: Option<&'a native::Catalog>,
+    /// Where each stock perk is carried. Suggested counts only the perks weapons, armor and
+    /// abilities carry.
+    pub(super) carried: Option<&'a BTreeMap<u16, BTreeSet<sundial::investment::IngredientSource>>>,
+    pub(super) names: &'a BTreeMap<u16, String>,
+    pub(super) labels: &'a BTreeMap<u32, String>,
+}
+
+impl Inputs<'_> {
+    /// How many of `sources` Suggested counts.
+    fn uses<'s>(&self, sources: impl Iterator<Item = &'s native::Source>) -> usize {
+        sources
+            .filter(|source| counts(self.carried, source.perk))
+            .count()
+    }
+}
+
+/// The catalog's configurations for `purpose`, then the bare node kinds, in title order.
+/// `blocked` refuses every action row, as at the action cap.
+pub(super) fn native_rows(
+    inputs: &Inputs,
+    purpose: Purpose,
+    show_all: bool,
+    blocked: &'static str,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if let Some(catalog) = inputs.catalog {
+        if purpose == Purpose::Action {
+            rows.extend(effect_rows(catalog, inputs, blocked));
+        } else {
+            rows.extend(condition_rows(catalog, inputs, purpose, show_all));
+        }
+    }
+    rows.extend(kind_rows(purpose, show_all, blocked));
+    rows.sort_by_cached_key(|row| row.title.to_lowercase());
+    rows
+}
+
+/// The workbench's own rows. Without Show All, a comparison gives way to the stock state
+/// configuration that already checks its variable.
+pub(super) fn basic_rows(
+    mut rows: Vec<Row>,
+    catalog: Option<&native::Catalog>,
+    show_all: bool,
+) -> Vec<Row> {
+    if !show_all && let Some(catalog) = catalog {
+        let states = catalog
+            .conditions
+            .iter()
+            .filter(|entry| entry.condition.kind == 20)
+            .filter_map(|entry| entry.condition.name.as_deref())
+            .collect::<BTreeSet<_>>();
+        rows.retain(|row| !stock_state_covers(row, &states));
+    }
+    rows
+}
+
+/// The behaviors the filters leave, the workbench's own rows first within each.
+pub(super) fn groups<'a>(
+    basic: &'a [Row],
+    native: &'a [Row],
+    filters: &Filters,
+    purpose: Purpose,
+) -> Vec<Group<'a>> {
+    group_rows(
+        basic.iter().chain(native),
+        &filters.query,
+        filters.stock,
+        filters.detail,
+        filters.category,
+        filters.order,
+        purpose.leads(),
+    )
+}
+
+/// The stock actions, then the stock perks' own buffs under the perk's name, such as
+/// Rampage's.
+fn effect_rows(catalog: &native::Catalog, inputs: &Inputs, blocked: &'static str) -> Vec<Row> {
+    let mut rows = catalog
+        .effects
+        .iter()
+        .enumerate()
+        .map(|(index, effect)| {
+            let title = program::native_action_label(effect.kind, &effect.bytes);
+            let detail = asset_names(&effect.description, inputs.labels);
+            Row {
+                family: effect_family(effect.kind, &effect.bytes),
+                enabled: blocked.is_empty(),
+                reason: blocked,
+                search: format!(
+                    "{title} {detail} {}",
+                    perk_names(&effect.sources, inputs.names)
+                ),
+                title,
+                detail,
+                uses: inputs.uses(effect.sources.iter()),
+                choice: Choice::Effect(index),
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.extend(
+        recipes::adopted(catalog, inputs.names)
+            .into_iter()
+            .map(|recipe| recipe_row(recipe, blocked)),
+    );
+    rows
+}
+
+/// The stock conditions, each listed without Show All only when it is offered by default.
+fn condition_rows(
+    catalog: &native::Catalog,
+    inputs: &Inputs,
+    purpose: Purpose,
+    show_all: bool,
+) -> Vec<Row> {
+    catalog
+        .conditions
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| show_all || offered_by_default(&entry.condition))
+        .map(|(index, entry)| condition_row(index, entry, inputs, purpose))
+        .collect()
+}
+
+fn condition_row(
+    index: usize,
+    entry: &native::Condition,
+    inputs: &Inputs,
+    purpose: Purpose,
+) -> Row {
+    let condition = &entry.condition;
+    // The catalog named each configuration as it decoded it, with the rule
+    // `program::condition_title` applies to a placed node, so the row and the card it becomes
+    // read alike.
+    let title = condition
+        .name
+        .clone()
+        .unwrap_or_else(|| nodes::condition_title(condition.kind).to_owned());
+    let detail = stock_detail(condition);
+    // The trigger picker counts only the stock uses as a trigger, since most timers and signal
+    // keys end effects rather than start them.
+    let uses = inputs.uses(
+        entry
+            .sources
+            .iter()
+            .filter(|source| purpose != Purpose::Trigger || source.role.ends_with("Trigger")),
+    );
+    Row {
+        family: Family::Condition(condition.family.clone()),
+        enabled: true,
+        reason: "",
+        // The decoded reading and its fields name what sets one configuration apart from the
+        // next, such as the precision filter of a damage condition, which the plain sentence
+        // shared by every configuration of the kind does not.
+        search: format!(
+            "{title} {detail} {} {} {} {}",
+            condition.description,
+            condition.details.join(" "),
+            former_title(condition.kind),
+            perk_names(&entry.sources, inputs.names)
+        ),
+        title,
+        detail,
+        uses,
+        choice: Choice::Condition(index),
+    }
+}
+
+/// The bare node kinds the picker offers for `purpose`.
+fn kind_rows(purpose: Purpose, show_all: bool, blocked: &'static str) -> Vec<Row> {
+    let kinds = if purpose == Purpose::Action {
+        nodes::EFFECTS.as_slice()
+    } else {
+        nodes::CONDITIONS.as_slice()
+    };
+    kinds
+        .iter()
+        .filter(|kind| offers_kind(purpose, show_all, kind))
+        .map(|kind| kind_row(purpose, kind, blocked))
+        .collect()
+}
+
+/// A promoted condition kind is offered like a guided row. The rest of the bare kinds stay
+/// behind Show All.
+fn offers_kind(purpose: Purpose, show_all: bool, kind: &nodes::NodeKind) -> bool {
+    kind.support == nodes::Support::Authorable
+        && (purpose != Purpose::Action || kind.kind != 5)
+        && (show_all
+            || (purpose != Purpose::Action
+                && program::PROMOTED_NATIVE_CONDITIONS.contains(&kind.kind)))
+}
+
+fn kind_row(purpose: Purpose, kind: &nodes::NodeKind, blocked: &'static str) -> Row {
+    let (family, title) = bare_kind(purpose, kind);
+    let detail = bare_kind_summary(purpose, kind);
+    // The row is searched by what it shows as well as by the engine's own words and number, so
+    // "counter" finds the counter and "accumulator" still does.
+    let former = if purpose == Purpose::Action {
+        ""
+    } else {
+        former_title(kind.kind)
+    };
+    let search = format!(
+        "{:02} {} {} {title} {detail} {former}",
+        kind.kind, kind.name, kind.summary
+    );
+    Row {
+        family,
+        enabled: purpose != Purpose::Action || blocked.is_empty(),
+        reason: blocked,
+        title,
+        detail,
+        search,
+        uses: 0,
+        choice: Choice::Kind(kind.kind),
+    }
 }

@@ -125,7 +125,7 @@ fn bind(
         &mut result.notes,
     )?;
     let (sample, bc5) = if kind == 0 {
-        let (symbol, bc5) = bound_texture(c, pages, native, graph, mapping, normal, color)?;
+        let (symbol, bc5) = bound_texture(c, pages, native, graph, mapping, normal, color, color)?;
         let register = result.bindings.len();
         result.bindings.push((register, symbol));
         result.registers.insert(slot, register);

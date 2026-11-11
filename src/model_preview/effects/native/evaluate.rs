@@ -211,6 +211,14 @@ impl Program {
                     let c = source(3);
                     std::array::from_fn(|i| a[i].wrapping_mul(b[i]).wrapping_add(c[i]))
                 }
+                code @ (36 | 37) => {
+                    let a = source(1);
+                    let b = source(2);
+                    std::array::from_fn(|i| {
+                        let (a, b) = (a[i] as i32, b[i] as i32);
+                        (if code == 36 { a.max(b) } else { a.min(b) }) as u32
+                    })
+                }
                 38 => {
                     let a = source(2);
                     let b = source(3);

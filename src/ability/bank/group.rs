@@ -13,7 +13,7 @@ pub struct GroupEntry {
     pub value: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GroupModifier {
     pub template_key: u32,
     pub count: u8,

@@ -53,7 +53,7 @@ fn decode_account_defaults(
     let rows = read(107, "default investment data")?;
     let settings_schema = read(109, "account settings schema")?;
     let settings_rows = read(110, "default account settings")?;
-    let starter = if version == Schema::V3 {
+    let starter = if version.has_appearance() {
         Some(read(111, "character starter defaults")?)
     } else {
         None

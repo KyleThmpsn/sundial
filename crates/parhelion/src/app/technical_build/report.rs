@@ -273,13 +273,18 @@ pub(super) fn append_weapon(
     if let Some(collection) = &weapon.collection {
         field(out, "collectible hash", hex(collection.collectible_hash));
         field(out, "collectible index", collection.collectible_index);
-        field(out, "unlock hash", hex(collection.unlock_hash));
-        field(out, "unlock definition", collection.unlock_definition_index);
-        field(
-            out,
-            "unlock bank / slot",
-            format!("{} / {}", collection.unlock_bank, collection.unlock_slot),
-        );
+        match collection.unlock {
+            Some(unlock) => {
+                field(out, "unlock hash", hex(unlock.hash));
+                field(out, "unlock definition", unlock.definition_index);
+                field(
+                    out,
+                    "unlock bank / slot",
+                    format!("{} / {}", unlock.bank, unlock.slot),
+                );
+            }
+            None => field(out, "unlock", "always acquired"),
+        }
     }
     if let Some(subclass) = &weapon.subclass {
         append_staged_subclass(out, weapon, subclass, subclasses);

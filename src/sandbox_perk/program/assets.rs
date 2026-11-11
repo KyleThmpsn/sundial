@@ -26,6 +26,14 @@ pub struct Asset {
     /// it in a private copy of the script, which that effect then runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<u32>,
+    /// A projectile root of the imported graph of the weapon whose plug carries the program, by
+    /// its symbol. The action names that root in place of `graph`, which stays the native
+    /// projectile the program compiles and is checked against. The build writes the tag the
+    /// root is allocated with the weapon's imported assets, so a Pattern Override fires the
+    /// converted projectile. The root is used whole, without settings, a HUD status, a damage
+    /// type or rows of its own here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported: Option<String>,
 }
 
 /// One modifier row added to an attachment: the component interface and the input within it
@@ -79,6 +87,8 @@ impl ModifierRow {
 
 /// A translated attachment group owned by one action. The package allocator resolves
 /// the declared root symbol after native compilation has checked the action's envelope.
+/// A complete native program binds the group by `graph` instead, so every effect naming
+/// that graph runs the group, and `action_index` is unused.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportedAsset {
@@ -86,6 +96,10 @@ pub struct ImportedAsset {
     pub directory: std::path::PathBuf,
     pub sha256: String,
     pub symbol: String,
+    /// The envelope graph a complete native program's effects name in place of the group's
+    /// root. A guided program reads it from its action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<u32>,
 }
 
 /// A HUD status of the project's own. The HUD finds a status's name and icon by its name hash,
@@ -129,6 +143,8 @@ pub struct NativeAssetResourcePatch {
 
 /// Private edits to the existing graph referenced by one native effect action.
 /// The action is compiled against the live source graph, then its new private copy is rebound.
+/// A complete native program binds the edits by `source_graph`, as it binds component edits,
+/// so every effect naming the graph takes the private copy and `action_index` is unused.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAssetPatch {
@@ -166,6 +182,8 @@ pub struct NativeAssetComponent {
 
 /// An outgoing profile copied privately for one direct resource effect.
 /// Damage uses a neutral template. Health uses the checked mode-three response family.
+/// A complete native program binds the profile by `template`, so every direct resource
+/// effect naming it applies the copy and `action_index` is unused.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixedDamageProfile {
@@ -186,17 +204,37 @@ pub struct HealthResponse {
     pub amount_bits: u32,
     #[serde(with = "super::float_bit")]
     pub overflow_bits: u32,
+    /// Response mode at record `+00`. Mode 3 gives the first amount to kind-0 regions and the
+    /// smallest remainder plus the second amount to kind-1 regions. Modes 0, 1 and 2 give the
+    /// first amount to kind-0 regions and the second to kind-1 and kind-2 regions. Mode 1 first
+    /// clears the first amount unless every kind-1 and kind-2 region reads at least one, and mode
+    /// 2 clears the second unless every kind-0 region does.
+    #[serde(
+        default = "HealthResponse::shared_mode",
+        skip_serializing_if = "HealthResponse::is_shared_mode"
+    )]
+    pub mode: u8,
 }
 
 impl HealthResponse {
+    fn shared_mode() -> u8 {
+        3
+    }
+
+    fn is_shared_mode(mode: &u8) -> bool {
+        *mode == 3
+    }
+
     pub fn amounts(&self) -> [u32; 2] {
         [self.amount_bits, self.overflow_bits]
     }
 
     pub fn valid(&self) -> bool {
-        self.amounts()
-            .iter()
-            .all(|&bits| f32::from_bits(bits).is_finite() && f32::from_bits(bits) >= 0.0)
+        self.mode <= 3
+            && self
+                .amounts()
+                .iter()
+                .all(|&bits| f32::from_bits(bits).is_finite() && f32::from_bits(bits) >= 0.0)
             && self
                 .amounts()
                 .iter()

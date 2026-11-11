@@ -16,6 +16,10 @@ pub enum AbilityRowModifier {
         selection: bank::FixedSelection,
         /// Fixed outgoing amounts for the template's two routes, stored as Float32 bits.
         amounts: [u32; 2],
+        /// A melee attack's own distance controls for each record, Float32 bits in
+        /// `ability_bank::CONTROLS` order, when they are not the template's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controls: Option<[[u32; 5]; 2]>,
     },
     Group {
         #[serde(with = "super::hex_key")]
@@ -35,11 +39,32 @@ pub enum AbilityRowModifier {
     Charges {
         count: u8,
     },
+    /// A movement evade of its own: `controller` gains a profile copied from `template_profile`
+    /// under this row's key, playing `actions` in place of the template's directional human
+    /// actions, and the row selects it as the stock selector row `template_key` selects the
+    /// template. See `ability::movement::evade`.
+    Evade {
+        #[serde(with = "super::hex_key")]
+        template_key: u32,
+        #[serde(with = "super::hex_key")]
+        controller: u32,
+        #[serde(with = "super::hex_key")]
+        template_profile: u32,
+        actions: [u32; 4],
+        /// The copy leaves out the template's eligibility conditions, such as the energy check
+        /// of Shadowkeep's grounded evade, for a source evade that had none.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ungated: bool,
+    },
     Scalar {
         input: u8,
         #[serde(with = "super::f32_bits")]
         value: u32,
         multiply: bool,
+        /// The row's own name, priority and gate, as an upgrade's numeric rows compete with
+        /// others in their slot and apply only beside their base ability's key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selection: Option<bank::FixedSelection>,
     },
     Parameter {
         #[serde(with = "super::hex_key")]
@@ -49,6 +74,14 @@ pub enum AbilityRowModifier {
         #[serde(with = "super::f32_bits")]
         value: u32,
         add: bool,
+        /// A key that must also apply for the row to take effect, as stock upgrade rows gate on
+        /// their base ability's key.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "super::hex_key_option"
+        )]
+        gate: Option<u32>,
     },
 }
 
@@ -126,10 +159,30 @@ impl AbilityRow {
                 template_key,
                 selection,
                 amounts,
-            } => format!(
-                "attack.{template_key:08x}.{:08x}.{}.{:08x}.{:08x}.{:08x}",
-                selection.name, selection.priority, selection.required_key, amounts[0], amounts[1]
-            ),
+                controls,
+            } => {
+                let identity = format!(
+                    "attack.{template_key:08x}.{:08x}.{}.{:08x}.{:08x}.{:08x}",
+                    selection.name,
+                    selection.priority,
+                    selection.required_key,
+                    amounts[0],
+                    amounts[1]
+                );
+                // A row with the template's controls keeps the identity it always had.
+                match controls {
+                    Some(records) => format!(
+                        "{identity}.controls.{}",
+                        records
+                            .iter()
+                            .flatten()
+                            .map(|value| format!("{value:08x}"))
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    ),
+                    None => identity,
+                }
+            }
             AbilityRowModifier::Group {
                 template_key,
                 count,
@@ -166,22 +219,54 @@ impl AbilityRow {
                 }
             }
             AbilityRowModifier::Charges { count } => format!("charges.{count}"),
+            AbilityRowModifier::Evade {
+                template_key,
+                controller,
+                template_profile,
+                actions,
+                ungated,
+            } => format!(
+                "evade.{template_key:08x}.{controller:08x}.{template_profile:08x}.{}{}",
+                actions
+                    .iter()
+                    .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join("."),
+                if ungated { ".ungated" } else { "" }
+            ),
             AbilityRowModifier::Scalar {
                 input,
                 value,
                 multiply,
+                selection,
             } => {
-                format!("scalar.{input}.{value:08x}.{}", u8::from(multiply))
+                let identity = format!("scalar.{input}.{value:08x}.{}", u8::from(multiply));
+                // An unselected row keeps the identity it always had.
+                match selection {
+                    Some(s) => format!(
+                        "{identity}.selection.{:08x}.{}.{:08x}",
+                        s.name, s.priority, s.required_key
+                    ),
+                    None => identity,
+                }
             }
             AbilityRowModifier::Parameter {
                 name,
                 reset,
                 value,
                 add,
-            } => format!(
-                "parameter.{name:08x}.{reset:08x}.{value:08x}.{}",
-                u8::from(add)
-            ),
+                gate,
+            } => {
+                let identity = format!(
+                    "parameter.{name:08x}.{reset:08x}.{value:08x}.{}",
+                    u8::from(add)
+                );
+                // An ungated row keeps the identity it always had.
+                match gate {
+                    Some(gate) => format!("{identity}.gate.{gate:08x}"),
+                    None => identity,
+                }
+            }
         };
         crate::hash::fnv1_name_hash(&format!(
             "parhelion.ability.bank.{:08x}.{}.{}.{}",
@@ -220,13 +305,17 @@ impl AbilityRow {
                 template_key,
                 selection,
                 amounts,
+                controls,
             } => {
-                self.slot == AbilityTarget::Movement
+                // A movement attack pair, or a melee attack container in a melee bank.
+                matches!(self.slot, AbilityTarget::Movement | AbilityTarget::Melee)
                     && self.mode == 255
                     && bank::AttackModifier {
                         template_key,
                         selection,
                         damage: None,
+                        melee: self.slot == AbilityTarget::Melee,
+                        controls,
                     }
                     .validate()
                     .is_ok()
@@ -253,20 +342,39 @@ impl AbilityRow {
             } => bank::FixedModifier {
                 template_key,
                 class,
-                words,
+                words: bank::widened(words),
                 selection,
             }
             .validate()
             .is_ok(),
             AbilityRowModifier::Charges { count } => (1..=16).contains(&count),
+            AbilityRowModifier::Evade {
+                template_key,
+                controller,
+                template_profile,
+                actions,
+                ..
+            } => {
+                self.slot == AbilityTarget::Movement
+                    && self.mode == 255
+                    && [template_key, controller, template_profile, self.key]
+                        .iter()
+                        .all(|key| ![0, u32::MAX, EMPTY_KEY].contains(key))
+                    && actions.iter().all(|action| ![0, u32::MAX].contains(action))
+            }
             AbilityRowModifier::Scalar {
                 input,
                 value,
                 multiply,
+                selection,
             } => {
                 input < 7
                     && f32::from_bits(value).is_finite()
                     && (!multiply || f32::from_bits(value) >= 0.0)
+                    && selection.is_none_or(|s| {
+                        ![0, u32::MAX].contains(&s.name)
+                            && ![u32::MAX, EMPTY_KEY].contains(&s.required_key)
+                    })
             }
             AbilityRowModifier::Parameter {
                 name, reset, value, ..
@@ -326,6 +434,7 @@ impl AbilityRow {
             self.modifier,
             AbilityRowModifier::Scalar { .. }
                 | AbilityRowModifier::Fixed { .. }
+                | AbilityRowModifier::Evade { .. }
                 | AbilityRowModifier::Group { .. }
                 | AbilityRowModifier::Attack { .. }
         ) {
@@ -345,11 +454,14 @@ impl AbilityRow {
             AbilityRowModifier::Attack {
                 template_key,
                 selection,
+                controls,
                 ..
             } => Modifier::Attack(bank::AttackModifier {
                 template_key,
                 selection,
                 damage: None,
+                melee: self.slot == AbilityTarget::Melee,
+                controls,
             }),
             AbilityRowModifier::Group {
                 template_key,
@@ -368,25 +480,41 @@ impl AbilityRow {
             } => Modifier::Fixed(bank::FixedModifier {
                 template_key,
                 class,
-                words,
+                words: bank::widened(words),
                 selection,
             }),
             AbilityRowModifier::Charges { count } => Modifier::Charges(i64::from(count)),
+            // The selector names the profile by the row's own key.
+            AbilityRowModifier::Evade { template_key, .. } => {
+                Modifier::Fixed(bank::FixedModifier {
+                    template_key,
+                    class: bank::EVADE_PROFILE,
+                    words: bank::widened([self.key, 0, 0, 0, 0, 0, 0, 0]),
+                    selection: None,
+                })
+            }
             AbilityRowModifier::Scalar {
                 input,
                 value,
                 multiply,
+                selection,
             } => Modifier::Scalar {
                 input,
                 value: f32::from_bits(value),
                 multiply,
+                selection,
             },
             AbilityRowModifier::Parameter {
-                name, value, add, ..
+                name,
+                value,
+                add,
+                gate,
+                ..
             } => Modifier::Parameter {
                 name,
                 applied: f32::from_bits(value),
                 add,
+                gate,
             },
         })
     }

@@ -291,6 +291,15 @@ impl Property {
         self.evaluate(Evaluation::Cpu)
     }
 
+    /// The property's CPU value with each source input supplied by `input`: one scalar in every
+    /// lane, or a color's normalized RGB.
+    pub(in crate::halo_reach) fn value(
+        &self,
+        input: &impl Fn(u8) -> Result<f32>,
+    ) -> Result<[f32; 4]> {
+        self.formula()?.value(input)
+    }
+
     fn evaluate(&self, evaluation: Evaluation) -> Result<Expr> {
         // MCC 00240EA8 returns this value before reading any inputs when the
         // compiled scalar constant bit is set. Color properties have a separate
@@ -350,11 +359,6 @@ impl Property {
         Ok(value)
     }
 
-    /// The primary source input ordinal the mapping reads.
-    pub fn input(&self) -> u8 {
-        self.inputs[0]
-    }
-
     pub fn constant(&self) -> Result<f32> {
         ensure!(
             self.inputs[2] == 0
@@ -388,14 +392,35 @@ impl Property {
     }
 
     pub fn expression(&self) -> Result<String> {
-        let formula = self.evaluate(Evaluation::Gpu)?;
-        let value = formula.hlsl(&|index| {
+        self.expression_with(&|index| {
             ensure!(
                 index == 0,
                 "Effect curve needs another profile input {index}"
             );
             Ok("age".into())
-        })?;
+        })
+    }
+
+    /// The GPU expression of the property, with each source input it reads written by `input`.
+    pub fn expression_with(&self, input: &impl Fn(u8) -> Result<String>) -> Result<String> {
+        self.shader(Evaluation::Gpu, input)
+    }
+
+    /// The CPU evaluation as a shader expression, with each source input written by `input`. The
+    /// HREK `function` shader source transforms a Spline2 domain by its origin, width and power on
+    /// the GPU as the CPU does, which the GPU evaluation above refuses after the separate Halo
+    /// Online reference. Over a nonnegative unranged input the two MCC evaluations agree.
+    pub fn evaluated_with(&self, input: &impl Fn(u8) -> Result<String>) -> Result<String> {
+        self.shader(Evaluation::Cpu, input)
+    }
+
+    fn shader(
+        &self,
+        evaluation: Evaluation,
+        input: &impl Fn(u8) -> Result<String>,
+    ) -> Result<String> {
+        let formula = self.evaluate(evaluation)?;
+        let value = formula.hlsl(input)?;
         Ok(format!(
             "({value}).{}",
             if self.function[2] == 0 { "x" } else { "xyz" }

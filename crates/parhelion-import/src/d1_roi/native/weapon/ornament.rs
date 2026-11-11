@@ -204,9 +204,7 @@ impl Source {
         }
         ensure!(!parts.is_empty(), "The ornament has no converted art");
         let mut rows = art["rows"].as_array().context("Ornament art rows")?.clone();
-        for row in &mut rows {
-            row["template_index"] = json!(owner.template);
-        }
+        super::native_rows(&mut rows, owner.template)?;
         let icon = match assembly.item_icon(item.strings)? {
             Some(icon) => Some(icon),
             None => assembly.container_icon(container)?,
@@ -229,6 +227,7 @@ impl Source {
                 "plug_category":choice.layout.category,"name":name,"source_item":item.hash},
             "installable":true,"gameplay_verified":false,"limitations":limitations});
         crate::io::write_json(&folder.join("asset-graph.json"), &graph)?;
+        crate::graph::check_particle_bindings(folder)?;
         assembly.native.finish()?;
         Ok(name)
     }

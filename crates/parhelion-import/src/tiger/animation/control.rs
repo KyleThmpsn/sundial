@@ -76,19 +76,6 @@ pub struct Rig {
     pub parents: Vec<Option<usize>>,
 }
 
-fn poses(p: &Payload, at: usize) -> Result<Vec<[f32; 8]>> {
-    p.array(at, 32, Some(0x80809F75))?
-        .into_iter()
-        .map(|at| {
-            let mut v = [0.; 8];
-            for (i, value) in v.iter_mut().enumerate() {
-                *value = p.f32(at + i * 4)?;
-            }
-            Ok(Pose::checked(v)?.0)
-        })
-        .collect()
-}
-
 impl Rig {
     pub fn read(skeleton: &Payload, controls: &Payload) -> Result<Self> {
         Self::read_modes(skeleton, controls, false)
@@ -107,10 +94,7 @@ impl Rig {
             skeleton.u32(s - 4)? == 0x80808546 && controls.u32(c - 4)? == 0x80808F8F,
             "Motion translation requires native FK controls"
         );
-        let bind = poses(skeleton, s + 0x90)?
-            .into_iter()
-            .map(Pose)
-            .collect::<Vec<_>>();
+        let bind = super::pose::rows(skeleton, s + 0x90)?;
         let hierarchy = skeleton.array(s + 0x80, 16, Some(0x80808A08))?;
         let names = hierarchy
             .iter()
@@ -123,7 +107,10 @@ impl Rig {
                 Ok((parent >= 0).then_some(parent as usize))
             })
             .collect::<Result<Vec<_>>>()?;
-        let defaults = poses(controls, c + 0xB0)?;
+        let defaults = super::pose::rows(controls, c + 0xB0)?
+            .into_iter()
+            .map(|pose| pose.0)
+            .collect::<Vec<_>>();
         let inverse = controls.array(c + 0xD8, 2, None)?;
         let forward = controls.array(c + 0xE8, 2, None)?;
         let rows = controls.array(c + 0xA0, 52, None)?;

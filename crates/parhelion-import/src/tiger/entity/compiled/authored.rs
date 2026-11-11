@@ -1,5 +1,5 @@
 //! Registration rows for explicitly authored native implementations.
-use super::{Component, Registration};
+use super::{Component, Conditions, Registration};
 use crate::tiger::{entity::links, payload::Payload};
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +17,7 @@ pub(super) fn registrations(
     component: &Component<'_>,
     ordinal: usize,
     providers: &[Provider<'_>],
-    masks: &mut Vec<Vec<u8>>,
+    conditions: &mut Conditions<'_>,
     groups: &mut BTreeMap<u32, Vec<Registration>>,
 ) -> Result<()> {
     let p = component.payload;
@@ -82,10 +82,10 @@ pub(super) fn registrations(
         let mut map = vec![0; 40];
         let mut descriptor = vec![0; 24];
         if provider.condition != 0 {
-            map[..2].copy_from_slice(&i16::try_from(masks.len())?.to_le_bytes());
-            masks.push(vec![0; 2]);
+            let (word, bits) = conditions.authored(provider.condition)?;
+            map[..2].copy_from_slice(&word.to_le_bytes());
+            map[2..4].copy_from_slice(&bits.to_le_bytes());
         }
-        map[2..4].copy_from_slice(&provider.condition.to_le_bytes());
         let relative = i32::try_from(state as i64 - instance as i64)?;
         map[4..8].copy_from_slice(&relative.to_le_bytes());
         let priority = i32::from(p.i16(provider.offset + 16)?);
@@ -106,10 +106,6 @@ pub(super) fn registrations(
         });
     }
     ensure!(!providers.is_empty(), "Authored component has no providers");
-    ensure!(
-        masks.len() <= i16::MAX as usize,
-        "Authored condition capacity exceeded"
-    );
     p.0.get(instance..boundary)
         .context("Authored instance span")?;
     Ok(())

@@ -1,14 +1,14 @@
 //! Canonical headers for imported item appearance arrays. No in-place padding guesses.
-fn read<const N: usize>(b: &[u8], at: usize) -> Result<[u8; N], String> {
-    b.get(at..at.checked_add(N).ok_or("offset overflow")?)
-        .ok_or_else(|| "array field outside payload".into())
-        .map(|s| s.try_into().unwrap())
+use sundial::package_authoring::native_payload::bytes_at;
+
+fn u32_at(b: &[u8], at: usize) -> Result<u32, String> {
+    bytes_at(b, at).map(u32::from_le_bytes)
 }
 fn u64_at(b: &[u8], at: usize) -> Result<u64, String> {
-    Ok(u64::from_le_bytes(read(b, at)?))
+    bytes_at(b, at).map(u64::from_le_bytes)
 }
 fn pointer(b: &[u8], at: usize) -> Result<usize, String> {
-    let n = at as i128 + i64::from_le_bytes(read(b, at)?) as i128;
+    let n = at as i128 + i64::from_le_bytes(bytes_at(b, at)?) as i128;
     if n < 0 || n >= b.len() as i128 {
         return Err("array pointer outside payload".into());
     }
@@ -27,7 +27,7 @@ fn row(b: &[u8], at: usize, class: u32) -> Result<Option<(usize, usize)>, String
         return Err("appearance row count exceeds limit".into());
     }
     let h = pointer(b, at + 8)?;
-    if u64_at(b, h)? != count || u32::from_le_bytes(read(b, h + 8)?) != class {
+    if u64_at(b, h)? != count || u32_at(b, h + 8)? != class {
         return Err("appearance header class/count mismatch".into());
     }
     let end = h
@@ -41,7 +41,7 @@ fn row(b: &[u8], at: usize, class: u32) -> Result<Option<(usize, usize)>, String
 pub fn validate(b: &[u8]) -> Result<(), String> {
     for (i, at) in descriptors(b)?.into_iter().enumerate() {
         if let Some((h, _)) = row(b, at, if i == 0 { 0x808077B5 } else { 0x808077B3 })?
-            && (h < 4 || u32::from_le_bytes(read(b, h - 4)?) >> 16 != 0x8080)
+            && (h < 4 || u32_at(b, h - 4)? >> 16 != 0x8080)
         {
             return Err(format!(
                 "appearance array at {at:X} lacks native header marker"
@@ -56,7 +56,7 @@ pub fn add_array_markers(b: &mut Vec<u8>) -> Result<usize, String> {
         let Some((h, end)) = row(b, at, if i == 0 { 0x808077B5 } else { 0x808077B3 })? else {
             continue;
         };
-        if h >= 4 && u32::from_le_bytes(read(b, h - 4)?) >> 16 == 0x8080 {
+        if h >= 4 && u32_at(b, h - 4)? >> 16 == 0x8080 {
             continue;
         }
         let payload = b[h..end].to_vec();

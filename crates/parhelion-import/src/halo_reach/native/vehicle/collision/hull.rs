@@ -10,7 +10,9 @@ fn shapes(
     let kind = shape[0].as_i64().context("Source collision shape kind")?;
     let index = usize::try_from(shape[1].as_u64().context("Source collision shape index")?)?;
     match kind {
-        1 | 2 | 4 => out.push((kind, index)),
+        // Kind 6 indexes the polyhedron block too. The Phantom's first list names polyhedra 0 to
+        // 2 as kind 6, which no kind 4 entry references.
+        0 | 1 | 2 | 4 | 6 => out.push((kind, index)),
         14 | 15 => {
             ensure!(
                 !path.contains(&(kind, index)) && path.len() < 16,
@@ -46,7 +48,10 @@ fn shapes(
             }
             path.pop();
         }
-        _ => bail!("Source collision shape {kind} needs an explicit native translation"),
+        _ => bail!(
+            "Source collision shape {kind} needs an explicit native translation (undecoded block counts {})",
+            source["undecoded_counts"]
+        ),
     }
     Ok(())
 }
@@ -79,6 +84,32 @@ pub(in super::super) fn build(scene: &Scene, bones: &Value, index: usize) -> Res
     )?;
     let mut out = Vec::new();
     for (kind, shape) in selected {
+        if kind == 0 {
+            // Native capsules need two distinct ends. A sphere becomes a capsule one millimetre
+            // long with the sphere's radius.
+            let sphere = &source["collision"]["spheres"][shape];
+            let local = vector::<3>(&sphere["center_source"]).context("Source collision sphere")?;
+            let radius = sphere["radius_source"]
+                .as_f64()
+                .context("Source sphere radius")? as f32;
+            ensure!(
+                local.iter().all(|v| v.is_finite() && v.abs() < 1000.)
+                    && radius.is_finite()
+                    && radius > 0.
+                    && radius < 100.,
+                "Source collision sphere layout differs"
+            );
+            let point = local.map(|v| v * scene.metres());
+            let object = rig::point(&worlds[matches[0].0], point, true);
+            let center = super::super::super::seat::frame(bones, 0, (object, [0., 0., 0., 1.]))?.0;
+            let end = |sign: f32| [center[0], center[1], center[2] + sign * 0.0005];
+            out.push(Shape::Capsule {
+                a: end(-1.),
+                b: end(1.),
+                radius: radius * scene.metres(),
+            });
+            continue;
+        }
         if kind == 1 {
             let capsule = &source["collision"]["capsules"][shape];
             let position = |key: &str| -> Result<[f32; 3]> {
@@ -96,7 +127,7 @@ pub(in super::super) fn build(scene: &Scene, bones: &Value, index: usize) -> Res
             });
             continue;
         }
-        let (points, equations, radius, world) = if kind == 4 {
+        let (points, equations, radius, world) = if matches!(kind, 4 | 6) {
             let source = &source["collision"]["polyhedra"][shape];
             let points = source["vertices_source"]
                 .as_array()

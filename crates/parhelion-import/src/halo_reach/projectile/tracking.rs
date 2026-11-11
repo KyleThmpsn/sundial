@@ -2,6 +2,13 @@
 use super::*;
 use crate::tiger::entity::links::Object;
 
+/// Gameplay calibration of source turn rates on native steering. At the Needler's source 75 to 90
+/// degrees per second the needles curved in game but tracked far more weakly than Reach's. Native
+/// steering runs much faster: the stock Turn Rate is 360 degrees per second, the guided grenade's
+/// program falls from 2,000 to 125, and an authored perk reported to home strongly writes 2,880.
+/// Kyle asked for significantly better tracking, so source rates are scaled by this factor.
+const TURN_RATE_CALIBRATION: f32 = 8.;
+
 fn unbind(p: &mut Payload, definition: usize) -> Result<Vec<Object>> {
     let objects = program::unbind(p, definition)?;
     ensure!(
@@ -24,7 +31,7 @@ fn rates(behavior: &Value) -> Result<[f32; 2]> {
         rates[0].is_finite() && rates[1].is_finite() && rates[0] >= 0. && rates[0] <= rates[1],
         "Invalid source turn-rate bounds"
     );
-    Ok([rates[0], rates[1]])
+    Ok([rates[0], rates[1]].map(|rate| rate * TURN_RATE_CALIBRATION))
 }
 
 pub(super) fn enabled(behavior: &Value) -> Result<bool> {
@@ -35,19 +42,22 @@ pub(super) fn policy(behavior: &Value) -> Result<Value> {
     let bounds = rates(behavior)?;
     let at_rest = behavior["guided_angular_velocity_at_rest"]
         .as_f64()
-        .context("Source at-rest turn rate")? as f32;
+        .context("Source at-rest turn rate")? as f32
+        * TURN_RATE_CALIBRATION;
     ensure!(
         at_rest.is_finite() && at_rest >= 0.,
         "Invalid source at-rest turn rate"
     );
-    Ok(json!({"rate_bounds_radians_per_second":bounds,
+    Ok(
+        json!({"rate_bounds_radians_per_second":bounds,"calibration":TURN_RATE_CALIBRATION,
         "sampling":"One uniform sample per launch when the bounds differ",
         "at_rest_radians_per_second":at_rest,
         "ramp_distance_source_units":behavior["acceleration_range"],
         "ramp_inverse_width":behavior["acceleration_inverse_width"],
         "ramp_input":"Integrated commanded speed, with source velocity multiplier scaling",
         "constant_rate_family":bounds[0] == bounds[1] && bounds[0] == at_rest,
-        "limits":["Private guided carriers bind a stable native launch seed sample and source-speed distance fraction. Seed sequences, target selection, contact continuation, live-component relaunch and trajectories remain unverified."]}))
+        "limits":["Private guided carriers bind a stable native launch seed sample and source-speed distance fraction. Seed sequences, target selection, contact continuation, live-component relaunch and trajectories remain unverified."]}),
+    )
 }
 
 pub(super) fn prepare(
@@ -151,7 +161,11 @@ pub(super) fn bind(
         .collect::<Result<Vec<_>>>()?;
     let original = owners[&bank].clone();
     let allocation_tag = original.u32(0x44)?;
-    let allocation = reader.tag(allocation_tag, Some(0x80809bbb))?;
+    // The assembly may already have grown this bank for the names its flow reads.
+    let allocation = match allocations.get(&allocation_tag) {
+        Some(grown) => grown.clone(),
+        None => (*reader.tag(allocation_tag, Some(0x80809bbb))?).clone(),
+    };
     let declarations = sources
         .iter()
         .enumerate()
@@ -282,7 +296,8 @@ pub(super) fn bind(
     let rates = rates(behavior)?;
     let at_rest = behavior["guided_angular_velocity_at_rest"]
         .as_f64()
-        .context("At-rest guidance")? as f32;
+        .context("At-rest guidance")? as f32
+        * TURN_RATE_CALIBRATION;
     ensure!(
         at_rest.is_finite() && at_rest >= 0.,
         "Invalid at-rest guidance"

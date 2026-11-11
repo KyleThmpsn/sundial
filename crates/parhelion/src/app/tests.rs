@@ -10,6 +10,8 @@ mod added_sockets;
 mod artwork;
 mod barrel_controls;
 mod build_selection;
+#[cfg(feature = "d2-model-importer")]
+mod d1_damage;
 mod magazine_readout;
 mod recipe_editing;
 

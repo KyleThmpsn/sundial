@@ -69,7 +69,7 @@ pub(crate) fn preview_replacement(
     let mut source = open(path, false)?;
     let tx = source.transaction().map_err(err)?;
     validate(&tx)?;
-    if super::Schema::read(&tx).map_err(err)? == super::Schema::V3 {
+    if super::Schema::read(&tx).map_err(err)?.has_appearance() {
         for hash in hashes {
             let referenced: bool = tx
                 .query_row(

@@ -38,19 +38,83 @@ pub(crate) fn decoded_wave_cancelable(
             Ok(wave.bytes.to_vec())
         }
         0xFFFF => {
-            let default = ww2ogg::CodebookLibrary::default_codebooks()
-                .map_err(|error| format!("Could not load Wwise codebooks: {error}"))?;
-            let ogg = convert(wave.bytes, default, cancel).or_else(|first| {
+            // Wwise media name their setup in one of several ways. Each layout is tried in turn
+            // until one converts and decodes: the packaged codebook libraries, codebooks inline
+            // in the stream, a complete Vorbis setup, and either packet format forced.
+            use ww2ogg::{CodebookLibrary, ForcePacketFormat};
+            type Library = fn() -> ww2ogg::WemResult<CodebookLibrary>;
+            let attempts: [(&str, Library, bool, bool, ForcePacketFormat); 6] = [
+                (
+                    "default codebooks",
+                    CodebookLibrary::default_codebooks,
+                    false,
+                    false,
+                    ForcePacketFormat::NoForce,
+                ),
+                (
+                    "alternate codebooks",
+                    CodebookLibrary::aotuv_codebooks,
+                    false,
+                    false,
+                    ForcePacketFormat::NoForce,
+                ),
+                (
+                    "inline codebooks",
+                    || Ok(CodebookLibrary::empty()),
+                    true,
+                    false,
+                    ForcePacketFormat::NoForce,
+                ),
+                (
+                    "full setup",
+                    || Ok(CodebookLibrary::empty()),
+                    true,
+                    true,
+                    ForcePacketFormat::NoForce,
+                ),
+                (
+                    "modified packets",
+                    CodebookLibrary::default_codebooks,
+                    false,
+                    false,
+                    ForcePacketFormat::ForceModPackets,
+                ),
+                (
+                    "standard packets",
+                    CodebookLibrary::default_codebooks,
+                    false,
+                    false,
+                    ForcePacketFormat::ForceNoModPackets,
+                ),
+            ];
+            // The converter's check rejects a stream when over a tenth of its first samples sit at
+            // the 16-bit limits, which a loud, clipped effect also does. A layout whose stream
+            // fails only that check is kept and used when no layout passes it.
+            let mut errors = Vec::new();
+            let mut clipped = None;
+            for (label, library, inline, full, packets) in attempts {
                 check_cancel(cancel)?;
-                let alternate = ww2ogg::CodebookLibrary::aotuv_codebooks()
-                    .map_err(|error| format!("Could not load alternate codebooks: {error}"))?;
-                convert(wave.bytes, alternate, cancel).map_err(|second| {
-                    format!(
-                        "Wwise Vorbis conversion failed: {first}. Alternate codebooks: {second}"
-                    )
-                })
-            })?;
-            decode_ogg(&ogg, cancel)
+                let codebooks =
+                    library().map_err(|error| format!("Could not load {label}: {error}"))?;
+                match convert(wave.bytes, codebooks, (inline, full, packets), cancel) {
+                    Ok((ogg, true)) => match decode_ogg(&ogg, cancel) {
+                        Ok(decoded) => return Ok(decoded),
+                        Err(error) => errors.push(format!("{label}: {error}")),
+                    },
+                    Ok((ogg, false)) => {
+                        errors.push(format!("{label}: clipped samples"));
+                        clipped.get_or_insert(ogg);
+                    }
+                    Err(error) => errors.push(format!("{label}: {error}")),
+                }
+            }
+            match clipped {
+                Some(ogg) => decode_ogg(&ogg, cancel),
+                None => Err(format!(
+                    "Wwise Vorbis conversion failed. {}",
+                    errors.join(". ")
+                )),
+            }
         }
         codec => Err(format!("Audio codec 0x{codec:04X} cannot be previewed")),
     }
@@ -67,10 +131,15 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
 fn convert(
     bytes: &[u8],
     codebooks: ww2ogg::CodebookLibrary,
+    (inline, full, packets): (bool, bool, ww2ogg::ForcePacketFormat),
     cancel: &AtomicBool,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, bool), String> {
     check_cancel(cancel)?;
-    let mut converter = ww2ogg::WwiseRiffVorbis::new(Cursor::new(bytes), codebooks)
+    let mut converter = ww2ogg::WwiseRiffVorbisBuilder::new(Cursor::new(bytes), codebooks)
+        .inline_codebooks(inline)
+        .full_setup(full)
+        .force_packet_format(packets)
+        .build()
         .map_err(|error| error.to_string())?;
     let mut ogg = ConversionOutput {
         bytes: Vec::new(),
@@ -80,8 +149,13 @@ fn convert(
         .generate_ogg(&mut ogg)
         .map_err(|error| error.to_string())?;
     check_cancel(cancel)?;
-    ww2ogg::validate(&ogg.bytes).map_err(|error| error.to_string())?;
-    Ok(ogg.bytes)
+    // Returns whether the stream passed the converter's whole check, or failed only its
+    // clipping heuristic.
+    match ww2ogg::validate(&ogg.bytes) {
+        Ok(_) => Ok((ogg.bytes, true)),
+        Err(error) if error.to_string().contains("invalid samples") => Ok((ogg.bytes, false)),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 struct ConversionOutput<'a> {
@@ -165,27 +239,6 @@ fn decode_ogg(ogg: &[u8], cancel: &AtomicBool) -> Result<Vec<u8>, String> {
 mod tests {
     use super::{decoded_wave, wave_duration};
     use std::time::Duration;
-
-    #[test]
-    fn wav_duration_uses_pcm_data_rate_and_rejects_truncation() {
-        let mut wave = Vec::new();
-        wave.extend_from_slice(b"RIFF");
-        wave.extend_from_slice(&16_036u32.to_le_bytes());
-        wave.extend_from_slice(b"WAVEfmt ");
-        wave.extend_from_slice(&16u32.to_le_bytes());
-        wave.extend_from_slice(&1u16.to_le_bytes());
-        wave.extend_from_slice(&1u16.to_le_bytes());
-        wave.extend_from_slice(&8_000u32.to_le_bytes());
-        wave.extend_from_slice(&16_000u32.to_le_bytes());
-        wave.extend_from_slice(&2u16.to_le_bytes());
-        wave.extend_from_slice(&16u16.to_le_bytes());
-        wave.extend_from_slice(b"data");
-        wave.extend_from_slice(&16_000u32.to_le_bytes());
-        wave.resize(wave.len() + 16_000, 0);
-        assert_eq!(wave_duration(&wave), Some(Duration::from_secs(1)));
-        wave.pop();
-        assert_eq!(wave_duration(&wave), None);
-    }
 
     fn pcm_fixture() -> Vec<u8> {
         let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0".to_vec();

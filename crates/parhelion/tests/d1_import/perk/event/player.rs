@@ -64,7 +64,19 @@ pub(super) fn fields(
         }
         ability_event::pattern(reader, stock, pattern, native.u32(n + 0xC8)?)?;
     }
-    assert_eq!(source.u32(s + 0xC4)?, native.u32(n + 0xE0)?);
+    // Source setter 6F5010 arms a positive hold as whole 60 Hz ticks, nearest with ties to even
+    // and at least one. The native timer holds those ticks in seconds.
+    let hold = source.f32(s + 0xC4)?;
+    let expected = if hold > 0.0 {
+        (hold * 60.0).round_ties_even().max(1.0) / 60.0
+    } else {
+        0.0
+    };
+    assert_eq!(
+        native.f32(n + 0xE0)?.to_bits(),
+        expected.to_bits(),
+        "Player hold"
+    );
     assert_eq!(source.u8(s + 0xC8)?, native.u8(n + 0xF8)?);
     ability_ranges(source, s + 0x40, native, n + 0x60)?;
     named_ranges(source, s + 0x50, native, n + 0x70)?;

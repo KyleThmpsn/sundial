@@ -4,9 +4,11 @@ use parhelion_import::d2_mot::arrays;
 use serde_json::Value;
 mod bounds;
 mod character;
+mod clips;
 mod crosshair;
 mod dyes;
 mod gear;
+mod human_actions;
 mod inspect;
 mod loading;
 mod ornament_collections;
@@ -18,8 +20,10 @@ mod streaming;
 
 struct Shared {
     companions: linking::Companions,
-    characters: BTreeMap<(u32, u32), [u8; 32]>,
+    characters: character::Profiles,
     identities: sharing::Identities,
+    /// The gear art and dye keys the build's graphs hold so far.
+    keys: BTreeSet<u64>,
     timings: Timings,
     /// The runtime the build is for, whose watermark imported ornament icons take. The packages
     /// a build reads can be a filtered view outside the install, so it is not read from them.
@@ -55,6 +59,89 @@ impl std::fmt::Display for Timings {
             seconds(self.link),
             seconds(self.tables)
         )
+    }
+}
+
+/// What linking one recipe's graphs changed that the graphs linked after it read, so a recipe
+/// whose graph fails is undone and the others still link. A pass with a failed recipe is never
+/// packaged: the build compiles again without every recipe that failed. The undo therefore only
+/// has to keep later recipes' results honest, not restore every byte.
+///
+/// - The asset packages only grow, so their lengths, reservations and shared clips restore them.
+/// - The shared tables the recipe replaced take their earlier payloads back.
+/// - The character profiles go back, or a later item could join the gate of a profile whose
+///   selector edit was undone.
+/// - The dependency index goes back, since the recipe enrolled entries that no longer exist.
+///
+/// The recipe's own item definition and Collections rows keep its edits, which no other recipe
+/// reads. Resource sharing needs no undo: a later graph reuses a committed pair only when the
+/// entry still holds the same bytes, and an undone entry does not.
+struct Rollback {
+    packages: Vec<(usize, usize)>,
+    reservations: usize,
+    shared_clips: BTreeMap<
+        (
+            Option<sundial::package_authoring::mod_content::Importer>,
+            [u8; 32],
+        ),
+        TagHash,
+    >,
+    runtime_dependencies: Option<Vec<u8>>,
+    characters: character::Profiles,
+    /// Each shared table the recipe replaced, with the payload it had before the recipe.
+    replaced: BTreeMap<u32, Option<Vec<u8>>>,
+}
+
+impl Rollback {
+    fn take(emission: &PackageEmission, shared: &Shared) -> Self {
+        let assets = &emission.asset_packages;
+        Self {
+            packages: assets
+                .packages
+                .iter()
+                .map(|package| (package.tags.len(), package.references.len()))
+                .collect(),
+            reservations: assets.reservations.len(),
+            shared_clips: assets.shared_clips.clone(),
+            runtime_dependencies: emission.runtime_dependencies.clone(),
+            characters: shared.characters.clone(),
+            replaced: BTreeMap::new(),
+        }
+    }
+
+    /// Replaces the shared table `tag` with `payload`, remembering what the recipe found there.
+    fn replace(&mut self, replacements: &mut BTreeMap<u32, Vec<u8>>, tag: u32, payload: Vec<u8>) {
+        let previous = replacements.insert(tag, payload);
+        self.replaced.entry(tag).or_insert(previous);
+    }
+
+    fn apply(
+        self,
+        emission: &mut PackageEmission,
+        shared: &mut Shared,
+        replacements: &mut BTreeMap<u32, Vec<u8>>,
+    ) {
+        let assets = &mut emission.asset_packages;
+        assets.packages.truncate(self.packages.len());
+        for (package, (tags, references)) in assets.packages.iter_mut().zip(self.packages) {
+            package.tags.truncate(tags);
+            package.references.truncate(references);
+        }
+        assets.reservations.truncate(self.reservations);
+        assets.shared_clips = self.shared_clips;
+        assets.owner = None;
+        emission.runtime_dependencies = self.runtime_dependencies;
+        shared.characters = self.characters;
+        for (tag, previous) in self.replaced {
+            match previous {
+                Some(payload) => {
+                    replacements.insert(tag, payload);
+                }
+                None => {
+                    replacements.remove(&tag);
+                }
+            }
+        }
     }
 }
 
@@ -256,8 +343,8 @@ type Checked<'a> = (ItemKind, u32, &'a parhelion_import::GraphReference, &'a str
 /// Checks every imported graph against the fingerprint taken when it was selected. Each
 /// graph hashes tens of megabytes of its own files, so the graphs are checked side by side.
 /// The build log names each recipe's model after `verb` in recipe order as the check waits on
-/// it, and the first failing graph in that order is reported, as a sequential check would.
-/// The build checks before [`apply`] links them and again after.
+/// it. Every graph that changed is reported with its recipe, so the build leaves them all out
+/// in one pass. The build checks before [`apply`] links them and again after.
 pub(super) fn validate_graphs(
     weapons: &[WeaponCloneSpec],
     progress: &mut crate::item::build::Progress<'_>,
@@ -272,6 +359,11 @@ pub(super) fn validate_graphs(
             })
         })
         .collect::<Vec<Checked<'_>>>();
+    // The recipe of each checked graph, in the same order, to name the ones that changed.
+    let recipes = weapons
+        .iter()
+        .filter(|weapon| weapon.overrides.imported_graph.is_some())
+        .collect::<Vec<_>>();
     let workers = std::thread::available_parallelism()
         .map_or(4, std::num::NonZeroUsize::get)
         .clamp(1, 8)
@@ -289,6 +381,7 @@ pub(super) fn validate_graphs(
             .collect::<Vec<_>>();
         drop(sender);
         let mut finished = BTreeMap::new();
+        let mut failures = Vec::new();
         let checked = graphs
             .iter()
             .enumerate()
@@ -298,10 +391,10 @@ pub(super) fn validate_graphs(
                     let (done, result) = receiver.recv().map_err(|_| stopped())?;
                     finished.insert(done, result);
                 }
-                finished
-                    .remove(&index)
-                    .ok_or_else(stopped)?
-                    .map_err(invalid)
+                if let Err(error) = finished.remove(&index).ok_or_else(stopped)? {
+                    failures.push(recipes[index].in_recipe(invalid(error)));
+                }
+                Ok(())
             });
         // A worker still checking stops at its next result.
         drop(receiver);
@@ -310,7 +403,15 @@ pub(super) fn validate_graphs(
         for handle in handles {
             joined &= handle.join().is_ok();
         }
-        if joined { checked } else { Err(stopped()) }
+        if !joined {
+            return Err(stopped());
+        }
+        checked?;
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::AuthoringError::several(failures))
+        }
     })
 }
 
@@ -354,29 +455,7 @@ pub(super) fn apply(
             crate::mod_family::build::native(package.id);
         }
     }
-    for spec in weapons {
-        if let Some(reference) = &spec.overrides.imported_graph {
-            let graph: Value = serde_json::from_slice(
-                &fs::read(reference.directory.join("asset-graph.json"))
-                    .map_err(|e| invalid(e.to_string()))?,
-            )
-            .map_err(|e| invalid(e.to_string()))?;
-            if (graph["kind"] == "shader") != (spec.kind == ItemKind::Shader) {
-                return Err(invalid(
-                    "Imported asset kind does not match its item recipe",
-                ));
-            }
-            if let Some(kind) = crate::imported::kind(spec.kind) {
-                if graph["kind"] != kind {
-                    return Err(invalid("Imported asset kind does not match its recipe"));
-                }
-            } else if graph.get("gear_art").is_some()
-                && !(spec.kind == ItemKind::Weapon && graph["kind"] == "weapon")
-            {
-                return Err(invalid("Imported gear cannot supply a weapon model"));
-            }
-        }
-    }
+    validate_graph_kinds(weapons)?;
     let folders = weapons
         .iter()
         .filter_map(|weapon| {
@@ -403,13 +482,17 @@ pub(super) fn apply(
         })
         .collect::<Vec<_>>();
     timings.read = started.elapsed();
-    if folders.is_empty() {
+    let abilities = human_actions::directories(weapons);
+    // The main mod's build writes the importers' rows of the shared tables it hosts.
+    let hosted = crate::mod_family::build::contributions();
+    if folders.is_empty() && abilities.is_empty() && hosted.is_empty() {
         return Ok((Vec::new(), timings));
     }
     let mut shared = Shared {
         companions: linking::Companions::new(),
-        characters: BTreeMap::new(),
+        characters: character::Profiles::default(),
         identities: sharing::Identities::default(),
+        keys: BTreeSet::new(),
         timings,
         branding,
     };
@@ -420,10 +503,24 @@ pub(super) fn apply(
     }
     let accounted =
         |timings: &Timings| timings.read + timings.nodes + timings.companions + timings.link;
+    // A recipe's graphs, its own and its attachments', link one after another. One that fails
+    // undoes the recipe's graphs, and the others still link, so the pass names every recipe
+    // whose graphs fail and the build leaves them out together.
+    let mut failures = Vec::new();
+    let mut failed = BTreeSet::new();
+    let mut undo: Option<(&str, Rollback)> = None;
     for target in folders {
+        let folder = target.folder;
+        let recipe = target.recipe;
+        let namespace = recipe.namespace.as_str();
+        if failed.contains(namespace) {
+            continue;
+        }
+        if undo.as_ref().is_none_or(|(owner, _)| *owner != namespace) {
+            undo = Some((namespace, Rollback::take(emission, &shared)));
+        }
         let started = std::time::Instant::now();
         let before = accounted(&shared.timings);
-        let folder = target.folder;
         let applied = apply_one(
             directory,
             emission,
@@ -432,14 +529,57 @@ pub(super) fn apply(
             manager,
             &mut shared,
             progress,
-        )
-        .map_err(|error| error.context(format!("Imported graph {}", folder.display())))?;
-        for replacement in applied {
-            replacements.insert(replacement.tag.0, replacement.payload);
-        }
+        );
         let staged = accounted(&shared.timings) - before;
         shared.timings.tables += started.elapsed().saturating_sub(staged);
         shared.timings.graphs += 1;
+        match applied {
+            Ok(applied) => {
+                let (_, rollback) = undo.as_mut().expect("the recipe's undo is taken");
+                for replacement in applied {
+                    rollback.replace(&mut replacements, replacement.tag.0, replacement.payload);
+                }
+            }
+            Err(error) => {
+                let error = error.context(format!("Imported graph {}", folder.display()));
+                // The graph belongs to one recipe, so the build can name it and go on without it.
+                let error = if error.recipe_namespace().is_some() {
+                    error
+                } else {
+                    recipe.in_recipe(error)
+                };
+                let (_, rollback) = undo.take().expect("the recipe's undo is taken");
+                rollback.apply(emission, &mut shared, &mut replacements);
+                failed.insert(namespace);
+                progress.diagnostic(format!(
+                    "Linking {} failed. Linking the other items before reporting it.",
+                    recipe.text.name
+                ));
+                failures.push(error);
+            }
+        }
+    }
+    // The build compiles again without the failed recipes, and the hosted tables and abilities
+    // link in that pass.
+    if !failures.is_empty() {
+        return Err(crate::AuthoringError::several(failures));
+    }
+    let mut added_actions = BTreeMap::new();
+    host(
+        manager,
+        &hosted,
+        &mut replacements,
+        &mut shared,
+        &mut added_actions,
+    )?;
+    // Imported abilities add their private human actions on top of the graphs' additions.
+    for folder in &abilities {
+        for replacement in
+            human_actions::apply(manager, emission, folder, &replacements, &mut added_actions)
+                .map_err(|error| error.context(format!("Imported ability {}", folder.display())))?
+        {
+            replacements.insert(replacement.tag.0, replacement.payload);
+        }
     }
     let identities = &shared.identities;
     if identities.reused + identities.within > 0 {
@@ -450,6 +590,7 @@ pub(super) fn apply(
             identities.bytes as f64 / 1048576.0
         );
     }
+    share(manager, &mut replacements)?;
     let replacements = replacements
         .into_iter()
         .map(|(tag, payload)| ReplacementSpec {
@@ -458,6 +599,93 @@ pub(super) fn apply(
         })
         .collect();
     Ok((replacements, shared.timings))
+}
+
+/// Adds the importers' rows of the shared tables the main mod's build hosts, after its own:
+/// crosshair rows naming the importers' scenes, and character profiles and human actions with the
+/// clips the importers' builds allocated. `added_actions` records the human actions added.
+fn host(
+    manager: &sundial::package_authoring::PackageManager,
+    hosted: &[crate::mod_family::build::Contributions],
+    replacements: &mut BTreeMap<u32, Vec<u8>>,
+    shared: &mut Shared,
+    added_actions: &mut BTreeMap<u32, [u8; 32]>,
+) -> AuthoringResult<()> {
+    use crate::weapon::crosshair::{TABLE, Table};
+    let rows = hosted
+        .iter()
+        .flat_map(|contributions| &contributions.crosshair)
+        .collect::<Vec<_>>();
+    if !rows.is_empty() {
+        let original = match replacements.get(&TABLE.0) {
+            Some(data) => data.clone(),
+            None => manager
+                .read_tag(TABLE)
+                .map_err(|error| invalid(error.to_string()))?,
+        };
+        let mut table = Table::parse(&original)?;
+        // A row for a bucket and key an earlier member already added stays that member's.
+        for row in rows {
+            table.insert(row.clone())?;
+        }
+        replacements.insert(TABLE.0, table.serialize()?);
+    }
+    for profile in hosted
+        .iter()
+        .flat_map(|contributions| &contributions.characters)
+    {
+        for replacement in character::host(manager, profile, replacements, &mut shared.characters)?
+        {
+            replacements.insert(replacement.tag.0, replacement.payload);
+        }
+    }
+    for actions in hosted
+        .iter()
+        .flat_map(|contributions| &contributions.human_actions)
+    {
+        for replacement in human_actions::host(manager, actions, replacements, added_actions)? {
+            replacements.insert(replacement.tag.0, replacement.payload);
+        }
+    }
+    Ok(())
+}
+
+/// Records the shared tables the member's build changed, and for an importer what it adds to
+/// them. The tables the main mod's build hosts for the importer leave its own build.
+fn share(
+    manager: &sundial::package_authoring::PackageManager,
+    replacements: &mut BTreeMap<u32, Vec<u8>>,
+) -> AuthoringResult<()> {
+    use crate::mod_family::build::{Shared as Table, contribute, hosts, produced, produced_by};
+    use crate::weapon::crosshair::{TABLE, Table as Crosshair};
+    if let Some(table) = replacements.get(&TABLE.0) {
+        produced(Table::Crosshair, [TABLE.0]);
+        if crate::package_profile::member().is_some() {
+            let stock = Crosshair::parse(
+                &manager
+                    .read_tag(TABLE)
+                    .map_err(|error| invalid(error.to_string()))?,
+            )?;
+            let rows = Crosshair::parse(table)?
+                .rows()
+                .iter()
+                .filter(|row| !stock.has(row.bucket, row.key))
+                .cloned()
+                .collect::<Vec<_>>();
+            contribute(|contributions| contributions.crosshair = rows);
+            if hosts(Table::Crosshair) {
+                replacements.remove(&TABLE.0);
+            }
+        }
+    }
+    if hosts(Table::Character) {
+        for (tag, table) in produced_by(crate::package_profile::member()) {
+            if table == Table::Character {
+                replacements.remove(&tag);
+            }
+        }
+    }
+    Ok(())
 }
 /// One node of an imported asset graph, with its payload read from `folder` and prepared:
 /// model draw indices declared and moved markers applied.
@@ -570,22 +798,30 @@ fn graph_node(
 /// import's than keys from its low 16 bits.
 fn bind_mod(graph: &mut Value, spec: &WeaponCloneSpec) {
     let item = spec.identity.item_hash;
+    graph["item_hash"] = item.into();
+    rekey(graph, &format!("{item:08X}"));
+}
+
+/// The graph rows that hold a key, and the field each holds it in.
+const KEYED_ROWS: [(&str, &str, &str); 3] = [
+    ("dyes", "manifest", "dye"),
+    ("kept_parts", "key", "kept"),
+    ("source_parts", "key", "source-part"),
+];
+
+/// Gives the graph the art, dye, kept part and source part keys an imported model copy takes,
+/// FNV-1 of `parhelion/imported-model/{seed}/{role}`. A copy seeds them with its item hash.
+fn rekey(graph: &mut Value, seed: &str) {
     let key = |role: &str| {
-        let hash = fnv1_name_hash(&format!("parhelion/imported-model/{item:08X}/{role}"));
+        let hash = fnv1_name_hash(&format!("parhelion/imported-model/{seed}/{role}"));
         if [0, u32::MAX, 0x811C9DC5].contains(&hash) {
             hash ^ 0x10000
         } else {
             hash
         }
     };
-    graph["item_hash"] = item.into();
     graph["art_key"] = key("art").into();
-    for (field, role) in [
-        ("dyes", "dye"),
-        ("kept_parts", "kept"),
-        ("source_parts", "source-part"),
-    ] {
-        let target = if field == "dyes" { "manifest" } else { "key" };
+    for (field, target, role) in KEYED_ROWS {
         for (index, row) in graph[field]
             .as_array_mut()
             .into_iter()
@@ -595,6 +831,59 @@ fn bind_mod(graph: &mut Value, spec: &WeaponCloneSpec) {
             row[target] = key(&format!("{role}-{index}")).into();
         }
     }
+}
+
+/// The keys a graph adds to the build's gear art and dye maps.
+fn graph_keys(graph: &Value) -> Vec<u64> {
+    std::iter::once(&graph["art_key"])
+        .chain(KEYED_ROWS.iter().flat_map(|(field, target, _)| {
+            graph[*field]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(move |row| &row[*target])
+        }))
+        .filter_map(Value::as_u64)
+        .collect()
+}
+
+/// Two recipes can carry graphs with the same keys, as a library copy imported again from its
+/// source does, since an import takes its keys from the source item. A graph holding a key an
+/// earlier graph of the build or the gear art map already holds takes keys hashed from its own
+/// item instead, as a copy does, so both build. The first graph keeps its keys.
+fn keep_keys_apart(
+    graph: &mut Value,
+    recipe: &WeaponCloneSpec,
+    taken: &mut BTreeSet<u64>,
+    table: &[u8],
+) -> AuthoringResult<()> {
+    let assigned = art::assignments(table)?;
+    let clash = |graph: &Value, taken: &BTreeSet<u64>| {
+        graph_keys(graph).into_iter().any(|key| {
+            taken.contains(&key) || u32::try_from(key).is_ok_and(|key| assigned.contains_key(&key))
+        })
+    };
+    if clash(graph, taken) {
+        let item = graph["item_hash"]
+            .as_u64()
+            .and_then(|item| u32::try_from(item).ok())
+            .unwrap_or(recipe.identity.item_hash);
+        let mut seed = format!("{item:08X}");
+        for attempt in 1.. {
+            rekey(graph, &seed);
+            if !clash(graph, taken) {
+                break;
+            }
+            if attempt == 16 {
+                return Err(invalid(format!(
+                    "Imported graph keys for item 0x{item:08X} collide with other imports"
+                )));
+            }
+            seed = format!("{item:08X}/{attempt}");
+        }
+    }
+    taken.extend(graph_keys(graph));
+    Ok(())
 }
 
 /// One graph to link: its folder, the name of the recipe it belongs to, and that recipe when the
@@ -610,6 +899,49 @@ struct Target<'a> {
 
 /// The build log's line while a graph links: an appearance by its ornament name, else its
 /// recipe's model.
+/// The nodes a graph with a runtime presentation links into its appearance: its own nodes and the
+/// runtime nodes they reach, such as the model's materials and the driver seat. A vehicle graph
+/// lists its whole runtime among its nodes, and the runtime takes a resident group of its own, so
+/// linking the rest here would load a second copy whenever the item's appearance loads. `None`
+/// keeps every node of a graph without a runtime presentation.
+fn appearance_symbols(graph: &Value) -> Option<BTreeSet<String>> {
+    let runtime = graph
+        .get("runtime_presentation")?
+        .get("nodes")?
+        .as_array()?
+        .iter()
+        .filter_map(|node| node["symbol"].as_str())
+        .collect::<BTreeSet<_>>();
+    let nodes = graph["nodes"]
+        .as_array()?
+        .iter()
+        .filter_map(|node| Some((node["symbol"].as_str()?, node)))
+        .collect::<BTreeMap<_, _>>();
+    let mut keep = BTreeSet::new();
+    let mut pending = nodes
+        .keys()
+        .copied()
+        .filter(|symbol| !runtime.contains(symbol))
+        .collect::<Vec<_>>();
+    while let Some(symbol) = pending.pop() {
+        if !keep.insert(symbol.to_owned()) {
+            continue;
+        }
+        let Some(node) = nodes.get(symbol) else {
+            continue;
+        };
+        pending.extend(
+            node["patches"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|patch| patch["symbol"].as_str()),
+        );
+        pending.extend(node["reference"].as_str());
+    }
+    Some(keep)
+}
+
 fn linking_label(graph: &Value, owner: &str) -> String {
     match graph.get("ornament") {
         Some(link) => match link["name"].as_str() {
@@ -670,9 +1002,34 @@ fn apply_one(
     } else if let Some(spec) = spec.filter(|spec| spec.kind == ItemKind::Mod) {
         bind_mod(&mut graph, spec);
     }
+    // Shader and gear graphs take keys from their recipes as they bind, so only a model graph's
+    // keys can repeat another graph's. Every graph's keys count as taken.
+    if graph["kind"] != "shader" && graph.get("gear_art").is_none() {
+        let table = match previous.get(&art::ASSIGNMENT_TABLE.0) {
+            Some(table) => table.clone(),
+            None => manager
+                .read_tag(art::ASSIGNMENT_TABLE)
+                .map_err(|error| invalid(error.to_string()))?,
+        };
+        keep_keys_apart(&mut graph, recipe, &mut shared.keys, &table)?;
+    } else {
+        shared.keys.extend(graph_keys(&graph));
+    }
     let json_nodes = graph["nodes"]
         .as_array()
         .ok_or_else(|| invalid("Asset nodes missing"))?;
+    let appearance = appearance_symbols(&graph);
+    let json_nodes = &json_nodes
+        .iter()
+        .filter(|node| {
+            appearance.as_ref().is_none_or(|keep| {
+                node["symbol"]
+                    .as_str()
+                    .is_some_and(|symbol| keep.contains(symbol))
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let branding = shared.branding;
     let shader = graph["kind"] == "shader";
     let origin = crate::package_profile::host()
@@ -823,11 +1180,15 @@ fn apply_one(
         let mut result = gear::apply(manager, emission, &symbols, &graph, previous)?;
         ornaments::apply(emission, &graph)?;
         ornament_icon::apply(manager, emission, &graph, folder, branding)?;
+        // A weapon ornament drawn from gear art, as Rise of Iron's are, joins Collections as one
+        // drawn from an art row does.
+        ornament_collections::apply(manager, emission, &graph)?;
         result.extend(character::apply(
             manager,
             emission,
             &graph,
             folder,
+            &symbols,
             previous,
             &mut shared.characters,
         )?);
@@ -953,14 +1314,42 @@ fn apply_one(
 
     ornaments::apply(emission, &graph)?;
     ornament_icon::apply(manager, emission, &graph, folder, branding)?;
-    ornament_collections::apply(emission, &graph)?;
+    ornament_collections::apply(manager, emission, &graph)?;
     result.extend(character::apply(
         manager,
         emission,
         &graph,
         folder,
+        &symbols,
         previous,
         &mut shared.characters,
     )?);
     Ok(result)
+}
+
+fn validate_graph_kinds(weapons: &[WeaponCloneSpec]) -> AuthoringResult<()> {
+    for spec in weapons {
+        if let Some(reference) = &spec.overrides.imported_graph {
+            let graph: Value = serde_json::from_slice(
+                &fs::read(reference.directory.join("asset-graph.json"))
+                    .map_err(|e| invalid(e.to_string()))?,
+            )
+            .map_err(|e| invalid(e.to_string()))?;
+            if (graph["kind"] == "shader") != (spec.kind == ItemKind::Shader) {
+                return Err(invalid(
+                    "Imported asset kind does not match its item recipe",
+                ));
+            }
+            if let Some(kind) = crate::imported::kind(spec.kind) {
+                if graph["kind"] != kind {
+                    return Err(invalid("Imported asset kind does not match its recipe"));
+                }
+            } else if graph.get("gear_art").is_some()
+                && !(spec.kind == ItemKind::Weapon && graph["kind"] == "weapon")
+            {
+                return Err(invalid("Imported gear cannot supply a weapon model"));
+            }
+        }
+    }
+    Ok(())
 }

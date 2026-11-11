@@ -78,6 +78,11 @@ pub struct Description {
     pub diffs: usize,
     pub ops: Vec<String>,
     pub sites: BTreeMap<String, usize>,
+    /// The stock ranges of a table entry the loader rebuilds for every mod instead of merging
+    /// their bytes: the size word, and each array's descriptor and header count. Two mods' diffs
+    /// inside them never clash.
+    #[serde(skip)]
+    pub rebuilt: Vec<(u32, u32)>,
 }
 
 /// One sidecar per package, in the packages' order, and how each entry was described.
@@ -245,6 +250,7 @@ struct EntryPlan<'a> {
     ops: Vec<OpPlan>,
     sites: BTreeMap<u32, SiteHit>,
     growth: Vec<Target>,
+    rebuilt: Vec<(u32, u32)>,
 }
 
 impl<'a> EntryPlan<'a> {
@@ -261,6 +267,7 @@ impl<'a> EntryPlan<'a> {
             ops: Vec::new(),
             sites: BTreeMap::new(),
             growth: Vec::new(),
+            rebuilt: Vec::new(),
         }
     }
 
@@ -386,6 +393,8 @@ fn record_growth(plan: &mut EntryPlan<'_>, recipe: &Recipe) {
 struct Spans {
     structural: Vec<(i64, i64)>,
     arrays: Vec<(i64, i64)>,
+    /// The descriptors of the arrays in stock rows that grew, inside the arrays' spans.
+    nested: Vec<(i64, i64)>,
 }
 
 /// Fills a recipe table's ops and diffs, or names the first rule its build breaks.
@@ -422,6 +431,12 @@ fn classify_table(plan: &mut EntryPlan<'_>, recipe: &Recipe) -> Checked<()> {
     build_ops(plan, recipe, &stock_views, &built_views)?;
     nested_ops(plan, recipe, &stock_views, &built_views, &mut spans)?;
     plan.diffs = diffs(stock, built, &spans.structural, &spans.arrays, true)?;
+    plan.rebuilt = spans
+        .structural
+        .iter()
+        .chain(&spans.nested)
+        .map(|&(begin, end)| (begin as u32, end as u32))
+        .collect();
     Ok(())
 }
 
@@ -624,6 +639,7 @@ fn nested_ops(
                     child.rows() + child.count * element_stride,
                 ));
                 spans.structural.push((child.header, child.header + 8));
+                spans.nested.push((stock_at, stock_at + 16));
                 plan.ops.push(OpPlan {
                     name: format!("{}[{row}]+{offset}", array.name),
                     kind: OpKind::Append,
@@ -651,7 +667,7 @@ fn nested_ops(
 }
 
 /// Checks every pointer field of every row, and refuses a row word that points at a typed object
-/// the recipe doesn't list. `added` is where the build's added bytes start.
+/// the recipe neither lists nor names as a number. `added` is where the build's added bytes start.
 fn validate_rows(
     bytes: &[u8],
     views: &Views,
@@ -664,7 +680,8 @@ fn validate_rows(
     for row in 0..view.count {
         let start = view.rows() + row * stride;
         let place = format!("{} row {row}", array.name);
-        let declared = validate_fields(bytes, views, array.row.fields, start, added, &place)?;
+        let mut declared = validate_fields(bytes, views, array.row.fields, start, added, &place)?;
+        declared.extend(array.row.values.iter().map(|&offset| start + offset as i64));
         let mut word = (start + 7) & !7;
         while word + 8 <= start + stride {
             if !declared.contains(&word) && looks_like_pointer(bytes, word) {
@@ -1021,7 +1038,7 @@ fn walk(bytes: &[u8], path: &[Step], node: i64) -> Vec<i64> {
 /// adds 0, and a member the installation lacks isn't checked.
 fn check_pairs(stock: &mut dyn Stock, plans: &[&EntryPlan<'_>]) -> Vec<String> {
     let mut groups = BTreeMap::<&str, BTreeMap<(u32, i64), u32>>::new();
-    for recipe in recipes::TABLES {
+    for recipe in recipes::all() {
         if !stock.has(recipe.tag) {
             continue;
         }
@@ -1276,6 +1293,7 @@ fn report(plan: &EntryPlan<'_>) -> Description {
             .map(|op| format!("{} {}..{}", op.name, op.stock_count, op.mod_count))
             .collect(),
         sites,
+        rebuilt: plan.rebuilt.clone(),
     }
 }
 

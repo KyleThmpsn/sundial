@@ -567,41 +567,103 @@ mod f32_bits {
 /// The tunings a program defines for its Ability Property actions.
 impl Program {
     /// Why this program cannot become an editable native program without losing part of it.
-    /// The native form keeps component edits per referenced graph, so a guided program's
-    /// private resource edits to the graphs its actions reference have no place in it.
     #[must_use]
     pub fn native_adoption_issue(&self) -> Option<&'static str> {
-        if self
-            .auxiliary
+        self.auxiliary
             .iter()
             .any(|record| record.hud_status.is_some())
-        {
-            return Some(
+            .then_some(
                 "This effect carries private HUD text and artwork, which a native draft cannot keep. It stays in its authored form.",
-            );
-        }
-        (self.native.is_none()
-            && (!self.native_asset_patches.is_empty() || !self.imported_assets.is_empty()
-                || !self.damage_profiles.is_empty())).then_some(
-            "This effect edits private resources that a native draft cannot keep. It stays in its authored form.",
-        )
+            )
     }
 
-    /// This program's name and tunings around a native draft of it, for the editors that
-    /// adopt the draft as the program. Refused while the program holds anything the native
-    /// form cannot keep, so an edit never silently drops part of an effect.
+    /// This program's name, tunings and private resource edits around a native draft of it,
+    /// for the editors that adopt the draft as the program. Refused while the program holds
+    /// anything the native form cannot keep, so an edit never silently drops part of an effect.
+    ///
+    /// The native form binds a private resource edit to the graph its effects name rather
+    /// than to one action. A guided program's edit moves to its action's graph, which no
+    /// other action may also name, since that action would start sharing the private copy.
+    /// From a native program, the edits to graphs `native` still names come along.
     pub fn with_native(&self, native: NativeProgram) -> Result<Self, String> {
         if let Some(issue) = self.native_adoption_issue() {
             return Err(issue.into());
         }
-        Ok(Self {
+        let mut adopted = Self {
             name: self.name.clone(),
-            native: Some(native),
+            native_asset_patches: self.native_asset_patches.clone(),
+            damage_profiles: self.damage_profiles.clone(),
+            imported_assets: self.imported_assets.clone(),
+            imported_labels: self.imported_labels.clone(),
             ability_tunings: self.ability_tunings.clone(),
             ability_inputs: self.ability_inputs.clone(),
             ability_rows: self.ability_rows.clone(),
             ..Self::default()
-        })
+        };
+        if self.native.is_none() {
+            const SHARED: &str = "This effect edits an asset privately for one action that another action also uses. It stays in its authored form.";
+            let effects = native_effects(&native)?;
+            let mut graphs = BTreeSet::new();
+            let mut bind = |graph: u32| {
+                let naming = effects
+                    .iter()
+                    .filter(|(_, _, bytes)| names(bytes, graph))
+                    .count();
+                (naming == 1 && graphs.insert(graph))
+                    .then_some(())
+                    .ok_or(SHARED)
+            };
+            for edit in &mut adopted.native_asset_patches {
+                bind(edit.source_graph)?;
+                edit.action_index = 0;
+            }
+            for profile in &mut adopted.damage_profiles {
+                bind(profile.template)?;
+                profile.action_index = 0;
+            }
+            for imported in &mut adopted.imported_assets {
+                let graph = self
+                    .actions
+                    .get(imported.action_index)
+                    .and_then(Action::asset)
+                    .map(|asset| asset.graph)
+                    .ok_or("An imported attachment must select an entity action.")?;
+                bind(graph)?;
+                imported.graph = Some(graph);
+                imported.action_index = 0;
+            }
+        }
+        adopted.native = Some(native);
+        adopted.prune_private_resources();
+        Ok(adopted)
+    }
+
+    /// Drops the private resource edits of a complete native program whose graph none of
+    /// its effects names any more, as its component edits are dropped. A program that
+    /// cannot be read keeps them all.
+    pub fn prune_private_resources(&mut self) {
+        let Some(native) = &self.native else {
+            return;
+        };
+        if self.native_asset_patches.is_empty()
+            && self.damage_profiles.is_empty()
+            && self.imported_assets.is_empty()
+        {
+            return;
+        }
+        let Ok(effects) = native_effects(native) else {
+            return;
+        };
+        let named = |graph: u32| effects.iter().any(|(_, _, bytes)| names(bytes, graph));
+        self.native_asset_patches
+            .retain(|edit| named(edit.source_graph));
+        self.damage_profiles
+            .retain(|profile| named(profile.template));
+        self.imported_assets
+            .retain(|imported| imported.graph.is_some_and(named));
+        if self.imported_assets.is_empty() {
+            self.imported_labels = None;
+        }
     }
 
     /// The slot and key of every Ability Property action in this controller, including its
@@ -1026,6 +1088,21 @@ impl Action {
         }
     }
 
+    /// The resource an imported group replaces in this action: an entity action's graph, or
+    /// the profile a native direct damage node (kind 4) names at bytes `16..20`, which an
+    /// imported group's private profile replaces.
+    #[must_use]
+    pub fn imported_envelope(&self) -> Option<u32> {
+        match self {
+            Self::Native { node } if node.kind == 4 => node
+                .bytes
+                .get(16..20)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u32::from_le_bytes),
+            _ => self.asset().map(|asset| asset.graph),
+        }
+    }
+
     pub const fn asset_mut(&mut self) -> Option<&mut Asset> {
         match self {
             Self::Spawn { asset, .. } | Self::Attach { asset, .. } | Self::Pattern { asset } => {
@@ -1112,6 +1189,13 @@ pub struct Program {
     /// A verbatim ending condition, replacing the trigger's default ending condition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_removal: Option<NativeNode>,
+    /// The damage type of an equipped subclass whose super keeps the program active, in the
+    /// damage-profile encoding: Solar 1, Arc 2, Void 3. A build expands it into native roster
+    /// conditions over the super of every installed subclass of that type, each starting the
+    /// program when its super joins the ability roster and ending it when the super leaves, and
+    /// then clears it. Compilation refuses a program that still holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subclass_damage_type: Option<u8>,
     /// Complete native form for programs with arbitrary groups, policies and conditions.
     /// When present, this owns the behavior and the convenience controls must be defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1149,6 +1233,71 @@ pub struct Program {
     /// Further programs a stock action runs beside this one, carried verbatim.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_groups: Vec<NativeGroup>,
+    /// Shadowkeep abilities this program's conditions name in place of an imported source's
+    /// ability. A build that also carries an imported copy of that source ability accepts the
+    /// copy beside the Shadowkeep one ([`Self::accept_imported_abilities`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ability_counterparts: Vec<AbilityCounterpart>,
+    /// Entity graphs the build allocates in its own packages, which this program's conditions
+    /// name before the package manager lists them: the imported abilities
+    /// [`Self::accept_imported_abilities`] binds. Compilation accepts them as live resources. Set
+    /// for one build only, never saved.
+    #[serde(skip)]
+    pub allocated_entities: std::collections::BTreeSet<u32>,
+}
+
+/// A Shadowkeep ability entity that stands for one ability of an imported source game.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbilityCounterpart {
+    /// The source game, as its importer names it.
+    pub source: String,
+    /// The source ability's stable identity, its definitions row key in that game.
+    #[serde(with = "hex_key")]
+    pub identity: u32,
+    /// The Shadowkeep ability entity graph the conditions name. `None` for an ability of a
+    /// roster gate, a subclass damage-type gate's list, which holds no condition of its own: each
+    /// imported copy then gains a roster addition among the triggers and a roster removal among
+    /// the endings.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_key_option"
+    )]
+    pub native: Option<u32>,
+}
+
+impl NativeNode {
+    /// The ability entity a condition selects positively: a roster addition or removal (kinds 10
+    /// and 11) at `+10`, or a selected ability predicate (kind 20) or compound predicate (kind 35)
+    /// at `+C8` with inversion `+F8` clear. Native `107C4B0` and `F04840` compare an entity graph
+    /// tag at those operands. `None` for every other node and for an empty selector.
+    #[must_use]
+    pub fn ability_operand(&self) -> Option<u32> {
+        let word = |at: usize| {
+            self.bytes
+                .get(at..at + 4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+        };
+        let operand = match self.kind {
+            10 | 11 if self.bytes.len() == 24 => word(0x10)?,
+            20 | 35 if self.bytes.get(0xF8) == Some(&0) => word(0xC8)?,
+            _ => return None,
+        };
+        (operand != u32::MAX).then_some(operand)
+    }
+
+    /// The same condition naming `entity` in place of its ability operand.
+    fn with_ability(&self, entity: u32) -> Self {
+        let at = if matches!(self.kind, 10 | 11) {
+            0x10
+        } else {
+            0xC8
+        };
+        let mut node = self.clone();
+        node.bytes[at..at + 4].copy_from_slice(&entity.to_le_bytes());
+        node
+    }
 }
 
 /// One further program of a stock action: its four condition lists and its effects, each
@@ -1313,6 +1462,7 @@ impl Default for Program {
             removal_key: None,
             native_trigger: None,
             native_removal: None,
+            subclass_damage_type: None,
             native: None,
             auxiliary: Vec::new(),
             policy: None,
@@ -1324,8 +1474,222 @@ impl Default for Program {
             ability_tunings: Vec::new(),
             ability_inputs: Vec::new(),
             ability_rows: Vec::new(),
+            ability_counterparts: Vec::new(),
+            allocated_entities: std::collections::BTreeSet::new(),
         }
     }
+}
+
+impl Program {
+    /// Accept the build's imported copies of the source abilities this program and its nested
+    /// controllers name through [`Self::ability_counterparts`]. `imported` gives the allocated
+    /// entity of every imported ability by source and identity. Each condition naming a
+    /// counterpart's Shadowkeep entity positively gains one copy per imported entity in its own
+    /// list, where any passing condition counts, as stock `80BBCC8B` lists Nova Bomb and Nova Warp
+    /// as two activations. An inverted selector keeps the Shadowkeep entity alone, since any of
+    /// two inversions always passes. A counterpart without a Shadowkeep entity belongs to a roster
+    /// gate, and each imported copy gains a roster addition and removal. Run it after
+    /// [`Self::expand_subclass_gates`], which gives such a gate its stock conditions. Returns the
+    /// number of conditions added.
+    pub fn accept_imported_abilities(
+        &mut self,
+        imported: &std::collections::BTreeMap<(String, u32), std::collections::BTreeSet<u32>>,
+    ) -> usize {
+        let roster = |kind: u8, entity: u32| {
+            let mut bytes = vec![0; 24];
+            bytes[..4].copy_from_slice(&1f32.to_le_bytes());
+            bytes[4] = 0xFF;
+            bytes[5] = kind;
+            bytes[16..20].copy_from_slice(&entity.to_le_bytes());
+            NativeNode { kind, bytes }
+        };
+        let mut added = 0;
+        let mut pending = vec![self];
+        while let Some(program) = pending.pop() {
+            let mut copies = std::collections::BTreeMap::<u32, Vec<u32>>::new();
+            let mut gated = std::collections::BTreeSet::new();
+            for counterpart in &program.ability_counterparts {
+                let Some(entities) =
+                    imported.get(&(counterpart.source.clone(), counterpart.identity))
+                else {
+                    continue;
+                };
+                match counterpart.native {
+                    Some(native) => copies
+                        .entry(native)
+                        .or_default()
+                        .extend(entities.iter().copied()),
+                    None => gated.extend(entities.iter().copied()),
+                }
+            }
+            program
+                .allocated_entities
+                .extend(gated.iter().chain(copies.values().flatten()).copied());
+            for &entity in &gated {
+                for (kind, primary, list) in [
+                    (
+                        10,
+                        &mut program.native_trigger,
+                        &mut program.alternative_triggers,
+                    ),
+                    (
+                        11,
+                        &mut program.native_removal,
+                        &mut program.alternative_removals,
+                    ),
+                ] {
+                    match primary {
+                        None => *primary = Some(roster(kind, entity)),
+                        Some(_) => list.push(roster(kind, entity)),
+                    }
+                    added += 1;
+                }
+            }
+            if !copies.is_empty() {
+                let widen = |list: &mut Vec<NativeNode>, primary: Option<&NativeNode>| {
+                    let extra = primary
+                        .into_iter()
+                        .chain(list.iter())
+                        .filter_map(|node| Some((node, copies.get(&node.ability_operand()?)?)))
+                        .flat_map(|(node, entities)| {
+                            entities.iter().map(|&entity| node.with_ability(entity))
+                        })
+                        .collect::<Vec<_>>();
+                    let count = extra.len();
+                    list.extend(extra);
+                    count
+                };
+                added += widen(
+                    &mut program.alternative_triggers,
+                    program.native_trigger.as_ref(),
+                );
+                added += widen(
+                    &mut program.alternative_removals,
+                    program.native_removal.as_ref(),
+                );
+                added += widen(
+                    &mut program.alternative_rearms,
+                    program.native_rearm.as_ref(),
+                );
+                for group in &mut program.additional_groups {
+                    added += widen(&mut group.activation, None);
+                    added += widen(&mut group.removal, None);
+                    added += widen(&mut group.rearm, None);
+                }
+            }
+            for edit in &mut program.native_asset_patches {
+                for child in &mut edit.programs {
+                    pending.push(&mut child.program);
+                }
+            }
+        }
+        added
+    }
+    /// Whether this program or any of its nested controllers, at any depth, is gated on a
+    /// subclass damage type. These are the programs [`Self::expand_subclass_gates`] expands.
+    #[must_use]
+    pub fn has_subclass_gate(&self) -> bool {
+        let mut pending = vec![self];
+        while let Some(program) = pending.pop() {
+            if program.subclass_damage_type.is_some() {
+                return true;
+            }
+            pending.extend(
+                program
+                    .native_asset_patches
+                    .iter()
+                    .flat_map(|edit| &edit.programs)
+                    .map(|child| &*child.program),
+            );
+        }
+        false
+    }
+
+    /// Replace the subclass damage-type gate of this program and of its nested controllers with
+    /// native roster conditions, given the super ability entities of each installed subclass by
+    /// damage type. Each entity gives a roster addition (kind 10) among the triggers and a roster
+    /// removal (kind 11) among the endings. Both compare event word zero with the entity at
+    /// `+10`. Returns whether any gate was expanded.
+    pub fn expand_subclass_gates(
+        &mut self,
+        supers: &std::collections::BTreeMap<u8, std::collections::BTreeSet<u32>>,
+    ) -> Result<bool, String> {
+        let roster = |kind: u8, entity: u32| {
+            let mut bytes = vec![0; 24];
+            bytes[..4].copy_from_slice(&1f32.to_le_bytes());
+            bytes[4] = 0xFF;
+            bytes[5] = kind;
+            bytes[16..20].copy_from_slice(&entity.to_le_bytes());
+            NativeNode { kind, bytes }
+        };
+        let mut expanded = false;
+        let mut pending = vec![self];
+        while let Some(program) = pending.pop() {
+            if let Some(damage) = program.subclass_damage_type.take() {
+                let entities = supers
+                    .get(&damage)
+                    .filter(|entities| !entities.is_empty())
+                    .ok_or_else(|| {
+                        format!("No installed subclass of damage type {damage} has a super.")
+                    })?;
+                let mut additions = entities.iter().map(|&entity| roster(10, entity));
+                program.native_trigger = additions.next();
+                program.alternative_triggers = additions.collect();
+                let mut removals = entities.iter().map(|&entity| roster(11, entity));
+                program.native_removal = removals.next();
+                program.alternative_removals = removals.collect();
+                expanded = true;
+            }
+            for edit in &mut program.native_asset_patches {
+                for child in &mut edit.programs {
+                    pending.push(&mut child.program);
+                }
+            }
+        }
+        Ok(expanded)
+    }
+}
+
+/// What one private resource edit binds: an action of a guided program, or a graph of a
+/// complete native program.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Binding {
+    Action(usize),
+    Graph(u32),
+}
+
+impl Binding {
+    fn of<T>(native: &Option<T>, action: usize, graph: u32) -> Self {
+        match native {
+            Some(_) => Self::Graph(graph),
+            None => Self::Action(action),
+        }
+    }
+}
+
+/// Every effect of a complete native program as its kind, class and node bytes.
+fn native_effects(native: &NativeProgram) -> Result<Vec<(u8, u32, Vec<u8>)>, String> {
+    Ok(crate::sandbox_perk::action::decode(&native.graph.emit()?)?
+        .effects()
+        .map(|effect| (effect.kind, effect.class, effect.native.clone()))
+        .collect())
+}
+
+/// Whether an effect node names `tag` in its resource lane at `+0x10`.
+fn names(bytes: &[u8], tag: u32) -> bool {
+    bytes.get(16..20) == Some(&tag.to_le_bytes()[..])
+}
+
+/// Whether effects name `graph`, all of them entity effects.
+fn entity_effect_names(effects: &[(u8, u32, Vec<u8>)], graph: u32) -> bool {
+    let mut naming = effects
+        .iter()
+        .filter(|(_, _, bytes)| names(bytes, graph))
+        .peekable();
+    naming.peek().is_some()
+        && naming.all(|(_, class, bytes)| {
+            native::entity_reference(*class, bytes).is_ok_and(|tag| tag == Some(graph))
+        })
 }
 
 impl Program {
@@ -1431,63 +1795,127 @@ impl Program {
                 "An imported label dictionary needs a symbol in a pinned attachment group.".into(),
             );
         }
-        let mut patched_actions = BTreeSet::new();
+        // A guided program binds each private edit to one action. A complete native program
+        // binds it to a graph, and every effect naming that graph takes the private copy.
+        let native = self
+            .native
+            .as_ref()
+            .map(|native| Ok::<_, String>((native, native_effects(native)?)))
+            .transpose()?;
+        let mut patched = BTreeSet::new();
         for profile in &self.damage_profiles {
             let amount = f32::from_bits(profile.amount_bits);
-            if !patched_actions.insert(profile.action_index)
+            let health = |bytes: &[u8]| {
+                profile.health.is_none() || bytes.get(..8) == Some(&[4, 0, 1, 0, 0, 0, 0, 0][..])
+            };
+            let direct = match &native {
+                Some((_, effects)) => {
+                    let mut naming = effects
+                        .iter()
+                        .filter(|effect| names(&effect.2, profile.template))
+                        .peekable();
+                    naming.peek().is_some()
+                        && naming.all(|(kind, _, bytes)| *kind == 4 && health(bytes.as_slice()))
+                }
+                None => {
+                    matches!(self.actions.get(profile.action_index), Some(Action::Native { node })
+                    if node.kind == 4 && names(&node.bytes, profile.template) && health(node.bytes.as_slice()))
+                }
+            };
+            if !patched.insert(Binding::of(&native, profile.action_index, profile.template))
                 || matches!(profile.template, 0 | u32::MAX)
                 || !amount.is_finite()
                 || profile.health.as_ref().map_or(amount <= 0.0, |health| {
                     !health.valid() || profile.amount_bits != 0 || profile.damage_type != 0
                 })
                 || profile.damage_type > 3
-                || !matches!(self.actions.get(profile.action_index), Some(Action::Native { node })
-                    if node.kind == 4 && node.bytes.get(16..20) == Some(&profile.template.to_le_bytes()[..])
-                        && (profile.health.is_none() || node.bytes.get(..8) == Some(&[4, 0, 1, 0, 0, 0, 0, 0][..])))
+                || !direct
             {
                 return Err("A direct profile needs a unique resource effect, a live template and valid damage or player-healing amounts.".into());
             }
         }
         for imported in &self.imported_assets {
-            if !patched_actions.insert(imported.action_index)
+            let graph = match &native {
+                Some(_) => imported.graph,
+                None => self
+                    .actions
+                    .get(imported.action_index)
+                    .and_then(Action::imported_envelope),
+            }
+            .ok_or("An imported attachment must select an entity action.")?;
+            if !patched.insert(Binding::of(&native, imported.action_index, graph))
                 || !imported.directory.is_absolute()
                 || imported.sha256.len() != 64
                 || !imported.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
                 || imported.symbol.trim().is_empty()
                 || imported.symbol.contains('\0')
+                || native.is_none() && imported.graph.is_some()
             {
                 return Err(
                     "An imported attachment needs a directory, a root symbol and a unique action."
                         .into(),
                 );
             }
-            let asset = self
-                .actions
-                .get(imported.action_index)
-                .and_then(Action::asset)
-                .ok_or("An imported attachment must select an entity action.")?;
-            if asset.graph == 0
-                || asset.graph == u32::MAX
-                || !asset.values.is_empty()
-                || asset.hud_status.is_some()
-                || asset.damage_type.is_some()
+            let assets = match &native {
+                Some((program, effects)) => {
+                    if !entity_effect_names(effects, graph) {
+                        return Err("An imported attachment must select an entity action.".into());
+                    }
+                    program
+                        .assets
+                        .iter()
+                        .filter(|asset| asset.graph == graph && asset.script.is_none())
+                        .collect()
+                }
+                None => self
+                    .actions
+                    .get(imported.action_index)
+                    .and_then(Action::asset)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            };
+            if matches!(graph, 0 | u32::MAX)
+                || assets.iter().any(|asset| {
+                    !asset.values.is_empty()
+                        || asset.hud_status.is_some()
+                        || asset.damage_type.is_some()
+                        || native.is_some() && !asset.rows.is_empty()
+                })
             {
                 return Err("Edit an imported attachment in its source group before binding it to an action.".into());
             }
         }
         for edit in &self.native_asset_patches {
-            if !patched_actions.insert(edit.action_index) {
+            if !patched.insert(Binding::of(&native, edit.action_index, edit.source_graph)) {
                 return Err("A native asset action has more than one patch set.".into());
             }
-            let action = self
-                .actions
-                .get(edit.action_index)
-                .ok_or_else(|| "An asset patch must select an effect action.".to_owned())?;
-            let matches_graph = if let Some(asset) = action.asset() {
-                asset.graph == edit.source_graph && asset.values.is_empty()
-            } else {
-                matches!(action, Action::Native { node } if node.kind == 2
-                    && node.bytes.get(16..20) == Some(&edit.source_graph.to_le_bytes()[..]))
+            let matches_graph = match &native {
+                // The patched copy is made once per graph, so the graph's own component
+                // settings, which make a copy of their own, cannot join it.
+                Some((program, effects)) => {
+                    entity_effect_names(effects, edit.source_graph)
+                        && program
+                            .assets
+                            .iter()
+                            .filter(|asset| asset.graph == edit.source_graph)
+                            .all(|asset| {
+                                asset.values.is_empty()
+                                    && asset.rows.is_empty()
+                                    && asset.damage_type.is_none()
+                            })
+                }
+                None => {
+                    let action = self
+                        .actions
+                        .get(edit.action_index)
+                        .ok_or_else(|| "An asset patch must select an effect action.".to_owned())?;
+                    if let Some(asset) = action.asset() {
+                        asset.graph == edit.source_graph && asset.values.is_empty()
+                    } else {
+                        matches!(action, Action::Native { node } if node.kind == 2
+                            && names(&node.bytes, edit.source_graph))
+                    }
+                }
             };
             if !matches_graph || matches!(edit.source_graph, 0 | u32::MAX) {
                 return Err("A native asset patch must name its effect's live graph.".into());
@@ -1564,13 +1992,15 @@ impl Program {
                     }
                 }
             }
+            // A child may carry imported attachment groups. The build loads every owned program's
+            // groups and binds each child's through its own compiled actions, and the child's own
+            // validation checks its bindings. Imported label dictionaries stay with the root.
             for (index, child) in edit.programs.iter().enumerate() {
                 if child.binding_hash == 0
                     || matches!(child.expected_action, 0 | u32::MAX)
                     || child.offset.checked_add(4).is_none()
                     || child.program.native.is_some()
                     || child.program.imported_labels.is_some()
-                    || !child.program.imported_assets.is_empty()
                 {
                     return Err("A nested controller needs an authored program and a bounded native action reference.".into());
                 }
@@ -1594,6 +2024,40 @@ impl Program {
                         "A nested controller reference overlaps another resource edit.".into(),
                     );
                 }
+            }
+        }
+        // An imported projectile stands in for its native projectile whole, so no other private
+        // edit may bind the action or graph it replaces.
+        let bound = match &native {
+            Some((program, _)) => program
+                .assets
+                .iter()
+                .map(|asset| (Binding::Graph(asset.graph), asset))
+                .collect::<Vec<_>>(),
+            None => self
+                .actions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, action)| {
+                    action.asset().map(|asset| (Binding::Action(index), asset))
+                })
+                .collect(),
+        };
+        for (binding, asset) in bound {
+            let Some(symbol) = &asset.imported else {
+                continue;
+            };
+            if symbol.trim().is_empty()
+                || symbol.contains('\0')
+                || matches!(asset.graph, 0 | u32::MAX)
+                || !asset.values.is_empty()
+                || asset.hud_status.is_some()
+                || asset.damage_type.is_some()
+                || !asset.rows.is_empty()
+                || asset.script.is_some()
+                || patched.contains(&binding)
+            {
+                return Err("An imported projectile replaces its native projectile whole, without settings, a status, a damage type, rows or patches of its own.".into());
             }
         }
         Ok(())
@@ -1631,10 +2095,6 @@ impl Program {
         if let Some(native) = &self.native {
             let defaults = Self::default();
             if !self.actions.is_empty()
-                || !self.native_asset_patches.is_empty()
-                || !self.damage_profiles.is_empty()
-                || !self.imported_assets.is_empty()
-                || self.imported_labels.is_some()
                 || self.native_trigger.is_some()
                 || self.native_removal.is_some()
                 || self.removal_key.is_some()
@@ -1655,10 +2115,13 @@ impl Program {
                         .into(),
                 );
             }
-            return native.validate();
+            native.validate()?;
+            return self.validate_asset_patches();
         }
-        if self.actions.len() > 16 {
-            return Err("A custom effect can contain up to 16 actions.".into());
+        // The root's timer-extension mask at `+A0` holds one bit per action in a UInt64.
+        // Retained-state and timer reservations are counted bytes the compiler checks.
+        if self.actions.len() > 64 {
+            return Err("A custom effect can contain up to 64 actions.".into());
         }
         if self
             .actions
@@ -1703,10 +2166,27 @@ impl Program {
             (Some(_), _) => {
                 return Err("A native trigger node needs the On Native Condition trigger.".into());
             }
+            // A build supplies the roster conditions of a subclass damage-type gate.
+            (None, Trigger::Native) if self.subclass_damage_type.is_some() => {}
             (None, Trigger::Native) => {
                 return Err("Choose a native condition for the trigger.".into());
             }
             (None, _) => {}
+        }
+        if let Some(damage) = self.subclass_damage_type {
+            if !(1..=3).contains(&damage) {
+                return Err("A subclass gate needs the Solar, Arc or Void damage type.".into());
+            }
+            if self.trigger != Trigger::Native
+                || self.native_trigger.is_some()
+                || self.native_removal.is_some()
+                || !self.alternative_triggers.is_empty()
+                || !self.alternative_removals.is_empty()
+            {
+                return Err(
+                    "A subclass gate supplies its own trigger and ending conditions.".into(),
+                );
+            }
         }
         if let Some(node) = &self.native_removal {
             if self.removal_key.is_some() {

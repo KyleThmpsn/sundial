@@ -304,6 +304,61 @@ pub fn native_relocation_layout(schema: u32) -> Result<Option<PointerLayout>, St
     Ok(Some((size, fields.into_iter().collect())))
 }
 
+/// One definition as the client's table records it.
+pub(crate) struct NativeDeclaration {
+    pub size: usize,
+    /// The base type, or the element type of a fixed array. `0xFFFFFFFF` when absent.
+    pub base: u32,
+    /// Reflected members in declared order, as byte offset, type handle and name hash.
+    pub members: Vec<(usize, u32, u32)>,
+    /// The serialized layout program as `(offset, code)` rows, unexpanded.
+    pub layout: Vec<(usize, u32)>,
+}
+
+/// `schema`'s declaration, or `None` when it is outside the definition table.
+pub(crate) fn native_declaration(schema: u32) -> Result<Option<NativeDeclaration>, String> {
+    let Some(record) = runtime_registry()?.records.get(&schema) else {
+        return Ok(None);
+    };
+    Ok(Some(NativeDeclaration {
+        size: record.struct_size as usize,
+        base: record.base_type,
+        members: record
+            .members
+            .iter()
+            .map(|member| {
+                (
+                    member.byte_offset as usize,
+                    member.type_handle,
+                    member.name_hash,
+                )
+            })
+            .collect(),
+        layout: record
+            .native_layout
+            .iter()
+            .map(|entry| (entry.byte_offset as usize, entry.type_code))
+            .collect(),
+    }))
+}
+
+/// A definition's handle, native size and serialized layout program as `(offset, code)` rows.
+pub(crate) type NativeLayout = (u32, usize, Vec<(usize, u32)>);
+
+/// Every definition's handle, size and serialized native layout program, unexpanded, in handle
+/// order. Package reference discovery reads these and expands each program itself.
+pub(crate) fn native_layouts() -> Result<impl Iterator<Item = NativeLayout>, String> {
+    let registry = runtime_registry()?;
+    Ok(registry.records.values().map(|record| {
+        let layout = record
+            .native_layout
+            .iter()
+            .map(|entry| (entry.byte_offset as usize, entry.type_code))
+            .collect();
+        (record.handle, record.struct_size as usize, layout)
+    }))
+}
+
 /// Every reflected member, in any type, that holds a `schema`.
 pub fn native_holders(schema: u32) -> Vec<NativeMember> {
     let Ok(registry) = runtime_registry() else {

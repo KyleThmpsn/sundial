@@ -1,8 +1,11 @@
-//! Declarations recovered from build 86657.20.08.23 with stock or original consumer evidence.
+//! The perk editor's native declarations: the classes it declares (`classes`), each read from the
+//! client's definition table of build 86657.20.08.23.
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::OnceLock,
 };
+
+mod classes;
 
 #[derive(Clone, Debug)]
 pub struct Record {
@@ -12,45 +15,19 @@ pub struct Record {
     pub array: bool,
     /// Inline byte offset, native class and native field-name hash.
     pub members: Vec<(usize, u32, u32)>,
-    /// Expanded native layout byte offset and declaration opcode.
+    /// Native layout byte offset and code, without the class operand row after each code 11.
     pub fields: Vec<(usize, u32)>,
 }
 
-type Encoded = (
-    u32,
-    usize,
-    u32,
-    bool,
-    Vec<(usize, u32, u32)>,
-    Vec<(usize, u32)>,
-);
 static RECORDS: OnceLock<Result<BTreeMap<u32, Record>, String>> = OnceLock::new();
 
 pub fn record(class: u32) -> Result<&'static Record, String> {
     let records = RECORDS
         .get_or_init(|| {
-            let rows: Vec<Encoded> = serde_json::from_str(include_str!("schema.json"))
-                .map_err(|error| format!("Native perk declarations are invalid: {error}"))?;
-            let mut result = BTreeMap::new();
-            for (class, size, base, array, members, fields) in rows {
-                if result
-                    .insert(
-                        class,
-                        Record {
-                            class,
-                            size,
-                            base,
-                            array,
-                            members,
-                            fields,
-                        },
-                    )
-                    .is_some()
-                {
-                    return Err("Duplicate native perk declaration.".into());
-                }
-            }
-            Ok(result)
+            classes::CLASSES
+                .iter()
+                .map(|&class| Ok((class, declared(class)?)))
+                .collect()
         })
         .as_ref()
         .map_err(Clone::clone)?;
@@ -59,18 +36,47 @@ pub fn record(class: u32) -> Result<&'static Record, String> {
         .ok_or_else(|| format!("Native class 0x{class:08X} has no recovered perk declaration."))
 }
 
-pub fn is_a(mut class: u32, base: u32) -> bool {
-    let mut visited = BTreeSet::new();
-    while visited.insert(class) {
-        if class == base {
-            return true;
+/// `class` as the definition table declares it, with the editor's array flag.
+fn declared(class: u32) -> Result<Record, String> {
+    let declaration = crate::runtime::native_declaration(class)
+        .map_err(|error| format!("Native perk declarations are unavailable: {error}"))?
+        .ok_or_else(|| format!("Native class 0x{class:08X} is outside the definition table."))?;
+    let mut fields = Vec::with_capacity(declaration.layout.len());
+    let mut rows = declaration.layout.iter();
+    while let Some(&(offset, code)) = rows.next() {
+        match code {
+            // The perk editor reads no repeated layout, so a repeat would be misread here.
+            10 => {
+                return Err(format!(
+                    "Native class 0x{class:08X} has a repeated layout the perk editor does not read."
+                ));
+            }
+            11 => {
+                fields.push((offset, code));
+                rows.next()
+                    .filter(|(_, operand)| *operand == 0)
+                    .ok_or_else(|| {
+                        format!("Native class 0x{class:08X} has a truncated indexed value.")
+                    })?;
+            }
+            _ => fields.push((offset, code)),
         }
-        let Ok(record) = record(class) else {
-            return false;
-        };
-        class = record.base;
     }
-    false
+    Ok(Record {
+        class,
+        size: declaration.size,
+        base: declaration.base,
+        array: classes::ARRAYS.contains(&class),
+        members: declaration.members,
+        fields,
+    })
+}
+
+/// Whether `class` is `base` or derives from it through the perk editor's declarations.
+pub fn is_a(class: u32, base: u32) -> bool {
+    crate::runtime::inherits(class, base, |class| {
+        record(class).ok().map(|record| record.base)
+    })
 }
 
 /// Inline native records, including their inherited views, with stable member routes.
@@ -116,16 +122,26 @@ pub(super) fn template(kind: super::NodeKind) -> Option<Vec<u8>> {
         return super::super::layout::blank_condition(33);
     }
     let rows = TEMPLATES.get_or_init(|| {
-        serde_json::from_str(include_str!("templates.json")).expect("validated native templates")
+        serde_json::from_str(include_str!("schema/templates.json"))
+            .expect("validated native templates")
     });
-    let text = &rows
+    let row = rows
         .iter()
-        .find(|row| row.0 == kind.is_condition() && row.1 == kind.byte())?
-        .4;
-    (0..text.len())
+        .find(|row| row.0 == kind.is_condition() && row.1 == kind.byte())?;
+    let text = &row.4;
+    let bytes = (0..text.len())
         .step_by(2)
         .map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok())
-        .collect()
+        .collect::<Option<Vec<_>>>()?;
+    // Templates enter the editor in the same physical layout that edits emit.
+    // Opening a node must not count string-envelope normalization as an edit.
+    let nodes: &[_] = if kind.is_condition() {
+        &crate::sandbox_perk::nodes::CONDITIONS
+    } else {
+        &crate::sandbox_perk::nodes::EFFECTS
+    };
+    let class = nodes.iter().find(|node| node.kind == kind.byte())?.class;
+    super::Graph::read(&bytes, 0, class).ok()?.emit().ok()
 }
 
 type Targets = Vec<(u32, usize, Vec<(u32, bool)>)>;
@@ -134,7 +150,7 @@ static TARGETS: OnceLock<Targets> = OnceLock::new();
 pub fn targets(class: u32, field: usize) -> &'static [(u32, bool)] {
     TARGETS
         .get_or_init(|| {
-            serde_json::from_str(include_str!("targets.json"))
+            serde_json::from_str(include_str!("schema/targets.json"))
                 .expect("validated native pointer targets")
         })
         .iter()
@@ -142,9 +158,21 @@ pub fn targets(class: u32, field: usize) -> &'static [(u32, bool)] {
         .map_or(&[], |row| row.2.as_slice())
 }
 
-/// Polymorphic node slots accept every recovered concrete member of their family.
+/// Polymorphic node slots accept every recovered concrete member of their family. The action
+/// root's policy configuration accepts each registered policy's configuration class, including
+/// those no stock action selects, such as policy 4's `80803E08`.
 pub fn choices(class: u32, field: usize) -> Vec<(u32, bool)> {
     let mut choices = targets(class, field).to_vec();
+    if class == crate::sandbox_perk::action::ACTION_ROOT_CLASS
+        && field == crate::sandbox_perk::action::POLICY_CONFIGURATION
+    {
+        choices.extend(
+            crate::sandbox_perk::nodes::POLICIES
+                .iter()
+                .filter(|policy| policy.configuration_class != 0)
+                .map(|policy| (policy.configuration_class, false)),
+        );
+    }
     for (base, entries) in [
         (
             0x808040BC,

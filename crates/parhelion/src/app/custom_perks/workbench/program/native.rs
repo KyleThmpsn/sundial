@@ -109,8 +109,8 @@ pub(in crate::app::custom_perks::workbench) fn draw_complete(
         .add_enabled_ui(editing, |ui| {
             // One card draws many independent editors. Carrying the first failure out of here
             // rather than returning on it keeps the rest of the card drawn and, more
-            // importantly, keeps the edits its other controls made this frame: a truncated
-            // field in one node used to discard a label set made in another.
+            // importantly, keeps the edits its other controls made this frame, so a truncated
+            // field in one node leaves a label set in another.
             let mut failed = None;
             match behavior::draw(ui, &mut changed.graph, &mut changed.assets, pick) {
                 Ok(asset) => edit_asset = asset,
@@ -244,6 +244,7 @@ pub(in crate::app::custom_perks::workbench) fn move_group(
     moved_program.prune_ability_tunings();
     added.program = Some(moved_program);
     program.prune_ability_tunings();
+    program.prune_private_resources();
     recipe.effects.insert(position + 1, added);
     Ok(())
 }

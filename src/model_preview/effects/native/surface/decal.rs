@@ -8,6 +8,20 @@ fn zero_target(code: &Code, target: u32) -> bool {
     })
 }
 
+/// State CC multiplies existing albedo by this RGB factor while preserving the other targets.
+pub(super) fn modulate(code: &Code) -> bool {
+    zero_target(code, 1)
+        && zero_target(code, 2)
+        && output(code, 0, 3)
+            .is_some_and(|(_, alpha)| alpha.code == 54 && literal(&alpha.operands[1], 3, 0.0))
+        && output(code, 0, 0).is_some_and(|(_, rgb)| {
+            rgb.code == 50
+                && !rgb.saturate
+                && rgb.operands[0].mask == 7
+                && (0..3).all(|lane| literal(&rgb.operands[3], lane, 1.0))
+        })
+}
+
 fn opacity_control(code: &Code) -> bool {
     let Some((alpha_at, alpha)) = output(code, 0, 3) else {
         return false;
@@ -36,6 +50,66 @@ fn opacity_control(code: &Code) -> bool {
                 .is_some_and(|(at, _, other)| at == control_at && other == lane)
         })
     })
+}
+
+/// A color-only gear layer keeps the receiver normal and writes premultiplied material targets.
+pub(super) fn paint(code: &Code) -> bool {
+    if !zero_target(code, 1) {
+        return false;
+    }
+    let Some((alpha_at, alpha)) = output(code, 0, 3) else {
+        return false;
+    };
+    let Some((_, material_alpha)) = output(code, 2, 3) else {
+        return false;
+    };
+    if alpha.code != 54
+        || material_alpha.code != 54
+        || producer(code, &alpha.operands[1], 3, alpha_at).map(|(at, _, lane)| (at, lane))
+            != producer(
+                code,
+                &material_alpha.operands[1],
+                3,
+                output(code, 2, 3).unwrap().0,
+            )
+            .map(|(at, _, lane)| (at, lane))
+    {
+        return false;
+    }
+    let Some((inverse_at, inverse, lane)) = producer(code, &alpha.operands[1], 3, alpha_at) else {
+        return false;
+    };
+    if inverse.code != 0 || inverse.saturate {
+        return false;
+    }
+    let coverage = [(1, 2), (2, 1)].into_iter().find_map(|(a, b)| {
+        (inverse.operands[a].modifier == 1 && literal(&inverse.operands[b], lane, 1.0)).then(|| {
+            let mut source = inverse.operands[a].clone();
+            source.modifier = 0;
+            source
+        })
+    });
+    let Some(coverage) = coverage else {
+        return false;
+    };
+    let Some((color_at, color)) = output(code, 0, 0) else {
+        return false;
+    };
+    let Some((_, properties)) = output(code, 2, 0) else {
+        return false;
+    };
+    color.code == 56
+        && !color.saturate
+        && color.operands[0].mask == 7
+        && properties.code == 56
+        && properties.operands[0].mask == 7
+        && (1..=2).any(|source| {
+            (0..3).all(|axis| {
+                producer(code, &color.operands[source], axis, color_at)
+                    .map(|(at, _, lane)| (at, lane))
+                    == producer(code, &coverage, lane, inverse_at).map(|(at, _, lane)| (at, lane))
+            })
+        })
 }
 
 pub(super) fn supported(code: &Code) -> bool {

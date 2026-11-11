@@ -11,7 +11,9 @@
 //! follows. Its first word holds x, y and z in 11, 11 and 10 bits, a share of the grid's extent
 //! from its corner. Bytes 8 to 11 are a quaternion, signed normalized, with w in byte 8 and z, y
 //! and x in bytes 9 to 11, which the program does not normalize, so a vertex turns by it and
-//! scales by its squared length. Bytes 12 to 15 are the instance's light, red, green and blue
+//! scales by its squared length. The renderer submits the set's model compression scaled by 2
+//! ([`MODEL_SCALE`]), so an instance's size is twice that squared length. Bytes 12 to 15 are the
+//! instance's light, red, green and blue
 //! unsigned normalized times `2^(63.75 a - 31.75)` of its alpha `a`, in the units of the level's
 //! lightmap, irradiance over pi. Byte 4 is the sun's visibility for the analytical light, which
 //! these levels do not use. Byte 7 indexes the set's types. The pixel program multiplies the
@@ -49,6 +51,7 @@ const GRID_SIZE: usize = 0x3C;
 const GRID_SET: usize = 0x02;
 const GRID_START: usize = 0x04;
 const GRID_CORNER: usize = 0x08;
+const GRID_RADIUS: usize = 0x14;
 const GRID_EXTENT: usize = 0x18;
 const INSTANCE_SIZE: usize = 16;
 const INSTANCE_DECLARATION: u32 = 0x0010_0014;
@@ -57,10 +60,23 @@ const SET_MODELS: usize = 0x00;
 const SET_MODEL_SIZE: usize = 0x10;
 const SET_TYPES: usize = 0x40;
 const SET_TEXTURE: usize = 0x50;
-/// A set's fade distances, one 16-byte row for each of its four models: where it starts to fade
-/// and where it is gone, in world units, then the fade's slope and offset.
+/// A set's last valid level of detail (`i32`, its model count less one) and its transitions, one
+/// 16-byte row for each model up to that one: where it starts to fade and where it is gone, in
+/// world units, then the fade's slope and offset. A row before the last cross-fades its model to
+/// the next, and the last valid model's row fades it out. Rows past it are zero. Reach's
+/// `render_decorators` (`halo3_tag_play` 2011-07-07, `825FBBA0`) evaluates `slope * d + offset`
+/// over these rows, culling a grid where the last is not positive, with `d` the camera's distance
+/// from the grid's bounding sphere times `1.71867 * tan(vertical field of view / 2)` over the
+/// performance throttle's decorator fade scale, 1 in the stock globals.
+const SET_LAST_DETAIL: usize = 0xB0;
 const SET_FADES: usize = 0xB4;
 const FADE_SIZE: usize = 0x10;
+/// The constant scale Reach's decorator renderer submits a set's model compression with
+/// (`render_mesh_submit_compression_with_constant_scale(.., 2.0)` in
+/// `c_decorator_lod_renderer::render`, `825FB570`), which doubles every model position about the
+/// origin. Sword Base's sets place their instances at squared lengths from 0.33 to 0.55 at the
+/// median, a size of about 1 once doubled.
+const MODEL_SCALE: f32 = 2.;
 /// The models Destiny's instanced decorators draw a type with, most detailed first: the native
 /// decorator models stock grass uses hold three meshes, one for each distance band.
 const INSTANCED_DETAILS: usize = 3;
@@ -88,18 +104,21 @@ const MODEL_INSTANCE_SIZE: usize = 60;
 struct Instance {
     /// Position in meters.
     position: [f32; 3],
-    /// The unit rotation and the scale its squared length gives.
+    /// The unit rotation and the scale its squared length gives under [`MODEL_SCALE`].
     rotation: [f32; 4],
     scale: f32,
     kind: usize,
     light: [f32; 3],
     sun: f32,
+    /// The radius of its grid's bounding sphere in meters, from which Reach measures the distance
+    /// its fades take.
+    grid: f32,
 }
 
 impl Instance {
-    /// Decodes instance `bytes` in a grid whose least corner and extent are `corner` and `extent`,
-    /// in world units.
-    fn decode(bytes: &[u8], corner: [f32; 3], extent: [f32; 3]) -> Result<Self> {
+    /// Decodes instance `bytes` in a grid whose least corner and extent are `corner` and `extent`
+    /// and whose bounding sphere's radius is `radius`, in world units.
+    fn decode(bytes: &[u8], corner: [f32; 3], extent: [f32; 3], radius: f32) -> Result<Self> {
         ensure!(bytes.len() == INSTANCE_SIZE, "Short decorator instance");
         let word = u32::from_le_bytes(bytes[0..4].try_into()?);
         let share = [
@@ -128,10 +147,11 @@ impl Instance {
         Ok(Self {
             position,
             rotation: quaternion.map(|v| v / length),
-            scale: squared,
+            scale: squared * MODEL_SCALE,
             kind: usize::from(bytes[7]),
             light: [bytes[12], bytes[13], bytes[14]].map(|byte| unorm(byte) * exposure),
             sun: unorm(bytes[4]),
+            grid: radius * METRES_PER_UNIT,
         })
     }
 
@@ -364,6 +384,7 @@ pub(super) fn read(
             let start = usize::try_from(cache.u32(grid + GRID_START)?)?;
             let corner = cache.floats::<3>(grid + GRID_CORNER)?;
             let extent = cache.floats::<3>(grid + GRID_EXTENT)?;
+            let radius = cache.f32(grid + GRID_RADIUS)?;
             let bytes = buffers
                 .get(set)
                 .with_context(|| format!("A decorator grid names set {set} of {}", buffers.len()))?
@@ -372,7 +393,7 @@ pub(super) fn read(
                     format!("A decorator grid of set {set} reaches past its buffer")
                 })?;
             for row in bytes.chunks_exact(INSTANCE_SIZE) {
-                let instance = Instance::decode(row, corner, extent)?;
+                let instance = Instance::decode(row, corner, extent, radius)?;
                 let light = probe(lightmap::Texel::ambient(instance.light, instance.sun));
                 decorators.instances.push((set, instance, light));
             }
@@ -544,20 +565,26 @@ pub(super) struct Kind {
     /// detailed first. A model that cannot be paired with the types, or lacks the type, repeats
     /// the model before it.
     pub details: [Vec<Primitive>; INSTANCED_DETAILS],
-    /// Where each of the set's four models starts to fade and where it is gone, in meters
-    /// (`+0xB4`).
-    pub fades: [[f32; 2]; 4],
+    /// The set's transitions in meters (`+0xB4`), one for each model up to its last valid one
+    /// (`+0xB0`): where it starts to fade and where it is gone. The last fades the set out, and
+    /// each before it cross-fades a model to the next.
+    pub transitions: Vec<[f32; 2]>,
+    /// The mean radius of the grids holding the type's instances, in meters. Reach measures its
+    /// fades from a grid's bounding sphere, so an instance draws about this much farther away.
+    pub grid: f32,
 }
 
 /// One decorator instance for Destiny's instanced decorators: its type in [`Instanced::kinds`],
-/// where it stands in meters, its unit rotation (x, y, z, w), its scale and the scenario BSPs whose
-/// loading draws it.
+/// where it stands in meters, its unit rotation (x, y, z, w), its scale, the scenario BSPs whose
+/// loading draws it and the absolute luminance of its baked light in Reach's irradiance units.
+/// Native visibility converts this value to the atlas's normalized units before calibration.
 pub(super) struct Placement {
     pub kind: usize,
     pub position: [f32; 3],
     pub rotation: [f32; 4],
     pub scale: f32,
     pub bsps: u32,
+    pub light: f32,
 }
 
 /// A level's decorators as instances of their types, which `native::decorators` writes as
@@ -568,16 +595,18 @@ pub(super) struct Instanced {
     pub placements: Vec<Placement>,
 }
 
-/// A set's types at its first three models, those models' paths, its texture and its fades.
+/// A set's types at its first three models, those models' paths, its texture and its
+/// transitions.
 type SetDetails = (
     [Types; INSTANCED_DETAILS],
     [String; INSTANCED_DETAILS],
     Tag,
-    [[f32; 2]; 4],
+    Vec<[f32; 2]>,
 );
 
-/// Set `tag`'s types at its first three models, its texture and its fade distances. The first
-/// model always pairs with the types, which name its instances.
+/// Set `tag`'s types at its first three models, its texture and its transitions up to its last
+/// valid model ([`SET_LAST_DETAIL`]). The first model always pairs with the types, which name its
+/// instances.
 fn instanced_types(cache: &Cache, pages: &mut Pages, tag: &Tag) -> Result<SetDetails> {
     let (first, first_path) = paired(cache, pages, tag, 0)?
         .with_context(|| format!("Decorator set {} has no model to draw", tag.path))?;
@@ -607,18 +636,25 @@ fn instanced_types(cache: &Cache, pages: &mut Pages, tag: &Tag) -> Result<SetDet
     let texture = cache
         .reference(at + SET_TEXTURE, Some("bitm"))?
         .with_context(|| format!("Decorator set {} names no texture", tag.path))?;
-    let mut fades = [[0.; 2]; 4];
-    for (model, fade) in fades.iter_mut().enumerate() {
-        let row = cache.floats::<2>(at + SET_FADES + model * FADE_SIZE)?;
-        *fade = row.map(|value| value * METRES_PER_UNIT);
-    }
+    let last = cache.u32(at + SET_LAST_DETAIL)?;
+    ensure!(
+        usize::try_from(last).is_ok_and(|last| last < DETAILS),
+        "Decorator set {} names level of detail {last} as its last",
+        tag.path
+    );
+    let transitions = (0..=usize::try_from(last)?)
+        .map(|model| {
+            let row = cache.floats::<2>(at + SET_FADES + model * FADE_SIZE)?;
+            Ok(row.map(|value| value * METRES_PER_UNIT))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let types: [Types; INSTANCED_DETAILS] = types
         .try_into()
         .map_err(|_| anyhow::anyhow!("Decorator set {} detail count", tag.path))?;
     let paths: [String; INSTANCED_DETAILS] = paths
         .try_into()
         .map_err(|_| anyhow::anyhow!("Decorator set {} detail count", tag.path))?;
-    Ok((types, paths, texture, fades))
+    Ok((types, paths, texture, transitions))
 }
 
 /// The decorators of every BSP in `parts`, whose scenario BSP masks are `masks`, as instances of
@@ -634,15 +670,18 @@ pub(super) fn instanced(
 ) -> Result<Instanced> {
     ensure!(parts.len() == masks.len(), "Decorator BSP masks differ");
     let mut out = Instanced::default();
-    // Each set's types, model paths, texture and fades, and the kind each of its types became.
+    // Each set's types, model paths, texture and transitions, and the kind each of its types
+    // became.
     type Set = (
         [Types; INSTANCED_DETAILS],
         [String; INSTANCED_DETAILS],
         Tag,
-        [[f32; 2]; 4],
+        Vec<[f32; 2]>,
         Vec<Option<usize>>,
     );
     let mut sets = BTreeMap::<String, Set>::new();
+    // Each kind's sum of its instances' grid radii.
+    let mut grids = Vec::<f64>::new();
     for (part, &bsps) in parts.iter_mut().zip(masks) {
         let decorated = std::mem::take(&mut part.decorated);
         if decorated.sets.is_empty() {
@@ -651,16 +690,19 @@ pub(super) fn instanced(
         }
         for (tag, _) in &decorated.sets {
             if !sets.contains_key(&tag.path) {
-                let (types, paths, texture, fades) = instanced_types(cache, pages, tag)?;
+                let (types, paths, texture, transitions) = instanced_types(cache, pages, tag)?;
                 let kinds = vec![None; types[0].len()];
-                sets.insert(tag.path.clone(), (types, paths, texture, fades, kinds));
+                sets.insert(
+                    tag.path.clone(),
+                    (types, paths, texture, transitions, kinds),
+                );
             }
         }
         let mut placed = vec![0usize; decorated.sets.len()];
         let mut untyped = vec![0usize; decorated.sets.len()];
         for (set, instance, _) in decorated.instances {
             let tag = &decorated.sets[set].0;
-            let (types, _, texture, fades, kinds) = sets
+            let (types, _, texture, transitions, kinds) = sets
                 .get_mut(&tag.path)
                 .context("Decorator set read before its instances")?;
             if types[0].get(instance.kind).is_none_or(Vec::is_empty) {
@@ -675,30 +717,35 @@ pub(super) fn instanced(
                         texture: texture.clone(),
                         index: instance.kind,
                         details: std::array::from_fn(|detail| types[detail][instance.kind].clone()),
-                        fades: *fades,
+                        transitions: transitions.clone(),
+                        grid: 0.,
                     });
+                    grids.push(0.);
                     kinds[instance.kind] = Some(out.kinds.len() - 1);
                     out.kinds.len() - 1
                 }
             };
+            grids[kind] += f64::from(instance.grid);
             placed[set] += 1;
+            let [red, green, blue] = instance.light;
             out.placements.push(Placement {
                 kind,
                 position: instance.position,
                 rotation: instance.rotation,
                 scale: instance.scale,
                 bsps,
+                light: 0.2126 * red + 0.7152 * green + 0.0722 * blue,
             });
         }
         part.decorators = json!({
             "mode": "native",
             "sets": decorated.sets.iter().zip(placed.iter().zip(&untyped)).map(|((tag, _), (placed, untyped))| {
-                let (types, paths, _, fades, _) = &sets[&tag.path];
+                let (types, paths, _, transitions, _) = &sets[&tag.path];
                 json!({
                     "set": tag.path,
                     "models": paths,
                     "types": types[0].iter().map(Vec::len).collect::<Vec<_>>(),
-                    "fades": fades,
+                    "transitions": transitions,
                     "placed": placed,
                     "untyped": untyped,
                 })
@@ -708,5 +755,18 @@ pub(super) fn instanced(
             "untyped": untyped.iter().sum::<usize>(),
         });
     }
+    average_grids(&mut out, &grids);
     Ok(out)
+}
+
+/// Sets each kind's grid radius to the mean over its placements of `sums`, each kind's total.
+fn average_grids(out: &mut Instanced, sums: &[f64]) {
+    let mut counts = vec![0u32; out.kinds.len()];
+    for placement in &out.placements {
+        counts[placement.kind] += 1;
+    }
+    for ((kind, sum), &count) in out.kinds.iter_mut().zip(sums).zip(&counts) {
+        // A kind exists only once an instance places it, so its count is at least 1.
+        kind.grid = (sum / f64::from(count.max(1))) as f32;
+    }
 }

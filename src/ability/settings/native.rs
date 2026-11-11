@@ -1,7 +1,7 @@
 //! Exact native configuration lanes verified for Shadowkeep build 86657.20.08.23.1800.d2_rc___release.
 //! Locators store the property and structural row path. Both discovery and compilation repeat
 //! the same bounds, typed-array and reciprocal-pair validation. No absolute offset is trusted.
-use super::{Kind, Lane, Setting, Unit, lanes::Codec};
+use super::{Kind, Lane, Meta, Setting, Unit, lanes::Codec};
 use crate::package_payload::{
     bytes_at, i64_at, native_array_at, relative_offset, rows_fit, u32_at, u64_at,
 };
@@ -145,262 +145,283 @@ impl Property {
             _ => return None,
         })
     }
+    /// Every shown property of this setting, defined in one place.
+    pub(super) const fn meta(self) -> Meta {
+        match self {
+            Self::MinimumActivationDelay => Meta::new(
+                "Minimum Creation Delay",
+                "Shortest wait before the part is created",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::MaximumActivationDelay => Meta::new(
+                "Maximum Creation Delay",
+                "Longest wait before the part is created",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::MinimumCycleDuration => Meta::new(
+                "Minimum Cycle Duration",
+                "Shortest countdown holding a cycle",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::MaximumCycleDuration => Meta::new(
+                "Maximum Cycle Duration",
+                "Longest countdown holding a cycle",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::RepeatCount => Meta::new(
+                "Repeat Count",
+                "Cycles this group can run. Zero and one both allow one cycle. This does not count spawned objects.",
+                Unit::Count,
+                (0.0, 255.0),
+            ),
+            Self::LaunchSpeedWeight => Meta::new(
+                "Launch Speed Weight",
+                "Weight of an optional launch speed input. Stock identity inputs make this setting inactive.",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::StartingHealth => Meta::new(
+                "Starting Health",
+                "Starting fraction of this object region capacity. Other removal and recovery rules still apply.",
+                Unit::Number,
+                (0.0, 100.0),
+            )
+            .scaled(100.0),
+            Self::RechargeScale => Meta::new(
+                "Recharge Scale",
+                "Scales this controller's recharge input. Combines with applied modifiers and keyed Recharge Rate changes.",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::ActivationCostScale => Meta::new(
+                "Activation Cost Scale",
+                "Scales activation energy use. A zero cost does not remove readiness requirements.",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::ActiveEnergyScale => Meta::new(
+                "Active Energy Scale",
+                "Scales active energy use. A selected movement bank can also replace the base energy rate.",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::ActivationLockout => Meta::new(
+                "Activation Lockout",
+                "Seconds of activation lockout for this controller. Other cooldown and input requirements still apply.",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::TargetingRange => Meta::new(
+                "Targeting Range",
+                "Scales this controller target queries. Other targeting rules still apply.",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::CollisionLimit => Meta::new(
+                "Collision Limit",
+                "Stored contact query allowance. Zero allows one entry, and each added step allows one more.",
+                Unit::Count,
+                (0.0, 127.0),
+            ),
+            Self::TrackingSpeedChange => Meta::new(
+                "Tracking Speed Change",
+                "Maximum tracking speed change per simulation update. This is not acceleration per second.",
+                Unit::Number,
+                (0.0, 200.0),
+            ),
+            Self::MinimumSpawnDelay => Meta::new(
+                "Minimum Spawn Delay",
+                "Earliest deferred attachment attempt",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::MaximumSpawnDelay => Meta::new(
+                "Maximum Spawn Delay",
+                "Latest sampled attachment deadline",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::MinimumPartDuration => Meta::new(
+                "Minimum Part Duration",
+                "Shortest time before the part is cleaned up. Other events can remove it sooner.",
+                Unit::Seconds,
+                (0.001, 60.0),
+            ),
+            Self::MaximumPartDuration => Meta::new(
+                "Maximum Part Duration",
+                "Longest time before the part is cleaned up. This may control a visual effect.",
+                Unit::Seconds,
+                (0.001, 60.0),
+            ),
+            Self::EffectPriority => Meta::new(
+                "Effect Priority",
+                "Priority within a conflicting effect group. Used only when Effect Group is not zero.",
+                Unit::Number,
+                (-1.0, 100.0),
+            ),
+            Self::EffectGroup => Meta::new(
+                "Effect Group",
+                "Conflict group bits 1, 2, 4 and 8. Native group names are unknown. Some groups also affect effect lifecycle.",
+                Unit::Count,
+                (0.0, 15.0),
+            ),
+            Self::BounceCountIncrement => Meta::new(
+                "Bounce Count Increment",
+                "Weight this bounce response",
+                Unit::Count,
+                (0.0, 16.0),
+            ),
+            Self::BounceAngleVariation => Meta::new(
+                "Bounce Angle Variation",
+                "Direction variation after contact",
+                Unit::Number,
+                (0.0, 30.0),
+            )
+            .scaled(180.0 / std::f32::consts::PI),
+            Self::BounceSpeedVariation => Meta::new(
+                "Bounce Speed Variation",
+                "Speed variation after contact",
+                Unit::Number,
+                (0.0, 100.0),
+            )
+            .scaled(100.0),
+            Self::BounceSurfaceRadius => Meta::new(
+                "Bounce Surface Radius",
+                "Surface query for bounce normal",
+                Unit::Distance,
+                (0.0, 2.0),
+            ),
+            Self::ContactSpeed => Meta::new(
+                "Contact Speed",
+                "Speed after this contact",
+                Unit::Number,
+                (0.0, 50.0),
+            ),
+            Self::ContactFinalSpeed => Meta::new(
+                "Contact Final Speed",
+                "Final speed after contact",
+                Unit::Number,
+                (0.0, 80.0),
+            ),
+            Self::ContactFinalGravity => Meta::new(
+                "Contact Final Gravity",
+                "Final gravity after contact",
+                Unit::Factor,
+                (0.0, 10.0),
+            ),
+            Self::ContactCurveStart => Meta::new(
+                "Contact Curve Start",
+                "Distance travelled after this contact before the new speed and gravity curve starts.",
+                Unit::Distance,
+                (0.0, 30.0),
+            ),
+            Self::ContactCurveEnd => Meta::new(
+                "Contact Curve End",
+                "Distance travelled after this contact where the new speed and gravity curve ends.",
+                Unit::Distance,
+                (0.0, 30.0),
+            ),
+            Self::CleanupOnContact => Meta::new(
+                "Cleanup on Contact",
+                "Start the cleanup response",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::SurfacePlacement => Meta::new(
+                "Surface Placement",
+                "Offset attachment against the surface",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::TriggeredDurationScaling => Meta::new(
+                "Triggered Duration Scaling",
+                "Multiplies the supplied input to set the timer after a query accepts a target. The input has no assigned physical unit.",
+                Unit::Number,
+                (0.0, 8.0),
+            ),
+            Self::QueryScaleReduction => Meta::new(
+                "Query Scale Reduction",
+                "Subtracts this value from the supplied query multiplier. Nonpositive results do not perform the query.",
+                Unit::Factor,
+                (0.0, 5.0),
+            ),
+            Self::ContactCleanupDelay => Meta::new(
+                "Contact Cleanup Delay",
+                "Cleanup threshold after this contact. It can affect every projectile in the pool, while only the current clock resets.",
+                Unit::Seconds,
+                (0.0, 60.0),
+            ),
+            Self::ContactCleanupBaseOffset => Meta::new(
+                "Contact Cleanup Base Offset",
+                "Seconds added before multiplying the contact cleanup timer by its second input and scaling offset.",
+                Unit::Seconds,
+                (-60.0, 60.0),
+            ),
+            Self::ContactTriggerDelay => Meta::new(
+                "Contact Trigger Delay",
+                "Age threshold after this contact. Used only when Expiration Updates is By Age. This does not promise a detonation.",
+                Unit::Seconds,
+                (0.0, 60.0),
+            ),
+            Self::ContactTriggerBaseOffset => Meta::new(
+                "Contact Trigger Base Offset",
+                "Seconds added before multiplying the contact trigger timer by its second input and scaling offset. Used only with By Age expiration.",
+                Unit::Seconds,
+                (-60.0, 60.0),
+            ),
+            Self::ContactCleanupOffset => Meta::new(
+                "Contact Cleanup Offset",
+                "Seconds added to the computed cleanup timer after contact. Other finish paths can end the projectile sooner.",
+                Unit::Seconds,
+                (-60.0, 60.0),
+            ),
+            Self::ContactTriggerOffset => Meta::new(
+                "Contact Trigger Offset",
+                "Seconds added to the computed trigger timer after contact. Used only with By Age expiration.",
+                Unit::Seconds,
+                (-60.0, 60.0),
+            ),
+            Self::ContactCleanupScaling => Meta::new(
+                "Contact Cleanup Scaling",
+                "Multiplies the supplied input to compute the cleanup timer. The coefficient has no assigned physical unit.",
+                Unit::Number,
+                (0.0, 8.0),
+            ),
+            Self::ContactTriggerScaling => Meta::new(
+                "Contact Trigger Scaling",
+                "Multiplies the supplied input to compute the trigger timer. Used only with By Age expiration.",
+                Unit::Number,
+                (0.0, 8.0),
+            ),
+            Self::ContactCleanupVariation => Meta::new(
+                "Contact Cleanup Variation",
+                "Seconds of variation from the verified zero-to-one seed input, added to the cleanup offset.",
+                Unit::Seconds,
+                (0.0, 60.0),
+            ),
+            Self::ContactCleanupScalingOffset => Meta::new(
+                "Contact Cleanup Scaling Offset",
+                "Added to the second input before it multiplies the cleanup timer. This is a multiplier offset, not seconds.",
+                Unit::Number,
+                (-8.0, 8.0),
+            ),
+            Self::ContactTriggerScalingOffset => Meta::new(
+                "Contact Trigger Scaling Offset",
+                "Added to the second input before it multiplies the trigger timer. This is a multiplier offset, not seconds.",
+                Unit::Number,
+                (-8.0, 8.0),
+            ),
+        }
+    }
     pub const fn label(self) -> &'static str {
-        match self {
-            Self::MinimumActivationDelay => "Minimum Creation Delay",
-            Self::MaximumActivationDelay => "Maximum Creation Delay",
-            Self::MinimumCycleDuration => "Minimum Cycle Duration",
-            Self::MaximumCycleDuration => "Maximum Cycle Duration",
-            Self::RepeatCount => "Repeat Count",
-            Self::LaunchSpeedWeight => "Launch Speed Weight",
-            Self::StartingHealth => "Starting Health",
-            Self::RechargeScale => "Recharge Scale",
-            Self::ActivationCostScale => "Activation Cost Scale",
-            Self::ActiveEnergyScale => "Active Energy Scale",
-            Self::ActivationLockout => "Activation Lockout",
-            Self::TargetingRange => "Targeting Range",
-            Self::CollisionLimit => "Collision Limit",
-            Self::TrackingSpeedChange => "Tracking Speed Change",
-            Self::MinimumSpawnDelay => "Minimum Spawn Delay",
-            Self::MaximumSpawnDelay => "Maximum Spawn Delay",
-            Self::MinimumPartDuration => "Minimum Part Duration",
-            Self::MaximumPartDuration => "Maximum Part Duration",
-            Self::EffectPriority => "Effect Priority",
-            Self::EffectGroup => "Effect Group",
-            Self::BounceCountIncrement => "Bounce Count Increment",
-            Self::BounceAngleVariation => "Bounce Angle Variation",
-            Self::BounceSpeedVariation => "Bounce Speed Variation",
-            Self::BounceSurfaceRadius => "Bounce Surface Radius",
-            Self::ContactSpeed => "Contact Speed",
-            Self::ContactFinalSpeed => "Contact Final Speed",
-            Self::ContactFinalGravity => "Contact Final Gravity",
-            Self::ContactCurveStart => "Contact Curve Start",
-            Self::ContactCurveEnd => "Contact Curve End",
-            Self::CleanupOnContact => "Cleanup on Contact",
-            Self::SurfacePlacement => "Surface Placement",
-            Self::TriggeredDurationScaling => "Triggered Duration Scaling",
-            Self::QueryScaleReduction => "Query Scale Reduction",
-            Self::ContactCleanupDelay => "Contact Cleanup Delay",
-            Self::ContactCleanupBaseOffset => "Contact Cleanup Base Offset",
-            Self::ContactTriggerDelay => "Contact Trigger Delay",
-            Self::ContactTriggerBaseOffset => "Contact Trigger Base Offset",
-            Self::ContactCleanupOffset => "Contact Cleanup Offset",
-            Self::ContactTriggerOffset => "Contact Trigger Offset",
-            Self::ContactCleanupScaling => "Contact Cleanup Scaling",
-            Self::ContactTriggerScaling => "Contact Trigger Scaling",
-            Self::ContactCleanupVariation => "Contact Cleanup Variation",
-            Self::ContactCleanupScalingOffset => "Contact Cleanup Scaling Offset",
-            Self::ContactTriggerScalingOffset => "Contact Trigger Scaling Offset",
-        }
-    }
-    pub const fn hint(self) -> &'static str {
-        match self {
-            Self::MinimumActivationDelay => "Shortest wait before the part is created",
-            Self::MaximumActivationDelay => "Longest wait before the part is created",
-            Self::MinimumCycleDuration => "Shortest countdown holding a cycle",
-            Self::MaximumCycleDuration => "Longest countdown holding a cycle",
-            Self::RepeatCount => {
-                "Cycles this group can run. Zero and one both allow one cycle. This does not count spawned objects."
-            }
-            Self::LaunchSpeedWeight => {
-                "Weight of an optional launch speed input. Stock identity inputs make this setting inactive."
-            }
-            Self::StartingHealth => {
-                "Starting fraction of this object region capacity. Other removal and recovery rules still apply."
-            }
-            Self::RechargeScale => {
-                "Scales this controller's recharge input. Combines with applied modifiers and keyed Recharge Rate changes."
-            }
-            Self::ActivationCostScale => {
-                "Scales activation energy use. A zero cost does not remove readiness requirements."
-            }
-            Self::ActiveEnergyScale => {
-                "Scales active energy use. A selected movement bank can also replace the base energy rate."
-            }
-            Self::ActivationLockout => {
-                "Seconds of activation lockout for this controller. Other cooldown and input requirements still apply."
-            }
-            Self::TargetingRange => {
-                "Scales this controller target queries. Other targeting rules still apply."
-            }
-            Self::CollisionLimit => {
-                "Stored contact query allowance. Zero allows one entry, and each added step allows one more."
-            }
-            Self::TrackingSpeedChange => {
-                "Maximum tracking speed change per simulation update. This is not acceleration per second."
-            }
-            Self::MinimumSpawnDelay => "Earliest deferred attachment attempt",
-            Self::MaximumSpawnDelay => "Latest sampled attachment deadline",
-            Self::MinimumPartDuration => {
-                "Shortest time before the part is cleaned up. Other events can remove it sooner."
-            }
-            Self::MaximumPartDuration => {
-                "Longest time before the part is cleaned up. This may control a visual effect."
-            }
-            Self::EffectPriority => {
-                "Priority within a conflicting effect group. Used only when Effect Group is not zero."
-            }
-            Self::EffectGroup => {
-                "Conflict group bits 1, 2, 4 and 8. Native group names are unknown. Some groups also affect effect lifecycle."
-            }
-            Self::BounceCountIncrement => "Weight this bounce response",
-            Self::BounceAngleVariation => "Direction variation after contact",
-            Self::BounceSpeedVariation => "Speed variation after contact",
-            Self::BounceSurfaceRadius => "Surface query for bounce normal",
-            Self::ContactSpeed => "Speed after this contact",
-            Self::ContactFinalSpeed => "Final speed after contact",
-            Self::ContactFinalGravity => "Final gravity after contact",
-            Self::ContactCurveStart => {
-                "Distance travelled after this contact before the new speed and gravity curve starts."
-            }
-            Self::ContactCurveEnd => {
-                "Distance travelled after this contact where the new speed and gravity curve ends."
-            }
-            Self::CleanupOnContact => "Start the cleanup response",
-            Self::SurfacePlacement => "Offset attachment against the surface",
-            Self::TriggeredDurationScaling => {
-                "Multiplies the supplied input to set the timer after a query accepts a target. The input has no assigned physical unit."
-            }
-            Self::QueryScaleReduction => {
-                "Subtracts this value from the supplied query multiplier. Nonpositive results do not perform the query."
-            }
-            Self::ContactCleanupDelay => {
-                "Cleanup threshold after this contact. It can affect every projectile in the pool, while only the current clock resets."
-            }
-            Self::ContactCleanupBaseOffset => {
-                "Seconds added before multiplying the contact cleanup timer by its second input and scaling offset."
-            }
-            Self::ContactTriggerDelay => {
-                "Age threshold after this contact. Used only when Expiration Updates is By Age. This does not promise a detonation."
-            }
-            Self::ContactTriggerBaseOffset => {
-                "Seconds added before multiplying the contact trigger timer by its second input and scaling offset. Used only with By Age expiration."
-            }
-            Self::ContactCleanupOffset => {
-                "Seconds added to the computed cleanup timer after contact. Other finish paths can end the projectile sooner."
-            }
-            Self::ContactTriggerOffset => {
-                "Seconds added to the computed trigger timer after contact. Used only with By Age expiration."
-            }
-            Self::ContactCleanupScaling => {
-                "Multiplies the supplied input to compute the cleanup timer. The coefficient has no assigned physical unit."
-            }
-            Self::ContactTriggerScaling => {
-                "Multiplies the supplied input to compute the trigger timer. Used only with By Age expiration."
-            }
-            Self::ContactCleanupVariation => {
-                "Seconds of variation from the verified zero-to-one seed input, added to the cleanup offset."
-            }
-            Self::ContactCleanupScalingOffset => {
-                "Added to the second input before it multiplies the cleanup timer. This is a multiplier offset, not seconds."
-            }
-            Self::ContactTriggerScalingOffset => {
-                "Added to the second input before it multiplies the trigger timer. This is a multiplier offset, not seconds."
-            }
-        }
-    }
-    pub const fn unit(self) -> Unit {
-        match self {
-            Self::MinimumActivationDelay => Unit::Seconds,
-            Self::MaximumActivationDelay => Unit::Seconds,
-            Self::MinimumCycleDuration => Unit::Seconds,
-            Self::MaximumCycleDuration => Unit::Seconds,
-            Self::RepeatCount => Unit::Count,
-            Self::LaunchSpeedWeight => Unit::Number,
-            Self::StartingHealth => Unit::Number,
-            Self::RechargeScale => Unit::Factor,
-            Self::ActivationCostScale => Unit::Factor,
-            Self::ActiveEnergyScale => Unit::Factor,
-            Self::ActivationLockout => Unit::Seconds,
-            Self::TargetingRange => Unit::Factor,
-            Self::CollisionLimit => Unit::Count,
-            Self::TrackingSpeedChange => Unit::Number,
-            Self::MinimumSpawnDelay => Unit::Seconds,
-            Self::MaximumSpawnDelay => Unit::Seconds,
-            Self::MinimumPartDuration => Unit::Seconds,
-            Self::MaximumPartDuration => Unit::Seconds,
-            Self::EffectPriority => Unit::Number,
-            Self::EffectGroup => Unit::Count,
-            Self::BounceCountIncrement => Unit::Count,
-            Self::BounceAngleVariation => Unit::Number,
-            Self::BounceSpeedVariation => Unit::Number,
-            Self::BounceSurfaceRadius => Unit::Distance,
-            Self::ContactSpeed => Unit::Number,
-            Self::ContactFinalSpeed => Unit::Number,
-            Self::ContactFinalGravity => Unit::Factor,
-            Self::ContactCurveStart => Unit::Distance,
-            Self::ContactCurveEnd => Unit::Distance,
-            Self::CleanupOnContact => Unit::Flag,
-            Self::SurfacePlacement => Unit::Flag,
-            Self::TriggeredDurationScaling => Unit::Number,
-            Self::QueryScaleReduction => Unit::Factor,
-            Self::ContactCleanupDelay => Unit::Seconds,
-            Self::ContactCleanupBaseOffset => Unit::Seconds,
-            Self::ContactTriggerDelay => Unit::Seconds,
-            Self::ContactTriggerBaseOffset => Unit::Seconds,
-            Self::ContactCleanupOffset => Unit::Seconds,
-            Self::ContactTriggerOffset => Unit::Seconds,
-            Self::ContactCleanupScaling => Unit::Number,
-            Self::ContactTriggerScaling => Unit::Number,
-            Self::ContactCleanupVariation => Unit::Seconds,
-            Self::ContactCleanupScalingOffset => Unit::Number,
-            Self::ContactTriggerScalingOffset => Unit::Number,
-        }
-    }
-    pub const fn range(self) -> (f32, f32) {
-        match self {
-            Self::MinimumActivationDelay => (0.0, 10.0),
-            Self::MaximumActivationDelay => (0.0, 10.0),
-            Self::MinimumCycleDuration => (0.0, 10.0),
-            Self::MaximumCycleDuration => (0.0, 10.0),
-            Self::RepeatCount => (0.0, 255.0),
-            Self::LaunchSpeedWeight => (0.0, 1.0),
-            Self::StartingHealth => (0.0, 100.0),
-            Self::RechargeScale => (0.0, 3.0),
-            Self::ActivationCostScale => (0.0, 3.0),
-            Self::ActiveEnergyScale => (0.0, 3.0),
-            Self::ActivationLockout => (0.0, 10.0),
-            Self::TargetingRange => (0.0, 3.0),
-            Self::CollisionLimit => (0.0, 127.0),
-            Self::TrackingSpeedChange => (0.0, 200.0),
-            Self::MinimumSpawnDelay => (0.0, 10.0),
-            Self::MaximumSpawnDelay => (0.0, 10.0),
-            Self::MinimumPartDuration => (0.001, 60.0),
-            Self::MaximumPartDuration => (0.001, 60.0),
-            Self::EffectPriority => (-1.0, 100.0),
-            Self::EffectGroup => (0.0, 15.0),
-            Self::BounceCountIncrement => (0.0, 16.0),
-            Self::BounceAngleVariation => (0.0, 30.0),
-            Self::BounceSpeedVariation => (0.0, 100.0),
-            Self::BounceSurfaceRadius => (0.0, 2.0),
-            Self::ContactSpeed => (0.0, 50.0),
-            Self::ContactFinalSpeed => (0.0, 80.0),
-            Self::ContactFinalGravity => (0.0, 10.0),
-            Self::ContactCurveStart => (0.0, 30.0),
-            Self::ContactCurveEnd => (0.0, 30.0),
-            Self::CleanupOnContact => (0.0, 1.0),
-            Self::SurfacePlacement => (0.0, 1.0),
-            Self::TriggeredDurationScaling => (0.0, 8.0),
-            Self::QueryScaleReduction => (0.0, 5.0),
-            Self::ContactCleanupDelay => (0.0, 60.0),
-            Self::ContactCleanupBaseOffset => (-60.0, 60.0),
-            Self::ContactTriggerDelay => (0.0, 60.0),
-            Self::ContactTriggerBaseOffset => (-60.0, 60.0),
-            Self::ContactCleanupOffset => (-60.0, 60.0),
-            Self::ContactTriggerOffset => (-60.0, 60.0),
-            Self::ContactCleanupScaling => (0.0, 8.0),
-            Self::ContactTriggerScaling => (0.0, 8.0),
-            Self::ContactCleanupVariation => (0.0, 60.0),
-            Self::ContactCleanupScalingOffset => (-8.0, 8.0),
-            Self::ContactTriggerScalingOffset => (-8.0, 8.0),
-        }
+        self.meta().label
     }
     pub const fn scale(self) -> f32 {
-        match self {
-            Self::StartingHealth | Self::BounceSpeedVariation => 100.0,
-            Self::BounceAngleVariation => 180.0 / std::f32::consts::PI,
-            _ => 1.0,
-        }
+        self.meta().scale
     }
 }
 

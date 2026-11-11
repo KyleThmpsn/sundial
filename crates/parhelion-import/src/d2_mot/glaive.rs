@@ -664,8 +664,6 @@ pub(crate) fn weapon_melee(
     impact_key: u32,
     title: &str,
 ) -> Result<Value> {
-    let base = crate::graph::hash(&recipe["donor"], "item_hash")?;
-    let (lane, plug) = intrinsic(native, base, recipe)?;
     let kit: Value = serde_json::from_str(KIT)?;
     let candidates = kit["variant"]["sandbox_perks"]
         .as_array()
@@ -697,6 +695,35 @@ pub(crate) fn weapon_melee(
             action["key"] = json!(format!("0x{impact_key:08X}"));
         }
     }
+    let (lane, plug) = intrinsic_program(
+        native,
+        recipe,
+        perk_index,
+        perk,
+        (
+            title,
+            "Use the weapon's own melee strikes while it is drawn.",
+        ),
+    )?;
+    Ok(
+        json!({"socket_index":lane,"source_plug":plug,"source_perk_index":perk_index,"property":impact_key,
+        "scope":"Drawn weapon","native_contract":"Private attack selection, closed ranged-melee window and zero activation energy cost"}),
+    )
+}
+
+/// Adds `perk`, a private program over stock finished perk row `perk_index`, to the private variant
+/// of the donor's selected intrinsic, and returns that intrinsic's socket and plug. A missing
+/// variant is created with `title` and `description`. A program already on that row is replaced
+/// only when it has the same name.
+pub(crate) fn intrinsic_program(
+    native: &mut Reader,
+    recipe: &mut Value,
+    perk_index: u16,
+    perk: Value,
+    (title, description): (&str, &str),
+) -> Result<(usize, u32)> {
+    let base = crate::graph::hash(&recipe["donor"], "item_hash")?;
+    let (lane, plug) = intrinsic(native, base, recipe)?;
     let variants = recipe["overrides"]
         .as_object_mut()
         .context("Recipe overrides")?
@@ -716,7 +743,7 @@ pub(crate) fn weapon_melee(
     } else {
         variants.push(json!({"socket_index":lane,"choice_index":0,
             "source_plug_hash":format!("0x{plug:08X}"),"name":title,
-            "description":"Use the weapon's own melee strikes while it is drawn.",
+            "description":description,
             "additional_sandbox_perks":[],"sandbox_perks":[]}));
         variants.last_mut().unwrap()
     };
@@ -747,20 +774,20 @@ pub(crate) fn weapon_melee(
         .filter(|(_, row)| row["source_perk_index"] == perk_index)
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    ensure!(existing.len() <= 1, "Repeated intrinsic melee programs");
+    ensure!(
+        existing.len() <= 1,
+        "Repeated intrinsic programs on one perk row"
+    );
     if let Some(&index) = existing.first() {
         ensure!(
-            programs[index]["program"]["name"] == title,
-            "The selected intrinsic already edits the required melee template perk"
+            programs[index]["program"]["name"] == perk["program"]["name"],
+            "The selected intrinsic already edits stock perk row {perk_index} with another program"
         );
         programs[index] = perk;
     } else {
         programs.push(perk);
     }
-    Ok(
-        json!({"socket_index":lane,"source_plug":plug,"source_perk_index":perk_index,"property":impact_key,
-        "scope":"Drawn weapon","native_contract":"Private attack selection, closed ranged-melee window and zero activation energy cost"}),
-    )
+    Ok((lane, plug))
 }
 
 fn named_particles(variant: &Value) -> Vec<String> {

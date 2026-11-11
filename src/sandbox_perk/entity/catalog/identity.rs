@@ -14,7 +14,7 @@ fn familiar_name(graph: u32) -> Option<String> {
     static NAMES: std::sync::OnceLock<BTreeMap<u32, String>> = std::sync::OnceLock::new();
     NAMES
         .get_or_init(|| {
-            serde_json::from_str(include_str!("display_names.json"))
+            serde_json::from_str(include_str!("identity/display_names.json"))
                 .expect("bundled effect display names")
         })
         .get(&graph)
@@ -92,11 +92,6 @@ impl Entry {
         game_name(self.graph)
             .or_else(|| common_name(&direct.iter().map(String::as_str).collect()))
             .or_else(|| familiar_name(self.graph))
-    }
-
-    #[cfg(test)]
-    pub fn discovery_name(&self) -> Option<String> {
-        self.discovery_name_with(|_| None, |_| None)
     }
 
     pub fn discovery_name_with(

@@ -257,6 +257,7 @@ fn reset_planned_damage(recipe: &mut Value) -> Result<()> {
 
 pub(crate) mod private;
 pub(crate) mod stat_group;
+pub mod timing;
 use crate::stat_group::limits;
 
 /// Older plug-driven elemental sockets cannot be made Kinetic by changing a
@@ -351,6 +352,9 @@ fn default_hash(socket: &Value) -> Option<u64> {
 
 /// Intrinsic plugs (`67FBA961`) set the weapon's frame.
 const INTRINSIC_CATEGORY: u64 = 0x67FB_A961;
+/// Kill tracker plugs (`AFB3306E`). A tracker lane keeps the base's own trackers, Shadowkeep's
+/// standard set, since the source's modern trackers add nothing a weapon needs.
+const TRACKER_CATEGORY: u64 = 0xAFB3_306E;
 /// Weapon perk plugs, as opposed to shaders (14), masterworks and trackers (13) and mods (37).
 const PERK_ITEM_KIND: u64 = 15;
 /// The most source plugs a column offers freely, as few as a random-roll column's curated perks.
@@ -393,6 +397,10 @@ fn columns(
             continue;
         };
         used.insert(source_index);
+        // The source tracker socket is consumed here so it cannot take another lane.
+        if allowed.contains(&TRACKER_CATEGORY) {
+            continue;
+        }
         let supported = |plug: &&Value| {
             let Some(hash) = plug["hash"].as_u64().and_then(|v| u32::try_from(v).ok()) else {
                 return false;

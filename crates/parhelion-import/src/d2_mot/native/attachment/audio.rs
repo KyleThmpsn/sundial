@@ -63,7 +63,7 @@ fn settings(
     Ok((fallback, (*payload).clone(), false))
 }
 
-pub(super) fn convert(
+pub(crate) fn convert(
     source: &mut Reader,
     native: &mut Reader,
     assets: &mut Assets,

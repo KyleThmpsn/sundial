@@ -88,6 +88,7 @@ fn entity_references_follow_the_moved_instance_region(manager: &PackageManager) 
                     name: EXPLOSION_RADIUS_SCALAR,
                     applied: 0.5,
                     add: true,
+                    gate: None,
                 },
             )
             .unwrap()
@@ -209,6 +210,7 @@ fn parameter_rows_land_on_every_grenade_bank(manager: &PackageManager) {
         name: EXPLOSION_RADIUS_SCALAR,
         applied: 0.5,
         add: true,
+        gate: None,
     };
     for &bank in slot_banks(GRENADE_SLOT) {
         let stock = manager.read_tag(TagHash(bank)).unwrap();
@@ -258,6 +260,7 @@ fn parameter_rows_land_on_every_grenade_bank(manager: &PackageManager) {
                     name: 0xDEAD_BEEF,
                     applied: 1.0,
                     add: false,
+                    gate: None,
                 }
             )
             .is_err(),

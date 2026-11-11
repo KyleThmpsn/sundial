@@ -1,4 +1,4 @@
-//! The source mode-three family has zero damage and two named health categories.
+//! The source health family has zero damage and two named health categories.
 use super::*;
 
 pub(super) const TEMPLATE: u32 = 0x8162C86E;
@@ -8,20 +8,30 @@ pub(super) fn read(
     native: &mut Reader,
     owner: &Payload,
     expected: &mut [u8],
-) -> Result<HealthResponse> {
+) -> Result<(HealthResponse, [u8; 2])> {
     let root = owner.pointer(24)?;
     let rows = owner.array(root + 0x28, 8, Some(0x8080276E))?;
     ensure!(rows.len() == 1, "Source healing needs one response");
     let at = owner.pointer(rows[0])?;
+    // Flags `+01/+02` set event masks `04` and `08` in both builds. Stock `8162C86E` stores one
+    // and zero, so each flag carries as written. Source `6EBA00` and native `B84960` walk regions
+    // alike for modes 0 to 3, with modes 1 and 2 testing region values against one in source
+    // `6E66B0` and native `B8B0C0`. Native modes 4 and 5 read other fields, and the source reader
+    // `5DDFD0` treats them as mode 0.
+    let [mode, first, second, pad] = owner.bytes::<4>(at)?;
     ensure!(
         at == root + 0x14C
             && owner.u32(at - 4)? == 0x80802976
-            && owner.bytes::<4>(at)? == [3, 1, 1, 0],
+            && mode <= 3
+            && first <= 1
+            && second <= 1
+            && pad == 0,
         "Source healing has another response mode or flags"
     );
     let health = HealthResponse {
         amount_bits: owner.u32(at + 4)?,
         overflow_bits: owner.u32(at + 8)?,
+        mode,
     };
     ensure!(
         health.valid(),
@@ -79,7 +89,10 @@ pub(super) fn read(
         (0x12C, 0x80800184),
         (0x138, 0x8080276E),
         (0x148, 0x80802976),
-        (0x14C, 0x10103),
+        (
+            0x14C,
+            u32::from(mode) | u32::from(first) << 8 | u32::from(second) << 16,
+        ),
         (0x150, health.amount_bits),
         (0x154, health.overflow_bits),
         (0x15C, 0x80800184),
@@ -92,5 +105,5 @@ pub(super) fn read(
         put(expected, root + offset, &value.to_le_bytes())?;
     }
     put(expected, root + 0x90, &mask)?;
-    Ok(health)
+    Ok((health, [first, second]))
 }

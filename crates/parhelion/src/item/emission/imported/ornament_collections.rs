@@ -54,10 +54,41 @@ fn exotic_page(
     Ok((leaf, parents, selection))
 }
 
-pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringResult<()> {
+/// The child row naming `collectible` among stock node `node`'s collectibles. An importer's
+/// entries placed first take the rows of stock entries (`collection::front`), so an earlier one may
+/// hold this one's place, and the row then comes from the stock table.
+fn child_row(
+    manager: &sundial::package_authoring::PackageManager,
+    emission: &PackageEmission,
+    node: usize,
+    collectible: usize,
+) -> AuthoringResult<crate::collection::front::Row> {
+    crate::progression::presentation::collectible_child_row(&emission.nodes, node, collectible)
+        .or_else(|_| {
+            let stock = crate::tag_payload::read_tag(
+                manager,
+                emission.table_tags.presentation_node_table_tag,
+                "Collections presentation nodes",
+            )?;
+            crate::progression::presentation::collectible_child_row(&stock, node, collectible)
+        })
+}
+
+pub(super) fn apply(
+    manager: &sundial::package_authoring::PackageManager,
+    emission: &mut PackageEmission,
+    graph: &Value,
+) -> AuthoringResult<()> {
     let Some(link) = graph.get("ornament") else {
         return Ok(());
     };
+    // Only a weapon's own ornaments join Collections here, and only their links name the weapon as
+    // `target_weapon`. An armor ornament's link names just its armor as `target_item`, which
+    // binding gear art also adds to a Rise of Iron weapon ornament's link, so that field cannot
+    // tell them apart.
+    if link.get("target_weapon").is_none() {
+        return Ok(());
+    }
     let value = |v: &Value| {
         v.as_u64()
             .and_then(|n| u32::try_from(n).ok())
@@ -71,12 +102,16 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         .iter()
         .find(|p| p.item_hash == owner_hash)
         .ok_or_else(|| invalid("Ornament owner plan"))?;
-    // Installing the authored weapon also grants its imported cosmetic choices.
-    let unlock = owner
+    // An imported cosmetic choice is acquired with its authored weapon, through the same flag or
+    // unconditionally as the weapon is.
+    let acquisition = owner
         .collection
         .as_ref()
-        .ok_or_else(|| invalid("Ornament owner has no collection unlock"))?
-        .unlock_definition_index;
+        .ok_or_else(|| invalid("Ornament owner has no Collections entry"))?
+        .unlock
+        .map_or(Acquisition::Always, |unlock| {
+            Acquisition::Flag(unlock.definition_index)
+        });
     let (n, _, rows, _) = array_at(&emission.item_table, 8)?;
     let index = |hash| -> AuthoringResult<usize> {
         let found = (0..n)
@@ -109,16 +144,19 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
     let source_unlock = collection_unlock_index(&emission.collectibles, donor_row)?;
     // Weapon emission has already appended count programs after the parallel
     // lookup. Restore the compiler's terminal-array contract without changing
-    // those programs or their pointers before extending cosmetic counts.
-    validate_shared_expression_table(&emission.pools, false)?;
-    let (parallel_count, parallel_header, parallel_rows, _) = array_at(&emission.pools, 0x18)?;
-    let parallel = emission.pools[parallel_header..parallel_rows + parallel_count * 2].to_vec();
-    while !emission.pools.len().is_multiple_of(16) {
-        emission.pools.push(0);
+    // those programs or their pointers before extending cosmetic counts. An entry acquired
+    // unconditionally extends no count, so the pool stays as it is.
+    if acquisition.flag().is_some() {
+        validate_shared_expression_table(&emission.pools, false)?;
+        let (parallel_count, parallel_header, parallel_rows, _) = array_at(&emission.pools, 0x18)?;
+        let parallel = emission.pools[parallel_header..parallel_rows + parallel_count * 2].to_vec();
+        while !emission.pools.len().is_multiple_of(16) {
+            emission.pools.push(0);
+        }
+        let new_parallel = emission.pools.len();
+        emission.pools.extend_from_slice(&parallel);
+        crate::tag_payload::write_relative_pointer(&mut emission.pools, 0x20, new_parallel)?;
     }
-    let new_parallel = emission.pools.len();
-    emission.pools.extend_from_slice(&parallel);
-    crate::tag_payload::write_relative_pointer(&mut emission.pools, 0x20, new_parallel)?;
     // An ordinary weapon's planned page counts it directly. An Exotic's counts as the native
     // ornament's pools count that ornament.
     let weapon_page = emission.ornament_targets.get(&owner_hash).copied();
@@ -146,7 +184,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         &emission.collectibles,
         donor_row + COLLECTIBLE_MATERIAL_SET_OFFSET,
     )?;
-    let acquisition = emission.collectibles[donor_row];
+    let acquisition_mode = emission.collectibles[donor_row];
     let reacquisition = read_u16(
         &emission.collectibles,
         donor_row + COLLECTIBLE_REACQUISITION_STATE_OFFSET,
@@ -159,7 +197,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
             item_index,
             unlock: CollectibleUnlockClone {
                 source_index: source_unlock,
-                authored_index: unlock,
+                acquisition,
             },
             material_set_index: material,
             presentation_parents: &parents,
@@ -169,7 +207,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
     let (_, _, new_rows, _) = array_at(&emission.collectibles, 8)?;
     let new_row = new_rows + count * COLLECTIBLE_ROW_SIZE;
     // Preserve cosmetic acquisition/reacquisition semantics, not weapon costs.
-    emission.collectibles[new_row] = acquisition;
+    emission.collectibles[new_row] = acquisition_mode;
     write_u16(
         &mut emission.collectibles,
         new_row + COLLECTIBLE_REACQUISITION_STATE_OFFSET,
@@ -203,56 +241,83 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         0xFFFF,
         0x811C9DC5,
     )?;
-    match weapon_page {
-        // A page the build added has no stock child of its own, so the row copies one from the
-        // stock page it was cloned from.
-        Some(page) => {
-            let template = crate::progression::presentation::collectible_child_row(
-                &emission.nodes,
-                usize::from(page.child_page),
-                page.child_donor,
-            )?;
-            crate::progression::presentation::add_templated_collectible_children(
-                &mut emission.nodes,
-                usize::from(leaf),
-                &[count],
-                template,
-                crate::collection::first(None),
-            )?;
-        }
-        None => crate::progression::presentation::append_collectible_child_to_node(
-            &mut emission.nodes,
-            leaf as usize,
-            donor,
-            count,
+    // The entry's row copies a stock child: on a Weapon Ornaments page, the one the page was
+    // cloned from, which a page the build added has none of its own, and beside an Exotic, the
+    // native ornament's.
+    let template = match weapon_page {
+        Some(page) => child_row(
+            manager,
+            emission,
+            usize::from(page.child_page),
+            page.child_donor,
         )?,
+        None => child_row(manager, emission, usize::from(leaf), donor)?,
+    };
+    let first = crate::collection::leads(
+        None,
+        usize::from(leaf),
+        PRESENTATION_NODE_COLLECTIBLES_OFFSET,
+    );
+    // Every member's ornaments go before the stock entries of a stock page, as its weapons do,
+    // each member's in rows of its own (`collection::front`).
+    if first && usize::from(leaf) < crate::progression::STOCK_PRESENTATION_NODE_COUNT {
+        let mut row = template;
+        write_u16(
+            &mut row,
+            0,
+            u16::try_from(count).map_err(|_| invalid("Ornament collectible index overflow"))?,
+        )?;
+        crate::collection::front::place_first(&mut emission.nodes, usize::from(leaf), &[row])?;
+    } else {
+        crate::progression::presentation::add_templated_collectible_children(
+            &mut emission.nodes,
+            usize::from(leaf),
+            &[count],
+            template,
+            first,
+        )?;
     }
-    emission.objectives = patch_project_collection_objectives(
-        std::mem::take(&mut emission.objectives),
-        &emission.nodes,
-        &BTreeMap::from([(leaf, 1)]),
-        1,
-    )?;
+    // An entry acquired unconditionally has no flag, and counts in its page below instead.
+    if acquisition.flag().is_some() {
+        emission.objectives = patch_project_collection_objectives(
+            std::mem::take(&mut emission.objectives),
+            &emission.nodes,
+            &BTreeMap::from([(leaf, 1)]),
+            1,
+        )?;
+    }
     let row = ProjectAuthoredRow {
         donor_collectible_index: donor,
         authored_collectible_index: count,
         pages: crate::collection::CollectionPages::one(leaf),
         classes: crate::collection::Classes::ALL,
         source_acquired_flag: source_unlock as u16,
-        authored_unlock_index: unlock,
+        acquisition,
         count_selection: selection,
     };
-    if weapon_page.is_some() {
-        add_direct_acquired_counts(
-            &mut emission.objectives,
-            &emission.nodes,
-            std::slice::from_ref(&row),
-            &emission.pools,
-        )?;
+    if acquisition.flag().is_some() {
+        if weapon_page.is_some() {
+            add_direct_acquired_counts(
+                &mut emission.objectives,
+                &emission.nodes,
+                std::slice::from_ref(&row),
+                &emission.pools,
+            )?;
+        } else {
+            emission.pools = patch_project_acquired_count_programs(
+                std::mem::take(&mut emission.pools),
+                std::slice::from_ref(&row),
+            )?;
+        }
     } else {
-        emission.pools = patch_project_acquired_count_programs(
-            std::mem::take(&mut emission.pools),
+        // An entry acquired unconditionally counts in its page's total and acquired count, as
+        // the build's items do.
+        let objective_table = emission.table_tags.objective_table_tag;
+        crate::item::build::count_constant_entries(
+            (&mut emission.objectives, &emission.nodes, &emission.pools),
             std::slice::from_ref(&row),
+            objective_table,
+            false,
         )?;
     }
     for data in [
@@ -266,7 +331,7 @@ pub(super) fn apply(emission: &mut PackageEmission, graph: &Value) -> AuthoringR
         crate::tag_payload::write_u64(data, 0, len)?;
     }
     eprintln!(
-        "Imported ornament {target:08X} collectible {} on Collections page {leaf}; owner unlock {unlock}",
+        "Imported ornament {target:08X} collectible {} on Collections page {leaf}; acquired by {acquisition:?}",
         identity.collectible_hash
     );
     Ok(())

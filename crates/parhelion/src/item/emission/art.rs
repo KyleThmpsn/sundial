@@ -211,13 +211,15 @@ fn rewrite_with_regions(
         data[row + 16..row + 32].fill(0);
         return Ok(());
     }
-    let (resource_count, resource_header, resources, _) = array(data, 24)?;
+    let (resource_count, _, resources, _) = array(data, 24)?;
     let end = resources + resource_count * 24;
     let mut copies = Vec::new();
     let mut slots = Vec::new();
     for i in 0..n {
         let source = relative_target(data, multi + i * 8)?;
-        if source < resources || source + 24 > end || (source - resources) % 24 != 0 {
+        // A stock row's group is in the pool, and a group this build added sits after it.
+        let pooled = source >= resources && source + 24 <= end && (source - resources) % 24 == 0;
+        if !pooled && (source < end || source + 24 > data.len()) {
             return Err(invalid("Artwork slot is outside the resource table"));
         }
         let (cnt, _, entries, class) = array(data, source + 8)?;
@@ -268,53 +270,16 @@ fn rewrite_with_regions(
         return Err(invalid("Artwork regions have no native array format"));
     }
     let n = slots.len();
-    let extra = n * 24;
-    // Insert new registered resource rows before the assignment arrays. Existing
-    // multi-slot pointers keep their targets; each assignment-array pointer moves.
-    let mut targets = Vec::new();
-    // Earlier private rows append their multi-slot arrays after the resource table.
-    // A subsequent insertion moves those arrays, including the pointer fields
-    // inside them. Relocate both ends, not just the resource assignment arrays.
-    for i in 0..count {
-        let item = rows + i * 32;
-        let (slots, header, entries, _) = array(data, item + 16)?;
-        if slots == 0 {
-            continue;
-        }
-        targets.push((item + 24, header));
-        for slot in 0..slots {
-            let at = entries + slot * 8;
-            targets.push((at, relative_target(data, at)?));
-        }
-    }
-    for i in 0..resource_count {
-        let o = resources + i * 24;
-        if read_u64(data, o + 8)? != 0 {
-            let target = relative_target(data, o + 16)?;
-            if target < end {
-                return Err(invalid("Unexpected resource array placement"));
-            }
-            targets.push((o + 16, target));
-        }
-    }
-    // The donor may be a private row whose arrays sit after the table. Its slots were read
-    // above and the relocation covers its arrays like any other private row's.
-    data.splice(end..end, std::iter::repeat_n(0, extra));
-    let moved = |offset: usize| {
-        if offset >= end {
-            offset + extra
-        } else {
-            offset
-        }
-    };
-    for (o, target) in targets {
-        point(data, moved(o), moved(target))?;
-    }
-    write_u64(data, 24, (resource_count + n) as u64)?;
-    write_u64(data, resource_header, (resource_count + n) as u64)?;
+    // The row's groups follow its own slot pointers after the entry's last bytes, as Studio's
+    // rows hold theirs, so the stock pool and everything that names it keep their places and
+    // Sunrise's merge describes the row with every group it owns.
     let mh = append(data, multi_class, n, &vec![0; n * 8]);
     for (i, (selector, keys)) in slots.into_iter().enumerate() {
-        let resource = end + i * 24;
+        while !data.len().is_multiple_of(8) {
+            data.push(0);
+        }
+        let resource = data.len();
+        data.resize(resource + 24, 0);
         let cnt = keys.len();
         write_u64(data, resource, selector)?;
         write_u64(data, resource + 8, cnt as u64)?;
@@ -371,6 +336,89 @@ pub(super) fn insert_assignments(
         tag: ASSIGNMENT_TABLE,
         payload: table,
     })
+}
+
+/// The assignment map as this build last left it: its replacement when an earlier pass grew it,
+/// otherwise the stock table.
+pub(super) fn assignment_table(
+    manager: &sundial::package_authoring::PackageManager,
+    replacements: &[ReplacementSpec],
+) -> AuthoringResult<Vec<u8>> {
+    match replacements
+        .iter()
+        .find(|replacement| replacement.tag == ASSIGNMENT_TABLE)
+    {
+        Some(replacement) => Ok(replacement.payload.clone()),
+        None => manager
+            .read_tag(ASSIGNMENT_TABLE)
+            .map_err(|error| invalid(format!("Reading 0x{:08X}: {error}", ASSIGNMENT_TABLE.0))),
+    }
+}
+
+/// The assignment map's rows: gear-art key to relation tag.
+pub(super) fn assignments(table: &[u8]) -> AuthoringResult<BTreeMap<u32, u32>> {
+    let (count, _, rows, _) = array(table, 8)?;
+    (0..count)
+        .map(|i| {
+            Ok((
+                read_u32(table, rows + i * 8)?,
+                read_u32(table, rows + i * 8 + 4)?,
+            ))
+        })
+        .collect()
+}
+
+/// Adds `entries` to `table`, the map as this build last left it, and keeps the result as the
+/// build's one replacement of the map.
+pub(super) fn replace_assignments(
+    replacements: &mut Vec<ReplacementSpec>,
+    table: &[u8],
+    entries: &[(u32, TagHash)],
+) -> AuthoringResult<()> {
+    let replacement = insert_assignments(table, entries)?;
+    replacements.retain(|existing| existing.tag != ASSIGNMENT_TABLE);
+    replacements.push(replacement);
+    Ok(())
+}
+
+/// Gives `item` its own metadata row, cloned from `source_row`, with each key `substitutions`
+/// names replaced by its private key, and points every class's arrangement in the definition at
+/// `ordinal` to that row.
+pub(super) fn substitute_row(
+    emission: &mut PackageEmission,
+    (item, ordinal): (u32, usize),
+    source_row: usize,
+    art_rows: &[WeaponArtArrangementOverride],
+    substitutions: &BTreeMap<u32, u32>,
+) -> AuthoringResult<()> {
+    let row_index = prepare_row_at(emission, item, source_row)?;
+    let (_, _, rows, _) = array(&emission.item_metadata, 8)?;
+    rewrite(
+        &mut emission.item_metadata,
+        rows + row_index * 32,
+        rows + source_row * 32,
+        |singles, slots| {
+            for key in singles
+                .iter_mut()
+                .chain(slots.iter_mut().flat_map(|(_, keys)| keys))
+            {
+                if let Some(private) = substitutions.get(key) {
+                    *key = *private;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    let arrangement =
+        u16::try_from(row_index).map_err(|_| invalid("Gear-art row index overflow"))?;
+    let updated = art_rows
+        .iter()
+        .map(|row| WeaponArtArrangementOverride {
+            character_class: row.character_class,
+            arrangement,
+        })
+        .collect::<Vec<_>>();
+    set_weapon_art_arrangements(&mut emission.host_new_tags[ordinal].payload, &updated)
 }
 
 #[cfg(test)]

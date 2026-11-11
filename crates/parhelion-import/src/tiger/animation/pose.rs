@@ -1,8 +1,30 @@
 //! Checked uniform-scale transforms for native control-space translation.
+use crate::tiger::payload::Payload;
 use anyhow::{Result, ensure};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Pose(pub [f32; 8]);
+
+/// The checked poses of the array at `at`, whose 32-byte rows of class `80809F75` hold a
+/// rotation quaternion, a translation and a uniform scale as eight Float32 values.
+pub fn rows(payload: &Payload, at: usize) -> Result<Vec<Pose>> {
+    payload
+        .array(at, 32, Some(0x80809F75))?
+        .into_iter()
+        .map(|at| {
+            let mut values = [0.; 8];
+            for (i, value) in values.iter_mut().enumerate() {
+                *value = payload.f32(at + i * 4)?;
+            }
+            Pose::checked(values)
+        })
+        .collect()
+}
+
+/// A native skeleton's bind poses, the pose array at its definition plus `0x90`.
+pub fn bind(skeleton: &Payload) -> Result<Vec<Pose>> {
+    rows(skeleton, skeleton.pointer(24)? + 0x90)
+}
 
 impl Pose {
     pub const IDENTITY: Self = Self([0., 0., 0., 1., 0., 0., 0., 1.]);

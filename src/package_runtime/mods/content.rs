@@ -6,9 +6,7 @@ use super::merge::{
     Status,
     sidecar::{self, METADATA_DIGEST_SIZE, Sidecar},
 };
-use super::{
-    FOLDER_LIMIT, ID, MANIFEST, Refusal, checked_path, config, is_package, runtime_directory,
-};
+use super::{FOLDER_LIMIT, MANIFEST, Refusal, checked_path, config, is_package, runtime_directory};
 use crate::package_payload::bytes_at;
 use resolution::{Mod, resolve};
 use std::{
@@ -30,16 +28,21 @@ pub use shared::Coexistence;
 
 /// The loader serves at most this many mod package files together.
 const FILE_LIMIT: usize = 1024;
+/// Where a mod lists every place that names its own packages, beside its manifest.
+const REFERENCE_MAP: &str = "refmap.bin";
+/// The activity SDK pack Sunrise Studio ships beside a mod's manifest.
+const ACTIVITY_SDK_PACK: &str = "activity_sdk.pack";
 
-/// Parhelion's mod as an installation would publish it: its new packages and its patches, each
-/// with its merge data beside it under the same name. A plan reads these files in place of
-/// Parhelion's installed folder.
+/// A Parhelion family member as an installation would publish it: its new packages and its
+/// patches, each with its merge data beside it under the same name. A plan reads these files in
+/// place of the installed family folders. The main mod leads when the family has one.
 #[derive(Clone, Debug, Default)]
 pub struct Incoming {
     pub manifest: super::Manifest,
     pub packages: Vec<PathBuf>,
     pub patches: Vec<PathBuf>,
-    /// Importer members published with the main mod, including verified installed members.
+    /// The other members published with this one, including verified installed members. Each
+    /// holds its own patches, which the loader merges with every other mod's like any mod's.
     pub family: Vec<Incoming>,
     /// Names of files in stock `packages` the installation removes, which an earlier layout left.
     pub retired: Vec<String>,
@@ -135,9 +138,10 @@ fn packages(path: &Path) -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
-/// The files that decide what the loader serves: each mod folder's manifest, packages and merge
-/// data, and the saved configuration. Refused mods are included, since an edit can admit one.
-/// A runtime that doesn't load Sunrise mods reads none of them.
+/// The files that decide what the loader serves: each mod folder's manifest, reference map,
+/// activity SDK pack, packages and merge data, and the saved configuration. Refused mods are
+/// included, since an edit can admit one. A runtime that doesn't load Sunrise mods reads none of
+/// them.
 pub(super) fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
     let folders = folders(install, None)?;
     if folders.read.is_empty() || !super::loads_mods(install)? {
@@ -152,6 +156,14 @@ pub(super) fn files(install: &Path) -> Result<Vec<PathBuf>, String> {
         }
         if manifest.is_file() {
             files.push(manifest);
+        }
+        // Sunrise 9ab7b50 moves a mod's own packages by its reference map when another source
+        // holds their ids, and reads the activity SDK pack at boot like a package.
+        for name in [REFERENCE_MAP, ACTIVITY_SDK_PACK] {
+            let path = folder.join(name);
+            if checked_path(install, &path).is_ok() && path.is_file() {
+                files.push(path);
+            }
         }
         for child in ["packages", "patches"] {
             files.extend(children(&folder.join(child)).unwrap_or_default());
@@ -190,22 +202,63 @@ pub(super) struct Plan {
 }
 
 impl Plan {
-    /// Parhelion's installed mod folder alone, as installation and removal read it.
-    pub(super) fn installed(files: &[PathBuf]) -> Self {
-        Self {
-            primary: files.iter().filter(|p| is_package(p)).cloned().collect(),
-            patches: Vec::new(),
-            merged: Vec::new(),
-            actions: Vec::new(),
-            notices: Vec::new(),
-            coexistence: Coexistence::default(),
-            provenance: Provenance::default(),
+    /// Parhelion's installed family alone, as installation and removal read it. Where two
+    /// members patch one package, the members are read in load order and their shared entries
+    /// are served as the loader serves them.
+    pub(super) fn installed(install: &Path, files: &[PathBuf]) -> Result<Self, String> {
+        let primary = files
+            .iter()
+            .filter(|p| is_package(p))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut names = HashSet::new();
+        if primary
+            .iter()
+            .all(|path| names.insert(name(path).into_owned()))
+        {
+            return Ok(Self {
+                primary,
+                patches: Vec::new(),
+                merged: Vec::new(),
+                actions: Vec::new(),
+                notices: Vec::new(),
+                coexistence: Coexistence::default(),
+                provenance: Provenance::default(),
+            });
         }
+        let folders = super::family_directories(install)?
+            .into_values()
+            .collect::<Vec<_>>();
+        Self::members(install, resolution::family(install, &folders)?, &[])
+    }
+
+    /// The incoming family alone over stock, without other mods, as a review reads a staged
+    /// generation's own content.
+    pub(super) fn family(install: &Path, incoming: &Incoming) -> Result<Self, String> {
+        let mods = std::iter::once(incoming)
+            .chain(&incoming.family)
+            .cloned()
+            .map(Mod::incoming)
+            .collect();
+        Self::members(install, resolution::ordered(mods), &incoming.retired)
+    }
+
+    /// `mods` over stock in the order given, each staged as the loader stages a mod but none
+    /// refused for the mods it needs.
+    fn members(install: &Path, mods: Vec<Mod>, retired: &[String]) -> Result<Self, String> {
+        let mut stage = Stage::new(install, retired)?;
+        for item in mods {
+            let staged = stage
+                .contents(install, &item)
+                .map_err(|reason| format!("{} can't be read: {reason}", item.id))?;
+            stage.commit(&item.id, item.name(), staged);
+        }
+        Ok(stage.compose(Vec::new()))
     }
 
     /// What the loader serves, admitting mods one at a time in load order. `refused` are mods a
     /// reader found the loader refuses once their configured values are written. `incoming` is
-    /// read in place of Parhelion's installed folder.
+    /// read in place of Parhelion's installed family folders.
     pub(super) fn read(
         install: &Path,
         refused: &[Refusal],
@@ -221,6 +274,11 @@ impl Plan {
                     name(folder)
                 )
             })
+            .collect::<Vec<_>>();
+        let members = incoming
+            .into_iter()
+            .flat_map(|incoming| std::iter::once(incoming).chain(&incoming.family))
+            .map(|member| member.manifest.id.as_str())
             .collect::<Vec<_>>();
         let extra = incoming
             .into_iter()
@@ -241,7 +299,11 @@ impl Plan {
         let (mods, left_out) = resolve(install, &folders.read, extra);
         let mut refusal = left_out
             .iter()
-            .find(|notice| notice.starts_with(&format!("{ID} was left out")))
+            .find(|notice| {
+                members
+                    .iter()
+                    .any(|id| notice.starts_with(&format!("{id} was left out")))
+            })
             .cloned();
         notices.extend(left_out);
         let retired = incoming.map_or(&[][..], |incoming| &incoming.retired[..]);
@@ -265,14 +327,19 @@ impl Plan {
                 }
             }
         }
-        let admitted = stage.admitted.iter().any(|id| id == ID);
+        // Every incoming member must load. A member the loader leaves out loses its content, and
+        // the members that need it with it.
+        let missing = members
+            .iter()
+            .find(|id| !stage.admitted.iter().any(|admitted| admitted == *id))
+            .map(|id| (*id).to_owned());
         let mut plan = stage.compose(notices);
-        if incoming.is_some() && !admitted {
+        if let Some(missing) = missing {
             plan.coexistence.problems.insert(
                 0,
                 refusal.unwrap_or_else(|| {
                     format!(
-                        "{ID} was left out: Sunrise reads only the {FOLDER_LIMIT} mod folders whose names sort first"
+                        "{missing} was left out: Sunrise reads only the {FOLDER_LIMIT} mod folders whose names sort first"
                     )
                 }),
             );
@@ -503,6 +570,12 @@ impl Stage {
         {
             return Err(format!("it needs {needed}, which was left out"));
         }
+        self.contents(install, item)
+    }
+
+    /// What `item`'s files and bindings add beside the mods staged so far, or why the loader
+    /// refuses them.
+    fn contents(&self, install: &Path, item: &Mod) -> Result<Staged, String> {
         let mut staged = Staged::default();
         let new_packages = match &item.incoming {
             Some(incoming) => incoming.packages.clone(),

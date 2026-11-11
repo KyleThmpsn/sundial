@@ -3,6 +3,72 @@ use super::*;
 use crate::tiger::reader::Reader;
 pub(super) mod slam;
 
+/// The private program the weapon melee route writes on the weapon's intrinsic.
+const PROGRAM: &str = "Reach Weapon Melee";
+
+/// Intrinsic titles and descriptions for source weapons whose intrinsic does more than melee, by
+/// source weapon path. These are authored names, since the source has no perk text.
+const NAMED: &[(&str, &str, &str)] = &[(
+    r"objects\weapons\pistol\needler\needler",
+    "Beware the Pink Mist",
+    "Needles home in and stick to targets. Stuck needles detonate after a moment, and enough at once trigger a supercombine.",
+)];
+
+/// Completes the drawn intrinsic the melee route publishes. A carrier steered by the source's
+/// guidance needs the firing weapon's tracking count, which every stock tracking perk holds as
+/// effect kind 30 (`1E 01 01`). Without it the weapon never forms a lock and its projectiles fly
+/// straight. A named source weapon's intrinsic takes its authored title.
+fn intrinsic(
+    recipe: &mut Value,
+    graph: &Value,
+    behavior: &Value,
+    activation: &Value,
+) -> Result<Value> {
+    let guided =
+        graph["projectile"]["conversion"]["guidance"]["translation"] == super::projectile::GUIDED;
+    let named = NAMED
+        .iter()
+        .find(|(path, _, _)| behavior["root"]["path"] == *path);
+    let rows = recipe["overrides"]["socket_plug_variants"]
+        .as_array_mut()
+        .context("Recipe private variants")?
+        .iter_mut()
+        .filter(|row| row["socket_index"] == activation["socket_index"] && row["choice_index"] == 0)
+        .collect::<Vec<_>>();
+    let [row] = rows
+        .try_into()
+        .ok()
+        .context("Weapon melee intrinsic is absent or ambiguous")?;
+    if guided {
+        let programs = row["sandbox_perks"]
+            .as_array_mut()
+            .context("Intrinsic private programs")?
+            .iter_mut()
+            .filter(|perk| {
+                perk["source_perk_index"] == activation["source_perk_index"]
+                    && perk["program"]["name"] == PROGRAM
+            })
+            .collect::<Vec<_>>();
+        let [program] = programs
+            .try_into()
+            .ok()
+            .context("Weapon melee program is absent or ambiguous")?;
+        let count = json!({"operation":"weapon_reference_count","selector":1});
+        let actions = program["program"]["actions"]
+            .as_array_mut()
+            .context("Weapon melee program actions")?;
+        if !actions.contains(&count) {
+            actions.push(count);
+        }
+    }
+    if let Some((_, title, description)) = named {
+        row["name"] = json!(title);
+        row["description"] = json!(description);
+    }
+    Ok(json!({"tracking_count":guided,"title":row["name"],
+        "basis":"Every stock tracking perk holds effect kind 30 (1E 01 01) while the projectile tracks"}))
+}
+
 pub(super) fn prepare(
     native: &mut Reader,
     behavior: &Value,
@@ -108,8 +174,8 @@ pub(super) fn prepare(
     audio["clip_events"] = json!(events);
     audio["impact_key"] = json!(format!("{key:08X}"));
     audio["retain_native_contacts"] = json!(true);
-    let activation =
-        crate::d2_mot::glaive::weapon_melee(native, recipe, key, "Reach Weapon Melee")?;
+    let activation = crate::d2_mot::glaive::weapon_melee(native, recipe, key, PROGRAM)?;
+    let intrinsic = intrinsic(recipe, graph, behavior, &activation)?;
     let root_id = behavior["root"]["datum"].clone();
     let source_damage = behavior["edges"]
         .as_array()
@@ -145,7 +211,7 @@ pub(super) fn prepare(
     );
     graph["audio"]["contact_damage"] = json!(amount);
     Ok(
-        json!({"activation":activation,"strikes":strikes.len(),"source_sounds":converted.len(),"source_damage":source_damage,
+        json!({"activation":activation,"intrinsic":intrinsic,"strikes":strikes.len(),"source_sounds":converted.len(),"source_damage":source_damage,
         "authored_contact_damage":amount,"damage_policy":"Source constant amount in a private absolute native profile",
         "swing_audio":if source_audio {"source_recording"} else {"native_punch_at_contact"},
         "retained_native_behavior":["Native surface feedback", "Native lunge, hit acceptance and attack input handling", "Post-melee weapon ready transition"],

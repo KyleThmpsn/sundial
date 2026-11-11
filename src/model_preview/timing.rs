@@ -23,7 +23,9 @@ static EVENTS: Mutex<Vec<Event>> = Mutex::new(Vec::new());
 pub struct Event {
     pub name: String,
     pub thread: &'static str,
-    /// When the step began, in milliseconds since timing started.
+    /// The process whose local clock and GL work this event describes.
+    pub process: u32,
+    /// When the step began, in milliseconds since timing started in this process.
     pub start_ms: f64,
     pub total_ms: f64,
     /// Each stage's own milliseconds and how often it ran.
@@ -85,9 +87,15 @@ pub fn salt_shaders(salt: String) {
     let _ = SALT.set(salt);
 }
 
-/// A comment to append to preview shader sources, set only by a timing run.
+/// A comment that gives an opt-in timing run fresh driver shader-cache keys.
 pub(crate) fn shader_salt() -> Option<&'static str> {
-    SALT.get().map(String::as_str)
+    static ENV_SALT: OnceLock<Option<String>> = OnceLock::new();
+    SALT.get().map(String::as_str).or_else(|| {
+        output()?;
+        ENV_SALT
+            .get_or_init(|| std::env::var("SUNDIAL_PREVIEW_SHADER_SALT").ok())
+            .as_deref()
+    })
 }
 
 /// Records elapsed time for a named stage while a timing step is active.
@@ -169,6 +177,7 @@ pub(crate) fn measure<T>(
         publish(Event {
             name: name(),
             thread,
+            process: std::process::id(),
             start_ms: millis(start.saturating_duration_since(epoch)),
             total_ms: millis(total),
             stages: stages
@@ -188,6 +197,7 @@ pub(crate) fn mark(name: impl FnOnce() -> String, thread: &'static str) {
     publish(Event {
         name: name(),
         thread,
+        process: std::process::id(),
         start_ms: millis(epoch().elapsed()),
         total_ms: 0.0,
         stages: Vec::new(),
@@ -200,13 +210,16 @@ fn millis(duration: Duration) -> f64 {
 
 fn publish(event: Event) {
     if let Some(path) = output()
-        && let Ok(line) = serde_json::to_string(&event)
+        && let Ok(mut line) = serde_json::to_vec(&event)
         && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
     {
-        let _ = writeln!(file, "{line}");
+        // Append the complete record in one write, including its newline. Separate writes
+        // allowed another publisher to append its record before the first one's newline.
+        line.push(b'\n');
+        let _ = file.write_all(&line);
     }
     if RECORDING.load(Ordering::Relaxed) {
         EVENTS

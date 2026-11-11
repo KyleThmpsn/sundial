@@ -6,13 +6,14 @@ use std::{hash::Hash, path::Path};
 
 pub use crate::ui::help::tooltip_title;
 pub use authoring_bridge::{
-    AUTHORING_SOCKET_RESET_WIDTH, AuthoringItemHeader, WeaponChoiceFilter, authoring_button_width,
-    authoring_socket_label_width, authoring_socket_reset_width,
-    configure_fonts as configure_authoring_fonts, default_plug_selection_mode,
-    draw_asset_choice_row, draw_asset_choice_row_plain, draw_authoring_info_icon,
-    draw_authoring_item_header, draw_authoring_plug_safety_warning as draw_plug_safety_warning,
-    draw_authoring_socket_label, draw_authoring_socket_reset, draw_authoring_tile,
-    draw_authoring_toolbar, draw_authoring_warning_icon, show_plug_safety_warnings,
+    AUTHORING_SOCKET_RESET_WIDTH, AuthoringItemHeader, ItemChoiceFields, ItemChoiceFilter,
+    WeaponChoiceFilter, authoring_button_width, authoring_socket_label_width,
+    authoring_socket_reset_width, configure_fonts as configure_authoring_fonts,
+    default_plug_selection_mode, draw_asset_choice_row, draw_asset_choice_row_plain,
+    draw_authoring_info_icon, draw_authoring_item_header,
+    draw_authoring_plug_safety_warning as draw_plug_safety_warning, draw_authoring_socket_label,
+    draw_authoring_socket_reset, draw_authoring_tile, draw_authoring_toolbar,
+    draw_authoring_warning_icon, show_plug_safety_warnings,
 };
 
 /// Consistent loading and build progress appearance across both applications.

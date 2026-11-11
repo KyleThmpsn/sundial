@@ -423,6 +423,18 @@ pub(crate) fn open_incoming_shadowkeep_packages(
     Err("Sunrise mods kept changing while the incoming content was checked".into())
 }
 
+/// Stock with the incoming family alone, merged where its members patch one package, for reading
+/// a staged generation's own content without other mods.
+pub(crate) fn open_family_shadowkeep_packages(
+    install: &Path,
+    incoming: &mods::Incoming,
+) -> Result<PackageManager, String> {
+    let view = mods::View::family(install, incoming)?;
+    let mut manager = open_stock_shadowkeep_packages(view.install())?;
+    manager.retain_view(view)?;
+    Ok(manager)
+}
+
 fn open_stock_shadowkeep_packages(install: &Path) -> Result<PackageManager, String> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {

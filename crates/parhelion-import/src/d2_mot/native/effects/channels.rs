@@ -593,7 +593,9 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     if let Some(variable) = variable {
         // TODO: Restore the procedural barrel animation for Insidious,
         // Forbearance and Cataclysmic after validating native resources and
-        // callbacks and verifying animated previews in game.
+        // callbacks and verifying animated previews in game. The build no longer
+        // carries a native variable attachment, so a restoration attaches one
+        // here, where the source variable is known.
         for (hash, channel) in &mut extra {
             static_channel(hash, channel)?;
         }
@@ -606,7 +608,6 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
             "gameplay_verified": false
         });
     }
-    c.variable = None;
     if extra.is_empty() {
         return Ok(());
     }
@@ -1141,19 +1142,6 @@ pub(super) fn bind(c: &mut Effect, prepared: &Path) -> Result<()> {
     let start = Payload(entity_bytes.clone()).pointer(0x28)? + 16;
     for (at, symbol) in new_patches {
         patch(&mut entity_patches, start + at, &symbol);
-    }
-    if c.variable.is_some() {
-        procedural::attach(
-            c,
-            &mut entity_bytes,
-            &mut entity_patches,
-            schema,
-            &bank_order,
-            components
-                .iter()
-                .position(|at| entity.u32(*at).ok() == Some(old_tag))
-                .context("native bank component index")?,
-        )?;
     }
     c.graph.write("entity", &entity_bytes)?;
     c.graph.node_mut("entity")?["patches"] = json!(entity_patches);

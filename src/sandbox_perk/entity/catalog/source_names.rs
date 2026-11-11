@@ -27,7 +27,8 @@ struct LegacyName {
 
 fn legacy_names() -> Vec<NameEvidence> {
     let legacy: Vec<LegacyName> =
-        serde_json::from_str(include_str!("legacy_names.json")).expect("bundled legacy names");
+        serde_json::from_str(include_str!("source_names/legacy_names.json"))
+            .expect("bundled legacy names");
     legacy
         .into_iter()
         .map(|legacy| NameEvidence {

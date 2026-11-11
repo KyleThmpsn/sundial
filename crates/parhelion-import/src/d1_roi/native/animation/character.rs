@@ -430,7 +430,7 @@ pub(in crate::d1_roi::native) fn prepare(
                             && payloads["layers"].f32(o + 36)? == 1.,
                         "Native holding driver is dynamic"
                     );
-                    for weight in payloads["layers"].array(o, 8, Some(0x80803737))? {
+                    for weight in payloads["layers"].array(o, 12, Some(0x80803737))? {
                         templates.insert(
                             payloads["bank"].u32(
                                 *native_clips
@@ -441,7 +441,7 @@ pub(in crate::d1_roi::native) fn prepare(
                     }
                 }
                 let mut weights = Vec::new();
-                for row in layers.array(option, 8, Some(0x80802687))? {
+                for row in layers.array(option, 12, Some(0x80802687))? {
                     let tag = sb.u32(
                         *source_clips
                             .get(layers.u32(row)? as usize)

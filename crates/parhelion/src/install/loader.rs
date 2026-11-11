@@ -170,10 +170,7 @@ fn review_upgrade(
 
 /// The packages from an earlier layout an operation on the mod folder retires. They cannot share
 /// the installation with a mod folder, and an interrupted earlier operation is recovered first.
-fn retired_legacy(
-    target: &Path,
-    original: Option<&Folder>,
-) -> Result<Vec<ArtifactMetadata>, InstallError> {
+fn retired_legacy(target: &Path, installed: bool) -> Result<Vec<ArtifactMetadata>, InstallError> {
     if target
         .join(INSTALL_TRANSACTION_FILE_NAME)
         .try_exists()
@@ -184,7 +181,7 @@ fn retired_legacy(
         ));
     }
     let legacy = uninstall::preview_legacy(target)?.artifacts;
-    if original.is_some() && !legacy.is_empty() {
+    if installed && !legacy.is_empty() {
         return Err(InstallError::validation(
             "Legacy and mod-folder packages are both present",
         ));
@@ -272,18 +269,47 @@ pub(super) fn preview_uninstall_with_packages(
     let (mut family, packages) = managed_family_with_packages(target, known)?;
     let original = family.remove(mod_content::ID);
     let mut plan = uninstall::preview_legacy(target)?;
-    if let Some(original) = original {
+    // A family may hold no main mod. Each package is named as a build stages it, so members
+    // that patch one package stay apart.
+    if original.is_some() || !family.is_empty() {
         if !plan.artifacts.is_empty() {
             return Err(InstallError::validation(
                 "Legacy and mod-folder packages are both present",
             ));
         }
-        plan.artifacts = artifacts(&original);
-        plan.artifacts.extend(family.values().flat_map(artifacts));
-        plan.mod_folder = Some(original);
+        plan.artifacts = original
+            .iter()
+            .flat_map(|folder| member_artifacts(mod_content::ID, folder))
+            .collect();
+        plan.artifacts.extend(
+            family
+                .iter()
+                .flat_map(|(id, folder)| member_artifacts(id, folder)),
+        );
+        plan.mod_folder = original;
         plan.mod_family = family;
     }
     Ok((plan, packages))
+}
+
+/// Shows each member whose installed folder already holds its staged generation as kept, since
+/// installation leaves it in place.
+pub(super) fn mark_unchanged(
+    install: &Path,
+    members: &[crate::mod_family::Member],
+    reports: &mut [crate::ModReport],
+) -> Result<(), String> {
+    let installed = mod_content::family_directories(install)?;
+    for member in members {
+        let id = &member.manifest.id;
+        if installed.contains_key(id)
+            && transaction::unchanged(install, member).map_err(|e| e.to_string())?
+            && let Some(report) = reports.iter_mut().find(|report| report.id == *id)
+        {
+            report.status = crate::mod_family::ModStatus::Kept;
+        }
+    }
+    Ok(())
 }
 
 /// Carries the reviewed folder inventory into preparation. Package evidence is reusable only
@@ -319,7 +345,8 @@ pub(super) fn install_with_observer(
     let original = original_family.remove(mod_content::ID);
     // Packages an earlier layout left in stock `packages` cannot load beside the mod, so this
     // transaction retires them, after backing them up, while it publishes the build.
-    let legacy = retired_legacy(target, original.as_ref())?;
+    let legacy = retired_legacy(target, original.is_some() || !original_family.is_empty())?;
+    // Each staged file is found by its member-qualified name.
     let staged = |artifacts: &[ArtifactMetadata]| -> Result<Vec<_>, InstallError> {
         artifacts
             .iter()
@@ -339,8 +366,9 @@ pub(super) fn install_with_observer(
     validate_packages(target, &sources, &validated.packages)?;
     reject_installed_conflicts(target, &sources, &legacy)?;
     let mod_overlaps = check_other_mods(target, &sources, &legacy, &validated.mods)?;
-    let mod_reports = crate::mod_family::reports(&validated.mods, install, &validated.artifacts)
-        .map_err(InstallError::validation)?;
+    let mut mod_reports =
+        crate::mod_family::reports(&validated.mods, install, &validated.artifacts)
+            .map_err(InstallError::validation)?;
     // The merge data is published beside its packages.
     let diagnostics = validated
         .map_diagnostics
@@ -369,6 +397,13 @@ pub(super) fn install_with_observer(
         runtime: &validated.sunrise_build_cache.runtime,
     })?;
     let backup = transaction.record.context.backup_directory.clone();
+    // A member whose installed folder already held its staged generation stays in place.
+    let kept = transaction.record.kept();
+    for report in &mut mod_reports {
+        if kept.contains(&report.id) {
+            report.status = crate::mod_family::ModStatus::Kept;
+        }
+    }
     let recipe_backup_directory =
         backup_recipe_snapshots(&validated, &backup).map_err(InstallError::validation)?;
     if let Some(review) = &validated.replacement_guard {
@@ -435,20 +470,14 @@ pub(super) fn install_with_observer(
             .iter()
             .map(|a| {
                 let path = package_path(a).expect("validated package");
-                let owner = validated.mods.iter().find(|m| {
-                    m.receipt
-                        .artifacts
-                        .iter()
-                        .any(|owned| owned.path.rsplit('/').next() == Some(a.file_name.as_str()))
-                });
-                let id = owner.map_or(mod_content::ID, |m| m.manifest.id.as_str());
-                let kept = owner.is_some_and(|m| m.kept);
+                let (id, _) = crate::mod_family::split(&a.file_name);
                 let old = if id == mod_content::ID {
                     original.as_ref()
                 } else {
                     original_family.get(id)
                 };
-                let replaced = !kept && old.is_some_and(|o| o.files.contains_key(&path));
+                let replaced =
+                    !kept.contains(id) && old.is_some_and(|o| o.files.contains_key(&path));
                 InstalledArtifact {
                     file_name: a.file_name.clone(),
                     target_path: mod_content::member_directory(install, id).join(&path),
@@ -544,8 +573,8 @@ pub(super) fn uninstall_with_observer(
             "The installed mod changed since removal review",
         ));
     }
-    // Without a mod folder, the reviewed packages are an earlier layout's in stock `packages`.
-    let legacy = if plan.mod_folder.is_none() {
+    // Without a family folder, the reviewed packages are an earlier layout's in stock `packages`.
+    let legacy = if plan.mod_folder.is_none() && plan.mod_family.is_empty() {
         plan.artifacts.clone()
     } else {
         Vec::new()
@@ -594,11 +623,7 @@ pub(super) fn uninstall_with_observer(
                 .iter()
                 .map(|a| {
                     let path = package_path(a).expect("validated package");
-                    let id = plan
-                        .mod_family
-                        .iter()
-                        .find(|(_, folder)| folder.files.contains_key(&path))
-                        .map_or(mod_content::ID, |(id, _)| id.as_str());
+                    let (id, _) = crate::mod_family::split(&a.file_name);
                     mod_content::member_directory(plan.target.parent().unwrap(), id).join(path)
                 })
                 .collect()

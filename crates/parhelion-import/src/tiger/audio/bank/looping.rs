@@ -59,13 +59,14 @@ const LIMITED_PRIORITY: f32 = 50.0;
 const LIMITED_PRIORITY_OFFSET: f32 = -39.0;
 
 /// Writes a node's base parameters. A top container (`parent` 0) with a `limit` plays at most that
-/// many instances at once, the rest virtual, by priority falling with distance.
+/// many instances at once, the rest virtual, by priority falling with distance. A top container
+/// with an `attenuation` is positioned and attenuated by that object.
 fn node(
     w: &mut Write,
     parent: u32,
     bus: u32,
     layer: Option<&Layer>,
-    spatial: bool,
+    attenuation: Option<u32>,
     limit: Option<u16>,
 ) -> Result<()> {
     let limit = limit.filter(|_| parent == 0);
@@ -93,9 +94,9 @@ fn node(
         w.u8(0);
     }
     w.u8(0);
-    if parent == 0 && spatial {
+    if let Some(attenuation) = attenuation.filter(|_| parent == 0) {
         w.bytes.extend([0xd9, 1]);
-        w.reference(3, Kind::Object);
+        w.reference(attenuation, Kind::Object);
     } else {
         w.u8(if parent == 0 { 0xc1 } else { 0xc0 });
     }
@@ -149,50 +150,75 @@ fn action(hirc: &mut Write, id: u32, target: u32, play: bool, fade_ms: u32) -> R
     object(hirc, 3, w)
 }
 
-/// Writes attenuation 3, whose dry volume follows `curve`, distance in meters to dB.
-fn attenuation(hirc: &mut Write, curve: Option<&[[f32; 2]]>) -> Result<u32> {
-    let Some(curve) = curve else {
-        return Ok(0);
-    };
+/// Writes attenuation `id`, whose dry volume follows `curve`, distance in meters to dB.
+fn attenuation(hirc: &mut Write, id: u32, curve: &[[f32; 2]]) -> Result<()> {
     ensure!(
         curve.first().is_some_and(|point| point[0] == 0.0)
             && curve.iter().all(|point| (-96.0..=0.0).contains(&point[1])),
         "Invalid loop attenuation"
     );
     let mut payload = Write::default();
-    payload.reference(3, Kind::Object);
+    payload.reference(id, Kind::Object);
     payload.u8(0);
     payload.bytes.extend([0, 0, 0, 255, 255, 255, 255]);
     payload.u8(1);
     payload.u8(0);
     points(&mut payload, curve)?;
     payload.u16(0);
-    object(hirc, 14, payload)?;
-    Ok(1)
+    object(hirc, 14, payload)
+}
+
+/// Full volume within the near distance, falling linearly to silence at the far distance.
+fn band(distance: [f32; 2]) -> Result<Vec<[f32; 2]>> {
+    ensure!(
+        distance[0].is_finite()
+            && distance[1].is_finite()
+            && distance[0] >= 0.0
+            && distance[1] > distance[0],
+        "Invalid loop attenuation"
+    );
+    let mut curve = vec![[0.0, 0.0]];
+    if distance[0] > 0.0 {
+        curve.push([distance[0], 0.0]);
+    }
+    curve.push([distance[1], -96.0]);
+    Ok(curve)
 }
 
 impl Bank {
     /// Events 1 and 2 start and stop one object's complete layered sound.
     /// Starting again first retires this bank's preceding loops and tails.
-    pub(crate) fn looping(layers: &[Layer], output_bus: u32, distance: [f32; 2]) -> Result<Self> {
+    /// Layer `i` is heard over its own distance band `bands[i]`, full within the near distance and
+    /// silent at the far one, so loops that reach different distances share one start and stop.
+    /// Layers of one band share one attenuation.
+    pub(crate) fn looping_bands(
+        layers: &[Layer],
+        bands: &[[f32; 2]],
+        output_bus: u32,
+    ) -> Result<Self> {
         ensure!(
-            distance[0].is_finite()
-                && distance[1].is_finite()
-                && distance[0] >= 0.0
-                && distance[1] > distance[0],
-            "Invalid loop attenuation"
+            bands.len() == layers.len(),
+            "Every loop layer needs a distance band"
         );
-        let mut curve = vec![[0.0, 0.0]];
-        if distance[0] > 0.0 {
-            curve.push([distance[0], 0.0]);
+        let mut distinct = Vec::<[f32; 2]>::new();
+        let mut assignment = Vec::new();
+        for distance in bands {
+            let index = match distinct.iter().position(|known| known == distance) {
+                Some(index) => index,
+                None => {
+                    distinct.push(*distance);
+                    distinct.len() - 1
+                }
+            };
+            assignment.push(index);
         }
-        curve.push([distance[1], -96.0]);
-        Self::looped(layers, output_bus, Some(&curve), None)
+        let curves = distinct.into_iter().map(band).collect::<Result<Vec<_>>>()?;
+        Self::attenuated(layers, output_bus, &curves, &assignment, None)
     }
 
-    /// As [`Bank::looping`], with its volume following `curve` over distance, meters to dB from 0
-    /// to -96, the last point its farthest reach, and each layer playing at most `limit`
-    /// instances at once, the nearest.
+    /// As [`Bank::looping_bands`], with every layer's volume following `curve` over distance,
+    /// meters to dB from 0 to -96, the last point its farthest reach, and each layer playing at
+    /// most `limit` instances at once, the nearest.
     pub(crate) fn looping_curve(
         layers: &[Layer],
         output_bus: u32,
@@ -206,11 +232,25 @@ impl Bank {
         Self::looped(layers, output_bus, None, None)
     }
 
-    #[allow(clippy::cognitive_complexity)]
     fn looped(
         layers: &[Layer],
         output_bus: u32,
         curve: Option<&[[f32; 2]]>,
+        limit: Option<u16>,
+    ) -> Result<Self> {
+        let curves = curve.map(|curve| vec![curve.to_vec()]).unwrap_or_default();
+        Self::attenuated(layers, output_bus, &curves, &vec![0; layers.len()], limit)
+    }
+
+    /// Layer `i` is attenuated by `curves[assignment[i]]`, or not at all when `curves` is empty.
+    /// The first attenuation is object 3 and the others follow it, so the containers start after
+    /// them.
+    #[allow(clippy::cognitive_complexity)]
+    fn attenuated(
+        layers: &[Layer],
+        output_bus: u32,
+        curves: &[Vec<[f32; 2]>],
+        assignment: &[usize],
         limit: Option<u16>,
     ) -> Result<Self> {
         ensure!(
@@ -221,13 +261,25 @@ impl Bank {
             !matches!(output_bus, 0 | u32::MAX),
             "Loop output bus is unset"
         );
+        ensure!(
+            assignment.len() == layers.len()
+                && (curves.is_empty() || assignment.iter().all(|&index| index < curves.len())),
+            "Loop layer attenuation is outside the bank"
+        );
         let mut hirc = Write::default();
         hirc.u32(0);
-        let mut count = attenuation(&mut hirc, curve)?;
-        let mut next = 4u32;
+        let mut count = 0u32;
+        let mut ids = Vec::new();
+        for (index, curve) in curves.iter().enumerate() {
+            let id = 3 + u32::try_from(index)?;
+            attenuation(&mut hirc, id, curve)?;
+            ids.push(id);
+            count += 1;
+        }
+        let mut next = 3 + u32::try_from(curves.len().max(1))?;
         let mut starts = Vec::new();
         let mut stops = Vec::new();
-        for layer in layers {
+        for (layer, &heard) in layers.iter().zip(assignment) {
             ensure!(
                 !layer.media.is_empty() && layer.media.len() <= 4096,
                 "Invalid loop variation count"
@@ -246,7 +298,7 @@ impl Bank {
                 sound.reference(*medium, Kind::Media);
                 sound.reference(*medium, Kind::MediaSize);
                 sound.u8(0);
-                node(&mut sound, container, 0, None, curve.is_some(), None)?;
+                node(&mut sound, container, 0, None, None, None)?;
                 object(&mut hirc, 2, sound)?;
                 count += 1;
             }
@@ -257,7 +309,7 @@ impl Bank {
                 0,
                 output_bus,
                 Some(layer),
-                curve.is_some(),
+                ids.get(heard).copied(),
                 limit,
             )?;
             random.u16(
@@ -339,7 +391,9 @@ impl Bank {
             bytes: out.bytes,
             bank_id: 1,
             // Object 3 is reserved for attenuation and is absent from nonspatial banks.
-            objects: (1..next).filter(|id| *id != 3 || curve.is_some()).collect(),
+            objects: (1..next)
+                .filter(|id| *id != 3 || !curves.is_empty())
+                .collect(),
             refs: out.refs,
         })
     }

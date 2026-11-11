@@ -186,7 +186,7 @@ fn bundled_templates_match_nodes_in_the_reference_installation() {
         crate::package_authoring::open_shadowkeep_package_manager(std::path::Path::new(&packages))
             .unwrap();
     let rows: Vec<(bool, u8, u32, usize, String)> =
-        serde_json::from_str(include_str!("templates.json")).unwrap();
+        serde_json::from_str(include_str!("schema/templates.json")).unwrap();
     for (condition, kind, tag, offset, _) in &rows {
         let payload = manager.read_tag(*tag).unwrap();
         let node = if *condition {

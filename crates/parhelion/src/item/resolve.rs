@@ -19,41 +19,82 @@ pub(super) struct ResolvedWeapon {
     pub(super) icon_template_container: TagHash,
     pub(super) donor_icon_index: u16,
     pub(super) donor_icon_container: TagHash,
-    pub(super) presentation_donor: Option<ResolvedPresentationDonor>,
-    pub(super) damage_carrier_source: Option<ResolvedDamageCarrierSource>,
-    pub(super) render_gear_donor: Option<ResolvedRenderGearDonor>,
-    pub(super) runtime_component_donors: Vec<ResolvedRuntimeComponentDonor>,
-    /// The pattern selected by each component splice's donor item definition.
-    pub(super) component_splice_sources: Vec<(u32, ResolvedSandboxPatternSource)>,
+    /// What the item borrows from other items.
+    pub(super) donors: Donors,
     pub(super) runtime_pattern_source: Option<ResolvedSandboxPatternSource>,
     pub(super) gear_art_pattern_source: Option<ResolvedSandboxPatternSource>,
+    pub(super) socket_column_indices: Vec<Option<ResolvedSocketColumn>>,
+    pub(super) has_authored_shader: bool,
+    /// What only this item's kind resolves, when it resolves anything of its own.
+    pub(super) kind_model: Option<KindModel>,
+}
+
+/// The items an item borrows appearance, damage carrier, runtime components and pattern rows
+/// from. Only a weapon resolves any of them. They stay on every item because the runtime stages
+/// that read them run for gear and vehicles too, where empty means nothing is borrowed.
+#[derive(Clone, Default)]
+pub(super) struct Donors {
+    pub(super) presentation: Option<ResolvedPresentationDonor>,
+    pub(super) damage_carrier: Option<ResolvedDamageCarrierSource>,
+    pub(super) render_gear: Option<ResolvedRenderGearDonor>,
+    pub(super) runtime_components: Vec<ResolvedRuntimeComponentDonor>,
+    /// The pattern selected by each component splice's donor item definition.
+    pub(super) component_splices: Vec<(u32, ResolvedSandboxPatternSource)>,
     /// The appearance whose rig and animations are promoted onto the gameplay runtime, set
     /// only when the two belong to different weapon families and the promotion applies.
-    pub(super) appearance_rig_donor: Option<u32>,
+    pub(super) appearance_rig: Option<u32>,
     /// The appearance whose parts are pinned to another family's rig, which keeps that rig's
     /// animations but takes the appearance's own hold.
     pub(super) pinned_appearance: Option<ResolvedSandboxPatternSource>,
     /// The pattern row of the weapon whose first-person animations this one plays.
-    pub(super) animation_pattern_source: Option<ResolvedSandboxPatternSource>,
+    pub(super) animation: Option<ResolvedSandboxPatternSource>,
     /// The pattern row of each weapon a single first-person action is played from.
-    pub(super) animation_action_sources:
+    pub(super) animation_actions:
         Vec<(crate::recipe::AnimationAction, ResolvedSandboxPatternSource)>,
     /// The pattern row of the weapon whose type markers this one carries.
-    pub(super) type_marker_pattern_source: Option<ResolvedSandboxPatternSource>,
+    pub(super) type_marker: Option<ResolvedSandboxPatternSource>,
     /// The pattern row of the weapon whose behavior the block carries in place of the base's.
-    pub(super) behavior_pattern_source: Option<ResolvedSandboxPatternSource>,
-    pub(super) socket_column_indices: Vec<Option<ResolvedSocketColumn>>,
-    pub(super) has_authored_shader: bool,
-    /// A subclass's own socket-entry list, when its abilities are not all its base's own.
-    pub(super) subclass_list: Option<crate::subclass::authoring::ResolvedList>,
-    /// A shader's dye rows once custom dyes replace the ones it edits.
-    pub(super) dye_rows: Option<[Vec<WeaponDyeReferenceOverride>; 3]>,
+    pub(super) behavior: Option<ResolvedSandboxPatternSource>,
+}
+
+/// What one kind of item resolves beside what every item resolves. Each kind with a model of its
+/// own defines it in its own module.
+#[derive(Clone)]
+pub(super) enum KindModel {
+    /// Boxed because a subclass's own list makes it several times the size of the others.
+    Subclass(Box<crate::subclass::Resolved>),
     /// An emblem's nameplate images and where each comes from.
-    pub(super) nameplate: Option<crate::emblem::ResolvedNameplate>,
-    /// A subclass's screen pictures and where each comes from.
-    pub(super) screen_art: Option<crate::subclass::art::ResolvedArt>,
-    /// Art the build draws for the icon's image, such as a subclass's generated icon.
-    pub(super) drawn_icon: Option<crate::icon_edit::ImportedIcon>,
+    Emblem(crate::emblem::ResolvedNameplate),
+    /// A shader's dye rows once custom dyes replace the ones it edits.
+    Shader([Vec<WeaponDyeReferenceOverride>; 3]),
+}
+
+impl ResolvedWeapon {
+    pub(super) fn subclass(&self) -> Option<&crate::subclass::Resolved> {
+        match &self.kind_model {
+            Some(KindModel::Subclass(subclass)) => Some(subclass),
+            _ => None,
+        }
+    }
+
+    /// A subclass's own socket-entry list.
+    pub(super) fn subclass_list(&self) -> Option<&crate::subclass::authoring::ResolvedList> {
+        self.subclass()?.list.as_ref()
+    }
+
+    pub(super) fn nameplate(&self) -> Option<&crate::emblem::ResolvedNameplate> {
+        match &self.kind_model {
+            Some(KindModel::Emblem(nameplate)) => Some(nameplate),
+            _ => None,
+        }
+    }
+
+    pub(super) fn dye_rows(&self) -> Option<&[Vec<WeaponDyeReferenceOverride>; 3]> {
+        match &self.kind_model {
+            Some(KindModel::Shader(rows)) => Some(rows),
+            _ => None,
+        }
+    }
 }
 
 /// The stock rows an authored item's collectible copies, and the page it lands on.
@@ -99,7 +140,7 @@ pub(super) fn resolve_project_weapons_with_progress(
     let mut resolved = Vec::with_capacity(weapons.len());
     let mut exemplar_cache = CollectionExemplarCache::new(sources.stock_collectible_count);
     for (weapon_ordinal, weapon) in weapons.iter().enumerate() {
-        let operation = format!("Resolving {}", weapon.text.name);
+        let operation = format!("Preparing Item References: {}", weapon.text.name);
         progress.start(&operation);
         let resolved_weapon = resolve_project_weapon(
             sources,
@@ -643,8 +684,13 @@ fn resolve_project_weapon(
             )));
         }
     }
-    let socket_column_indices =
+    let mut socket_column_indices =
         resolve_socket_column_indices(choice_rows, &definition, &weapon.overrides.socket_columns)?;
+    follow_authored_damage(
+        &definition,
+        &mut socket_column_indices,
+        weapon.overrides.modern_damage_type,
+    )?;
     let has_authored_shader = selects_authored_shader(sources, &socket_column_indices)?;
     let inherited_icon = presentation_donor.as_ref().map_or(
         ResolvedIconDonor {
@@ -686,26 +732,24 @@ fn resolve_project_weapon(
         icon_template_container: inherited_icon.icon_container,
         donor_icon_index: selected_icon.icon_index,
         donor_icon_container: selected_icon.icon_container,
-        presentation_donor,
-        damage_carrier_source,
-        render_gear_donor,
-        runtime_component_donors,
-        component_splice_sources,
+        donors: Donors {
+            presentation: presentation_donor,
+            damage_carrier: damage_carrier_source,
+            render_gear: render_gear_donor,
+            runtime_components: runtime_component_donors,
+            component_splices: component_splice_sources,
+            appearance_rig: appearance_rig_donor,
+            pinned_appearance,
+            animation: animation_pattern_source,
+            animation_actions: animation_action_sources,
+            type_marker: type_marker_pattern_source,
+            behavior: behavior_pattern_source,
+        },
         runtime_pattern_source,
         gear_art_pattern_source,
-        appearance_rig_donor,
-        pinned_appearance,
-        animation_pattern_source,
-        animation_action_sources,
-        type_marker_pattern_source,
-        behavior_pattern_source,
         socket_column_indices,
         has_authored_shader,
-        subclass_list: None,
-        dye_rows: None,
-        nameplate: None,
-        screen_art: None,
-        drawn_icon: None,
+        kind_model: None,
     })
 }
 
@@ -898,26 +942,16 @@ fn resolve_subclass(
         icon_template_container: donor_icon_container,
         donor_icon_index: selected_icon.icon_index,
         donor_icon_container: selected_icon.icon_container,
-        presentation_donor: None,
-        damage_carrier_source: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        component_splice_sources: Vec::new(),
+        donors: Donors::default(),
         runtime_pattern_source: None,
         gear_art_pattern_source: None,
-        appearance_rig_donor: None,
-        pinned_appearance: None,
-        animation_pattern_source: None,
-        animation_action_sources: Vec::new(),
-        type_marker_pattern_source: None,
-        behavior_pattern_source: None,
         socket_column_indices: Vec::new(),
         has_authored_shader: false,
-        subclass_list,
-        dye_rows: None,
-        nameplate: None,
-        screen_art,
-        drawn_icon,
+        kind_model: Some(KindModel::Subclass(Box::new(crate::subclass::Resolved {
+            list: subclass_list,
+            screen_art,
+            drawn_icon,
+        }))),
     })
 }
 
@@ -1045,26 +1079,12 @@ fn resolve_mod(
         icon_template_container: donor_icon_container,
         donor_icon_index,
         donor_icon_container,
-        presentation_donor: None,
-        damage_carrier_source: None,
-        render_gear_donor: None,
-        runtime_component_donors: Vec::new(),
-        component_splice_sources: Vec::new(),
+        donors: Donors::default(),
         runtime_pattern_source: None,
         gear_art_pattern_source: None,
-        appearance_rig_donor: None,
-        pinned_appearance: None,
-        animation_pattern_source: None,
-        animation_action_sources: Vec::new(),
-        type_marker_pattern_source: None,
-        behavior_pattern_source: None,
         socket_column_indices: Vec::new(),
         has_authored_shader: false,
-        subclass_list: None,
-        dye_rows: None,
-        nameplate: None,
-        screen_art: None,
-        drawn_icon: None,
+        kind_model: None,
     })
 }
 
@@ -1134,7 +1154,7 @@ pub(super) fn validate_subclasses(
         .collect::<Vec<_>>();
     let lists = subclasses
         .iter()
-        .filter(|donor| donor.subclass_list.is_some())
+        .filter(|donor| donor.subclass_list().is_some())
         .count();
     sources.with_subclass_sources(|subclass| {
         crate::subclass::authoring::validate_project(subclass, lists)

@@ -133,6 +133,12 @@ impl PackageManager {
             .as_ref()
             .map_or(self.package_dir.as_path(), |view| view.source())
     }
+    /// This reader's identity, which no other reader of the process shares. Once a reader is
+    /// open, its package index changes only when it gains a local package.
+    #[must_use]
+    pub fn identity(&self) -> u64 {
+        self.identity
+    }
     pub fn read_tag(&self, tag: impl Into<TagHash>) -> Result<Vec<u8>, String> {
         let tag = tag.into();
         let result = self.read_payload(tag);

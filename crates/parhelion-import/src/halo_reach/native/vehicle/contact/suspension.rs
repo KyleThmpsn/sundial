@@ -91,8 +91,16 @@ pub(super) fn parameters(height: f32, travel: f32, load: f32, maximum: f32) -> R
     // EB60C0 uses separate compression and extension slopes. At the visible
     // tire height, request this wheel's balanced share rather than equal load.
     let (rest, stiffness) = if load >= 1. {
-        let stiffness = (1. / travel).min((maximum - load) / height);
-        (height + (load - 1.) / stiffness, stiffness)
+        // A wheel carrying more than its share can need more spring length than the source travel
+        // allows within the source static force bound, which limits the peak at full compression.
+        // Held to that bound, the military truck's front wheels at 1.8 times their share settled
+        // about 0.25 m below their visible height, and the truck sat nose down with its rear lifted
+        // (Dawn 1.7.2, 2026-11-06). The spring then stiffens until the load rests at the visible
+        // height inside the travel, and only its full-compression peak exceeds the bound.
+        let bounded = (1. / travel).min((maximum - load) / height);
+        let stiffness = bounded.max((load - 1.) / (travel * 0.999));
+        let rest = height + (load - 1.) / stiffness;
+        (rest, stiffness)
     } else {
         let rest = height + travel - travel / load;
         (rest, (1. / travel).min((maximum - 1.) / rest))
@@ -103,7 +111,7 @@ pub(super) fn parameters(height: f32, travel: f32, load: f32, maximum: f32) -> R
             && rest < height + travel
             && stiffness.is_finite()
             && stiffness > 0.,
-        "Source wheel travel cannot support its balanced load"
+        "Source wheel travel cannot support its balanced load (height {height}, travel {travel}, load {load}, maximum {maximum}, rest {rest}, stiffness {stiffness})"
     );
     Ok((rest, stiffness))
 }

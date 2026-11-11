@@ -31,7 +31,9 @@ pub(crate) use definition_picker::{
     draw_definition_picker_with_open_request_and_item_filter,
     draw_definition_picker_with_open_request_item_filter_and_footer,
 };
-pub(crate) use filters::{ItemFilter, ItemFilterScope, draw_item_filter_bar};
+pub(crate) use filters::{
+    FilterFields, ItemFilter, ItemFilterScope, draw_filter_bar, draw_item_filter_bar,
+};
 pub(crate) use header::{
     draw_catalog_item_header_with_trailing, draw_item_badge, draw_item_card,
     draw_item_header_with_trailing_at_icon_size, muted_item_header_fill,

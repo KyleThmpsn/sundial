@@ -34,6 +34,8 @@ use tiger_pkg::TagHash;
 mod catalog;
 mod firing;
 mod graft;
+#[cfg(feature = "d2-model-importer")]
+pub(crate) mod imported;
 mod sockets;
 #[cfg(test)]
 mod tests;
@@ -249,6 +251,81 @@ pub(crate) struct ContentGroups {
     /// The hold class of the attachment row a moved rig brings. The block takes it, so a hand
     /// cannon look on an auto rifle is held as a pistol rather than the base's rifle.
     pub(crate) stance: Option<u32>,
+}
+
+/// Another row of the weapon's content owner, by its content key, whose firing presentation the
+/// selected block takes, and its projectile too when `projectile` is set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContentVariant {
+    pub key: u32,
+    pub projectile: bool,
+}
+
+/// The block fields naming the firing presentation. Keyed rows of most families name a
+/// presentation parent (class 8080744A) at +0xC0, whose six-slot root holds the firing sounds and
+/// effects, and leave +0x60, +0x80 and +0x90 empty. Their default row names its presentation
+/// through those three instead. Grenade launcher and submachine gun rows name theirs at +0x60,
+/// +0x80, +0x90 and a direct presentation entity at +0xB0. All five travel together, so a
+/// default row takes a keyed row's presentation whole.
+const PRESENTATION_OFFSETS: [usize; 5] = [0x60, 0x80, 0x90, 0xB0, 0xC0];
+/// The block byte that makes the magazine display divide by bullets per shot, which follows the
+/// projectile a row fires.
+const SHOT_DISPLAY_OFFSET: usize = 0x13D;
+
+/// Writes `variant`'s presentation into the block `group` selects, with its firing graph and shot
+/// display when it brings its projectile. Stock weapons leave some rows unselected, such as the
+/// rows the shared rocket owner keeps for Rise of Iron weapons. Most keep firing cues of their own,
+/// but one row's cue has no sound, so the Rise of Iron importer checks a row's cue before naming
+/// it.
+pub(crate) fn variant_patches(
+    manager: &PackageManager,
+    entity: &[u8],
+    group: Option<u32>,
+    variant: ContentVariant,
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    let content = content(manager, entity)?;
+    let source = exact_block(&content, variant.key).ok_or_else(|| {
+        invalid(
+            "The chosen content variant is not in the base weapon's content owner. Choose a base weapon of the same family.",
+        )
+    })?;
+    let block = selected_block(&content, group)?;
+    // A keyed row's empty reference leaves the field to its owner's default row. Written into
+    // the default row itself it would leave nothing to inherit, so the default keeps its own.
+    let default = content.blocks.first().copied();
+    let mut fields = PRESENTATION_OFFSETS
+        .iter()
+        .map(|&offset| (offset, 4))
+        .collect::<Vec<_>>();
+    if variant.projectile {
+        fields.extend([(GRAPH_OFFSET, 4), (SHOT_DISPLAY_OFFSET, 1)]);
+    }
+    let mut patches = Vec::new();
+    for (offset, width) in fields {
+        let read = |at: usize| {
+            content
+                .owner
+                .get(at..at + width)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| invalid("Content variant field exceeds its owner"))
+        };
+        let bytes = read(source + offset)?;
+        if read(block + offset)? == bytes
+            || (Some(block) == default && width == 4 && bytes == [0xFF; 4])
+        {
+            continue;
+        }
+        patches.push(WeaponRuntimeResourcePatch {
+            binding_hash: BINDING,
+            resource_index: 0,
+            offset: slot_offset(block + offset, content.resource)?,
+            bytes,
+            graph_values: Vec::new(),
+            graph_removals: Vec::new(),
+            graph_trajectories: None,
+        });
+    }
+    Ok(patches)
 }
 
 /// What a set of behavior grafts compiles into.

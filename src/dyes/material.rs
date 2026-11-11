@@ -133,7 +133,7 @@ pub(crate) fn global_channels(manager: &PackageManager) -> Vec<[f32; 4]> {
 
 /// A dye's detail diffuse and detail normal textures. Armor dyes bind them at slots 3 and 4,
 /// cloth dyes at 5 and 6, and suit dyes at 7 and 8, so the pair the scope binds is the one.
-pub(super) fn detail_textures(
+pub(crate) fn detail_textures(
     scope: &[u8],
 ) -> (Result<Option<u32>, String>, Result<Option<u32>, String>) {
     for (diffuse, normal) in [(3, 4), (5, 6), (7, 8)] {
@@ -148,7 +148,7 @@ pub(super) fn detail_textures(
     (Ok(None), Ok(None))
 }
 
-fn detail_texture(scope: &[u8], slot: u32) -> Result<Option<u32>, String> {
+pub(crate) fn detail_texture(scope: &[u8], slot: u32) -> Result<Option<u32>, String> {
     // Pixel scope texture bindings, a slot and a texture per row.
     if u64::from_le_bytes(bytes_at(scope, 0x40)?) == 0 {
         return Ok(None);
@@ -165,7 +165,7 @@ fn detail_texture(scope: &[u8], slot: u32) -> Result<Option<u32>, String> {
     Ok(None)
 }
 
-pub(super) fn decode(constants: &[u8]) -> Result<Material, String> {
+pub(crate) fn decode(constants: &[u8]) -> Result<Material, String> {
     decode_colors(constants)?;
     let mut vectors = [[0.0; 4]; 27];
     for (i, vector) in vectors.iter_mut().enumerate() {

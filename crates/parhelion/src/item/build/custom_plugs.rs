@@ -355,11 +355,12 @@ pub(super) fn plan(
     occupied_item_hashes.extend(resolved.iter().map(|donor| donor.weapon.identity.item_hash));
     let (occupied_perk_hashes, occupied_runtime_keys) =
         occupied_perk_identities(sources, resolved)?;
+    let badge = crate::badge::Identity::current();
     let mut occupied_localized_hashes = BTreeSet::from([
         LOCALIZATION_DONOR_STRING_HASHES[0],
         LOCALIZATION_DONOR_STRING_HASHES[1],
-        SUNRISE_BADGE_DESCRIPTION_HASH,
-        SUNRISE_BADGE_NAME_HASH,
+        badge.description_hash,
+        badge.name_hash,
     ]);
     for donor in resolved {
         occupied_localized_hashes.extend(
@@ -473,6 +474,7 @@ pub(super) fn plan(
                     source.classification,
                     source.classification_perk_index,
                     appearance,
+                    weapon_ordinal,
                 )?;
                 if let Some(index) = shared_keys.iter().position(|key| *key == shared_key) {
                     custom_plugs[index].uses.push(usage);
@@ -795,11 +797,20 @@ pub(super) struct PerkCatalog<'a> {
     pub sandbox_perk_indices: &'a mut Vec<u8>,
     pub private_perk_runtime_new_tags: &'a mut Vec<NewTagSpec>,
     pub private_perk_runtime_tag_allocator: AppendedTagAllocator,
+    /// The private runtimes compiled so far, which later perks with identical output share.
+    pub compiled_runtimes: custom_runtime::CompiledRuntimes,
     /// Each authored weapon's imported particle tags by node symbol, by weapon ordinal.
     pub particle_symbols: &'a BTreeMap<usize, BTreeMap<String, TagHash>>,
+    /// Every imported ability's allocated entity, by source game and identity there.
+    pub imported_abilities: &'a BTreeMap<(String, u32), BTreeSet<u32>>,
     pub label_dictionaries: &'a BTreeMap<TagHash, NewTagSpec>,
     /// The weapon whose plug is compiling, when one weapon uses it.
     pub weapon: Option<usize>,
+    /// The item whose imported effect groups the compiling plug's programs bind: its one user,
+    /// or the first of several. Items share a plug only when its imported effects have the same
+    /// content, and every item's effect groups are placed in the runtime dependency index, so
+    /// each user reaches the first one's.
+    pub effects: Option<usize>,
 }
 
 pub(super) struct CustomPlugPayloads {
@@ -828,6 +839,7 @@ pub(super) fn author_payloads(
             1 => weapons.first().copied(),
             _ => None,
         };
+        catalog.effects = weapons.first().copied();
         let users = match catalog.weapon {
             Some(weapon) => resolved[weapon].weapon.text.name.clone(),
             None => format!("{} Items", weapons.len()),
@@ -862,7 +874,7 @@ pub(super) fn author_payloads(
                 write_localized_reference(
                     &mut strings,
                     ITEM_NAME_REFERENCE_OFFSET,
-                    LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                    crate::package_profile::localization_table() as u32,
                     name_hash,
                 )?;
             }
@@ -870,7 +882,7 @@ pub(super) fn author_payloads(
                 write_localized_reference(
                     &mut strings,
                     ITEM_DESCRIPTION_REFERENCE_OFFSET,
-                    LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                    crate::package_profile::localization_table() as u32,
                     description_hash,
                 )?;
             }
@@ -911,7 +923,7 @@ pub(super) fn author_payloads(
                     custom_plug
                         .authored_name_hash
                         .map(|string_hash| FinishedSandboxPerkName {
-                            bank_index: u16::try_from(LOCALIZATION_DONOR_TABLE_INDEX)
+                            bank_index: u16::try_from(crate::package_profile::localization_table())
                                 .expect("localization donor table index fits 16 bits"),
                             string_hash,
                         });
@@ -919,7 +931,7 @@ pub(super) fn author_payloads(
                     name: authored_name,
                     description: custom_plug.authored_description_hash.map(|string_hash| {
                         FinishedSandboxPerkName {
-                            bank_index: LOCALIZATION_DONOR_TABLE_INDEX as u16,
+                            bank_index: crate::package_profile::localization_table() as u16,
                             string_hash,
                         }
                     }),
@@ -943,13 +955,13 @@ pub(super) fn author_payloads(
                 let presentation = FinishedSandboxPerkPresentation {
                     name: custom_plug.authored_name_hash.map(|string_hash| {
                         FinishedSandboxPerkName {
-                            bank_index: LOCALIZATION_DONOR_TABLE_INDEX as u16,
+                            bank_index: crate::package_profile::localization_table() as u16,
                             string_hash,
                         }
                     }),
                     description: custom_plug.authored_description_hash.map(|string_hash| {
                         FinishedSandboxPerkName {
-                            bank_index: LOCALIZATION_DONOR_TABLE_INDEX as u16,
+                            bank_index: crate::package_profile::localization_table() as u16,
                             string_hash,
                         }
                     }),
@@ -992,6 +1004,7 @@ pub(super) fn author_payloads(
         .map_err(|error| error.context(plug_context(custom_plug, resolved)))?;
     }
     catalog.weapon = None;
+    catalog.effects = None;
     Ok(CustomPlugPayloads {
         definitions: custom_plug_definitions,
         strings: custom_plug_strings,
@@ -1053,26 +1066,61 @@ fn append_effect_at(
     catalog: &mut PerkCatalog<'_>,
     own_action: bool,
 ) -> AuthoringResult<(u16, TagHash)> {
-    let mut authored_runtime_tag = clone_private_sandbox_perk_runtime(
+    // Conditions naming the Shadowkeep version of an imported source ability also accept the
+    // build's imported copies of it. The family build couples a member whose perks check an
+    // ability another member's subclass imports.
+    if let Some(program) = &perk.program {
+        crate::mod_family::build::checks_abilities(
+            program
+                .owned_programs()
+                .flat_map(|program| &program.ability_counterparts)
+                .map(|counterpart| (counterpart.source.clone(), counterpart.identity)),
+        );
+    }
+    let widened = perk
+        .program
+        .as_ref()
+        .filter(|program| {
+            !catalog.imported_abilities.is_empty()
+                && program
+                    .owned_programs()
+                    .any(|program| !program.ability_counterparts.is_empty())
+        })
+        .map(|program| {
+            let mut program = program.clone();
+            program.accept_imported_abilities(catalog.imported_abilities);
+            program
+        });
+    let first = catalog.private_perk_runtime_new_tags.len();
+    let checkpoint = crate::appended_tags::checkpoint();
+    let compiled = clone_private_sandbox_perk_runtime(
         manager,
         &perk.runtime_action,
         custom_runtime::PrivateRuntimeEdits {
-            program: perk.program.as_ref(),
+            program: widened.as_ref().or(perk.program.as_ref()),
             values: &perk.runtime_values,
             action_float_values: &perk.action_float_values,
             projectiles: &perk.projectiles,
             activation: perk.activation,
             particle_symbols: catalog
-                .weapon
-                .and_then(|weapon| catalog.particle_symbols.get(&weapon)),
+                .effects
+                .and_then(|item| catalog.particle_symbols.get(&item)),
             label_dictionaries: Some(catalog.label_dictionaries),
         },
         catalog.private_perk_runtime_tag_allocator,
         &mut *catalog.private_perk_runtime_new_tags,
-    )?;
+    );
+    let mut authored_runtime_tag = match compiled {
+        Ok(tag) => tag,
+        Err(error) => {
+            checkpoint.commit();
+            return Err(error);
+        }
+    };
     // An unedited effect keeps the stock action, but a copy that must name a copied ability needs
     // an action of its own to rewrite.
     if own_action && authored_runtime_tag == perk.runtime_action.action_tag {
+        checkpoint.commit();
         authored_runtime_tag = custom_runtime::append_private_action(
             manager,
             perk.runtime_action.action_tag,
@@ -1080,6 +1128,31 @@ fn append_effect_at(
             catalog.private_perk_runtime_tag_allocator,
             &mut *catalog.private_perk_runtime_new_tags,
         )?;
+    } else if own_action || catalog.private_perk_runtime_new_tags.len() == first {
+        // The caller still rewrites an own action's ability references, so it stays unshared.
+        checkpoint.commit();
+    } else {
+        let shared = catalog.compiled_runtimes.share(
+            manager,
+            catalog.private_perk_runtime_tag_allocator,
+            &*catalog.private_perk_runtime_new_tags,
+            first,
+            authored_runtime_tag,
+        );
+        match shared {
+            Ok(Some(earlier)) => {
+                // Dropping the checkpoint returns the record pages to their state before this
+                // perk, so the next perk takes the ordinals this copy would have used.
+                catalog.private_perk_runtime_new_tags.truncate(first);
+                drop(checkpoint);
+                authored_runtime_tag = earlier;
+            }
+            Ok(None) => checkpoint.commit(),
+            Err(error) => {
+                checkpoint.commit();
+                return Err(error);
+            }
+        }
     }
     *catalog.entity_assignments = insert_sandbox_perk_runtime_assignment(
         &*catalog.entity_assignments,
@@ -1307,7 +1380,12 @@ impl crate::subclass::compile::Compiler for RecordCompiler<'_, '_, '_> {
                     .catalog
                     .weapon
                     .and_then(|ordinal| self.catalog.particle_symbols.get(&ordinal))
-                    .and_then(|symbols| symbols.get(&imported.symbol))
+                    .and_then(|symbols| {
+                        symbols.get(&crate::item::custom_runtime::particles::ability_symbol(
+                            &imported.symbol,
+                            changes.hud_glyph,
+                        ))
+                    })
                     .copied()
                     .ok_or_else(|| {
                         invalid(format!(

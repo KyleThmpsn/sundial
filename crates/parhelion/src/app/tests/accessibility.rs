@@ -48,7 +48,8 @@ fn build_selection_is_keyboard_operable_without_duplicate_row_tab_stops() {
         frame(&mut app, None);
     }
     let mut reached = false;
-    for _ in 0..8 {
+    // The kind, sort and item filter controls come between the search and the rows.
+    for _ in 0..12 {
         let output = frame(&mut app, Some(egui::Key::Tab));
         if focused_label(&output).starts_with(&format!("Select {name} ·")) {
             reached = true;

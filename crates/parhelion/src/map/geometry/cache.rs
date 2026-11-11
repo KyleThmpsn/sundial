@@ -1,7 +1,17 @@
-//! Immutable area conversions, separate from installed package-family reuse.
+//! Immutable area conversions, separate from installed package-family reuse. A map's conversions
+//! are its imports, kept as every importer keeps its items' in `imports/halo_reach/<HASH>/map-<n>`.
+//! `<HASH>` is the FNV-1 hash of the map's name, which its bubble records also carry, since one
+//! Reach level can become several maps. A conversion is written in the map's work folder and moved
+//! into a folder of its own once its manifest is complete, so a folder holding none is never read.
+//! The import sweep keeps each map's newest finished conversion, ordered by when its manifest last
+//! changed, so a conversion read again is touched to stay the newest. A stage reads under a hold
+//! on the map's conversions (`service::hold_for_reading`) from before it lists them until its
+//! world is linked, and a sweep sets none aside meanwhile, in this process or another. Earlier
+//! versions kept generations in `cache/map-conversions/<name>`. A stage of the map moves the
+//! current one into place and removes the rest.
 use anyhow::{Context, Result, ensure};
 use parhelion_import::{
-    cache::Generation,
+    d2_mot::service,
     halo_reach::level::native::{Converted, Templates},
 };
 use serde::{Deserialize, Serialize};
@@ -11,15 +21,27 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::SystemTime,
 };
-use sundial::package_authoring::PackageManager;
+use sundial::package_authoring::{PackageManager, mod_content::Importer};
 use tiger_pkg::TagHash;
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A finished conversion's manifest, written last.
+const MANIFEST: &str = "cache.json";
+/// The conversion without its payloads and reports: each node's symbol, fixups and references,
+/// and the placements. A build that keeps the installed map packages links the map's world
+/// against them from it. `mod_family::build::remember_map` writes it beside a published
+/// conversion.
+pub(super) const LINKS: &str = "links.json";
+/// The files of a conversion folder its manifest does not list: the manifest itself, the links
+/// written after it, and the mark the import store leaves once it shares the payloads.
+const UNLISTED: [&str; 3] = [MANIFEST, LINKS, parhelion_import::store::MARKER];
+/// The kind of a map's conversion folders, `map-<n>`.
+const KIND: &str = "map";
+
+/// Where an earlier version's generation family pointed to its current generation.
+#[derive(Deserialize)]
 struct Pointer {
-    key: String,
     generation: String,
 }
 
@@ -50,11 +72,14 @@ struct Manifest {
 }
 
 pub(super) struct Cache {
-    root: PathBuf,
+    /// The map's item folder, `imports/halo_reach/<HASH>`.
+    item: PathBuf,
     key: String,
-    generation: Generation,
-    _previous: Option<Generation>,
+    /// The conversion read again or published.
+    folder: Option<PathBuf>,
     pub converted: Option<Converted>,
+    /// Keeps the map's conversions from being set aside while `folder` is read.
+    hold: Option<service::Hold>,
 }
 
 fn hash(value: &impl Serialize) -> Result<String> {
@@ -92,7 +117,7 @@ fn files(root: &Path) -> Result<Vec<File>> {
             }
             ensure!(metadata.is_file(), "Map cache has a non-file entry");
             let relative = path.strip_prefix(root)?.to_owned();
-            if relative == Path::new("cache.json") {
+            if UNLISTED.iter().any(|name| relative == Path::new(name)) {
                 continue;
             }
             paths.push((path, relative));
@@ -196,16 +221,25 @@ fn native(root: &Path, files: &[File], manager: &PackageManager) -> Result<Vec<N
     Ok(records.into_values().collect())
 }
 
+/// Reads the conversion in `folder` when its manifest names `key` and every file and native
+/// dependency it recorded is unchanged. A matching conversion is touched first, so later import
+/// sweeps keep it as the newest.
 fn load(folder: &Path, key: &str, manager: &PackageManager) -> Result<Converted> {
+    let manifest_path = folder.join(MANIFEST);
     ensure!(
-        ordinary(&folder.join("cache.json"))?.len() <= 64 * 1024 * 1024,
+        ordinary(&manifest_path)?.len() <= 64 * 1024 * 1024,
         "Map cache manifest is too large"
     );
-    let manifest: Manifest = serde_json::from_slice(&fs::read(folder.join("cache.json"))?)?;
+    let manifest: Manifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
     ensure!(
         manifest.key == key && !manifest.files.is_empty() && !manifest.native.is_empty(),
         "Map cache identity differs"
     );
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&manifest_path)
+        .and_then(|file| file.set_modified(SystemTime::now()))
+        .context("Could not mark the map conversion used")?;
     // Enumerating the tree rejects missing, extra and redirected payloads as well as changed bytes.
     ensure!(
         serde_json::to_vec(&files(folder)?)? == serde_json::to_vec(&manifest.files)?,
@@ -235,11 +269,149 @@ fn load(folder: &Path, key: &str, manager: &PackageManager) -> Result<Converted>
     )?)?)
 }
 
+/// The finished conversions of `item`, the newest first.
+fn conversions(item: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(item) else {
+        return Vec::new();
+    };
+    let mut found = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix(KIND)?.strip_prefix('-'))
+                .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .filter(|entry| ordinary(&entry.path()).is_ok_and(|metadata| metadata.is_dir()))
+        .filter_map(|entry| {
+            let changed = fs::metadata(entry.path().join(MANIFEST))
+                .and_then(|metadata| metadata.modified())
+                .ok()?;
+            Some((changed, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    found.sort_by(|a, b| b.cmp(a));
+    found.into_iter().map(|(_, path)| path).collect()
+}
+
+/// The newest finished conversion of map `name` in the data folder `data`, whatever build made
+/// it. Reading it this way does not touch it.
+pub(crate) fn newest(data: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let item = service::item_directory(
+        &data.join(service::IMPORTS),
+        Importer::HaloReach.source(),
+        sundial::package_authoring::fnv1_name_hash(name),
+    )?;
+    Ok(conversions(&item).into_iter().next())
+}
+
+/// Moves the finished conversion `work` into the next free `map-<n>` folder of `item`.
+fn place(work: &Path, item: &Path) -> Result<PathBuf> {
+    for index in 0..u32::MAX {
+        let path = item.join(format!("{KIND}-{index}"));
+        if fs::symlink_metadata(&path).is_ok() {
+            continue;
+        }
+        // The import sweep removes an item folder it emptied, which can happen at any time.
+        fs::create_dir_all(item)?;
+        match fs::rename(work, &path) {
+            Ok(()) => return Ok(path),
+            Err(_) if fs::symlink_metadata(&path).is_ok() => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Could not move the map conversion to {}", path.display())
+                });
+            }
+        }
+    }
+    anyhow::bail!("No unused map conversion folder remains")
+}
+
+/// Moves the current generation an earlier version kept in the family `legacy` into `item`, then
+/// removes the family with its spare generations. The caller holds the map's stage lock, so no
+/// other stage of the map reads them.
+fn migrate(legacy: &Path, item: &Path) {
+    if !ordinary(legacy).is_ok_and(|metadata| metadata.is_dir()) {
+        return;
+    }
+    let current = fs::read(legacy.join("current.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Pointer>(&bytes).ok())
+        .filter(|pointer| {
+            pointer.generation.len() == 64
+                && pointer.generation.bytes().all(|b| b.is_ascii_hexdigit())
+        });
+    if let Some(pointer) = current {
+        let generation = legacy.join("generations").join(pointer.generation);
+        if ordinary(&generation).is_ok_and(|metadata| metadata.is_dir())
+            && generation.join(MANIFEST).is_file()
+        {
+            let _ = place(&generation, item);
+        }
+    }
+    let _ = fs::remove_dir_all(legacy);
+}
+
+/// The digests of the package manager's 64-bit binding index and entry index that every
+/// conversion key holds. Hashing both indexes takes a noticeable share of a stage, and every map
+/// a build stages reads the same manager, so the digests are kept for the manager they were taken
+/// from: its identity, and its package count, which changes when it gains a local package, the one
+/// change an open manager's index undergoes.
+fn index_digests(manager: &PackageManager) -> Result<(String, String)> {
+    type Kept = Option<((u64, usize), (String, String))>;
+    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(None);
+    let of = (
+        manager.identity(),
+        manager.lookup.tag32_entries_by_pkg.len(),
+    );
+    if let Some((kept, digests)) = &*KEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        && *kept == of
+    {
+        return Ok(digests.clone());
+    }
+    let bindings = manager
+        .lookup
+        .tag64_entries
+        .iter()
+        .map(|(&key, value)| (key, (value.hash32.0, value.reference.0)))
+        .collect::<BTreeMap<_, _>>();
+    let entries = manager
+        .lookup
+        .tag32_entries_by_pkg
+        .iter()
+        .map(|(&package, entries)| {
+            (
+                package,
+                entries
+                    .iter()
+                    .map(|entry| {
+                        (
+                            entry.reference,
+                            entry.file_type,
+                            entry.file_subtype,
+                            entry.file_size,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let digests = (hash(&bindings)?, hash(&entries)?);
+    *KEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((of, digests.clone()));
+    Ok(digests)
+}
+
 impl Cache {
-    /// The caller holds the existing per-area lock through linking. A generation lease also
-    /// prevents retention from removing a graph while its payloads are being read.
+    /// The conversions of map `name` in the data folder `data`, with the one whose identity
+    /// matches this build read again. The caller holds the map's stage lock through linking.
     pub(super) fn open(
-        root: &Path,
+        data: &Path,
+        name: &str,
         source: &crate::map::MapSource,
         templates: &Templates,
         manager: &PackageManager,
@@ -253,56 +425,33 @@ impl Cache {
         let Some(compiler) = parhelion_import::tiger::shader::compiler_identity() else {
             return Ok(None);
         };
-        let bindings = manager
-            .lookup
-            .tag64_entries
-            .iter()
-            .map(|(&key, value)| (key, (value.hash32.0, value.reference.0)))
-            .collect::<BTreeMap<_, _>>();
-        let entries = manager
-            .lookup
-            .tag32_entries_by_pkg
-            .iter()
-            .map(|(&package, entries)| {
-                (
-                    package,
-                    entries
-                        .iter()
-                        .map(|entry| {
-                            (
-                                entry.reference,
-                                entry.file_type,
-                                entry.file_subtype,
-                                entry.file_size,
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
+        let (bindings, entries) = index_digests(manager)?;
         let key = hash(
             &json!({ "format": 2, "converter": parhelion_import::CONVERTER_REVISION,
             "reach": parhelion_import::halo_reach::REVISION, "inputs": inputs, "source": source,
-            "templates": templates, "bindings": hash(&bindings)?, "entries": hash(&entries)?,
+            "templates": templates, "bindings": bindings, "entries": entries,
             "compiler": compiler, "compute": std::env::var("PARHELION_COMPUTE").unwrap_or_else(|_| "auto".into()) }),
         )?;
-        let current = fs::read(root.join("current.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Pointer>(&bytes).ok());
-        let previous = current.as_ref().and_then(|current| {
-            Generation::directory(&root.join("generations"), &current.generation)
-        });
-        if let (Some(current), Some(generation)) = (&current, &previous)
-            && current.key == key
-        {
-            match load(generation.path(), &key, manager) {
+        let item = service::item_directory(
+            &data.join(service::IMPORTS),
+            Importer::HaloReach.source(),
+            sundial::package_authoring::fnv1_name_hash(name),
+        )?;
+        // Held before the conversions are listed, so the one chosen stays where it was found.
+        let hold = Some(service::hold_for_reading(&item)?);
+        migrate(
+            &data.join("cache").join("map-conversions").join(name),
+            &item,
+        );
+        for folder in conversions(&item) {
+            match load(&folder, &key, manager) {
                 Ok(converted) => {
                     return Ok(Some(Self {
-                        root: root.into(),
+                        item,
                         key,
-                        generation: previous.unwrap(),
-                        _previous: None,
+                        folder: Some(folder),
                         converted: Some(converted),
+                        hold,
                     }));
                 }
                 Err(error) if parhelion_import::cancellation::is_cancelled(&error) => {
@@ -311,56 +460,46 @@ impl Cache {
                 Err(_) => {}
             }
         }
-        let unique = hash(&(
-            key.as_str(),
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
-        ))?;
-        let Some(generation) = Generation::directory(&root.join("generations"), &unique) else {
-            return Ok(None);
-        };
         Ok(Some(Self {
-            root: root.into(),
+            item,
             key,
-            generation,
-            _previous: previous,
+            folder: None,
             converted: None,
+            hold,
         }))
     }
 
-    pub(super) fn folder(&self) -> &Path {
-        self.generation.path()
+    /// The conversion read again or published, where its payloads are read.
+    pub(super) fn folder(&self) -> Option<&Path> {
+        self.folder.as_deref()
     }
 
-    pub(super) fn publish(&self, converted: &Converted, manager: &PackageManager) -> Result<()> {
-        parhelion_import::cache::write_json(&self.folder().join("conversion.json"), converted)?;
-        let files = files(self.folder())?;
-        let native = native(self.folder(), &files, manager)?;
+    /// The hold on the map's conversions, for whoever reads the conversion after this cache.
+    pub(super) fn take_hold(&mut self) -> Option<service::Hold> {
+        self.hold.take()
+    }
+
+    /// Records the conversion written in the work folder `work`, then moves it into the map's
+    /// item folder, where it is read from then on.
+    pub(super) fn publish(
+        &mut self,
+        converted: &Converted,
+        work: &Path,
+        manager: &PackageManager,
+    ) -> Result<PathBuf> {
+        parhelion_import::cache::write_json(&work.join("conversion.json"), converted)?;
+        let files = files(work)?;
+        let native = native(work, &files, manager)?;
         parhelion_import::cache::write_json(
-            &self.folder().join("cache.json"),
+            &work.join(MANIFEST),
             &Manifest {
                 key: self.key.clone(),
                 files,
                 native,
             },
         )?;
-        let generation = self
-            .folder()
-            .file_name()
-            .context("Map cache generation")?
-            .to_str()
-            .context("Map cache generation encoding")?
-            .to_owned();
-        parhelion_import::cache::write_json(
-            &self.root.join("current.json"),
-            &Pointer {
-                key: self.key.clone(),
-                generation,
-            },
-        )
-    }
-
-    pub(super) fn lease(self) -> Generation {
-        self.generation
+        let folder = place(work, &self.item)?;
+        self.folder = Some(folder.clone());
+        Ok(folder)
     }
 }

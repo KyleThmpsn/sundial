@@ -5,9 +5,11 @@
 
 pub mod animation;
 pub mod effects;
+pub mod evade;
 pub mod grants;
 mod plan;
 pub(crate) mod source;
+pub mod volley;
 pub use plan::{Controller, ControllerStatus, Plan, Runtime};
 
 use serde::{Deserialize, Serialize};

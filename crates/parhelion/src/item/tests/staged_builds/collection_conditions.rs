@@ -126,7 +126,6 @@ fn verify_staged_collections(
         "staged Collections nodes",
     )
     .unwrap();
-    let mut unlocks = BTreeSet::new();
     let mut khvostov_pages = BTreeMap::new();
     for plan in &bundle.plan.weapons {
         let spec = project
@@ -136,7 +135,8 @@ fn verify_staged_collections(
             .unwrap();
         let (rarity, page) =
             verify_staged_weapon(&manager, sources, &collectibles, &nodes, spec, plan);
-        assert!(unlocks.insert(plan.collection.unwrap().unlock_definition_index));
+        // Every build acquires its collectibles unconditionally and authors no unlock flag.
+        assert!(plan.collection.unwrap().unlock.is_none());
         if spec.donor_item_hash == 0x6080_3CD7 {
             khvostov_pages.insert(rarity.package_value(), page);
         }
@@ -204,13 +204,7 @@ fn verify_staged_weapon(
         )
         .unwrap()
         .tokens,
-        [(
-            crate::progression::NUMERIC_FLAG_INSTRUCTION,
-            plan.collection.unwrap().unlock_definition_index
-        )]
-    );
-    assert!(
-        usize::from(plan.collection.unwrap().unlock_definition_index) >= sources.stock_unlock_count
+        [(crate::progression::NUMERIC_CONSTANT_INSTRUCTION, 1)]
     );
     let parents = template_presentation_parents(
         nodes,
@@ -267,10 +261,29 @@ fn verify_staged_appearance(
         weapon_art_arrangements(definition).unwrap(),
         weapon_art_arrangements(appearance).unwrap()
     );
-    assert_eq!(
-        weapon_render_dye_rows(definition).unwrap(),
-        weapon_render_dye_rows(appearance).unwrap()
+    let authored_dyes = weapon_render_dye_rows(definition).unwrap();
+    let source_dyes = weapon_render_dye_rows(appearance).unwrap();
+    assert!(
+        authored_dyes[2].is_empty(),
+        "{} must allow shaders to replace its base colors",
+        spec.text.name
     );
+    assert_eq!(
+        dye_palette(&authored_dyes),
+        dye_palette(&source_dyes),
+        "{} must retain its appearance's base colors",
+        spec.text.name
+    );
+}
+
+/// Without an equipped shader, custom colors override defaults and locked colors override both.
+fn dye_palette(rows: &[Vec<WeaponDyeReferenceOverride>; 3]) -> BTreeMap<i8, u16> {
+    rows[1]
+        .iter()
+        .chain(&rows[0])
+        .chain(&rows[2])
+        .map(|row| (row.channel_index, row.dye_reference_index))
+        .collect()
 }
 
 fn verify_stock_conditions(sources: &sources::ProjectSources, collectibles: &[u8]) {

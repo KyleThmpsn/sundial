@@ -5,9 +5,12 @@ use crate::sandbox_perk::action::{
     native::{Graph, labels, schema},
 };
 
+/// `private_labels` is a label dictionary in place of the stock one, for a program whose
+/// imported attachment group carries it.
 pub(super) fn compile(
     manager: &PackageManager,
     program: &NativeProgram,
+    private_labels: Option<&[u8]>,
 ) -> Result<Compiled, String> {
     program.validate()?;
     // Drop detached editing allocations before validation and dependency collection.
@@ -36,12 +39,18 @@ pub(super) fn compile(
             })
         })
     {
-        let registry = manager
-            .read_tag(TagHash(LABEL_GLOBALS))
-            .map_err(|error| error.to_string())?;
-        labels::compile(&mut graph, &registry)?;
+        match private_labels {
+            Some(registry) => labels::compile(&mut graph, registry)?,
+            None => {
+                let registry = manager
+                    .read_tag(TagHash(LABEL_GLOBALS))
+                    .map_err(|error| error.to_string())?;
+                labels::compile(&mut graph, &registry)?;
+            }
+        }
     }
-    validate_native_resources(manager, &graph)?;
+    // A complete native program names no entity the build allocates for it.
+    validate_native_resources(manager, &graph, &std::collections::BTreeSet::new())?;
     let (mut payload, offsets) = graph.emit_with_offsets()?;
     let size = payload.len() as u64;
     payload[..8].copy_from_slice(&size.to_le_bytes());
@@ -58,6 +67,25 @@ pub(super) fn compile(
         .map_err(|_| "The native program exceeds its state reservation limit.")?;
     payload[0xCC] = payload[0xCC].max(states);
     payload[0xCD] = payload[0xCD].max(states - 1);
+    let mut resource_lanes = std::collections::BTreeMap::<u32, Vec<usize>>::new();
+    for (&block_index, &start) in &offsets {
+        let block = &graph.blocks[block_index];
+        if block.class == 0 {
+            continue;
+        }
+        let record = schema::record(block.class)?;
+        for row in 0..block.count.unwrap_or(1) {
+            for &(field, code) in &record.fields {
+                if matches!(code, 4 | 9) {
+                    let at = start + row * record.size + field;
+                    resource_lanes
+                        .entry(u32_at(&payload, at)?)
+                        .or_default()
+                        .push(at);
+                }
+            }
+        }
+    }
     let mut asset_offsets = Vec::new();
     let mut scripts: Vec<ScriptCopy> = Vec::new();
     for (index, asset) in program.assets.iter().enumerate() {
@@ -85,26 +113,10 @@ pub(super) fn compile(
             }
             continue;
         }
-        let mut lanes = Vec::new();
-        for (&block_index, &start) in &offsets {
-            let block = &graph.blocks[block_index];
-            if block.class == 0 {
-                continue;
-            }
-            let record = schema::record(block.class)?;
-            for row in 0..block.count.unwrap_or(1) {
-                for &(field, code) in &record.fields {
-                    let at = start + row * record.size + field;
-                    if matches!(code, 4 | 9) && u32_at(&payload, at)? == asset.graph {
-                        lanes.push(at);
-                    }
-                }
-            }
-        }
-        if lanes.is_empty() {
+        let Some(lanes) = resource_lanes.get(&asset.graph) else {
             return Err("A component edit no longer references an asset in this program.".into());
-        }
-        asset_offsets.push((index, lanes));
+        };
+        asset_offsets.push((index, lanes.clone()));
     }
     Graph::read(&payload, 0, action::ACTION_ROOT_CLASS)?.validate_program()?;
     Ok(Compiled {
@@ -112,6 +124,7 @@ pub(super) fn compile(
         graph_offsets: Vec::new(),
         asset_offsets,
         scripts,
+        resource_lanes: Some(resource_lanes),
     })
 }
 

@@ -13,6 +13,19 @@ const PREFERENCES_FILE_NAME: &str = "preferences.json";
 #[cfg(test)]
 mod tests;
 
+/// What an import does with a saved recipe that was edited since its own conversion.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReimportEdits {
+    /// Leaves the recipe as it is and asks once the import ends.
+    #[default]
+    Ask,
+    /// Keeps the edits on the new conversion where they still fit.
+    Reapply,
+    /// Replaces the recipe with the new conversion's after a backup.
+    Overwrite,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct ParhelionPreferences {
@@ -24,6 +37,13 @@ pub(crate) struct ParhelionPreferences {
     pub play_preview_animations: bool,
     pub load_preview_models: bool,
     pub ability_notice_dismissed: bool,
+    /// Whether builds put every item in the Parhelion mod, rather than each importer's items in a
+    /// mod of their own.
+    pub one_mod: bool,
+    /// Whether imported items the Parhelion mod holds take a badge for their source game, rather
+    /// than joining Project Sunrise. An importer's own mod always holds its badge.
+    pub source_badges: bool,
+    pub reimport_edits: ReimportEdits,
 }
 
 impl Default for ParhelionPreferences {
@@ -37,6 +57,9 @@ impl Default for ParhelionPreferences {
             play_preview_animations: true,
             load_preview_models: true,
             ability_notice_dismissed: false,
+            one_mod: false,
+            source_badges: true,
+            reimport_edits: ReimportEdits::Ask,
         }
     }
 }

@@ -11,11 +11,7 @@ pub(super) fn draw_parhelion_reset_note(ui: &mut egui::Ui, resets_account: bool)
 
 impl SundialApp {
     pub(in crate::app) fn draw_sqlite_reset_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation != Some(ConfirmationDialog::ResetSqliteDefaults) {
-            return;
-        }
-        let Some(plan) = self.pending_sqlite_reset.as_ref() else {
-            self.confirmation = None;
+        let Some(ConfirmationDialog::ResetSqliteDefaults(plan)) = &self.confirmation else {
             return;
         };
         let mut reset = false;
@@ -41,10 +37,10 @@ impl SundialApp {
         cancel |= response.should_close();
         if cancel {
             self.confirmation = None;
-            self.pending_sqlite_reset = None;
-        } else if reset {
-            self.confirmation = None;
-            self.reset_sqlite_to_sunrise_defaults();
+        } else if reset
+            && let Some(ConfirmationDialog::ResetSqliteDefaults(plan)) = self.confirmation.take()
+        {
+            self.reset_sqlite_to_sunrise_defaults(plan);
         }
     }
 }

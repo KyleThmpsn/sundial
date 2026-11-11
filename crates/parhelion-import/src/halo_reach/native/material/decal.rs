@@ -6,7 +6,7 @@ pub(super) const SHADOW: usize = 31;
 
 /// Source multiplicative color ignores alpha. The native premultiplied pass approximates
 /// scalar attenuation, but cannot multiply channels or brighten the receiver.
-pub(super) fn multiplication(material: &Material) -> Option<String> {
+pub(super) fn multiplication(material: &Material, scatter: &str) -> Option<String> {
     if !material.decal() {
         return None;
     }
@@ -16,7 +16,7 @@ pub(super) fn multiplication(material: &Material) -> Option<String> {
         _ => return None,
     };
     Some(format!(
-        "o0=float4(0,0,0,1-saturate(dot(unlit.rgb,float3(1,1,1))*{factor:.1}/3));"
+        "float coverage=1-saturate(dot(unlit.rgb,float3(1,1,1))*{factor:.1}/3);o0=float4(({scatter})*coverage,coverage);"
     ))
 }
 

@@ -38,6 +38,7 @@ impl Prepared {
             })
             .collect();
         let key_of = |triangle: usize| Key {
+            dye_bank: model.triangle_dye_banks.get(triangle).copied().flatten(),
             emitter: model
                 .triangle_emitter
                 .get(triangle)
@@ -195,8 +196,6 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Result<Upl
             std::mem::size_of_val(positions.as_slice()) as i32,
             glow::DYNAMIC_DRAW,
         );
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 12, 0);
         let attribute_buffer = gl.create_buffer().expect("buffer");
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(attribute_buffer));
         gl.buffer_data_size(
@@ -204,18 +203,6 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Result<Upl
             std::mem::size_of_val(attributes.as_slice()) as i32,
             glow::DYNAMIC_DRAW,
         );
-        gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 68, 0);
-        gl.enable_vertex_attrib_array(2);
-        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, 68, 12);
-        gl.enable_vertex_attrib_array(3);
-        gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, 68, 20);
-        gl.enable_vertex_attrib_array(4);
-        gl.vertex_attrib_pointer_f32(4, 4, glow::FLOAT, false, 68, 28);
-        gl.enable_vertex_attrib_array(5);
-        gl.vertex_attrib_pointer_f32(5, 4, glow::FLOAT, false, 68, 44);
-        gl.enable_vertex_attrib_array(6);
-        gl.vertex_attrib_pointer_f32(6, 2, glow::FLOAT, false, 68, 60);
         let source_buffer = gl.create_buffer().expect("source index buffer");
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(source_buffer));
         let bytes = std::slice::from_raw_parts(
@@ -223,8 +210,7 @@ pub(super) unsafe fn begin(gl: &glow::Context, prepared: Prepared) -> Result<Upl
             std::mem::size_of_val(source_indices.as_slice()),
         );
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
-        gl.enable_vertex_attrib_array(7);
-        gl.vertex_attrib_pointer_i32(7, 3, glow::UNSIGNED_INT, 12, 0);
+        layout(gl, [position_buffer, attribute_buffer, source_buffer]);
         let index_buffer = gl.create_buffer().expect("element buffer");
         gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index_buffer));
         gl.bind_vertex_array(None);
@@ -582,7 +568,13 @@ fn texture_roles(model: &Model) -> Vec<[bool; 2]> {
     for index in model.triangle_textures.iter().flatten() {
         roles[*index][1] = true;
     }
-    for index in model.dyes.iter().flatten().filter_map(|dye| dye.detail) {
+    for index in model
+        .dyes
+        .iter()
+        .chain(model.dye_banks.iter().flatten())
+        .flatten()
+        .filter_map(|dye| dye.detail)
+    {
         roles[index][1] = true;
     }
     for index in model
@@ -593,7 +585,13 @@ fn texture_roles(model: &Model) -> Vec<[bool; 2]> {
     {
         roles[*index][0] = true;
     }
-    for index in model.dyes.iter().flatten().filter_map(|dye| dye.normal) {
+    for index in model
+        .dyes
+        .iter()
+        .chain(model.dye_banks.iter().flatten())
+        .flatten()
+        .filter_map(|dye| dye.normal)
+    {
         roles[index][0] = true;
     }
     for effect in &model.effects {
@@ -614,4 +612,29 @@ fn texture_roles(model: &Model) -> Vec<[bool; 2]> {
     }
 
     roles
+}
+
+/// The actual preview vertex formats, also used by the compiler helper's first draw.
+pub(super) unsafe fn layout(gl: &glow::Context, buffers: [glow::Buffer; 3]) {
+    // SAFETY: the caller binds a live VAO and supplies buffers large enough for its draw.
+    unsafe {
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffers[0]));
+        gl.enable_vertex_attrib_array(0);
+        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 12, 0);
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffers[1]));
+        for (index, size, offset) in [
+            (1, 3, 0),
+            (2, 2, 12),
+            (3, 2, 20),
+            (4, 4, 28),
+            (5, 4, 44),
+            (6, 2, 60),
+        ] {
+            gl.enable_vertex_attrib_array(index);
+            gl.vertex_attrib_pointer_f32(index, size, glow::FLOAT, false, 68, offset);
+        }
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffers[2]));
+        gl.enable_vertex_attrib_array(7);
+        gl.vertex_attrib_pointer_i32(7, 3, glow::UNSIGNED_INT, 12, 0);
+    }
 }

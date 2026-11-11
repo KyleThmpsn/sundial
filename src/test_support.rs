@@ -47,6 +47,10 @@ static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Headless frame captures the layout tests write as meshes and textures.
 pub mod capture;
+/// Non-executable runtime images. The complete `module` image serves the dependent crates'
+/// install tests, which reach it through the `test-support` feature.
+#[allow(dead_code)]
+pub mod runtime;
 
 /// Native verification runs on Rust's test thread, with the desktop backend selected normally.
 #[cfg(all(test, any(windows, target_os = "linux")))]
@@ -80,6 +84,33 @@ pub(crate) fn text_position(output: &egui::FullOutput, text: &str) -> Option<egu
             Some(shape.pos + egui::vec2(3.0, 3.0))
         }
         _ => None,
+    })
+}
+
+pub(crate) fn button_node(
+    output: &egui::FullOutput,
+    label: &str,
+) -> Option<egui::accesskit::NodeId> {
+    use egui::accesskit::Role;
+    output
+        .platform_output
+        .accesskit_update
+        .as_ref()?
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.role() == Role::Button && node.label() == Some(label) && !node.is_disabled()
+        })
+        .map(|(id, _)| *id)
+}
+
+pub(crate) fn click_button(output: &egui::FullOutput, label: &str) -> egui::Event {
+    use egui::accesskit::{Action, ActionRequest, TreeId};
+    egui::Event::AccessKitActionRequest(ActionRequest {
+        action: Action::Click,
+        target_tree: TreeId::ROOT,
+        target_node: button_node(output, label).unwrap_or_else(|| panic!("missing button {label}")),
+        data: None,
     })
 }
 

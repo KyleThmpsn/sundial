@@ -1,4 +1,4 @@
-use super::material::{Draw, Equipment, Retained};
+use super::material::{Draw, Equipment, Route};
 use super::*;
 
 pub(super) struct Model {
@@ -113,7 +113,8 @@ impl Assembly<'_> {
         let source = self.source.read(source_tag)?;
         let meshes = source.array(0x10, 0xA0, Some(0x80801BBF))?;
         // Every mesh of the source model shares one gear-dye extern per stage.
-        let retained = equipment.retained(&source, &meshes)?;
+        let route = if weapon { Route::Parts } else { Route::Lanes };
+        let retained = equipment.retained(&source, &meshes, route)?;
         let first = *ordinals
             .first()
             .context("Source model has no selected meshes")?;
@@ -258,7 +259,7 @@ impl Assembly<'_> {
                     // followed by ordinary attributes. The vertex-program guard separately
                     // rejects weighted inputs and resource-backed deformation.
                     ensure!(
-                        matches!(layout, 123 | 139)
+                        self.layouts.rigid(layout)
                             && strides[0] == 8
                             && strides[2] == 0
                             && strides[3] == 0,
@@ -272,28 +273,31 @@ impl Assembly<'_> {
                         flags & !0x777 == 0,
                         "Source draw flags need a native contract: {flags:04X}"
                     );
+                    // Only a cloth owner's display groups simulate a draw. Source bit 0x10 also
+                    // marks ordinary draws whose vertex programs read the skinning palette, as
+                    // the bit's native form 0x08 does on stock skinned gear (80F6419D's 0x18
+                    // transparent draws request the skinning scope). The bit alone therefore
+                    // never selects the rigid-model scope.
                     let simulated = simulated_draws
                         .as_ref()
-                        .map_or(flags & 16 != 0, |draws| draws.contains(&index));
+                        .is_some_and(|draws| draws.contains(&index));
                     let material = source.u32(part)?;
                     ensure!(
                         !matches!(material, 0 | u32::MAX) && source.i16(part + 4)? == -1,
                         "Source draw uses an unresolved variant material"
                     );
                     let dye = source.u8(part + 0x1E)?;
+                    let retained_state = retained.get(ordinal, index);
                     let mat_symbol = format!(
-                        "{symbol}-material-{material:08X}-pass-{stage}-dye-{dye}-layout-{layout}-sim-{}",
-                        u8::from(simulated)
+                        "{symbol}-material-{material:08X}-pass-{stage}-dye-{dye}-layout-{layout}-sim-{}{}",
+                        u8::from(simulated),
+                        retained.variant(stage, dye, material, retained_state)
                     );
-                    let retained = retained
-                        .get(&(stage, dye, material))
-                        .copied()
-                        .unwrap_or(Retained::Unresolved);
                     let mat = self
                     .material(
                         material,
                         &mat_symbol,
-                        Draw { stage, dye, simulated, layout, retained },
+                        Draw { stage, dye, simulated, layout, retained: retained_state },
                         equipment,
                     )
                     .with_context(|| {
@@ -332,6 +336,13 @@ impl Assembly<'_> {
                         // binding and material scope, independently of source flag variants.
                         native_flags = (native_flags & !8) | if simulated { 8 } else { 0 };
                     }
+                    // An ordinary record with source bit 0x10 keeps only the shifted 0x08,
+                    // so it draws in the native third-person passes. Source 0086FC20 draws
+                    // such records in its lane-2 pass, not its main passes, and no native
+                    // flag word draws in the lane-2 pass alone. Bit-4 records include
+                    // geometry seen only in third person, such as the waving layout-70
+                    // strip of a helmet, so leaving them out of those passes would hide it
+                    // everywhere.
                     if weapon {
                         native_flags &= !0x180;
                     }

@@ -15,6 +15,50 @@ pub(super) fn effective_power_cap_rows(
 
 const VARIABLE_DAMAGE_LABEL: &str = "Variable (Hold Reload)";
 
+fn imported_damage(overrides: &WeaponRecipeOverrides) -> Option<crate::recipe::RecipeDamageType> {
+    #[cfg(feature = "d2-model-importer")]
+    {
+        crate::recipe::damage::original(overrides)
+    }
+    #[cfg(not(feature = "d2-model-importer"))]
+    {
+        let _ = overrides;
+        None
+    }
+}
+
+fn supports_profile(
+    capabilities: &crate::capabilities::WeaponAuthoringCapabilities,
+    overrides: &WeaponRecipeOverrides,
+    donor: &WeaponDonor,
+    action: CombatProfileAction,
+) -> bool {
+    if capabilities.supports(action) {
+        return true;
+    }
+    let CombatProfileAction::Set(profile) = action else {
+        return false;
+    };
+    // D1 conversion explicitly disables or replaces the base's elemental socket. Its damage
+    // then uses a fixed marker, whose Kinetic form has no marker, plus the private talent.
+    profile.damage_type == sundial::investment::WeaponDamageType::Kinetic
+        && imported_damage(overrides).is_some()
+        && capabilities.diagnostics.is_empty()
+        && donor
+            .sockets
+            .iter()
+            .enumerate()
+            .filter(|(_, socket)| socket.socket_type == 68)
+            .all(|(lane, _)| {
+                overrides
+                    .socket_columns
+                    .get(lane)
+                    .and_then(Option::as_ref)
+                    .and_then(|column| column.socket_type)
+                    .is_some_and(|kind| kind != 68)
+            })
+}
+
 /// Changes one field without implicitly changing the other or the ammo override.
 ///
 /// `variable_damage_available` says whether this weapon's family can switch damage at all.
@@ -29,7 +73,7 @@ pub(super) fn draw_combat_profile_control(
     damage_locked: bool,
 ) -> bool {
     use crate::capabilities::{
-        recipe_damage_type_from_catalog, recipe_inventory_slot_from_catalog,
+        recipe_damage_type, recipe_damage_type_from_catalog, recipe_inventory_slot_from_catalog,
     };
     use sundial::investment::WeaponDamageType;
     let field_label = if select_slot {
@@ -53,7 +97,10 @@ pub(super) fn draw_combat_profile_control(
         if select_slot {
             donor.summary.inventory_slot.map(WeaponInventorySlot::label)
         } else {
-            donor.summary.damage_type.map(WeaponDamageType::label)
+            imported_damage(overrides)
+                .map(recipe_damage_type)
+                .or(donor.summary.damage_type)
+                .map(WeaponDamageType::label)
         }
     });
     let (label, mut changed) = combat_profile_name(
@@ -144,7 +191,7 @@ pub(super) fn draw_combat_profile_control(
                 };
                 if ui
                     .add_enabled(
-                        capabilities.supports(candidate_action),
+                        supports_profile(&capabilities, overrides, donor, candidate_action),
                         egui::Button::selectable(!variable && profile == Some(candidate), text),
                     )
                     .on_disabled_hover_text(if select_slot {
@@ -161,7 +208,7 @@ pub(super) fn draw_combat_profile_control(
                         changed = overrides.inventory_slot != value;
                         overrides.inventory_slot = value;
                     } else {
-                        let value = (donor.summary.damage_type != Some(candidate.damage_type))
+                        let value = (imported_damage(overrides).is_some() || donor.summary.damage_type != Some(candidate.damage_type))
                             .then(|| recipe_damage_type_from_catalog(candidate.damage_type));
                         let was_variable = overrides.variable_damage.take().is_some();
                         changed = was_variable || overrides.modern_damage_type != value;
@@ -224,7 +271,7 @@ pub(super) fn draw_combat_profile_control(
     }
     if !select_slot
         && capabilities.diagnostics.is_empty()
-        && action.is_none_or(|action| !capabilities.supports(action))
+        && action.is_none_or(|action| !supports_profile(&capabilities, overrides, donor, action))
         && ui.button("Use Base Weapon").clicked()
     {
         apply_combat_profile_action(overrides, &donor.summary, CombatProfileAction::Preserve);
@@ -249,7 +296,10 @@ fn combat_profile_name(
         )
     } else {
         (
-            overrides.modern_damage_type.is_some() || overrides.variable_damage.is_some(),
+            overrides
+                .modern_damage_type
+                .is_some_and(|damage| imported_damage(overrides) != Some(damage))
+                || overrides.variable_damage.is_some(),
             "Variable switches it while Reload is held",
         )
     };
@@ -276,7 +326,7 @@ fn combat_profile_name(
         if select_slot {
             overrides.inventory_slot = None;
         } else {
-            overrides.modern_damage_type = None;
+            overrides.modern_damage_type = imported_damage(overrides);
             overrides.variable_damage = None;
         }
     }
@@ -376,6 +426,7 @@ pub(super) fn draw_combat_profile_diagnostics(
         }
     }
     if overrides.modern_damage_type == Some(crate::recipe::RecipeDamageType::Kinetic)
+        && imported_damage(overrides).is_none()
         && matches!(
             donor.summary.damage_profile,
             WeaponDamageProfile::PlugOrEmptyAmbiguous(Some(_))
@@ -392,7 +443,7 @@ pub(super) fn draw_combat_profile_diagnostics(
     }
     if capabilities.diagnostics.is_empty()
         && recipe_combat_profile_action(overrides, &donor.summary)
-            .is_none_or(|action| !capabilities.supports(action))
+            .is_none_or(|action| !supports_profile(&capabilities, overrides, donor, action))
     {
         ui.colored_label(
             ui.visuals().warn_fg_color,

@@ -178,6 +178,11 @@ pub const ITEM_ORDINARY_SOCKET_POINTER_OFFSET: usize = 0x68;
 pub const ITEM_ORDINARY_SOCKET_ROW_CLASS: u32 = 0x8080_77C4;
 pub const ITEM_ORDINARY_SOCKET_ROW_SIZE: usize = 0x50;
 pub const ITEM_ORDINARY_SOCKET_DEFAULT_PLUG_OFFSET: usize = 0x02;
+/// A socket row flag in the position of `hidePerksInItemTooltip`. Masterwork sockets, Armor 2.0 mod
+/// sockets and most type 676 stat sockets set it, while Year 1 exotic armor's own type 676 socket
+/// leaves it clear. Setting it did not keep a plug's visible finished perk off the item tooltip in
+/// game, so its effect is unconfirmed.
+pub const ITEM_ORDINARY_SOCKET_HIDE_PERKS_IN_TOOLTIP_OFFSET: usize = 0x09;
 pub const ITEM_ORDINARY_SOCKET_REUSABLE_PLUG_SET_OFFSET: usize = 0x0C;
 pub const ITEM_ORDINARY_SOCKET_RANDOMIZED_SELECTION_PROGRAM_OFFSET: usize = 0x10;
 pub const ITEM_ORDINARY_SOCKET_RANDOMIZED_PLUG_SET_OFFSET: usize = 0x20;

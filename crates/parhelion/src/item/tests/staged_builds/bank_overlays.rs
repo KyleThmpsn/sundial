@@ -142,6 +142,7 @@ fn real_private_perk_applying_bank_keys_ships_the_banks() {
         name: EXPLOSION_RADIUS_SCALAR,
         applied: 0.5,
         add: true,
+        gate: None,
     };
     // The packages of the banks the build can give a row: those whose stock rows show a slot
     // for the modifier, and for the tuning, those that list the parameter.
@@ -249,6 +250,7 @@ fn staged_banks_carry_their_rows(
                 name: EXPLOSION_RADIUS_SCALAR,
                 applied: 0.5,
                 add: true,
+                gate: None,
             },
         )
         .unwrap()

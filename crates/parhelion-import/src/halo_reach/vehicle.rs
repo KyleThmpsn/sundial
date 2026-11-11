@@ -167,11 +167,166 @@ fn scout(cache: &Cache, row: usize) -> Result<Value> {
     Ok(result)
 }
 
+/// The human plane row of the Pelican and Phantom. MCC U13 513134 scales the forward speed by the
+/// vehicle's boost power, chooses the rise speed by the sign of its vertical input, scales every
+/// deceleration by the air friction field, turns at a fixed 2.094395 radians per second scaled
+/// by the boosting turn scale only while boosting, and banks against sideways motion to a quarter
+/// of the maximum roll at full slide speed. Speeds are magnitudes in both directions.
+fn plane(cache: &Cache, row: usize) -> Result<Value> {
+    let mut result = json!({});
+    for (name, offset) in [
+        ("forward_source_units_per_second", 0x0),
+        ("reverse_magnitude_source_units_per_second", 0x4),
+        ("acceleration_source_units_per_second_squared", 0x8),
+        ("deceleration_source_units_per_second_squared", 0xc),
+        ("left_slide_source_units_per_second", 0x10),
+        ("right_slide_source_units_per_second", 0x14),
+        ("slide_acceleration_source_units_per_second_squared", 0x18),
+        ("slide_deceleration_source_units_per_second_squared", 0x1c),
+        ("up_rise_source_units_per_second", 0x20),
+        ("down_rise_source_units_per_second", 0x24),
+        ("rise_acceleration_source_units_per_second_squared", 0x28),
+        ("rise_deceleration_source_units_per_second_squared", 0x2c),
+        ("flying_torque_scale", 0x30),
+        ("air_friction_deceleration_scale", 0x34),
+        ("unknown_38", 0x38),
+        ("boosting_turn_rate_scale", 0x3c),
+        ("maximum_roll_radians", 0x40),
+        ("unknown_44", 0x44),
+        ("unknown_48", 0x48),
+    ] {
+        result[name] = json!(cache.f32(row + offset)?);
+    }
+    Ok(result)
+}
+
+/// The space fighter row of the Sabre and Seraph. MCC U13 51DE3C runs the alien fighter update
+/// (516208) step for step with these fields four bytes later from +0x18 on. Its reverse speed is
+/// a magnitude. The bank target is sideways motion times a gain within the maximum bank at +0x8C.
+/// 1D9C4 follows it as a spring with the stiffness and damping at +0x98 and +0x9C, its rate and
+/// acceleration held within +0x94 and +0x90.
+fn space(cache: &Cache, row: usize) -> Result<Value> {
+    let mut result = json!({"steering":steering(cache,row)?});
+    for (name, offset) in [
+        ("forward_source_units_per_second", 0x14),
+        ("unknown_18", 0x18),
+        ("reverse_magnitude_source_units_per_second", 0x1c),
+        ("acceleration_source_units_per_second_squared", 0x20),
+        ("deceleration_source_units_per_second_squared", 0x24),
+        ("left_slide_source_units_per_second", 0x28),
+        ("right_slide_source_units_per_second", 0x2c),
+        ("slide_acceleration_source_units_per_second_squared", 0x30),
+        ("slide_deceleration_source_units_per_second_squared", 0x34),
+        ("flying_torque_scale", 0x38),
+        ("strafe_boost_scale", 0x50),
+        ("off_stick_deceleration_scale", 0x54),
+        ("dive_speed_scale", 0x58),
+        ("bank_gain", 0x88),
+        ("maximum_bank_radians", 0x8c),
+        ("bank_acceleration_limit_radians_per_second_squared", 0x90),
+        ("bank_rate_limit_radians_per_second", 0x94),
+        ("bank_stiffness_per_second_squared", 0x98),
+        ("bank_damping_per_second", 0x9c),
+    ] {
+        result[name] = json!(cache.f32(row + offset)?);
+    }
+    Ok(result)
+}
+
+/// The vtol block of the Falcon (0xD0 bytes), named by the tag definitions and read by MCC U13
+/// 5192F4 and its helpers. The vertical input passes through trigger to throttle and becomes lift
+/// from the maximum up or down acceleration. Released, the retained lift bleeds over the vertical
+/// deceleration time and is held at most at gravity. With altitude lock set, the altitude lock
+/// offset and velocity coefficients hold the locked altitude. Descent to boost raises upward
+/// authority while descending, over the maximum downward speed. 51A080 blends the speed
+/// interpolated rows by a transition state. Forward speed over the interpolation speed domain caps
+/// the forward throttle through the speed throttle ceiling, the interpolation acceleration
+/// integrates the state, and the interpolation blend maps it to the row weight, so the last row
+/// is forward flight. Each row's maximum left and forward accelerations tilt the lift on both
+/// lift markers (51AC90), and its magic angular acceleration torques the vehicle back toward up.
+/// The prop rotation speed bounds are cycles per second from idle to full throttle. 51A804 lands
+/// and takes off with the landing fields.
+fn vtol(cache: &Cache, row: usize) -> Result<Value> {
+    let speed_interpolated = cache
+        .block(row + 0x9c, 0x20)?
+        .into_iter()
+        .map(|set| {
+            let mut result = json!({});
+            for (name, offset) in [
+                ("rotor_damping", 0x0),
+                (
+                    "maximum_left_acceleration_source_units_per_second_squared",
+                    0x4,
+                ),
+                (
+                    "maximum_forward_acceleration_source_units_per_second_squared",
+                    0x8,
+                ),
+                ("drag_coefficient", 0xc),
+                ("constant_deceleration", 0x10),
+                ("upright_acceleration_exponent", 0x14),
+                ("upright_acceleration_scale", 0x18),
+                ("upright_acceleration_k", 0x1c),
+            ] {
+                result[name] = json!(cache.f32(set + offset)?);
+            }
+            Ok(result)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut result = json!({
+        "turning":{"left_limit_radians":cache.f32(row)?,"right_limit_radians":cache.f32(row+4)?,
+            "rate_radians_per_second":cache.f32(row+8)?},
+        "left_lift_marker":cache.string_id(cache.u32(row+0xc)?)?,
+        "right_lift_marker":cache.string_id(cache.u32(row+0x10)?)?,
+        "thrust_marker":cache.string_id(cache.u32(row+0x14)?)?,
+        "trigger_to_throttle":function(cache,row+0x18)?,
+        "descent_to_boost":function(cache,row+0x2c)?,
+        "speed_throttle_ceiling":function(cache,row+0x60)?,
+        "interpolation_acceleration":function(cache,row+0x74)?,
+        "interpolation_blend":function(cache,row+0x88)?,
+        "speed_interpolated":speed_interpolated,
+        "prop_rotation_cycles_per_second":cache.floats::<2>(row+0xb8)?,
+    });
+    for (name, offset) in [
+        ("maximum_downward_source_units_per_second", 0x40),
+        (
+            "maximum_up_acceleration_source_units_per_second_squared",
+            0x44,
+        ),
+        (
+            "maximum_down_acceleration_source_units_per_second_squared",
+            0x48,
+        ),
+        ("vertical_deceleration_seconds", 0x4c),
+        ("lift_arm_pivot_source_units", 0x50),
+        ("maximum_turn_acceleration", 0x54),
+        ("turn_acceleration_gain", 0x58),
+        ("interpolation_speed_domain_source_units_per_second", 0x5c),
+        ("lift_angle_acceleration_radians_per_second_squared", 0xa8),
+        (
+            "render_lift_angle_acceleration_radians_per_second_squared",
+            0xac,
+        ),
+        ("altitude_lock_offset_coefficient", 0xb0),
+        ("altitude_lock_velocity_coefficient", 0xb4),
+        ("landing_seconds", 0xc0),
+        ("takeoff_seconds", 0xc4),
+        ("landing_source_units_per_second", 0xc8),
+        ("landing_angular_radians_per_second", 0xcc),
+    ] {
+        result[name] = json!(cache.f32(row + offset)?);
+    }
+    Ok(result)
+}
+
 pub(super) fn controls(cache: &Cache, kind: &str, row: usize) -> Result<Value> {
     match kind {
+        "vtol" => vtol(cache, row),
         "human_jeep" => jeep(cache, row),
         "alien_fighter" => fighter(cache, row),
         "alien_scout" => scout(cache, row),
+        "human_plane" => plane(cache, row),
+        "space_fighter" => space(cache, row),
         _ => Ok(json!({})),
     }
 }

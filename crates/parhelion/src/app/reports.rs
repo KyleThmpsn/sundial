@@ -18,6 +18,7 @@ pub(super) fn draw_build_report(ui: &mut egui::Ui, build: &BuildReport) {
         );
         draw_summary(ui, build, "Ready for Review");
         ui.add_space(6.0);
+        draw_skipped(ui, &build.skipped);
         egui::CollapsingHeader::new(format!("Included {}", items_noun(build, 2)))
             .id_salt("build_included_items")
             .default_open(build.weapons.len() <= 6)
@@ -33,6 +34,40 @@ pub(super) fn draw_build_report(ui: &mut egui::Ui, build: &BuildReport) {
             .id_salt("build_package_details")
             .show(ui, |ui| draw_build_details(ui, build));
     });
+}
+
+/// The recipes the build left out, each with the failure that it alone caused. The build went on
+/// without them, so the rest can be installed while they are fixed.
+fn draw_skipped(ui: &mut egui::Ui, skipped: &[crate::workflow::SkippedRecipe]) {
+    if skipped.is_empty() {
+        return;
+    }
+    let warn = ui.visuals().warn_fg_color;
+    ui.colored_label(
+        warn,
+        egui::RichText::new(format!(
+            "Left Out {} {}",
+            skipped.len(),
+            if skipped.len() == 1 {
+                "Recipe"
+            } else {
+                "Recipes"
+            }
+        ))
+        .strong(),
+    );
+    ui.label("Each of these stopped the build on its own, so the build went on without it.");
+    for (index, recipe) in skipped.iter().enumerate() {
+        egui::CollapsingHeader::new(&recipe.name)
+            .id_salt(("build_skipped_recipe", index))
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(&recipe.reason).wrap());
+                if ui.button("Copy Error").clicked() {
+                    ui.ctx().copy_text(recipe.reason.clone());
+                }
+            });
+    }
+    ui.add_space(6.0);
 }
 
 fn items_noun(build: &BuildReport, count: usize) -> &'static str {
@@ -127,6 +162,9 @@ fn draw_item_grants(ui: &mut egui::Ui, report: &InstallReport) {
                     }
                 ));
             }
+            if !grants.abilities_reset.is_empty() {
+                ui.label("Ability choices start at the defaults where a subclass was equipped.");
+            }
         }
         Some(Err(error)) => {
             ui.colored_label(
@@ -184,12 +222,7 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
     if let Some(warning) = &report.kept_build_warning {
         ui.colored_label(ui.visuals().warn_fg_color, warning);
     }
-    for overlap in &report.mod_overlaps {
-        ui.label(overlap);
-    }
-    for member in &report.mods {
-        ui.label(format!("{}: {}", member.name, member.status.label()));
-    }
+    draw_mods(ui, &report.mods);
     ui.add_space(6.0);
     egui::CollapsingHeader::new("Installation Details").show(ui, |ui| {
         path_row(ui, "Installed To", &report.target_packages_directory);
@@ -228,6 +261,10 @@ pub(super) fn draw_install_report(ui: &mut egui::Ui, report: &InstallReport) {
                 }
             }
         }
+        // The stock entries several mods change, which Sunrise merges.
+        for overlap in &report.mod_overlaps {
+            ui.add(egui::Label::new(overlap).wrap());
+        }
         draw_artifact_grid(
             ui,
             "installed_artifacts",
@@ -250,6 +287,50 @@ pub(super) fn display_path(path: &Path) -> String {
     } else {
         path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
     }
+}
+
+/// Each mod the install touched, its result and its package count. A mod's note and the shared
+/// tables Parhelion writes for it show on its name.
+fn draw_mods(ui: &mut egui::Ui, mods: &[crate::ModReport]) {
+    if mods.is_empty() {
+        return;
+    }
+    egui::Grid::new("installed_mods")
+        .striped(true)
+        .num_columns(3)
+        .spacing([16.0, 6.0])
+        .show(ui, |ui| {
+            ui.strong("Mod");
+            ui.strong("Status");
+            ui.strong("Packages");
+            ui.end_row();
+            for member in mods {
+                let name = ui.label(&member.name);
+                if member.note.is_some() || !member.shared.is_empty() {
+                    name.on_hover_ui(|ui| {
+                        sundial::investment::tooltip_title(ui, &member.name);
+                        // The build's note already names the shared tables.
+                        if let Some(note) = &member.note {
+                            ui.label(note);
+                        } else {
+                            ui.label(format!(
+                                "Parhelion writes {}.",
+                                crate::workflow::sentence_list(
+                                    member.shared.iter().map(String::as_str)
+                                )
+                            ));
+                        }
+                    });
+                }
+                ui.label(member.status.label());
+                if member.packages.is_empty() {
+                    ui.label("");
+                } else {
+                    ui.label(member.packages.len().to_string());
+                }
+                ui.end_row();
+            }
+        });
 }
 
 pub(super) fn path_row(ui: &mut egui::Ui, label: &str, path: &Path) {

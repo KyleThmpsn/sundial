@@ -90,9 +90,22 @@ pub(super) fn fixture() -> Fixture {
 
 fn write_manifest(fixture: &Fixture) {
     fixture.write_manifest(Some(fixture.staged_bytes.keys().map(|name| {
-        let digest = digest_file(&fixture.staging.join(name)).unwrap();
+        let digest = digest_file(&staged_file(fixture, name)).unwrap();
         json!({"file_name": name, "byte_length": digest.byte_length, "sha256": digest.sha256})
     }).collect()));
+}
+
+/// A staged file, in the run or in the member folder a family test staged it in.
+fn staged_file(fixture: &Fixture, name: &str) -> PathBuf {
+    let flat = fixture.staging.join(name);
+    if flat.exists() {
+        return flat;
+    }
+    fs::read_dir(&fixture.staging)
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join(name))
+        .find(|path| path.is_file())
+        .unwrap_or(flat)
 }
 
 pub(super) fn change_assets(fixture: &mut Fixture) {

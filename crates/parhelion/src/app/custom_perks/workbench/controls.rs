@@ -37,6 +37,88 @@ pub(super) fn sized<R>(
     .inner
 }
 
+/// One filter of a picker toolbar: a combo held to `width` that elides its selection, keeps its
+/// full reading on hover and carries `name` as its accessible name. `shown` is the selection as
+/// the combo draws it and `hover` its full reading. Each choice is its value, label and hint,
+/// where an empty hint draws none. Returns whether the choice changed.
+pub(super) fn filter<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    (salt, name): (&'static str, &str),
+    width: f32,
+    (shown, hover): (&str, &str),
+    value: &mut T,
+    choices: impl IntoIterator<Item = (T, &'static str, &'static str)>,
+) -> bool {
+    let before = *value;
+    sized(ui, width, |ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .width(width)
+            .truncate()
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for (choice, label, hint) in choices {
+                    let response = ui.selectable_value(value, choice, label);
+                    if !hint.is_empty() {
+                        response.on_hover_text(hint);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(hover);
+        // The same salt names the combo, so the name reaches the node the combo draws.
+        crate::app::pickers::name_combo(ui, salt, name);
+    });
+    *value != before
+}
+
+/// A picker's search box on a line of its own, as wide as the line less the room its clear
+/// button takes. `search` draws the box at the width it is given and returns whether the query
+/// changed, which this returns.
+pub(super) fn search_line(
+    ui: &mut egui::Ui,
+    search: impl FnOnce(&mut egui::Ui, f32) -> bool,
+) -> bool {
+    ui.horizontal(|ui| {
+        let width = ui.available_width() - crate::app::pickers::CLEAR_WIDTH;
+        search(ui, width)
+    })
+    .inner
+}
+
+/// A picker's list under its toolbar, as tall as the window leaves it. `keys` hold each row's
+/// identity, so a filter change keeps the selected row.
+pub(super) fn browser_list<'a>(
+    ui: &egui::Ui,
+    keys: &'a [u64],
+    reset: bool,
+    select: Option<u64>,
+) -> crate::app::pickers::BrowserList<'a> {
+    crate::app::pickers::BrowserList {
+        keys,
+        height: (ui.available_height() - 4.0).max(110.0),
+        reset,
+        row_height: sundial::investment::authoring_choice_row_height(ui),
+        select,
+    }
+}
+
+/// A picker detail pane's primary command. A double-click on the row, `activated`, counts as a
+/// click where the command is enabled. `reason`, when given, is the hover text of the disabled
+/// command. Returns whether the command was used.
+pub(super) fn command(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    reason: Option<&str>,
+    activated: bool,
+) -> bool {
+    let mut response = ui.add_enabled(enabled, crate::app::style::primary(ui, label));
+    if let Some(reason) = reason {
+        response = response.on_disabled_hover_text(reason);
+    }
+    response.clicked() || (activated && enabled)
+}
+
 /// Width of the name beside a cell. It matches the ceiling the proportional label rows
 /// settle at in a wide pane, so a cell and a row in the same block share one column edge
 /// and their controls start at the same place.

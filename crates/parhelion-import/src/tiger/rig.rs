@@ -1,6 +1,7 @@
 //! Resolve equipment runtime and skeleton data without installing it.
 mod character;
 use crate::tiger::{
+    pattern,
     payload::Payload,
     reader::{Reader, write_json},
 };
@@ -42,30 +43,6 @@ pub fn attachment_rows(
         Ok(selected)
     }
 }
-fn patterns(r: &mut Reader, modern: bool) -> Result<Vec<(u32, u32)>> {
-    let tables = if modern {
-        r.classes(0x808052AA)
-    } else {
-        let tag = r
-            .manager
-            .lookup
-            .named_tags
-            .iter()
-            .find(|e| e.name == "investment_globals")
-            .context("globals")?
-            .hash
-            .0;
-        let globals = r.tag(tag, None)?;
-        vec![globals.u32(16 + 70 * 16)?]
-    };
-    ensure!(tables.len() == 1, "ambiguous pattern tables");
-    let table = r.tag(tables[0], None)?;
-    let rows = table.array(8, 48, Some(if modern { 0x808052AE } else { 0x80805B7C }))?;
-    rows.into_iter()
-        .map(|row| Ok((table.u32(row + 4)?, table.u32(row + 16)?)))
-        .collect()
-}
-
 fn entities(
     r: &mut Reader,
     modern: bool,
@@ -136,7 +113,7 @@ pub fn inspect(r: &mut Reader, item_tag: u32, modern: bool) -> Result<Value> {
     let item = r.tag(item_tag, None)?;
     let translation = item.pointer(if modern { 0x70 } else { 0x88 })?;
     let index = item.u16(translation + 0x58)? as usize;
-    let (key, content) = *patterns(r, modern)?.get(index).context("pattern index")?;
+    let pattern::Pattern { key, content, .. } = pattern::at(r, index, modern)?;
     let entities = entities(r, modern, &BTreeSet::from([key]))?;
     let selected = entities.get(&key).context("runtime entity missing")?;
     ensure!(selected.len() == 1, "runtime entity is ambiguous");

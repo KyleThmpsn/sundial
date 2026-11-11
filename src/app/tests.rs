@@ -1,4 +1,6 @@
 mod account_sources;
+mod appearance;
+mod close_review;
 pub(in crate::app) mod driver;
 mod equipment;
 mod navigation;
@@ -6,3 +8,4 @@ mod persistence;
 mod release_fixtures;
 mod schema_compatibility;
 mod workspace;
+mod workspace_transitions;

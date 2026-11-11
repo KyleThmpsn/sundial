@@ -1,15 +1,24 @@
-//! The `.merge` sidecar, version 2, as Sunrise f1e7c66 reads it (`table_merge/sidecar.cpp`) and
-//! Sunrise Studio 007dd7a6 writes it (`MergeSidecarFormat.cs`). Little-endian packed records,
+//! The `.merge` sidecar, versions 2 and 3, as Sunrise 9ab7b50 reads it (`table_merge/sidecar.cpp`)
+//! and Sunrise Studio 3a0e6f7 writes it (`MergeSidecarFormat.cs`). Little-endian packed records,
 //! with nothing after the last entry.
+//!
+//! Version 3 is version 2 plus object shapes: an object pointer may name the shape of the object
+//! it points at, and the merge then relocates that object's own pointers. Studio writes version 3
+//! always. Sunrise f1e7c66 and older read only version 2, so Sundial writes version 2 unless a
+//! shape needs version 3.
 use super::Status;
 
 pub const MAGIC: u32 = 0x4752_4D53;
-pub const VERSION: u16 = 2;
+/// The newest version, with object shapes.
+pub const VERSION: u16 = 3;
+/// Version 3 without object shapes, which every loader with merge support reads.
+pub const OLDEST_VERSION: u16 = 2;
 /// The loader refuses a larger file, so damaged data can't exhaust memory.
 pub const BYTE_LIMIT: usize = 64 << 20;
 /// `Op::parent_op` of an op that sits directly in the entry.
 pub const TOP_LEVEL_OP: u32 = u32::MAX;
-/// `ShapeField::reference` of an owned array whose elements hold no pointers.
+/// `ShapeField::reference` of an owned array whose elements hold no pointers, or of an object
+/// pointer whose object isn't walked.
 pub const NO_ELEMENT_SHAPE: u16 = 0xFFFF;
 /// `Site::target` bit that names an op of the same entry instead of a target.
 pub const OP_LOCAL_TARGET: u16 = 0x8000;
@@ -128,7 +137,8 @@ pub struct Target {
 pub struct ShapeField {
     pub row_offset: u32,
     pub kind: FieldKind,
-    /// Element shape of an owned array, op of a row pointer, or `NO_ELEMENT_SHAPE`.
+    /// Element shape of an owned array, op of a row pointer, shape of the object an object
+    /// pointer names (version 3), or `NO_ELEMENT_SHAPE`.
     pub reference: u16,
 }
 
@@ -236,9 +246,11 @@ impl Sidecar {
             return Err(Status::Format);
         }
         // A new version may define flag bits, so the version is checked first.
-        if cursor.u16().ok_or_else(format)? != VERSION {
+        let version = cursor.u16().ok_or_else(format)?;
+        if version != VERSION && version != OLDEST_VERSION {
             return Err(Status::Version);
         }
+        let objects = version != OLDEST_VERSION;
         let flags = cursor.u16().ok_or_else(format)?;
         let header_package = cursor.u16().ok_or_else(format)?;
         let header_patch = cursor.u16().ok_or_else(format)?;
@@ -261,7 +273,7 @@ impl Sidecar {
             return Err(Status::Format);
         }
         let shapes = (0..shape_count)
-            .map(|index| read_shape(&mut cursor, index, shape_count))
+            .map(|index| read_shape(&mut cursor, index, shape_count, objects))
             .collect::<Option<Vec<_>>>()
             .ok_or_else(format)?;
         if !cursor.fits(u64::from(entry_count), ENTRY_HEADER_SIZE) {
@@ -290,12 +302,24 @@ impl Sidecar {
         })
     }
 
+    /// The oldest version that holds every shape, so older loaders keep reading what they can.
+    pub fn version(&self) -> u16 {
+        let objects = self
+            .shapes
+            .iter()
+            .flat_map(|shape| &shape.fields)
+            .any(|field| {
+                field.kind == FieldKind::ObjectPointer && field.reference != NO_ELEMENT_SHAPE
+            });
+        if objects { VERSION } else { OLDEST_VERSION }
+    }
+
     /// Encodes the sidecar, then reads it back, so an encoder fault can't ship.
     pub fn write(&self) -> Result<Vec<u8>, Status> {
         let count = |value: usize| u32::try_from(value).map_err(|_| Status::Capacity);
         let mut out = Vec::new();
         out.extend_from_slice(&MAGIC.to_le_bytes());
-        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.extend_from_slice(&self.version().to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(&self.package.to_le_bytes());
         out.extend_from_slice(&self.patch.to_le_bytes());
@@ -438,8 +462,14 @@ fn read_targets(cursor: &mut Cursor<'_>, count: u32) -> Option<Vec<Target>> {
         .then_some(targets)
 }
 
-/// Element shapes must come later than the shape naming them, so shapes form no cycle.
-fn read_shape(cursor: &mut Cursor<'_>, index: u32, shape_count: u32) -> Option<Shape> {
+/// Element and object shapes must come later than the shape naming them, so shapes form no cycle.
+/// `objects` is false for a version 2 file, whose object pointers name no shape.
+fn read_shape(
+    cursor: &mut Cursor<'_>,
+    index: u32,
+    shape_count: u32,
+    objects: bool,
+) -> Option<Shape> {
     let stride = cursor.u32()?;
     let field_count = cursor.u32()?;
     if stride == 0 || !cursor.fits(u64::from(field_count), SHAPE_FIELD_SIZE) {
@@ -452,8 +482,10 @@ fn read_shape(cursor: &mut Cursor<'_>, index: u32, shape_count: u32) -> Option<S
         let kind = FieldKind::from_byte(cursor.u8()?)?;
         let reserved = cursor.u8()?;
         let reference = cursor.u16()?;
-        // An object pointer names no shape and no op.
-        if reserved != 0 || (kind == FieldKind::ObjectPointer && reference != NO_ELEMENT_SHAPE) {
+        // Before version 3 an object pointer names no shape. It never names an op.
+        if reserved != 0
+            || (!objects && kind == FieldKind::ObjectPointer && reference != NO_ELEMENT_SHAPE)
+        {
             return None;
         }
         let field_end = u64::from(row_offset) + kind.size() as u64;
@@ -461,7 +493,7 @@ fn read_shape(cursor: &mut Cursor<'_>, index: u32, shape_count: u32) -> Option<S
             return None;
         }
         end = field_end;
-        if kind == FieldKind::OwnedArray
+        if kind != FieldKind::RowPointer
             && reference != NO_ELEMENT_SHAPE
             && (u32::from(reference) <= index || u32::from(reference) >= shape_count)
         {
@@ -476,17 +508,15 @@ fn read_shape(cursor: &mut Cursor<'_>, index: u32, shape_count: u32) -> Option<S
     Some(Shape { stride, fields })
 }
 
-/// Per shape, the largest op a row pointer in it or in its owned elements names, or -1.
-/// Element shapes only point forward, so one backward pass sees every child first.
+/// Per shape, the largest op a row pointer in it or in what it owns names, or -1.
+/// Element and object shapes only point forward, so one backward pass sees every child first.
 fn pointer_reach(shapes: &[Shape]) -> Vec<i64> {
     let mut reach = vec![-1i64; shapes.len()];
     for index in (0..shapes.len()).rev() {
         for field in &shapes[index].fields {
             let named = match field.kind {
                 FieldKind::RowPointer => i64::from(field.reference),
-                FieldKind::OwnedArray if field.reference != NO_ELEMENT_SHAPE => {
-                    reach[usize::from(field.reference)]
-                }
+                _ if field.reference != NO_ELEMENT_SHAPE => reach[usize::from(field.reference)],
                 _ => continue,
             };
             reach[index] = reach[index].max(named);

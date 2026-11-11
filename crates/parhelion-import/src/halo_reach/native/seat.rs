@@ -39,21 +39,48 @@ fn product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// The source seats apart from the driver's that ride as seated children, in row order.
+pub(in crate::halo_reach) fn mounts(
+    cache: &crate::halo_reach::cache::Cache,
+    scene: &Scene,
+) -> Result<Vec<crate::halo_reach::Mount>> {
+    super::vehicle::mounts(cache, scene)
+}
+
 pub(super) fn selected_marker<'a>(
     model: &'a model::Model,
     name: &str,
 ) -> Result<&'a model::Marker> {
-    let mut markers = Vec::new();
-    for marker in model.markers.iter().filter(|marker| marker.name == name) {
-        if model.marker_selected(marker)? {
-            markers.push(marker);
-        }
-    }
+    selected_marker_in(model, name, &model.selected)
+}
+
+/// The unique marker named `name` present under `selection`.
+pub(super) fn selected_marker_in<'a>(
+    model: &'a model::Model,
+    name: &str,
+    selection: &std::collections::BTreeMap<String, String>,
+) -> Result<&'a model::Marker> {
+    let markers = markers_in(model, name, selection)?;
     ensure!(
         markers.len() == 1,
         "Source vehicle marker {name} is absent or ambiguous"
     );
     Ok(markers[0])
+}
+
+/// Every marker named `name` present under `selection`, in source order.
+pub(super) fn markers_in<'a>(
+    model: &'a model::Model,
+    name: &str,
+    selection: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<&'a model::Marker>> {
+    let mut markers = Vec::new();
+    for marker in model.markers.iter().filter(|marker| marker.name == name) {
+        if model.marker_selected_in(marker, selection)? {
+            markers.push(marker);
+        }
+    }
+    Ok(markers)
 }
 
 pub(in crate::halo_reach) fn marker(
@@ -122,12 +149,14 @@ pub(super) fn frame(
     ))
 }
 
-fn rewrite(
+/// Write the source markers onto the native rows in order, repeating them when the native
+/// seat has more rows than the source has markers. Each source names its native bone, or keeps
+/// the row's own bone.
+pub(super) fn rewrite(
     owner: &mut Payload,
     definition: usize,
     bones: &Value,
-    source: ([f32; 3], [f32; 4]),
-    source_bone: Option<usize>,
+    sources: &[SeatMarker],
     entry: bool,
 ) -> Result<Vec<Value>> {
     let (offset, stride, class) = if entry {
@@ -140,8 +169,10 @@ fn rewrite(
         !rows.is_empty() && (entry || rows.len() == 1),
         "Unsupported native driver marker count"
     );
+    ensure!(!sources.is_empty(), "Source driver markers are absent");
     let mut report = Vec::new();
-    for row in rows {
+    for (index, row) in rows.into_iter().enumerate() {
+        let (source, source_bone) = sources[index % sources.len()];
         let bone = source_bone.unwrap_or(usize::try_from(owner.u32(row + 4)?)?);
         let (position, orientation) = frame(bones, bone, source)?;
         put(&mut owner.0, row + 4, &u32::try_from(bone)?.to_le_bytes())?;
@@ -158,6 +189,51 @@ fn rewrite(
             "source_position":source.0,"source_orientation":source.1}));
     }
     Ok(report)
+}
+
+/// Give every entry marker row of `definition` the reach of `donor`'s first entry row: the radius at
+/// row `+0x40`, the limit on the angle between the marker's own direction and the player at `+0x44`,
+/// and the limit on the player's facing toward the marker at `+0x48`. The interaction search
+/// (00DEB830) offers a seat only from an entry row whose three tests pass, so a seat copied from an
+/// AI turret (4 m, 90 degrees either way) is passed over beside a vehicle whose own seat reaches
+/// further. The rows keep their placement.
+///
+/// With `any_facing` the facing limit takes the marker limit, which accepts every facing. A
+/// turret-row child carrying the tank driver's limits was never offered beside its carrier (Dawn
+/// 1.7.2, 2026-11-08). With all three relaxed, radius 8 m, both angles π, the game offered the
+/// gunner child by itself.
+pub(super) fn entry_reach(
+    owner: &mut Payload,
+    definition: usize,
+    donor: &Payload,
+    donor_definition: usize,
+    any_facing: bool,
+) -> Result<Value> {
+    let source = *donor
+        .array(donor_definition + 0x188 + 0x50, 80, Some(0x80803d6f))?
+        .first()
+        .context("Donor seat has no entry marker row")?;
+    let mut values = [0.; 3];
+    for (index, value) in values.iter_mut().enumerate() {
+        *value = donor.f32(source + 0x40 + index * 4)?;
+    }
+    ensure!(
+        values[0] > 0. && values.iter().all(|v| v.is_finite()),
+        "Donor entry marker reach is invalid"
+    );
+    if any_facing {
+        values[2] = values[1];
+    }
+    let rows = owner.array(definition + 0x188 + 0x50, 80, Some(0x80803d6f))?;
+    ensure!(!rows.is_empty(), "Seat has no entry marker row");
+    for row in &rows {
+        for (index, value) in values.iter().enumerate() {
+            put(&mut owner.0, row + 0x40 + index * 4, &value.to_le_bytes())?;
+        }
+    }
+    Ok(
+        json!({"rows":rows.len(),"radius":values[0],"marker_angle":values[1],"facing_angle":values[2]}),
+    )
 }
 
 pub(super) fn build(
@@ -217,22 +293,42 @@ pub(super) fn build(
             .context("Source driver marker name")?;
         ensure!(!name.is_empty(), "Source driver marker name is empty");
         let model = &scene.models[0].model;
-        let source_bone = bones["source_bone_first"]
-            .as_u64()
-            .map(|first| -> Result<usize> {
-                Ok(match selected_marker(model, name)?.bone {
-                    Some(bone) => usize::try_from(first)?
-                        .checked_add(bone)
-                        .context("Source driver bone overflow")?,
-                    None => 0,
-                })
+        // Several entry markers of one name are the source's alternative entry points. The
+        // driver's seat position itself is one marker.
+        let markers = if entry {
+            markers_in(model, name, &model.selected)?
+        } else {
+            vec![selected_marker(model, name)?]
+        };
+        ensure!(
+            !markers.is_empty(),
+            "Source vehicle marker {name} is absent"
+        );
+        let sources = markers
+            .iter()
+            .map(|marker| -> Result<_> {
+                let bone = bones["source_bone_first"]
+                    .as_u64()
+                    .map(|first| -> Result<usize> {
+                        Ok(match marker.bone {
+                            Some(bone) => usize::try_from(first)?
+                                .checked_add(bone)
+                                .context("Source driver bone overflow")?,
+                            None => 0,
+                        })
+                    })
+                    .transpose()?;
+                let mut source = marker_pose(model, marker)?;
+                if !entry && let Some(pose) = pose {
+                    source = pose.apply(source)?;
+                }
+                Ok((source, bone))
             })
-            .transpose()?;
-        let mut source = marker(model, name)?;
-        if !entry && let Some(pose) = pose {
-            source = pose.apply(source)?;
-        }
-        report.push(json!({"role":field,"source":name,"markers":rewrite(&mut owner, definition, bones, source, source_bone, entry)?}));
+            .collect::<Result<Vec<_>>>()?;
+        report.push(
+            json!({"role":field,"source":name,"source_markers":sources.len(),
+            "markers":rewrite(&mut owner, definition, bones, &sources, entry)?}),
+        );
     }
     let mut relocations = Vec::new();
     for at in (0..owner.0.len().saturating_sub(3)).step_by(4) {
@@ -258,3 +354,5 @@ pub(super) fn build(
         "limits":["Native seat policies are retained. Rider actions are selected separately. Passenger seats are not translated."]}),
     ))
 }
+
+type SeatMarker = (([f32; 3], [f32; 4]), Option<usize>);

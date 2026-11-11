@@ -114,6 +114,21 @@ impl Layouts {
         })
     }
 
+    /// Whether native `layout` stores only an Int16-normalized `POSITION0` four-vector in its
+    /// first stream and has no third or fourth stream, as layouts 123, 139 and 143 do. A changed
+    /// weapon palette rewrites that position's fourth lane, the only place such geometry keeps
+    /// its rigid bone index, whatever attributes the second stream holds.
+    pub fn rigid(&self, layout: u16) -> bool {
+        const POSITION: Element = Element {
+            semantic: 0,
+            index: 0,
+            format: 11,
+        };
+        self.native.get(&layout).is_some_and(|streams| {
+            streams[0] == [POSITION] && streams[2].is_empty() && streams[3].is_empty()
+        })
+    }
+
     pub fn matching(&self, source: u8, strides: [usize; 4]) -> Result<u16> {
         let layout = self
             .source

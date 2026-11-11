@@ -1,13 +1,10 @@
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
-
-pub(super) struct AuthoredTemplate {
-    pub(super) weapon: String,
-    pub(super) kind: crate::ItemKind,
-    pub(super) variant: WeaponSocketPlugVariantRecipe,
-}
+use crate::perk::library::saved::{self, Loaded, SavedPerk, SavedPerks};
+use std::collections::BTreeSet;
 
 impl Workbench {
+    /// Reads the saved recipes' perks and adds the new ones to Custom Perks before returning. The
+    /// window reads them through [`Self::load_templates`] instead.
     pub(super) fn load_authored_templates(
         &mut self,
         library: Option<&RecipeLibrary>,
@@ -15,34 +12,188 @@ impl Workbench {
         catalog: &InvestmentCatalog,
     ) {
         self.initialize();
-        let (mut templates, mut warnings) = load_saved(library);
-        if let Some(perks) = &self.library {
-            let recipes = templates.list.iter().filter_map(|entry| {
-                let hash = entry.variant.source_plug_hash.parse_u32().unwrap_or_default();
-                if !entry.variant.replace_effects && catalog.item_definition_tag(hash).is_none() {
-                    warnings.push(format!("Could not import a custom perk from {} because its stock template {hash:08X} is unavailable. The recipe is unchanged.", entry.weapon));
-                    None
-                } else {
-                    Some(from_variant(&entry.variant, catalog))
+        let loaded = saved::load(self.library.as_ref(), library, catalog);
+        self.adopt_templates(loaded, draft, catalog);
+    }
+
+    /// The ids of the open documents, whose saved files stay while they are open.
+    fn open_ids(&self) -> BTreeSet<String> {
+        self.documents
+            .iter()
+            .map(|document| document.recipe.id.clone())
+            .collect()
+    }
+
+    /// Keeps the saved recipes' perks loaded while the workbench or Select Custom Perk is open. A
+    /// large library takes seconds to read and import, so a worker does it while the window draws,
+    /// and a picker opened meanwhile fills in when it lands. Without saved recipes there is nothing
+    /// slow to read, so they load at once.
+    pub(super) fn load_templates(
+        &mut self,
+        ctx: &egui::Context,
+        library: Option<&RecipeLibrary>,
+        draft: &WeaponRecipe,
+        catalog: &InvestmentCatalog,
+    ) {
+        if let Some((generation, receiver)) = self.template_load.take() {
+            match receiver.try_recv() {
+                Ok(loaded) if generation == self.template_generation => {
+                    self.adopt_templates(loaded, draft, catalog);
                 }
-            }).collect::<Vec<_>>();
-            match perks.import_embedded(recipes) {
-                Ok(report) => {
-                    warnings.extend(report.errors);
-                    if report.added > 0 {
-                        self.message = Some(format!(
-                            "Added {} custom perk{} from saved recipes to the library.",
-                            report.added,
-                            if report.added == 1 { "" } else { "s" }
-                        ));
+                // Perks read before the saved recipes or the catalog changed are read again.
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => {
+                    self.template_load = Some((generation, receiver));
+                    return;
+                }
+                // A worker that stopped is not started again until the recipes change.
+                Err(TryRecvError::Disconnected) => {
+                    self.authored_templates = Some(Vec::new());
+                    self.template_browse = Browse::default();
+                    self.error = Some("Could not read the perks of saved recipes.".into());
+                }
+            }
+            self.fill_picker(draft, catalog);
+        }
+        if self.authored_templates.is_some() {
+            self.follow_draft(draft, catalog);
+            return;
+        }
+        let Some(library) = library else {
+            self.load_authored_templates(None, draft, catalog);
+            self.fill_picker(draft, catalog);
+            return;
+        };
+        self.initialize();
+        let perks = self.library.clone();
+        let recipes = library.clone();
+        let catalog = catalog.clone();
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            if sender
+                .send(saved::load(perks.as_ref(), Some(&recipes), &catalog))
+                .is_ok()
+            {
+                repaint.request_repaint();
+            }
+        });
+        self.template_load = Some((self.template_generation, receiver));
+    }
+
+    /// Whether the saved recipes' perks are still being read.
+    pub(super) fn loading_templates(&self) -> bool {
+        self.template_load.is_some()
+    }
+
+    /// Forgets the saved recipes' perks so they are read again. Perks still being read are
+    /// dropped when they land, and the worker keeps the library to itself until then.
+    pub(super) fn forget_authored_templates(&mut self) {
+        self.authored_templates = None;
+        self.template_draft = None;
+        self.template_browse = Browse::default();
+        self.template_generation = self.template_generation.wrapping_add(1);
+    }
+
+    /// Keeps the open recipe's perks among the authored templates as `draft` holds them now. A
+    /// saved recipe's perk that equals one stays the saved recipe's.
+    fn follow_draft(&mut self, draft: &WeaponRecipe, catalog: &InvestmentCatalog) {
+        let current = |(namespace, variants): &(String, Vec<WeaponSocketPlugVariantRecipe>)| {
+            *namespace == draft.namespace && *variants == draft.overrides.socket_plug_variants
+        };
+        if self.template_draft.as_ref().is_some_and(current) {
+            return;
+        }
+        let Some(list) = &mut self.authored_templates else {
+            return;
+        };
+        list.retain(|template| !template.draft);
+        let fresh = SavedPerks::of_draft(draft, catalog)
+            .into_iter()
+            .filter(|template| !list.iter().any(|saved| saved.variant == template.variant))
+            .collect::<Vec<_>>();
+        list.extend(fresh);
+        self.template_browse = Browse::default();
+        self.template_draft = Some((
+            draft.namespace.clone(),
+            draft.overrides.socket_plug_variants.clone(),
+        ));
+    }
+
+    /// Takes the perks read from saved recipes. The imports they replaced go, except the perks
+    /// open now, Custom Perks is read again, and the open recipe's own perks join them.
+    fn adopt_templates(
+        &mut self,
+        loaded: Loaded,
+        draft: &WeaponRecipe,
+        catalog: &InvestmentCatalog,
+    ) {
+        let Loaded {
+            mut perks,
+            added,
+            redundant,
+            library: read,
+            mut warnings,
+        } = loaded;
+        // The worker read the library after importing. Unless a perk file changed since, that
+        // read stands, and the window does not read every file again.
+        let read = read.filter(|(scan, _)| {
+            self.library
+                .as_ref()
+                .is_some_and(|library| library.unchanged_since(scan))
+        });
+        let retired = match &self.library {
+            Some(library) if !redundant.is_empty() => {
+                match library.remove_unchanged(&redundant, &self.open_ids()) {
+                    Ok(removed) => removed,
+                    Err(error) => {
+                        warnings.push(error);
+                        Vec::new()
                     }
                 }
-                Err(error) => warnings.push(error),
             }
-            warnings.extend(self.scan_library());
+            _ => Vec::new(),
+        };
+        let plural = |count: usize| if count == 1 { "" } else { "s" };
+        let mut notes = Vec::new();
+        if added > 0 {
+            notes.push(format!(
+                "Added {added} custom perk{} from saved recipes to the library.",
+                plural(added)
+            ));
         }
-        templates.append_draft(draft);
-        self.authored_templates = Some(templates.list);
+        if !retired.is_empty() {
+            notes.push(format!(
+                "Removed {} imported perk{} that saved recipes replaced.",
+                retired.len(),
+                plural(retired.len())
+            ));
+        }
+        if !notes.is_empty() {
+            self.message = Some(notes.join(" "));
+        }
+        match read {
+            Some((scan, history)) => {
+                self.entries = scan
+                    .entries
+                    .into_iter()
+                    .filter(|entry| !retired.contains(&entry.path))
+                    .collect();
+                match history {
+                    Ok(ids) => self.imported_perks = ids,
+                    Err(error) => warnings.push(error),
+                }
+            }
+            None if self.library.is_some() => warnings.extend(self.scan_library()),
+            None => {}
+        }
+        perks.append_draft(draft, catalog);
+        self.authored_templates = Some(perks.list);
+        self.template_browse = Browse::default();
+        self.template_draft = Some((
+            draft.namespace.clone(),
+            draft.overrides.socket_plug_variants.clone(),
+        ));
         if !warnings.is_empty() {
             self.error = Some(warnings.join("\n"));
         }
@@ -53,8 +204,9 @@ impl Workbench {
             catalog.perk_template_choices_from(crate::package_profile::is_stock_item_definition)
         });
         // The stock rows read a description and an effect list per perk, so they are built
-        // once per catalog. The authored rows are few and follow the library, so they are
-        // read each frame the picker is open.
+        // once per catalog, and the authored rows once per change to the saved perks. A library
+        // of imported weapons holds thousands, so the listing is filtered and sorted again only
+        // when the query or a filter changes.
         let stock_rows = self.template_rows.get_or_insert_with(|| {
             stock
                 .iter()
@@ -63,6 +215,28 @@ impl Workbench {
                 .collect()
         });
         let authored = self.authored_templates.as_deref().unwrap_or_default();
+        let browse = &mut self.template_browse;
+        let authored_rows = browse.authored.get_or_insert_with(|| {
+            authored
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| Row::authored(index, entry, catalog))
+                .collect()
+        });
+        // The type list is read off the rows, so it offers only types some perk has.
+        let types = browse.types.get_or_insert_with(|| {
+            authored_rows
+                .iter()
+                .chain(stock_rows.iter())
+                .map(|row| row.type_name.as_str())
+                .filter(|name| !name.is_empty())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        });
+        let (authored_rows, stock_rows): (&[Row], &[Row]) = (authored_rows, stock_rows);
+        let listing = &mut browse.listing;
         let picked = pickers::browser_with_toolbar(
             ui,
             "perk-template",
@@ -70,20 +244,7 @@ impl Workbench {
             "New from Perk",
             &mut self.template_query,
             |ui, query, opened, _| {
-                let authored_rows = authored
-                    .iter()
-                    .enumerate()
-                    .map(|(index, entry)| Row::authored(index, entry, catalog))
-                    .collect::<Vec<_>>();
-                // The type list is read off the rows, so it offers only types some perk has.
-                let types = authored_rows
-                    .iter()
-                    .chain(stock_rows.iter())
-                    .map(|row| row.type_name.as_str())
-                    .filter(|name| !name.is_empty())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>();
+                let types = types.iter().map(String::as_str).collect::<Vec<_>>();
                 let searched = ui
                     .horizontal(|ui| {
                         let width = (ui.available_width() - pickers::CLEAR_WIDTH).max(160.0);
@@ -95,25 +256,24 @@ impl Workbench {
                 filters.store(ui);
                 // Each row's search text is stored lowercase.
                 let words = query.to_lowercase();
-                let mut rows = authored_rows
-                    .iter()
-                    .chain(stock_rows.iter())
-                    .filter(|row| {
-                        filters.keeps(row)
-                            && words
-                                .split_whitespace()
-                                .all(|word| row.search.contains(word))
-                    })
-                    .collect::<Vec<_>>();
-                rows.sort_by(|a, b| sort_key(filters.order, a).cmp(&sort_key(filters.order, b)));
-                // Saved and stock rows count their indices separately, so the origin keeps
-                // each key apart.
-                let keys = rows
-                    .iter()
-                    .map(|row| (u64::from(row.authored) << 32) | row.index as u64)
-                    .collect::<Vec<_>>();
+                if listing
+                    .as_ref()
+                    .is_some_and(|listing| listing.words != words || listing.filters != filters)
+                {
+                    *listing = None;
+                }
+                let listing = &*listing
+                    .get_or_insert_with(|| Listing::new(authored_rows, stock_rows, words, filters));
+                let row = |index: usize| {
+                    let (authored, at) = listing.rows[index];
+                    if authored {
+                        &authored_rows[at]
+                    } else {
+                        &stock_rows[at]
+                    }
+                };
                 pickers::BrowserList {
-                    keys: &keys,
+                    keys: &listing.keys,
                     // The result count takes a line above the list.
                     height: (ui.available_height() - 24.0).max(160.0),
                     reset: opened || searched || filtered,
@@ -123,7 +283,7 @@ impl Workbench {
                 .draw_activating(
                     ui,
                     |ui, index, selected| {
-                        let row = rows[index];
+                        let row = row(index);
                         catalog.draw_authoring_choice_row(
                             ui,
                             Some(row.hash),
@@ -133,7 +293,7 @@ impl Workbench {
                         )
                     },
                     |ui, index, activated| {
-                        let row = rows[index];
+                        let row = row(index);
                         ui.heading(&row.name);
                         // A double-click copies the perk, as Copy Perk does.
                         let copy = ui
@@ -150,7 +310,10 @@ impl Workbench {
             return;
         };
         let recipe = if is_authored {
-            from_variant(&authored[index].variant, catalog)
+            // Each saved perk is resolved once, so every copy takes a document identity of its own.
+            let mut recipe = authored[index].perk.clone();
+            recipe.id = PerkRecipe::new().id;
+            recipe
         } else {
             let choice = &stock[index];
             let mut recipe = PerkRecipe::new();
@@ -185,7 +348,7 @@ impl Workbench {
 fn draw_template_facts(
     ui: &mut egui::Ui,
     row: &Row,
-    authored: &[AuthoredTemplate],
+    authored: &[SavedPerk],
     catalog: &InvestmentCatalog,
 ) {
     let secondary = crate::app::style::secondary(ui.visuals());
@@ -286,7 +449,7 @@ impl Row {
         )
     }
 
-    fn authored(index: usize, entry: &AuthoredTemplate, catalog: &InvestmentCatalog) -> Self {
+    fn authored(index: usize, entry: &SavedPerk, catalog: &InvestmentCatalog) -> Self {
         let variant = &entry.variant;
         let hash = variant.source_plug_hash.parse_u32().unwrap_or_default();
         let name = variant
@@ -550,217 +713,47 @@ impl Filters {
     }
 }
 
-pub(super) fn from_variant(
-    variant: &WeaponSocketPlugVariantRecipe,
-    catalog: &InvestmentCatalog,
-) -> PerkRecipe {
-    let mut recipe = PerkRecipe::new();
-    let hash = variant.source_plug_hash.parse_u32().unwrap_or_default();
-    recipe.template_plug = variant.source_plug_hash.clone();
-    recipe.icon = variant.icon.clone();
-    recipe.name = variant
-        .name
-        .clone()
-        .unwrap_or_else(|| catalog.plug_label(hash, false));
-    recipe.description = variant.description.clone().unwrap_or_else(|| {
-        catalog
-            .perk_description(hash)
-            .unwrap_or_default()
-            .to_owned()
-    });
-    recipe.classification = variant.classification_donor_hash.clone();
-    recipe.offer_everywhere = variant.offer_everywhere;
-    recipe.projectile = variant.projectile;
-    if !variant.replace_effects {
-        recipe.effects = catalog
-            .item_sandbox_perk_indices(hash)
-            .into_iter()
-            .map(PerkRecipe::effect)
-            .collect();
-        recipe.stats = catalog
-            .item_stat_contributions(hash)
-            .into_iter()
-            .map(|stat| WeaponStatOverride {
-                definition_index: stat.definition_index,
-                value: stat.value,
-            })
-            .collect();
-    }
-    for &index in &variant.additional_sandbox_perks {
-        if !recipe
-            .effects
+/// What the New from Perk picker keeps between frames: the authored rows and the type list,
+/// built once per change to the saved perks, and the listing for the last query and filters.
+#[derive(Default)]
+pub(super) struct Browse {
+    authored: Option<Vec<Row>>,
+    types: Option<Vec<String>>,
+    listing: Option<Listing>,
+}
+
+/// The rows a query and filters keep, in order, as each row's origin and index.
+struct Listing {
+    words: String,
+    filters: Filters,
+    rows: Vec<(bool, usize)>,
+    /// Saved and stock rows count their indices separately, so the origin keeps each key apart.
+    keys: Vec<u64>,
+}
+
+impl Listing {
+    fn new(authored: &[Row], stock: &[Row], words: String, filters: Filters) -> Self {
+        let mut rows = authored
             .iter()
-            .any(|effect| effect.source_perk_index == index)
-        {
-            recipe.effects.push(PerkRecipe::effect(index));
-        }
-    }
-    for effect in &variant.sandbox_perks {
-        if let Some(existing) = recipe
-            .effects
-            .iter_mut()
-            .find(|existing| existing.source_perk_index == effect.source_perk_index)
-        {
-            *existing = effect.clone();
-        } else {
-            recipe.effects.push(effect.clone());
-        }
-    }
-    for stat in &variant.investment_stats {
-        if let Some(existing) = recipe
-            .stats
-            .iter_mut()
-            .find(|existing| existing.definition_index == stat.definition_index)
-        {
-            *existing = stat.clone();
-        } else {
-            recipe.stats.push(stat.clone());
-        }
-    }
-    recipe
-}
-
-/// Source loading returns its own diagnostics so callers can display them in context.
-pub(super) fn load(
-    library: Option<&RecipeLibrary>,
-    draft: &WeaponRecipe,
-) -> (Vec<AuthoredTemplate>, Vec<String>) {
-    let (mut templates, warnings) = load_saved(library);
-    templates.append_draft(draft);
-    (templates.list, warnings)
-}
-
-/// How many saved recipes are held at once while their templates are collected.
-const RECIPES_AT_ONCE: usize = 64;
-
-fn load_saved(library: Option<&RecipeLibrary>) -> (Templates, Vec<String>) {
-    let mut warnings = Vec::new();
-    let mut templates = Templates::default();
-    if let Some(library) = library {
-        match library.scan() {
-            Ok(scan) => {
-                warnings.extend(scan.errors);
-                let paths: Vec<_> = scan.entries.into_iter().map(|entry| entry.path).collect();
-                for chunk in paths.chunks(RECIPES_AT_ONCE) {
-                    let recipes = crate::recipe_library::load_listings(chunk)
-                        .into_iter()
-                        .filter_map(|recipe| {
-                            recipe
-                                .map_err(|error| warnings.push(error.to_string()))
-                                .ok()
-                        })
-                        .collect::<Vec<_>>();
-                    let linked = LinkedIcons::read(&recipes);
-                    for recipe in recipes {
-                        templates.append(recipe, &linked);
-                    }
-                }
-            }
-            Err(error) => warnings.push(error),
-        }
-    }
-    (templates, warnings)
-}
-
-/// The authored templates, each variant once, in the order they were first found.
-#[derive(Default)]
-struct Templates {
-    list: Vec<AuthoredTemplate>,
-    /// Each template's index by its stock plug and name. A library of imported weapons holds
-    /// tens of thousands of variants, too many to compare each with every one before it.
-    by_plug: BTreeMap<(crate::recipe::HexHash, Option<String>), Vec<usize>>,
-}
-
-/// The icons of some recipes' linked ornaments, which the importer keeps in each ornament's
-/// conversion rather than in the weapon's variant, by the item hash of each private plug.
-#[derive(Default)]
-struct LinkedIcons(
-    #[cfg_attr(not(feature = "d2-model-importer"), allow(dead_code))]
-    BTreeMap<u32, crate::icon_edit::ImportedIcon>,
-);
-
-impl LinkedIcons {
-    #[cfg(feature = "d2-model-importer")]
-    fn read(recipes: &[WeaponRecipe]) -> Self {
-        Self(crate::imported::ornament_icons(
-            recipes
-                .iter()
-                .filter_map(|recipe| recipe.overrides.imported_graph.as_ref())
-                .flat_map(|graph| &graph.attachments),
-        ))
-    }
-
-    #[cfg(not(feature = "d2-model-importer"))]
-    fn read(_: &[WeaponRecipe]) -> Self {
-        Self::default()
-    }
-
-    /// The icon of the linked ornament whose private plug is a recipe's choice at `socket`.
-    #[cfg(feature = "d2-model-importer")]
-    fn get(
-        &self,
-        namespace: &str,
-        socket: u16,
-        choice: u16,
-    ) -> Option<crate::icon_edit::ImportedIcon> {
-        use parhelion_import::tiger::ornament::{fnv, roles};
-        let roles = roles(namespace, usize::from(socket), usize::from(choice));
-        self.0.get(&fnv(&format!("{roles}/private-plug"))).cloned()
-    }
-
-    #[cfg(not(feature = "d2-model-importer"))]
-    fn get(&self, _: &str, _: u16, _: u16) -> Option<crate::icon_edit::ImportedIcon> {
-        None
-    }
-}
-
-impl Templates {
-    fn append_draft(&mut self, draft: &WeaponRecipe) {
-        let linked = LinkedIcons::read(std::slice::from_ref(draft));
-        self.append(draft.clone(), &linked);
-    }
-
-    fn append(&mut self, recipe: WeaponRecipe, linked: &LinkedIcons) {
-        // A mod's plug is the item, so it shows the item's own image.
-        let item_image = (recipe.kind == crate::ItemKind::Mod)
-            .then(|| recipe.overrides.icon_edit.imported_image.clone())
-            .flatten();
-        for mut variant in recipe.overrides.socket_plug_variants {
-            // An ornament's plug shows an image its variant does not hold: a mod's item image, or
-            // the icon of a weapon's linked ornament conversion.
-            if variant.icon.is_none() {
-                variant.icon = item_image
-                    .clone()
-                    .or_else(|| {
-                        linked.get(
-                            &recipe.namespace,
-                            variant.socket_index,
-                            variant.choice_index,
-                        )
-                    })
-                    .map(|image| crate::perk::Icon::Image {
-                        name: variant.name.clone().unwrap_or_else(|| recipe.name.clone()),
-                        image,
-                    });
-            }
-            variant.socket_index = 0;
-            variant.choice_index = 0;
-            let same = self
-                .by_plug
-                .entry((variant.source_plug_hash.clone(), variant.name.clone()))
-                .or_default();
-            if same
-                .iter()
-                .any(|&index| self.list[index].variant == variant)
-            {
-                continue;
-            }
-            same.push(self.list.len());
-            self.list.push(AuthoredTemplate {
-                weapon: recipe.name.clone(),
-                kind: recipe.kind,
-                variant,
-            });
+            .chain(stock)
+            .filter(|row| {
+                filters.keeps(row)
+                    && words
+                        .split_whitespace()
+                        .all(|word| row.search.contains(word))
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| sort_key(filters.order, a).cmp(&sort_key(filters.order, b)));
+        let keys = rows
+            .iter()
+            .map(|row| (u64::from(row.authored) << 32) | row.index as u64)
+            .collect();
+        let rows = rows.iter().map(|row| (row.authored, row.index)).collect();
+        Self {
+            words,
+            filters,
+            rows,
+            keys,
         }
     }
 }
@@ -791,7 +784,7 @@ mod tests {
             !originals.is_empty(),
             "no saved weapon recipes were configured"
         );
-        let (embedded, warnings) = load_saved(Some(&weapons));
+        let (embedded, warnings) = SavedPerks::read(Some(&weapons), &catalog);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(
             !embedded.list.is_empty(),

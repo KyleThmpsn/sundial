@@ -6,6 +6,9 @@ use super::imports::Inputs;
 use super::*;
 use crate::tag_payload::read_u16;
 use std::collections::{BTreeMap, BTreeSet};
+mod ability;
+mod hud;
+pub(in crate::item) use ability::symbol as ability_symbol;
 mod projectile;
 use super::assets::replication;
 mod shard;
@@ -14,8 +17,16 @@ type Node = super::assets::Node<audio::Metadata>;
 
 pub(in crate::item) struct ImportedParticles {
     nodes: Vec<Node>,
+    hud: Vec<hud::Binding>,
     projectile: Option<String>,
+    /// Further projectile roots the weapon fires only where one of its private perks names one
+    /// in place of a native projectile, as a pattern override does. Each flies by the fired
+    /// projectile's launch policy.
+    perk_projectiles: BTreeSet<String>,
     pub(in crate::item) source_trajectory: bool,
+    /// The projectile is a retained native carrier fired as its own weapon fires it, so neither
+    /// the imported speed fit nor the source launch adjustment applies.
+    retained_trajectory: bool,
     attachments: BTreeSet<String>,
     presentation: Option<Presentation>,
     sword: Option<super::sword_profiles::Imported>,
@@ -147,6 +158,21 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
             );
         }
     }
+    // A translated firing effect's particle closure takes this group. Its rebuilt flow joins the
+    // firing presentation instead, which names these systems by symbol.
+    if let Some(part) = value
+        .get("firing_effect")
+        .and_then(|effect| effect.get("assets"))
+    {
+        if part["installable"] != true {
+            return Err(invalid("Imported firing effect is not marked installable"));
+        }
+        nodes.extend(
+            part["nodes"]
+                .as_array()
+                .ok_or_else(|| invalid("Imported firing effect lacks its asset nodes"))?,
+        );
+    }
     let projectile = value
         .get("projectile")
         .map(|section| {
@@ -157,6 +183,46 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
                 .ok_or_else(|| invalid("Imported projectile lacks its root symbol"))
         })
         .transpose()?;
+    // A perk projectile is launched by the weapon's own Barrel, which the fired projectile's
+    // launch policy prepares, so each one must share that policy.
+    let mut perk_projectiles = BTreeSet::new();
+    for part in value
+        .get("additional_projectiles")
+        .map(|sections| {
+            sections
+                .as_array()
+                .ok_or_else(|| invalid("Imported additional projectiles are not an array"))
+        })
+        .transpose()?
+        .into_iter()
+        .flatten()
+    {
+        if part["installable"] != true {
+            return Err(invalid(
+                "Imported additional projectile is not marked installable",
+            ));
+        }
+        if projectile.is_none()
+            || part["conversion"]["launch_policy"]
+                != value["projectile"]["conversion"]["launch_policy"]
+        {
+            return Err(invalid(
+                "An imported additional projectile needs the fired projectile's launch policy",
+            ));
+        }
+        let root = part["root"]
+            .as_str()
+            .filter(|symbol| !symbol.is_empty())
+            .ok_or_else(|| invalid("Imported additional projectile lacks its root symbol"))?;
+        if projectile.as_deref() == Some(root) || !perk_projectiles.insert(root.to_owned()) {
+            return Err(invalid("Imported projectile root is repeated"));
+        }
+        nodes.extend(
+            part["nodes"]
+                .as_array()
+                .ok_or_else(|| invalid("Imported additional projectile lacks its asset nodes"))?,
+        );
+    }
     let mut attachments = BTreeSet::new();
     if let Some(section) = value.get("attachments") {
         let roots = section["roots"]
@@ -247,17 +313,30 @@ pub(in crate::item) fn load(graph: &Inputs) -> AuthoringResult<Option<ImportedPa
         .get("runtime_presentation")
         .map(|part| presentation(part, &result))
         .transpose()?;
+    let hud = value
+        .get("hud_statuses")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| invalid(format!("Imported HUD bindings: {error}")))?
+        .unwrap_or_default();
     let assets = ImportedParticles {
+        hud,
         nodes: result,
         source_trajectory: value["projectile"]["conversion"]["launch_policy"]
             == "source_player_trajectory",
+        retained_trajectory: value["projectile"]["conversion"]["launch_policy"]
+            == "retained_native_trajectory",
         projectile,
+        perk_projectiles,
         attachments,
         presentation,
         sword: super::sword_profiles::Imported::load(value)?,
     };
     if let Some(root) = &assets.projectile {
         assets.projectile(root)?;
+    }
+    for root in &assets.perk_projectiles {
+        assets.perk_projectile(root)?;
     }
     for root in &assets.attachments {
         assets.attachment(root)?;
@@ -383,7 +462,7 @@ impl ImportedParticles {
         let original = manager
             .read_tag(TagHash(component.source_owner))
             .map_err(|e| invalid(e.to_string()))?;
-        let original = parhelion_import::d2_mot::payload::Payload(original);
+        let original = parhelion_import::tiger::payload::Payload(original);
         let resource = original.pointer(24).map_err(|e| invalid(e.to_string()))?;
         if manager
             .get_entry(TagHash(component.source_owner))
@@ -406,7 +485,7 @@ impl ImportedParticles {
             .iter()
             .find(|node| node.symbol == component.owner)
             .ok_or_else(|| invalid("Imported runtime component payload is absent"))?;
-        let replacement = parhelion_import::d2_mot::payload::Payload(node.payload.clone());
+        let replacement = parhelion_import::tiger::payload::Payload(node.payload.clone());
         let resource = replacement
             .pointer(24)
             .map_err(|e| invalid(e.to_string()))?;
@@ -423,8 +502,8 @@ impl ImportedParticles {
                 "Imported runtime payload changes its component class",
             ));
         }
-        let before = parhelion_import::d2_mot::payload::Payload(entity.to_vec());
-        parhelion_import::d2_mot::entity::owner_slots(&before, &original, component.source_owner)
+        let before = parhelion_import::tiger::payload::Payload(entity.to_vec());
+        parhelion_import::tiger::entity::owner_slots(&before, &original, component.source_owner)
             .map_err(|e| invalid(e.to_string()))?;
         let target = symbols
             .get(&component.owner)
@@ -435,8 +514,8 @@ impl ImportedParticles {
             target.0,
         )
         .map_err(invalid)?;
-        parhelion_import::d2_mot::entity::reject_stale_owner(
-            &parhelion_import::d2_mot::payload::Payload(entity.to_vec()),
+        parhelion_import::tiger::entity::reject_stale_owner(
+            &parhelion_import::tiger::payload::Payload(entity.to_vec()),
             component.source_owner,
         )
         .map_err(|e| invalid(e.to_string()))?;
@@ -459,6 +538,10 @@ impl ImportedParticles {
             return Err(invalid(
                 "An imported attachment root cannot replace its entity class",
             ));
+        }
+        // A direct damage effect binds a group whose root is its private outgoing profile.
+        if profile_root(&node.payload) {
+            return Ok(());
         }
         let (count, _, _, class) = array_at(&node.payload, 16)?;
         if count == 0
@@ -526,7 +609,7 @@ impl ImportedParticles {
                     .collect::<BTreeSet<_>>();
                 if retained_keys.iter().any(|key| !keys.contains(key)) {
                     return Err(invalid(
-                        "The imported ability bank lacks a property retained by its entry",
+                        "The imported ability bank lacks a selected property",
                     ));
                 }
             }
@@ -555,22 +638,36 @@ impl ImportedParticles {
                 "More than one imported group supplies sword mechanics",
             ));
         }
+        // Groups may carry the same converted node, as a weapon's audio and a perk explosion's
+        // audio share banks. Identical nodes become one. A symbol with other contents refuses.
         let existing = self
             .nodes
             .iter()
-            .map(|node| node.symbol.as_str())
-            .collect::<BTreeSet<_>>();
-        if other
-            .nodes
-            .iter()
-            .any(|node| existing.contains(node.symbol.as_str()))
-        {
-            return Err(invalid("Imported asset groups contain duplicate symbols"));
+            .enumerate()
+            .map(|(index, node)| (node.symbol.clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut added = Vec::new();
+        for node in other.nodes {
+            match existing.get(&node.symbol).map(|&index| &self.nodes[index]) {
+                Some(kept)
+                    if kept.template == node.template
+                        && kept.payload == node.payload
+                        && kept.reference == node.reference
+                        && kept.storage == node.storage
+                        && kept.patches == node.patches => {}
+                Some(_) => {
+                    return Err(invalid("Imported asset groups contain duplicate symbols"));
+                }
+                None => added.push(node),
+            }
         }
-        self.nodes.extend(other.nodes);
+        self.nodes.extend(added);
+        self.hud.extend(other.hud);
         self.attachments.extend(other.attachments);
         self.source_trajectory |= other.source_trajectory;
+        self.retained_trajectory |= other.retained_trajectory;
         self.projectile = self.projectile.take().or(other.projectile);
+        self.perk_projectiles.extend(other.perk_projectiles);
         self.presentation = self.presentation.take().or(other.presentation);
         self.sword = self.sword.take().or(other.sword);
         Ok(())
@@ -583,6 +680,26 @@ impl ImportedParticles {
                 "Imported projectile {symbol} is not the graph's declared projectile root"
             )));
         }
+        self.projectile_root(symbol)
+    }
+
+    /// A projectile root a private perk of the weapon may name in place of a native projectile:
+    /// the fired root or one of the graph's additional projectile roots.
+    pub(in crate::item) fn perk_projectile(&self, symbol: &str) -> AuthoringResult<&[u8]> {
+        if self.projectile.as_deref() != Some(symbol) && !self.perk_projectiles.contains(symbol) {
+            return Err(invalid(format!(
+                "Imported projectile {symbol} is not one of the graph's declared projectile roots"
+            )));
+        }
+        self.projectile_root(symbol)
+    }
+
+    /// The group's fired projectile root, whose launch policy its perk projectiles share.
+    pub(in crate::item) fn fired_projectile(&self) -> Option<&str> {
+        self.projectile.as_deref()
+    }
+
+    fn projectile_root(&self, symbol: &str) -> AuthoringResult<&[u8]> {
         let node = self
             .nodes
             .iter()
@@ -597,8 +714,39 @@ impl ImportedParticles {
                 "Imported projectile root is not a native projectile entity",
             ));
         }
-        replication::validate(&self.nodes, node)?;
+        // An unreplicated root needs an unreplicated template or no network component, checked
+        // when authored.
+        if !replication::absent(node)? {
+            replication::validate(&self.nodes, node)?;
+        }
         Ok(&node.payload)
+    }
+
+    /// Rows in the projectile root's one trajectory pool, or `None` when its movement is absent,
+    /// repeated or of another layout. Typed self-references are still symbolic here.
+    pub(in crate::item) fn trajectory_capacity(&self, symbol: &str) -> Option<usize> {
+        let root = self.nodes.iter().find(|node| node.symbol == symbol)?;
+        let bindings = sundial::package_authoring::entity::weapon_component_bindings(
+            &root.payload,
+            0x0437_756D,
+        )
+        .ok()?;
+        let [binding] = bindings.as_slice() else {
+            return None;
+        };
+        let (_, _, rows, class) = array_at(&root.payload, 16).ok()?;
+        if binding.concrete_class != 0x8080_3B73 || class != 0x8080_9C04 {
+            return None;
+        }
+        let owner =
+            replication::target(&self.nodes, root, rows + binding.component_index * 12).ok()?;
+        let instance = usize::try_from(binding.resource_offset).ok()?;
+        sundial::package_authoring::entity::projectile_trajectory_capacity(
+            &owner.payload,
+            u32::MAX,
+            instance,
+        )
+        .ok()
     }
 
     /// Reserve and append the group, including its replication loading companion.
@@ -606,9 +754,17 @@ impl ImportedParticles {
     pub(in crate::item) fn author(
         &self,
         manager: &PackageManager,
-        packages: &mut crate::asset_packages::AssetPackages,
+        (packages, shared): (
+            &mut crate::asset_packages::AssetPackages,
+            &mut super::assets::Shared,
+        ),
         item: u32,
     ) -> AuthoringResult<(BTreeMap<String, TagHash>, Vec<TagHash>)> {
+        if !self.hud.is_empty() {
+            return Err(invalid(
+                "Imported HUD displays must be bound before asset allocation",
+            ));
+        }
         let runtime = self
             .presentation
             .as_ref()
@@ -616,6 +772,7 @@ impl ImportedParticles {
         let roots = self
             .projectile
             .iter()
+            .chain(&self.perk_projectiles)
             .chain(runtime)
             .map(String::as_str)
             .chain(
@@ -624,10 +781,21 @@ impl ImportedParticles {
                     .map(super::sword_profiles::Imported::root),
             )
             .collect::<Vec<_>>();
+        // A profile root is a component owner, not an entity.
         let entities = roots
             .iter()
             .map(|root| (*root).to_owned())
-            .chain(self.attachments.iter().cloned())
+            .chain(
+                self.attachments
+                    .iter()
+                    .filter(|root| {
+                        self.nodes
+                            .iter()
+                            .find(|node| node.symbol == **root)
+                            .is_none_or(|node| !profile_root(&node.payload))
+                    })
+                    .cloned(),
+            )
             .collect();
         super::assets::author(
             &self.nodes,
@@ -635,6 +803,8 @@ impl ImportedParticles {
             &entities,
             manager,
             packages,
+            // Audio binding names each bank, medium and event after its own node.
+            (|node: &Node| node.metadata.is_empty(), shared),
             |symbols| {
                 let mut bound = audio::bind(
                     &self.nodes.iter().map(audio::Node::from).collect::<Vec<_>>(),
@@ -646,9 +816,8 @@ impl ImportedParticles {
             },
             |node, payload, entity| {
                 if entity {
-                    parhelion_import::d2_mot::entity::links::Graph::read(
-                        &parhelion_import::d2_mot::payload::Payload(payload.to_vec()),
-                        false,
+                    parhelion_import::tiger::entity::links::Graph::read_native(
+                        &parhelion_import::tiger::payload::Payload(payload.to_vec()),
                     )
                     .map_err(|error| {
                         invalid(format!("Imported entity {}: {error}", node.symbol))
@@ -658,6 +827,19 @@ impl ImportedParticles {
             },
         )
     }
+}
+
+/// Whether a payload is a complete native outgoing profile owner, whose definition is class
+/// `80804B02`. An imported group translated for a direct damage effect has one as its root, and
+/// the effect's profile word names it in place of a stock profile.
+fn profile_root(payload: &[u8]) -> bool {
+    let check = || -> AuthoringResult<bool> {
+        let definition = crate::tag_payload::relative_target(payload, 24)?;
+        Ok(read_u64(payload, 0)? == payload.len() as u64
+            && definition >= 4
+            && read_u32(payload, definition - 4)? == 0x8080_4B02)
+    };
+    check().unwrap_or(false)
 }
 
 /// The fired graph's particle slots as checked owner patches naming the authored systems.

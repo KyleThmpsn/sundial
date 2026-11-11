@@ -26,10 +26,17 @@ impl Key {
 
 #[derive(Default)]
 pub(super) struct Job {
-    pending: Option<(Key, mpsc::Receiver<egui::ColorImage>)>,
+    pending: Option<(u64, Key, mpsc::Receiver<egui::ColorImage>)>,
     rendered: Option<Key>,
+    generation: u64,
 }
 impl Job {
+    /// Keep the one render in flight until it finishes, but never accept its old result.
+    pub fn reset(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.rendered = None;
+    }
+
     pub fn update(
         &mut self,
         ctx: &egui::Context,
@@ -37,10 +44,10 @@ impl Job {
         key: Key,
     ) -> Option<(Key, egui::ColorImage)> {
         let mut ready = None;
-        if let Some((source, receiver)) = &self.pending {
+        if let Some((generation, source, receiver)) = &self.pending {
             match receiver.try_recv() {
                 Ok(image) => {
-                    if source.compatible(&key) {
+                    if *generation == self.generation && source.compatible(&key) {
                         ready = Some((source.clone(), image));
                         self.rendered = Some(source.clone());
                     }
@@ -52,7 +59,7 @@ impl Job {
         }
         if self.pending.is_none() && self.rendered.as_ref() != Some(&key) {
             let (sender, receiver) = mpsc::channel();
-            self.pending = Some((key.clone(), receiver));
+            self.pending = Some((self.generation, key.clone(), receiver));
             let (repaint, viewport) = (ctx.clone(), ctx.viewport_id());
             std::thread::spawn(move || {
                 let image = render::preview_image(

@@ -432,6 +432,26 @@ pub(crate) fn prepare_in(
                 json!({"status":"unconverted","reason":format!("{error:#}")})
             }
         };
+        progress("Translating source firing and reload timing…".into());
+        result["timing"] = super::gameplay::timing::apply(
+            modern,
+            native,
+            &source_path,
+            donor,
+            &folder.join("timing"),
+            &graph_dir,
+        )?;
+        progress("Translating the source firing presentation…".into());
+        result["firing_presentation"] =
+            super::native::firing::apply(&super::native::firing::Request {
+                source_packages: modern,
+                native_packages: native,
+                source: &source_path,
+                native_rig: &native_rig,
+                namespace: &namespace,
+                work: &folder.join("firing"),
+                graph: &graph_dir,
+            })?;
     }
     let recipe_path = out.join(format!("recipes/{hash:08X}.parhelion.json"));
     write_json(&recipe_path, &recipe)?;

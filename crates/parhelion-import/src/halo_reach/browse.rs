@@ -188,15 +188,20 @@ impl Entry {
         }
     }
 
-    /// Wheeled and fighter assemblies use Heavy Pike. Tank and hover sources retain their carriers.
+    /// Wheeled and flight assemblies use Heavy Pike. Tank and hover sources retain their carriers.
+    /// A stationary turret takes the tank, whose driver aims a gun on the hull and whose tire rows
+    /// it can drop.
     fn summon(&self) -> (&'static str, u32) {
-        if self.physics.iter().any(|kind| kind == "human_tank") {
+        let stationary =
+            !self.physics.is_empty() && self.physics.iter().all(|kind| kind == "turret");
+        if stationary || self.physics.iter().any(|kind| kind == "human_tank") {
             TANK
-        } else if self
-            .physics
-            .iter()
-            .any(|kind| matches!(kind.as_str(), "human_jeep" | "alien_fighter"))
-        {
+        } else if self.physics.iter().any(|kind| {
+            matches!(
+                kind.as_str(),
+                "human_jeep" | "alien_fighter" | "human_plane" | "space_fighter" | "vtol"
+            )
+        }) {
             HEAVY_PIKE
         } else {
             INTERCEPTOR
@@ -274,6 +279,7 @@ impl Entry {
             sights: None,
             optic_item: None,
             icon: None,
+            heat_capacity: None,
         })
     }
 }

@@ -414,6 +414,9 @@ pub struct WeaponCloneOverrides {
     /// Another weapon whose type markers the weapon's runtime block carries in place of the base
     /// weapon's own. Its block has to sit in the same content owner.
     pub type_marker_donor: Option<u32>,
+    /// Another row of the base weapon's content owner whose firing presentation, and optionally
+    /// projectile, the weapon's selected block takes.
+    pub content_variant: Option<crate::weapon::behavior::ContentVariant>,
     /// Another weapon whose behavior the weapon's runtime block carries in place of the base
     /// weapon's own: all of it from the same content owner, its records and labels from another.
     pub behavior_donor: Option<u32>,
@@ -628,6 +631,9 @@ pub struct WeaponSocketColumnOverride {
     /// How many leading choices the socket's own list offers. When set, every choice also joins a
     /// private randomized plug set appended to the shared table, which the socket rolls from.
     pub reusable_choices: Option<u16>,
+    /// Whether the item tooltip leaves the socket's plugs out of its perk rows. Omitted keeps the
+    /// socket row's own flag.
+    pub hide_perks_in_tooltip: Option<bool>,
 }
 
 impl WeaponSocketColumnOverride {
@@ -1144,10 +1150,18 @@ pub(crate) struct WeaponBuildDetails {
 pub struct NewCollectionPlan {
     pub collectible_hash: u32,
     pub collectible_index: u16,
-    pub unlock_hash: u32,
-    pub unlock_definition_index: u16,
-    pub unlock_bank: u8,
-    pub unlock_slot: u16,
+    /// `None` for a build for Sunrise's mod loader, whose collectibles are acquired
+    /// unconditionally, so the mods of the family share no flag or account slot.
+    pub unlock: Option<NewUnlockPlan>,
+}
+
+/// The unlock flag an authored collectible reads, and the account slot it is stored in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NewUnlockPlan {
+    pub hash: u32,
+    pub definition_index: u16,
+    pub bank: u8,
+    pub slot: u16,
 }
 
 /// Build-assigned identities for one private socket choice used by a weapon.
@@ -1209,4 +1223,7 @@ pub(super) struct AuthoredLocalization {
     pub(super) merged_header: Vec<u8>,
     pub(super) locale_data: Vec<AuthoredLocaleData>,
     pub(super) donor_header_tag: TagHash,
+    /// Whether the text went to a bank of the build's own, which a new string bank index row in
+    /// `index` names, instead of into the donor bank.
+    pub(super) own_bank: bool,
 }

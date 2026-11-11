@@ -7,7 +7,7 @@ use sundial_account::EntityId;
 
 use super::{
     SqliteAccountError,
-    writer::{insert, matching, put},
+    writer::{Preserved, insert, put},
 };
 
 mod rewards;
@@ -79,6 +79,7 @@ impl InventoryState {
     ) -> Result<(), SqliteAccountError> {
         rewards::save(db, &self.rewards, old_rewards)?;
         // Keep unknown columns with the row that owned them, even after a removal compacts it.
+        let old = Preserved::new(old, &["character_slot", "position"]);
         db.execute("DELETE FROM character_stacks", [])
             .map_err(sql)?;
         for (&slot, stacks) in &self.stacks {
@@ -96,15 +97,7 @@ impl InventoryState {
                 }
                 let mut row = stack
                     .original_position
-                    .map(|original| {
-                        matching(
-                            old,
-                            &[
-                                ("character_slot", slot as i64),
-                                ("position", original as i64),
-                            ],
-                        )
-                    })
+                    .map(|original| old.get(&[slot as i64, original as i64]))
                     .unwrap_or_default();
                 put(&mut row, "character_slot", slot as i64);
                 put(&mut row, "position", position as i64);

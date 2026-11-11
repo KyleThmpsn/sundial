@@ -1,7 +1,10 @@
 //! Author runtime payloads without interleaving host and private-perk tag allocation.
 use super::*;
 
+mod deferred;
+
 pub(in crate::item::build) struct Payloads {
+    pub hud_statuses: Vec<sundial::package_authoring::sandbox_perk::program::HudStatus>,
     pub entity_assignments: Vec<u8>,
     pub finished_sandbox_perks: Vec<u8>,
     pub sandbox_perk_indices: Vec<u8>,
@@ -21,6 +24,8 @@ pub(in crate::item::build) struct Payloads {
     weapon_allocator: AppendedTagAllocator,
     /// Every imported runtime asset placed in the asset packages, for the dependency index.
     runtime_asset_tags: Vec<TagHash>,
+    /// Authored entries that load with a private relation instead of the dependency index.
+    pub on_demand: std::collections::BTreeSet<TagHash>,
     /// The badge artwork's entries in the primary asset package, which the HUD icons end.
     pub(in crate::item::build) private_perk_allocator: AppendedTagAllocator,
 }
@@ -75,7 +80,7 @@ pub(in crate::item::build) fn author(
     let mut runtime_asset_tags = Vec::new();
     let mut impacts = Vec::new();
     #[cfg(feature = "d2-model-importer")]
-    let mut particle_symbols = BTreeMap::new();
+    let (mut particle_symbols, mut runtime_statuses) = (BTreeMap::new(), Vec::new());
     #[cfg(not(feature = "d2-model-importer"))]
     let particle_symbols = BTreeMap::new();
     // Sunrise's mod loader refuses a patch that adds entries, so there every private copy starts
@@ -107,6 +112,9 @@ pub(in crate::item::build) fn author(
     // One store for the build: weapons keep their runtime entities in it, and the subclasses
     // compiled below keep their abilities' copies.
     let runtime_cache = super::Cache::open(&sources.manager, &stock, progress);
+    // An item whose runtime or effect groups fail leaves everything as it was and the other items
+    // still compile, so one pass reports every item that fails here.
+    let mut failed = BTreeMap::new();
     let authored_pattern_global_ids = super::author_entities(
         &sources.manager,
         stock,
@@ -119,13 +127,16 @@ pub(in crate::item::build) fn author(
             impacts: &mut impacts,
             #[cfg(feature = "d2-model-importer")]
             particle_symbols: &mut particle_symbols,
+            #[cfg(feature = "d2-model-importer")]
+            hud_statuses: &mut runtime_statuses,
         },
         &mut entity_assignments,
         &mut weapon_runtime_new_tags,
+        &mut failed,
         progress,
     )?;
     #[cfg(feature = "d2-model-importer")]
-    super::attachments::author_subclasses(
+    let hud_statuses = super::attachments::author_groups(
         &sources.manager,
         resolved,
         &mut super::RuntimeAssets {
@@ -133,8 +144,26 @@ pub(in crate::item::build) fn author(
             placed: &mut runtime_asset_tags,
             impacts: &mut impacts,
             particle_symbols: &mut particle_symbols,
+            hud_statuses: &mut runtime_statuses,
         },
+        &mut assets.hud_status_layers,
+        &mut failed,
     )?;
+    #[cfg(not(feature = "d2-model-importer"))]
+    let hud_statuses = Vec::new();
+    if !failed.is_empty() {
+        return Err(crate::AuthoringError::several(
+            failed.into_values().collect(),
+        ));
+    }
+    // Every imported ability's root is allocated now, before any private perk compiles.
+    #[cfg(feature = "d2-model-importer")]
+    let imported_abilities = super::attachments::imported_abilities(resolved, &particle_symbols)?;
+    // A perk in another member can't name these roots, so the family build couples the members.
+    #[cfg(feature = "d2-model-importer")]
+    crate::mod_family::build::carries_abilities(imported_abilities.keys().cloned());
+    #[cfg(not(feature = "d2-model-importer"))]
+    let imported_abilities = BTreeMap::new();
     // Cache replay has already placed and linked every weapon's imported assets.
     // Perk actions can live in a different package from their label dictionary.
     let label_dictionaries = label_dictionaries(&sources.manager, &asset_packages)?;
@@ -144,9 +173,12 @@ pub(in crate::item::build) fn author(
         sandbox_perk_indices: &mut sandbox_perk_indices,
         private_perk_runtime_new_tags: &mut private_perk_runtime_new_tags,
         private_perk_runtime_tag_allocator,
+        compiled_runtimes: Default::default(),
         particle_symbols: &particle_symbols,
+        imported_abilities: &imported_abilities,
         label_dictionaries: &label_dictionaries,
         weapon: None,
+        effects: None,
     };
     // Each private perk, and each part of an authored subclass entry, reports as it starts.
     const PRIVATE_PERKS: &str = "Compiling Private Perks";
@@ -188,7 +220,7 @@ pub(in crate::item::build) fn author(
                 progress: &mut *progress,
             };
             crate::subclass::compile::compile(
-                donor.subclass_list.as_ref(),
+                donor.subclass_list(),
                 plans,
                 &mut compiler,
                 &mut sources.subclass_tables,
@@ -216,6 +248,7 @@ pub(in crate::item::build) fn author(
     grafted_graphs.dedup();
     Ok((
         Payloads {
+            hud_statuses,
             impacts,
             entity_assignments,
             finished_sandbox_perks,
@@ -228,6 +261,7 @@ pub(in crate::item::build) fn author(
             subclass_entries,
             weapon_allocator: weapon_runtime_tag_allocator,
             runtime_asset_tags,
+            on_demand: std::collections::BTreeSet::new(),
             private_perk_allocator: private_perk_runtime_tag_allocator,
             grafted_graphs,
         },
@@ -248,6 +282,11 @@ pub(in crate::item::build) struct DependencyTimings {
     /// Adding every new dependency to the index and checking it round-trips.
     pub enrollment: std::time::Duration,
     pub additions: usize,
+    /// Moving what only private relations reach into their loading groups.
+    pub on_demand: std::time::Duration,
+    pub relations: usize,
+    pub on_demand_entries: usize,
+    pub on_demand_bytes: usize,
 }
 
 impl Payloads {
@@ -293,7 +332,7 @@ impl Payloads {
             RUNTIME_DEPENDENCY_COMPANION,
             "investment runtime dependency index",
         )?;
-        let mut additions = assets.perk_icon_dependencies.clone();
+        let mut additions = assets.hud_dependencies.clone();
         additions.extend(assets.hud_assets.iter().copied());
         for index in 0..self.private_perk_tags.len() {
             additions.push(self.private_perk_allocator.assigned_tag(
@@ -303,13 +342,21 @@ impl Payloads {
             )?);
         }
         for index in 0..self.weapon_tags.len() {
-            additions.push(self.weapon_allocator.assigned_tag(
+            let tag = self.weapon_allocator.assigned_tag(
                 index,
                 "Runtime dependency",
                 "weapon runtime",
-            )?);
+            )?;
+            if !self.on_demand.contains(&tag) {
+                additions.push(tag);
+            }
         }
-        additions.extend(self.runtime_asset_tags.iter().copied());
+        additions.extend(
+            self.runtime_asset_tags
+                .iter()
+                .filter(|tag| !self.on_demand.contains(tag))
+                .copied(),
+        );
         timings.roots = started.elapsed();
         let started = std::time::Instant::now();
         let (prerequisites, graphs) = super::dependencies::native_prerequisites(

@@ -61,6 +61,7 @@ pub fn settable_parameters(bank: &[u8]) -> Result<Vec<Parameter>, String> {
             name: parameter.name,
             applied: parameter.applied,
             add: parameter.add,
+            gate: None,
         };
         if matches!(handler_slot(bank, modifier), Ok(Some(_))) {
             settable.push(parameter);
@@ -81,6 +82,7 @@ pub const fn recharge_modifier(multiplier: f32) -> Modifier {
         input: RECHARGE_INPUT,
         value: multiplier,
         multiply: true,
+        selection: None,
     }
 }
 

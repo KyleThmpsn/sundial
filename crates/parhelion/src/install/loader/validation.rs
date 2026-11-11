@@ -1,15 +1,17 @@
 use super::*;
 
+/// Checks each package of `sources`, named by member-qualified staged name, against its digest
+/// and its native profile.
 pub(super) fn validate_packages(
     target: &Path,
     sources: &[(ArtifactMetadata, PathBuf)],
     known: &[CheckedPackage],
 ) -> Result<Vec<CheckedPackage>, InstallError> {
-    authored_packages_for_file_names(sources.iter().map(|(a, _)| a.file_name.as_str()))
+    staged_packages(sources.iter().map(|(a, _)| a.file_name.as_str()))
         .map_err(InstallError::validation)?;
     let mut checked = Vec::with_capacity(sources.len());
     for (artifact, path) in sources {
-        let profile = authored_package_for_file_name(&artifact.file_name)
+        let profile = authored_package_for_file_name(native(artifact))
             .ok_or_else(|| InstallError::validation("Unknown managed package"))?;
         mod_content::checked_path(
             path.parent()
@@ -56,14 +58,14 @@ pub(super) fn reject_installed_conflicts(
         files.retain(|(name, _)| !retired.iter().any(|old| old.file_name == *name));
     }
     for (artifact, _) in sources {
-        let profile = authored_package_for_file_name(&artifact.file_name)
+        let profile = authored_package_for_file_name(native(artifact))
             .ok_or_else(|| InstallError::validation("Unknown managed package"))?;
         // Parhelion's own file of the same name is the legacy layout, which the upgrade owns.
         let mut others = installed
             .get(&profile.package_id)
             .into_iter()
             .flatten()
-            .filter(|(name, _)| *name != artifact.file_name);
+            .filter(|(name, _)| name != native(artifact));
         match canonical_package(profile.package_id) {
             Some(stock) => {
                 if let Some((name, _)) =
@@ -229,7 +231,7 @@ pub(super) fn check_other_mods(
         ..mod_content::Incoming::default()
     };
     for (artifact, path) in sources {
-        let profile = authored_package_for_file_name(&artifact.file_name)
+        let profile = authored_package_for_file_name(native(artifact))
             .ok_or_else(|| InstallError::validation("Unknown managed package"))?;
         if canonical_package(profile.package_id).is_some() {
             incoming.patches.push(path.clone());
@@ -374,22 +376,27 @@ fn installed_generations(target: &Path) -> Result<BTreeMap<u16, Vec<(String, u8)
 /// The mod folder's manifest and receipt, and at most 1,024 packages, each with its merge data.
 pub(super) const FOLDER_FILE_LIMIT: usize = 2 + 2 * 1024;
 
-/// A package's path in the mod folder, or the path of the merge data beside it.
+/// The native file name of a staged or installed artifact, which its profile is read by.
+fn native(artifact: &ArtifactMetadata) -> &str {
+    crate::mod_family::native_name(&artifact.file_name)
+}
+
+/// A package's path in its member's mod folder, or the path of the merge data beside it.
 pub(super) fn package_path(artifact: &ArtifactMetadata) -> Result<String, InstallError> {
-    let package = match artifact.file_name.strip_suffix(".merge") {
+    let name = native(artifact);
+    let package = match name.strip_suffix(".merge") {
         Some(stem) => format!("{stem}.pkg"),
-        None => artifact.file_name.clone(),
+        None => name.to_owned(),
     };
     let profile = authored_package_for_file_name(&package)
         .ok_or_else(|| InstallError::validation("Unknown managed package"))?;
     Ok(format!(
-        "{}/{}",
+        "{}/{name}",
         if canonical_package(profile.package_id).is_some() {
             "patches"
         } else {
             "packages"
         },
-        artifact.file_name
     ))
 }
 
@@ -411,8 +418,12 @@ pub(super) fn managed_family_with_packages(
                 .map_err(InstallError::validation)?;
         for artifact in &receipt.artifacts {
             let path = directory.join(&artifact.path);
+            // Named as a build stages it, so members that patch one package stay apart.
             let metadata = ArtifactMetadata {
-                file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                file_name: crate::mod_family::staged_name(
+                    &id,
+                    &path.file_name().unwrap().to_string_lossy(),
+                ),
                 byte_length: artifact.byte_length,
                 sha256: artifact.sha256.to_ascii_uppercase(),
             };
@@ -432,6 +443,18 @@ pub(super) fn managed_family_with_packages(
     Ok((family, packages))
 }
 
+/// Member `id`'s packages by staged name, the bare native name for the main mod.
+pub(super) fn member_artifacts(id: &str, folder: &Folder) -> Vec<ArtifactMetadata> {
+    artifacts(folder)
+        .into_iter()
+        .map(|artifact| ArtifactMetadata {
+            file_name: crate::mod_family::staged_name(id, &artifact.file_name),
+            ..artifact
+        })
+        .collect()
+}
+
+/// A folder's packages by native file name.
 pub(super) fn artifacts(folder: &Folder) -> Vec<ArtifactMetadata> {
     folder
         .files
@@ -457,15 +480,9 @@ pub(super) fn snapshot_folder(folder: &Path) -> Result<Folder, InstallError> {
         folder,
     )
     .map_err(InstallError::validation)?;
-    let mut files = BTreeMap::new();
-    for (relative, path) in
-        mod_content::mission_script::files(folder).map_err(InstallError::validation)?
-    {
-        files.insert(
-            relative,
-            TransactionDigest::from(&digest_file(&path).map_err(failure)?),
-        );
-    }
+    // Every file the folder may hold, by its name in the folder's inventory, checked before any
+    // is read.
+    let mut found = mod_content::mission_script::files(folder).map_err(InstallError::validation)?;
     for entry in fs::read_dir(folder).map_err(failure)? {
         let entry = entry.map_err(failure)?;
         mod_content::checked_path(folder, &entry.path()).map_err(InstallError::validation)?;
@@ -481,10 +498,7 @@ pub(super) fn snapshot_folder(folder: &Path) -> Result<Folder, InstallError> {
             mod_content::MANIFEST | mod_content::RECEIPT | mod_content::map_diagnostics::FILE_NAME
         ) && entry.file_type().map_err(failure)?.is_file()
         {
-            files.insert(
-                name,
-                TransactionDigest::from(&digest_file(&entry.path()).map_err(failure)?),
-            );
+            found.push((name, entry.path()));
         } else if matches!(name.as_str(), "packages" | "patches")
             && entry.file_type().map_err(failure)?.is_dir()
         {
@@ -499,10 +513,7 @@ pub(super) fn snapshot_folder(folder: &Path) -> Result<Folder, InstallError> {
                     .file_name()
                     .into_string()
                     .map_err(|_| InstallError::validation("Non-Unicode package filename"))?;
-                files.insert(
-                    format!("{name}/{file_name}"),
-                    TransactionDigest::from(&digest_file(&package.path()).map_err(failure)?),
-                );
+                found.push((format!("{name}/{file_name}"), package.path()));
             }
         } else {
             return Err(InstallError::validation(format!(
@@ -510,11 +521,36 @@ pub(super) fn snapshot_folder(folder: &Path) -> Result<Folder, InstallError> {
             )));
         }
     }
-    if files.len() > FOLDER_FILE_LIMIT {
+    if found.len() > FOLDER_FILE_LIMIT {
         return Err(InstallError::validation(
             "Managed mod exceeds its file limit",
         ));
     }
+    // A family's folders hold over a gigabyte, which every review and installation reads, so the
+    // files hash on several threads. Read one at a time, the folders of a five-mod family took
+    // about 10 seconds of an installation's account check.
+    let paths = found
+        .iter()
+        .map(|(_, path)| path.as_path())
+        .collect::<Vec<_>>();
+    let mut files = BTreeMap::new();
+    let mut failed = None;
+    crate::artifact::digest_files(&paths, |index, digest| match digest {
+        Ok(digest) => {
+            files.insert(found[index].0.clone(), TransactionDigest::from(&digest));
+            Ok(())
+        }
+        Err(error) => {
+            let message = error.to_string();
+            failed = Some(failure(error));
+            Err(message)
+        }
+    })
+    .map_err(|message| {
+        failed
+            .take()
+            .unwrap_or_else(|| InstallError::validation(message))
+    })?;
     Ok(Folder { files })
 }
 

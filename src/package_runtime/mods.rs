@@ -1,7 +1,7 @@
 //! The managed mod's on-disk contract and read-only views of independent Sunrise mods.
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Read,
     path::{Component, Path, PathBuf},
@@ -137,6 +137,7 @@ impl Manifest {
         {
             return Err("The managed Parhelion mod manifest has an unsupported identity".into());
         }
+        // Any member may require other members of its family, each once, at its own release.
         let mut dependencies = BTreeSet::new();
         if self.dependencies.len() > 32
             || self.dependencies.iter().any(|dependency| {
@@ -146,10 +147,9 @@ impl Manifest {
                     || dependency.max_version.as_deref() != Some(&self.version)
                     || !dependencies.insert(&dependency.id)
             })
-            || (self.id != ID && !self.dependencies.is_empty())
         {
             return Err(
-                "Managed mod dependencies must name each used importer at the same release".into(),
+                "Managed mod dependencies must name other family mods at the same release".into(),
             );
         }
         let parts = self.version.split('.').collect::<Vec<_>>();
@@ -186,6 +186,11 @@ pub struct Receipt {
     pub artifacts: Vec<Artifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<ImportContent>,
+    /// The compiler content of each importer whose items build with the main mod's, by source.
+    /// Those importers have no folder: their resources are the main mod's packages, so only the
+    /// main mod's receipt has any.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub coupled: BTreeMap<String, ImportContent>,
 }
 
 impl Receipt {
@@ -196,12 +201,14 @@ impl Receipt {
                     .into(),
             );
         }
+        // Every member may hold patches, records packages, mission controllers and map
+        // diagnostics. Only an importer carries compiler content.
         let mut names = BTreeSet::new();
         let mut packages = BTreeSet::new();
+        let mut standalone = BTreeSet::new();
         for artifact in &self.artifacts {
             if mission_script::valid_path(&artifact.path) {
-                if self.mod_id != ID
-                    || !names.insert(artifact.path.clone())
+                if !names.insert(artifact.path.clone())
                     || artifact.byte_length == 0
                     || artifact.byte_length > mission_script::BYTE_LIMIT
                     || !valid_sha256(&artifact.sha256)
@@ -211,8 +218,7 @@ impl Receipt {
                 continue;
             }
             if artifact.path == map_diagnostics::FILE_NAME {
-                if self.mod_id != ID
-                    || !names.insert(artifact.path.clone())
+                if !names.insert(artifact.path.clone())
                     || artifact.byte_length == 0
                     || artifact.byte_length > map_diagnostics::BYTE_LIMIT
                     || !valid_sha256(&artifact.sha256)
@@ -228,8 +234,6 @@ impl Receipt {
             if !matches!(folder, "packages" | "patches")
                 || name.contains(['/', '\\'])
                 || name.contains("_unp1_")
-                || (self.mod_id != ID
-                    && (folder != "packages" || name.starts_with("w64_parhelion_investment_")))
             {
                 return Err("The managed mod receipt contains an unsupported package path".into());
             }
@@ -262,6 +266,9 @@ impl Receipt {
                     "The managed mod receipt has invalid or repeated package metadata".into(),
                 );
             }
+            if folder == "packages" {
+                standalone.insert(id);
+            }
         }
         if packages.is_empty() || packages.len() > 1024 {
             return Err(
@@ -273,7 +280,23 @@ impl Receipt {
             if self.mod_id == ID {
                 return Err("Importer content cannot belong to the main mod receipt".into());
             }
-            content.validate(&packages)?;
+            // The allocation names the packages the importer adds, never the stock packages it
+            // patches.
+            content.validate(&standalone)?;
+        }
+        if !self.coupled.is_empty() {
+            if self.mod_id != ID {
+                return Err("Only the main mod receipt holds coupled importer content".into());
+            }
+            let mut claimed = BTreeSet::new();
+            for (source, content) in &self.coupled {
+                if Importer::from_source(source).is_none() {
+                    return Err(format!(
+                        "Coupled importer content names unknown source {source}"
+                    ));
+                }
+                content.validate_within(&standalone, &mut claimed)?;
+            }
         }
         Ok(())
     }
@@ -324,8 +347,9 @@ pub fn metadata_byte_limit(path: &Path) -> u64 {
         256 * 1024
     } else if path.file_name().is_some_and(|n| n == RECEIPT) {
         // Linked metadata carries one compact entry descriptor per imported resource. Large
-        // map families can exceed the ordinary one-megabyte metadata limit.
-        128 * 1024 * 1024
+        // map families can exceed the ordinary one-megabyte metadata limit: twelve Reach maps
+        // write about 155 MB compact and 196 MB indented.
+        512 * 1024 * 1024
     } else {
         1024 * 1024
     }
@@ -517,8 +541,8 @@ pub fn content_files(install: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// How Parhelion's build would load beside the other mods Sunrise loads, with `incoming` in place
-/// of Parhelion's installed folder: what would keep its content from loading intact, and the
-/// entries it shares that Sunrise merges.
+/// of Parhelion's installed family folders: what would keep any member's content from loading
+/// intact, and the entries members share with other mods or each other that Sunrise merges.
 pub fn coexistence(install: &Path, incoming: &Incoming) -> Result<Coexistence, String> {
     Ok(content::Plan::read(install, &[], Some(incoming))?.coexistence)
 }

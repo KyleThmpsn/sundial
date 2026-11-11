@@ -113,6 +113,27 @@ impl Interface {
 
 impl Graph {
     pub fn read(entity: &Payload, modern: bool) -> Result<Self> {
+        let graph = Self::read_layout(entity, modern)?;
+        ensure!(
+            graph
+                .components
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == graph.components.len(),
+            "ambiguous source component owner"
+        );
+        Ok(graph)
+    }
+
+    /// Read a native graph whose serialized component ordinals and registrations are retained.
+    /// An owner template may occur at several ordinals. Each connection still has to name the
+    /// owner at its exact ordinal. This reader supplies no owner-only mapping for conversion.
+    pub fn read_native(entity: &Payload) -> Result<Self> {
+        Self::read_layout(entity, false)
+    }
+
+    fn read_layout(entity: &Payload, modern: bool) -> Result<Self> {
         ensure!(
             entity.u64(0)? == entity.0.len() as u64,
             "entity file size differs"
@@ -129,14 +150,6 @@ impl Graph {
         ensure!(
             components.len() < 0xFFFF,
             "component ordinal exceeds native range"
-        );
-        ensure!(
-            components
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                == components.len(),
-            "ambiguous source component owner"
         );
         let read = |descriptor| -> Result<Vec<Connection>> {
             let stride = if modern { 56 } else { 72 };

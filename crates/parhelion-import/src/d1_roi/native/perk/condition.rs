@@ -9,6 +9,10 @@ mod event_filter;
 mod group;
 mod player;
 
+/// The refusal of a source game event that has no qualified Shadowkeep event.
+pub(super) const ABSENT_GAME_EVENT: &str =
+    "Source game event has no qualified native event and context pair";
+
 pub(super) fn read(
     source: &Source,
     p: &Payload,
@@ -110,14 +114,30 @@ pub(super) fn read(
                 && p.u8(at + 6)? == 0
                 && matches!(
                     (p.u32(at + 8)?, p.u32(at + 12)?),
-                    (0x6CEC7A87, 0x18CCBF24) | (0xB3311944, 0xC7161F86)
+                    (0x6CEC7A87, 0x18CCBF24)
+                        | (0xB3311944, 0xC7161F86)
+                        | (0xFBB59A0D, 0x4FE19919)
+                        | (0x83B708DF, 0x4FE19919)
+                        | (0x7E1308AB, 0xCBA6406B)
+                        | (0x34FD8483, 0x4CF2C008)
                 ),
-            "Source game event has no qualified native event and context pair"
+            "{ABSENT_GAME_EVENT}"
         );
         // Source 76C450 and native 107DD50 compare the event value, then resolve
         // the context key. Besides Orb pickup, B3311944 has matching event-list
         // production in source 5D768E and native F95A77. Its C7161F86 context
         // selects the compared source +48/native +50 member in both registries.
+        // The Oracle and Praetorian kill incidents (`FBB59A0D`, `83B708DF`, context
+        // `killing_player` `4FE19919`) and Narrow Escape (`7E1308AB`, threshold 0.2) are derived
+        // events in the native event table `80B9E5BF` (`808087F4` bodies) with the source's
+        // parent event, and stock activity statistics (`80809A12`) listen for the same pairs.
+        // Their filters are absent from the client event table `81327CD4`, so whether a client
+        // perk hears them is a gameplay question these pairs are admitted to answer.
+        // Capture King's zone capture event `34FD8483` (FNV-1 of `pvp_dominion_zone_captured`, a
+        // Control capture) with context `4CF2C008` is in both the native event table `80B9E5BF`
+        // and the client event table `81327CD4`, and stock activity statistics `80BA0002` and
+        // `80BA0016` read the pair. Its other alternatives are `D3F71215`
+        // (`pvp_salvage_zone_captured`, a mode Shadowkeep lacks) and the unnamed `FA34BD60`.
         // Other source activity signals still need their own producer evidence.
         // Byte +7 is a compiled condition index, not a reserved flag. Native
         // compilation rebuilds it, including the FF sentinel on extension children.
@@ -240,10 +260,15 @@ pub(super) fn read(
         );
         // Source 4F9F50 writes a miss flag, while native CFE490 writes a hit flag.
         // Their checkers invert the flag test too, preserving 1 = miss and 2 = hit.
-        // Mode 3 still needs qualification of the native target-category restriction.
+        // Mode 3 admits a hit on a qualifying target in both. The source requires the
+        // target-query byte, which 4F9F50 sets only for a valid target through the
+        // interface query of 0046FE20. Native requires the hit flag, the inverse of
+        // DDA370 and target movement interface 80803A18 through 3BD080. That the two
+        // queries select the same actors is inferred, since the source interface named by
+        // global 016EBBC8 is unidentified. Super Good Advice's hit refills use mode 3.
         bytes[0x90] = match p.u8(at + 0xE4)? {
-            mode @ 0..=2 => mode,
-            _ => anyhow::bail!("Source shot condition mode requires target translation"),
+            mode @ 0..=3 => mode,
+            _ => anyhow::bail!("Source shot condition mode is undefined"),
         };
         bytes[8] = p.u8(at + 8)?;
         // The shared weapon-slot domain is 0..2. Zero bypasses slot filtering.

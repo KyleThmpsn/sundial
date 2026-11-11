@@ -191,27 +191,72 @@ pub(in crate::install) fn grant_items(
     items: &[GrantedItem],
 ) -> Result<AuthoredGrantReport, String> {
     with_generation(target, target, |generation| {
+        let mut buckets = Buckets::open(generation)?;
+        let grants = buckets.grants(items)?;
+        grant_authored_items(game_root, &grants, &mut |hash| buckets.of(hash))
+    })
+}
+
+/// What [`grant_items`] will add and equip once `generation`, the staged one under review, is
+/// installed, read from the account as it is now. Grants run after the reviewed cleanup, so the
+/// saved rows of `removed`, the definitions that cleanup deletes, take no room here either.
+pub(in crate::install) fn preview_grants(
+    game_root: &Path,
+    runtime: &RuntimeSnapshot,
+    generation: &Generation,
+    items: &[GrantedItem],
+    removed: &BTreeSet<u32>,
+) -> Result<AuthoredGrantReport, String> {
+    let mut buckets = Buckets::open(generation)?;
+    let grants = buckets.grants(items)?;
+    sundial::package_authoring::account::preview_authored_grants_for_runtime(
+        game_root,
+        runtime,
+        &grants,
+        removed,
+        &mut |hash| buckets.of(hash),
+    )
+}
+
+/// Item buckets read from one generation's item table, each definition read once.
+struct Buckets<'a> {
+    manager: &'a sundial::package_authoring::PackageManager,
+    root: Vec<u8>,
+    table: Vec<u8>,
+    tags: Option<BTreeMap<u32, TagHash>>,
+    known: HashMap<u32, Option<u8>>,
+}
+
+impl<'a> Buckets<'a> {
+    fn open(generation: &'a Generation) -> Result<Self, String> {
         let manager = &generation.manager;
         let (root, table) = placement::tables(manager)?;
-        let definition = |hash: u32, tag: TagHash| -> Result<Vec<u8>, String> {
-            let item = manager.read_tag(tag).map_err(|e| e.to_string())?;
-            if read_u32(&item, ITEM_DEFINITION_HASH_OFFSET).map_err(|e| e.to_string())? != hash {
-                return Err(format!("Item 0x{hash:08X} has an inconsistent definition"));
-            }
-            Ok(item)
-        };
-        let bucket = |item: &[u8], hash: u32| {
-            item.get(ITEM_INVENTORY_SLOT_OFFSET)
-                .copied()
-                .ok_or_else(|| format!("Item 0x{hash:08X} has no inventory bucket"))
-        };
-        // A character equips the project's first subclass for its class. A subclass for every
-        // class reaches the other classes' characters too, unequipped, since another class
-        // using it is untested.
+        Ok(Self {
+            manager,
+            root,
+            table,
+            tags: None,
+            known: HashMap::new(),
+        })
+    }
+
+    fn definition(&self, hash: u32, tag: TagHash) -> Result<Vec<u8>, String> {
+        let item = self.manager.read_tag(tag).map_err(|e| e.to_string())?;
+        if read_u32(&item, ITEM_DEFINITION_HASH_OFFSET).map_err(|e| e.to_string())? != hash {
+            return Err(format!("Item 0x{hash:08X} has an inconsistent definition"));
+        }
+        Ok(item)
+    }
+
+    /// Each item's grants with its bucket and that bucket's capacity. A character equips the
+    /// project's first subclass for its class when this adds it. A subclass for every class
+    /// reaches the other classes' characters too, unequipped, since another class using it is
+    /// untested.
+    fn grants(&self, items: &[GrantedItem]) -> Result<Vec<AuthoredItemGrant>, String> {
         let mut equipping = BTreeSet::new();
         let mut grants = Vec::new();
         for item in items {
-            let payload = definition(item.item_hash, item.definition_tag)?;
+            let payload = self.definition(item.item_hash, item.definition_tag)?;
             let targets = match item.class_type {
                 Some(class_type) if item.every_class => (0..3)
                     .map(|class| AuthoredGrantTarget::Class {
@@ -232,8 +277,8 @@ pub(in crate::install) fn grant_items(
             };
             let bucket = bucket(&payload, item.item_hash)?;
             let capacity = sundial::package_authoring::inventory_bucket_capacity(
-                manager,
-                &root,
+                self.manager,
+                &self.root,
                 bucket,
                 item.class_type.is_none(),
             )?;
@@ -244,24 +289,31 @@ pub(in crate::install) fn grant_items(
                 target,
             }));
         }
-        // The account's other definitions, each read once and only when counted.
-        let mut tags: Option<BTreeMap<u32, TagHash>> = None;
-        let mut known = HashMap::<u32, Option<u8>>::new();
-        grant_authored_items(game_root, &grants, &mut |hash| {
-            if let Some(found) = known.get(&hash) {
-                return Ok(*found);
-            }
-            if tags.is_none() {
-                tags = Some(definition_tags(&table)?);
-            }
-            let found = match tags.as_ref().and_then(|tags| tags.get(&hash)) {
-                Some(tag) => Some(bucket(&definition(hash, *tag)?, hash)?),
-                None => None,
-            };
-            known.insert(hash, found);
-            Ok(found)
-        })
-    })
+        Ok(grants)
+    }
+
+    /// The bucket of another definition the account holds, or `None` when this generation has
+    /// no such item.
+    fn of(&mut self, hash: u32) -> Result<Option<u8>, String> {
+        if let Some(found) = self.known.get(&hash) {
+            return Ok(*found);
+        }
+        if self.tags.is_none() {
+            self.tags = Some(definition_tags(&self.table)?);
+        }
+        let found = match self.tags.as_ref().and_then(|tags| tags.get(&hash)).copied() {
+            Some(tag) => Some(bucket(&self.definition(hash, tag)?, hash)?),
+            None => None,
+        };
+        self.known.insert(hash, found);
+        Ok(found)
+    }
+}
+
+fn bucket(item: &[u8], hash: u32) -> Result<u8, String> {
+    item.get(ITEM_INVENTORY_SLOT_OFFSET)
+        .copied()
+        .ok_or_else(|| format!("Item 0x{hash:08X} has no inventory bucket"))
 }
 
 fn definition_tags(table: &[u8]) -> Result<BTreeMap<u32, TagHash>, String> {

@@ -9,10 +9,9 @@
 //! `2^(-9 x)` of the direction map's first channel and by a compression constant. Irradiance over
 //! pi is the lobe's color times a diffuse table read at the normal's cosine to the lobe and the
 //! bandwidth, plus the ambient color. The direction map's second channel is the sun's visibility,
-//! for the separate analytical light. The translation stores that decoded form in three images of
-//! one atlas, which sets the lightmap image of every BSP a level loads on shelves, each ringed by
-//! neutral texels, above the lighting probes and a last neutral strip that also lights surfaces
-//! without lightmap coordinates.
+//! for the separate analytical light. Material shading filters the original compressed values
+//! before this decode. Four block atlases retain the source image regions, and a separate half-float
+//! table holds constant probes. A decoded CPU atlas supports normalization and ground-light queries.
 //!
 //! Instances without lightmap coordinates are lit per vertex or by one coloring row, and so are a
 //! cluster mesh's parts lit per vertex. Per-vertex lighting is six bytes a vertex in a buffer the
@@ -29,6 +28,7 @@ use super::super::{
 use anyhow::{Context, Result, ensure};
 
 mod compute;
+mod sampling;
 
 /// The lightmap BSP data's direction and intensity maps, and its per-instance lightmap texture
 /// coordinate streams: one vertex buffer index per placed instance, `-1` for none.
@@ -56,7 +56,7 @@ const EXPONENT: f32 = 9.000_001;
 const BRIGHTNESS: usize = 0x18;
 /// The share of lit texels whose colors encode without clipping.
 const PEAK_QUANTILE: f64 = 0.999;
-/// Stored colors are logarithmic in their share `s` of the atlas's peak: a byte holds
+/// CPU atlas colors are logarithmic in their share `s` of the atlas's peak: a byte holds
 /// `255 log2(1 + LOG_RANGE s) / log2(1 + LOG_RANGE)` ([`encode_share`], [`decode_share`]). Zero and
 /// the peak store exactly, and the upper 16 stops step evenly by 4.4%, where the square root of `s`
 /// stepped by 13% or more below its sixteenth byte, on 12% of Nightfall's lit texels, and its dark
@@ -67,8 +67,8 @@ pub(in crate::halo_reach) const LOG_RANGE: f32 = 65_536.;
 const TEXCOORD_DECLARATION: u32 = 0x0004_0004;
 /// The cluster mesh vertex buffer slot holding lightmap texture coordinates.
 pub(super) const CLUSTER_SLOT: usize = 1;
-/// Texels of neutral lighting around each source image and in the atlas's last strip, so filtering
-/// at an image's edge reads neutral light rather than another image's.
+/// Separation between source images and the CPU atlas's neutral strip. Material sampling clamps
+/// within each source image before filtering, so these gaps do not affect its edge values.
 const NEUTRAL_ROWS: usize = 4;
 /// Texels on a side of the largest texture the atlas may take.
 const MAX_SIDE: usize = 16_384;
@@ -104,7 +104,7 @@ const SIGNED_RGBA16: i16 = 34;
 /// Texels on a side of the block that holds one lighting probe.
 const PROBE_BLOCK: usize = 3;
 
-/// A level's baked lighting in the decoded dual VMF form, as three linear RGBA8 images of one
+/// A level's baked lighting and its CPU approximation, as three RGBA8 images of one
 /// atlas: each BSP's source image on shelves, ringed by neutral lighting, and then the lighting
 /// probes above a last neutral strip. Texels outside those are black and never sampled. `lobe`
 /// holds the lobe's color and its bandwidth, `ambient` the ambient color and the sun's visibility,
@@ -129,6 +129,9 @@ pub struct Atlas {
     pub probes: usize,
     /// The average decoded level of the lit image texels and of the probes, before the scale.
     pub averages: [f32; 2],
+    /// Original compressed samples for material shading. The decoded atlas remains the CPU
+    /// approximation used by normalization and ground-light queries.
+    pub(in crate::halo_reach) sampling: sampling::Sampling,
 }
 
 /// An atlas, each image's placement in it, and each BSP's probes' atlas coordinates.
@@ -175,16 +178,15 @@ impl Atlas {
         [0.5, middle / self.height as f32]
     }
 
-    /// The texel holding atlas coordinates `uv`, unfiltered, decoded as surfaces decode it.
+    /// The CPU approximation at atlas coordinates `uv`, unfiltered.
     pub fn texel(&self, [u, v]: [f32; 2]) -> Sample {
         let x = ((u * self.width as f32) as usize).min(self.width - 1);
         let y = ((v * self.height as f32) as usize).min(self.height - 1);
         self.texel_at(x, y)
     }
 
-    /// Texel `(x, y)`, decoded as surfaces decode it. A surface filters the stored values, the
-    /// logarithms, before decoding, so a mean of decoded texels is slightly brighter than its
-    /// filtered sample.
+    /// Texel `(x, y)` from the decoded CPU approximation. Material shading samples the original
+    /// compressed values through `sampling`, before its nonlinear VMF decode.
     pub fn texel_at(&self, x: usize, y: usize) -> Sample {
         let at = (y * self.width + x) * 4;
         let unit = |bytes: &[u8], k: usize| f32::from(bytes[at + k]) / 255.;
@@ -621,15 +623,6 @@ pub(in crate::halo_reach) fn decode_share(stored: f32) -> f32 {
     ((stored * (1. + LOG_RANGE).log2()).exp2() - 1.) / LOG_RANGE
 }
 
-/// [`decode_share`] as an HLSL expression of the stored channels `stored`, a float or vector.
-pub(in crate::halo_reach) fn decode_share_hlsl(stored: &str) -> String {
-    format!(
-        "((exp2(({stored})*{:.9})-1)*{:e})",
-        (1. + LOG_RANGE).log2(),
-        1. / LOG_RANGE
-    )
-}
-
 fn encode_texel(texel: &Texel, peak: f32) -> [u8; 12] {
     let [r, g, b] = texel.lobe.map(|c| encode_share(c / peak));
     let [ar, ag, ab] = texel.ambient.map(|c| encode_share(c / peak));
@@ -655,6 +648,7 @@ pub(super) struct Lighting {
     width: usize,
     height: usize,
     texels: Vec<Texel>,
+    source: sampling::Image,
 }
 
 impl Lighting {
@@ -688,15 +682,28 @@ pub(super) fn decode(cache: &Cache, pages: &mut Pages, lightmap: &Tag) -> Result
         constant <= f32::MAX / 2.,
         "Lightmap brightness overflows decoded lighting"
     );
-    if let Some(texels) = compute::decode(width, height, &intensity_layers, &map[0], constant)? {
+    let source = sampling::Image {
+        source: lightmap.path.clone(),
+        constant,
+        intensity: intensity_layers
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Lightmap intensity count differs"))?,
+        mask: map
+            .into_iter()
+            .next()
+            .context("Lightmap has no direction blocks")?,
+    };
+    if let Some(texels) = compute::decode(width, height, &source.intensity, &source.mask, constant)?
+    {
         return Ok(Some(Lighting {
             width,
             height,
             texels,
+            source,
         }));
     }
     let mut intensities = vec![[[0u8; 4]; LAYERS]; width * height];
-    for (layer, blocks) in intensity_layers.iter().enumerate() {
+    for (layer, blocks) in source.intensity.iter().enumerate() {
         texels(
             blocks,
             width,
@@ -717,7 +724,7 @@ pub(super) fn decode(cache: &Cache, pages: &mut Pages, lightmap: &Tag) -> Result
     }
     let mut channels = vec![[0f32; 2]; width * height];
     texels(
-        &map[0],
+        &source.mask,
         width,
         |block| {
             let mut xy = [0f32; 32];
@@ -740,6 +747,7 @@ pub(super) fn decode(cache: &Cache, pages: &mut Pages, lightmap: &Tag) -> Result
         width,
         height,
         texels,
+        source,
     }))
 }
 
@@ -874,6 +882,14 @@ pub(super) fn pack(
         }
         coordinates.push(placed);
     }
+    let sampling = sampling::Sampling::pack(
+        [width, height],
+        &images,
+        &placements,
+        &probes,
+        layout.probe_row,
+        peak,
+    )?;
     Ok(Some(Packed {
         atlas: Atlas {
             width,
@@ -885,6 +901,7 @@ pub(super) fn pack(
             level: all,
             probes: probe_count,
             averages,
+            sampling,
         },
         placements,
         probes: coordinates,
@@ -921,12 +938,13 @@ fn layout(sizes: &[(usize, usize)], probes: usize, width: usize) -> Layout {
     let probe_rows = probes.div_ceil((width / PROBE_BLOCK).max(1)) * PROBE_BLOCK;
     Layout {
         width,
-        height: probe_row
+        height: (probe_row
             + if probes > 0 {
                 probe_rows + NEUTRAL_ROWS
             } else {
                 0
-            },
+            })
+        .next_multiple_of(4),
         origins,
         probe_row,
     }

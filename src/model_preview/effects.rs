@@ -69,6 +69,9 @@ impl Material {
     pub(in crate::model_preview) fn decal(&self) -> bool {
         self.native.as_ref().is_some_and(|n| n.decal)
     }
+    pub(in crate::model_preview) fn modulates(&self) -> bool {
+        self.native.as_ref().is_some_and(native::Native::modulates)
+    }
     pub fn frame(&self, seconds: f32) -> Option<Frame> {
         if self.kind == Kind::Unavailable || self.constants.len() > ROWS {
             return None;

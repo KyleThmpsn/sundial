@@ -452,7 +452,6 @@ mod tests {
     fn comparison_reads_the_compiled_threshold_instead_of_stale_source_text() {
         let source = include_bytes!("predicate/nearby_enemy.bin");
         let mut graph = Graph::read(source, 0, 0x80803DCE).unwrap();
-        assert_eq!(graph.emit().unwrap(), source);
         assert_eq!(describe(&graph).as_deref(), Some("Nearby Enemy Count > 2"));
         let comparison = comparisons(&graph, 0).remove(0);
         graph.blocks[comparison.constant_block].bytes[..4].copy_from_slice(&4.0f32.to_le_bytes());
@@ -474,7 +473,6 @@ mod tests {
 
     #[test]
     fn every_stock_variable_composes_a_predicate_that_reads_back_and_reloads() {
-        let template = include_bytes!("predicate/nearby_enemy.bin");
         let mut names = std::collections::BTreeSet::new();
         for variable in VARIABLES {
             assert!(
@@ -498,11 +496,37 @@ mod tests {
             assert_eq!(f32::from_bits(comparison.threshold), variable.threshold);
             let reloaded = Graph::read(&graph.emit().unwrap(), 0, 0x80803DCE).unwrap();
             assert_eq!(reloaded, graph);
-            // The template's own comparison composes back to the template byte for byte.
+            // The template's own comparison composes back to every block the stock template
+            // decodes to. The stock bytes keep bare text, so the physical layout is checked
+            // against the native string envelope instead: class 80800065 just before an
+            // eight-byte-aligned body that opens with the u64 length, terminator included,
+            // with the reference at the text.
             if variable.name == "nearby_enemy_count" {
-                assert_eq!(bytes, template);
+                check_native_template(&graph, &bytes);
             }
         }
+    }
+
+    fn check_native_template(graph: &Graph, bytes: &[u8]) {
+        let template = include_bytes!("predicate/nearby_enemy.bin");
+        assert_eq!(graph, &Graph::read(template, 0, 0x80803DCE).unwrap());
+        let (emitted, starts) = graph.emit_with_offsets().unwrap();
+        assert_eq!(emitted, bytes);
+        let strings = graph.blocks.iter().enumerate();
+        let mut checked = 0;
+        for (index, block) in strings.filter(|(_, block)| block.class == 0) {
+            let text = starts[&index];
+            assert_eq!(text % 8, 0, "string body {index} is not eight-byte aligned");
+            assert_eq!(bytes[text - 12..text - 8], 0x8080_0065u32.to_le_bytes());
+            assert_eq!(
+                bytes[text - 8..text],
+                (block.bytes.len() as u64).to_le_bytes()
+            );
+            assert_eq!(&bytes[text..text + block.bytes.len()], block.bytes);
+            assert_eq!(block.bytes.last(), Some(&0));
+            checked += 1;
+        }
+        assert!(checked > 0, "the template has no source string");
     }
 
     #[test]

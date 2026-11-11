@@ -3,6 +3,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod perk;
 mod translator;
+pub(crate) use perk::inventory_icon;
 pub use perk::{apply_perks, author_perks, release_lane};
 
 fn table(r: &mut Reader, class: u32) -> Result<std::sync::Arc<Payload>> {
@@ -201,12 +202,12 @@ pub fn author_gameplay(
             match (input,output.as_slice()) {
                 (0,[rate,mode]) if (0.05..=100.).contains(rate) && [0.,1.].contains(mode) => {
                     inputs.extend((0..4).map(|index|json!({"component":2,"input":index,"value":rate})));
-                    shown(&mut display, &definitions, name as u32, (*rate*60.).round() as i32)?;
+                    crate::stat_group::constant(&mut display, &definitions, name as u32, (*rate*60.).round() as i32)?;
                 }
                 (1, [capacity, chamber]) | (1,[capacity,chamber,1.])
                     if (1. ..=500.).contains(capacity) && capacity.fract()==0. && [0.,1.].contains(chamber) => {
                     inputs.extend([0,3].map(|index|json!({"component":1,"input":index,"value":capacity})));
-                    shown(&mut display, &definitions, name as u32, *capacity as i32)?;
+                    crate::stat_group::constant(&mut display, &definitions, name as u32, *capacity as i32)?;
                 }
                 (3,[magnification]) if (1. ..=10.).contains(magnification) => {
                     aim=json!({"magnification":magnification});
@@ -228,25 +229,6 @@ pub fn author_gameplay(
         graph["source_gameplay"]["tier"] = json!(tier);
     }
     graph["source_gameplay"]["rarity"] = json!(rarity);
-    Ok(())
-}
-
-fn shown(group: &mut Value, definitions: &BTreeMap<u32, u16>, hash: u32, value: i32) -> Result<()> {
-    let index = *definitions
-        .get(&hash)
-        .context("Native numeric stat definition")?;
-    let maximum = group["maximum_value"]
-        .as_i64()
-        .context("Native stat display maximum")?;
-    ensure!(maximum > 0, "Native display group has no positive range");
-    for row in group["stats"]
-        .as_array_mut()
-        .context("Native stat display rows")?
-    {
-        if row["definition_index"].as_u64() == Some(u64::from(index)) {
-            row["display"] = json!([[0, value], [maximum, value]]);
-        }
-    }
     Ok(())
 }
 

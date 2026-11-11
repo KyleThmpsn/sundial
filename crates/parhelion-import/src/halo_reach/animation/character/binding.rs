@@ -1,6 +1,7 @@
 //! Publish private character parameters from the owning weapon or driver.
 use super::*;
 use crate::presentation::put;
+use std::collections::BTreeSet;
 use sundial::package_authoring::entity::weapon_component_bindings;
 
 fn hex(value: &Value) -> Result<u32> {
@@ -60,6 +61,43 @@ pub(super) fn prepare(
             "Character attachment has an unsupported class"
         );
         let rows = crate::tiger::rig::attachment_rows(&owner, definition, content, false)?;
+        // The attachment profile also selects first-person actions. A weapon with a
+        // first-person entity needs the private profile in that dictionary as an alias.
+        let mut first_person = BTreeSet::new();
+        for &row in &rows {
+            let entity = owner.u32(row + 0x78)?;
+            if entity != u32::MAX && entity != 0 {
+                first_person.insert(entity);
+            }
+        }
+        ensure!(
+            first_person.len() <= 1,
+            "Character attachment rows select different first-person entities"
+        );
+        let first_person_parameters = first_person
+            .first()
+            .map(|&entity| -> Result<u32> {
+                let lookups = report["components"]
+                    .as_array()
+                    .context("Native weapon components")?
+                    .iter()
+                    .filter(|c| c["class"] == "8080344B" && hex(&c["entity"]).ok() == Some(entity))
+                    .map(|c| hex(&c["owner"]))
+                    .collect::<Result<BTreeSet<_>>>()?
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let [lookup] = lookups.as_slice() else {
+                    anyhow::bail!("First-person lookup is absent or ambiguous")
+                };
+                let lookup = native.tag(*lookup, Some(0x80809C36))?;
+                let at = lookup.pointer(24)?;
+                ensure!(
+                    lookup.u32(at - 4)? == 0x8080344B,
+                    "First-person lookup has an unsupported class"
+                );
+                lookup.u32(at + 0x94)
+            })
+            .transpose()?;
         let mut parent = None;
         let mut patches = Vec::new();
         for row in rows {
@@ -86,8 +124,8 @@ pub(super) fn prepare(
             .context("Recipe resource patches are not an array")?;
         append_patches(existing, patches)?;
         Ok(
-            json!({"builtin":3,"parent":parent,"private":private,"runtime":runtime,
-            "owner":binding.owner_tag,"content":content}),
+            json!({"builtin":3,"parent":parent,"private":private,"runtime":runtime,"alias":true,
+            "owner":binding.owner_tag,"content":content,"first_person_parameters":first_person_parameters}),
         )
     } else {
         ensure!(
@@ -96,6 +134,8 @@ pub(super) fn prepare(
         );
         let nodes = graph["nodes"].as_array().context("Vehicle graph nodes")?;
         let mut selected = Vec::new();
+        // The driver's seat sets the drive control bits 1 to 3 of its flags at `+0xE0`. A mounted
+        // turret's seat in the same graph leaves bit 1 clear.
         for node in nodes {
             let Some(file) = node["file"].as_str() else {
                 continue;
@@ -103,6 +143,7 @@ pub(super) fn prepare(
             let payload = Payload(fs::read(root.join(file))?);
             if let Ok(at) = payload.pointer(24)
                 && payload.u32(at.saturating_sub(4)).ok() == Some(0x80803D7D)
+                && payload.u32(at + 0xE0)? & 0x0E == 0x0E
             {
                 selected.push((file.to_owned(), payload, at));
             }

@@ -8,6 +8,7 @@ pub(in crate::item) fn author(
     audio: &ImportedAudio,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
+    media: &mut Media<'_>,
 ) -> AuthoringResult<Option<MeleeImpact>> {
     let Some(key) = audio.impact_key else {
         return Ok(None);
@@ -79,6 +80,7 @@ pub(in crate::item) fn author(
             allocator,
             tags,
             &mut BTreeMap::new(),
+            media,
         )?;
         put(&mut payload, at + 8, sound)?;
     }
@@ -90,7 +92,9 @@ pub(in crate::item) fn author(
     let responses = if audio.responses.is_empty() {
         None
     } else {
-        Some(responses(manager, audio, key, &template, allocator, tags)?)
+        Some(responses(
+            manager, audio, key, &template, allocator, tags, media,
+        )?)
     };
     // The profile names itself, so its address is needed before it is appended. A streamed
     // asset only has an address once its payload is reserved, and `append` reserves the same
@@ -117,7 +121,8 @@ pub(in crate::item) fn author(
     }))
 }
 
-/// A native cue that lists its media, as `private_sound` takes it.
+/// A native cue that lists its filled media slots, as the import lists them and `private_sound`
+/// takes them. An empty slot has all bits set and names no media.
 fn native_cue(manager: &PackageManager, tag: u32) -> AuthoringResult<Value> {
     let cue = stock(manager, tag, SOUND_CLASS, "contact sound")?;
     let count = word(&cue, 0x40)? as usize;
@@ -125,8 +130,12 @@ fn native_cue(manager: &PackageManager, tag: u32) -> AuthoringResult<Value> {
         return Err(invalid("Native contact cue has an unsupported media array"));
     }
     let media = (0..count)
-        .map(|i| word(&cue, 0x50 + i * 4).map(|tag| format!("{tag:08X}")))
-        .collect::<AuthoringResult<Vec<_>>>()?;
+        .map(|i| word(&cue, 0x50 + i * 4))
+        .collect::<AuthoringResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|media| *media != u32::MAX)
+        .map(|media| format!("{media:08X}"))
+        .collect::<Vec<_>>();
     Ok(serde_json::json!({
         "tag": format!("{tag:08X}"),
         "bank": format!("{:08X}", word(&cue, 0x14)?),
@@ -148,6 +157,7 @@ fn responses(
     template: &Value,
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
+    media: &mut Media<'_>,
 ) -> AuthoringResult<u32> {
     let mut payload = stock(manager, RESPONSES, RESPONSE_CLASS, "melee impact responses")?;
     let groups = array(&payload, 0x80, 24, 0x8080_8BD5)?;
@@ -180,6 +190,7 @@ fn responses(
             allocator,
             tags,
             &mut BTreeMap::new(),
+            media,
         )?;
         for name in list(&event["rows"], "response rows")? {
             let name = hex(name, "response row")?;

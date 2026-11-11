@@ -128,9 +128,10 @@ pub(crate) fn stage(
 ) -> Result<Vec<ArtifactMetadata>, String> {
     let sources = crate::mod_family::build::mission_scripts();
     let mut artifacts = Vec::new();
+    // Each member stages its own maps' controllers. The build checks that every one is staged.
     for (activity, source) in sources {
         if !recipes.iter().any(|recipe| recipe.name == activity) {
-            return Err("Mission controller belongs to an unselected map".into());
+            continue;
         }
         let file_name = format!("{activity}.lua");
         if mission_script::path(&file_name).is_none()

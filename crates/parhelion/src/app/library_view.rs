@@ -11,6 +11,7 @@ mod studio_import;
 use actions::{EntryAction, LibraryAction};
 pub(crate) use state::LibraryState;
 use state::SortOrder;
+use sundial::investment::{ItemChoiceFields, ItemChoiceFilter};
 
 struct LibraryRowResponse {
     activated: bool,
@@ -94,6 +95,46 @@ fn library_entry_details(entry: &RecipeLibraryEntry, donor: Option<&WeaponDonorS
         .join(" · ")
 }
 
+/// What the item filters read from a recipe: its own type, damage, ammo and rarity where it sets
+/// them, otherwise its base item's, as its details line shows them. Only weapon recipes have a
+/// weapon type.
+fn library_entry_fields<'a>(
+    entry: &'a RecipeLibraryEntry,
+    donor: Option<&'a WeaponDonorSummary>,
+) -> ItemChoiceFields<'a> {
+    ItemChoiceFields {
+        weapon_type: entry.kind.is_weapon().then(|| {
+            entry
+                .type_name
+                .as_deref()
+                .or_else(|| donor.map(|donor| donor.type_name.as_str()))
+                .unwrap_or_default()
+        }),
+        damage_type: entry
+            .damage_type
+            .map(crate::capabilities::recipe_damage_type)
+            .or_else(|| donor.and_then(|donor| donor.damage_type)),
+        ammo_type: entry
+            .ammo_type
+            .map(|ammo| match ammo {
+                RecipeAmmoType::Primary => WeaponAmmoType::Primary,
+                RecipeAmmoType::Special => WeaponAmmoType::Special,
+                RecipeAmmoType::Heavy => WeaponAmmoType::Heavy,
+            })
+            .or_else(|| donor.and_then(|donor| donor.ammo_type)),
+        rarity: entry.rarity.map_or_else(
+            || donor.map_or(WeaponRarity::Unknown, |donor| donor.rarity),
+            |rarity| match rarity {
+                RecipeRarity::Common => WeaponRarity::Common,
+                RecipeRarity::Uncommon => WeaponRarity::Uncommon,
+                RecipeRarity::Rare => WeaponRarity::Rare,
+                RecipeRarity::Legendary => WeaponRarity::Legendary,
+                RecipeRarity::Exotic => WeaponRarity::Exotic,
+            },
+        ),
+    }
+}
+
 /// Search terms may span fields: "arc special" matches "Arc · Special".
 fn library_entry_matches(entry: &RecipeLibraryEntry, details: &str, query: &str) -> bool {
     let searchable = format!("{} {} {details}", entry.name, entry.namespace).to_lowercase();
@@ -140,8 +181,9 @@ fn windowed_list_height(ui: &egui::Ui, footer_height: f32) -> f32 {
         .max(120.0)
 }
 
-/// One checkbox covering every row the search shows, the same bulk control Sundial uses for
-/// Collections and Triumphs: checked when they are all selected, mixed when only some are.
+/// One checkbox covering every row the search and filters show, the same bulk control Sundial
+/// uses for Collections and Triumphs: checked when they are all selected, mixed when only some
+/// are.
 fn draw_select_all_shown<'a>(
     ui: &mut egui::Ui,
     shown: impl Iterator<Item = &'a PathBuf> + Clone,
@@ -159,7 +201,7 @@ fn draw_select_all_shown<'a>(
             egui::Checkbox::new(&mut all, "Select All Shown")
                 .indeterminate(count > 0 && count < total),
         )
-        .on_hover_text("Selects or clears every recipe this search shows.");
+        .on_hover_text("Selects or clears every recipe the search and filters show.");
     if response.changed() {
         for path in shown {
             if all {
@@ -171,19 +213,61 @@ fn draw_select_all_shown<'a>(
     }
 }
 
-/// The search and sort row shared by the library and the build selection.
+/// The selection count under a list, with how many selected rows the search or filters hide.
+/// A hidden row stays selected, so the count keeps it from leaving a build or bundle unseen. It
+/// shares a row with the list's buttons, so a narrow window shortens it rather than drawing it
+/// over them.
+fn draw_selection_count(ui: &mut egui::Ui, selected: usize, hidden: usize, shown: usize) {
+    if hidden == 0 {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("{selected} selected · {shown} shown")).weak(),
+            )
+            .truncate(),
+        );
+    } else {
+        ui.add(
+            egui::Label::new(format!(
+                "{selected} selected ({hidden} hidden) · {shown} shown"
+            ))
+            .truncate(),
+        )
+        .on_hover_text(
+            "Selected recipes the search or filters hide stay selected. Clear the search and \
+             filters to see them.",
+        );
+    }
+}
+
+/// How many of `selected` the rows `shown` leave out.
+fn hidden_selection<'a>(
+    selected: &BTreeSet<PathBuf>,
+    shown: impl Iterator<Item = &'a PathBuf>,
+) -> usize {
+    selected
+        .len()
+        .saturating_sub(shown.filter(|path| selected.contains(*path)).count())
+}
+
+/// The search, filter and sort rows shared by the library and the build selection.
 ///
-/// Both browse the same recipes, so they offer the same controls and the same wording. The sort
-/// order is one setting: changing it in either place changes what the other shows.
+/// Both browse the same recipes, so they offer the same controls and the same wording. The kind,
+/// the item filters and the sort order are each one setting: changing one in either place
+/// changes what the other shows.
 fn draw_recipe_search(
     ui: &mut egui::Ui,
     id: &str,
     query: &mut String,
-    sort: &mut SortOrder,
-    kind: &mut Option<ItemKind>,
-    activities_only: &mut bool,
+    state: &mut LibraryState,
+    (entries, donors): (&[RecipeLibraryEntry], &[WeaponDonorSummary]),
     focus: &mut bool,
 ) {
+    let LibraryState {
+        sort,
+        kind,
+        activities_only,
+        ..
+    } = state;
     ui.horizontal(|ui| {
         let search = named_control(
             ui.add(
@@ -248,6 +332,10 @@ fn draw_recipe_search(
                 }
             });
     });
+    // Activities carry none of what the item filters read.
+    if !state.activities_only {
+        state.draw_filters(ui, id, entries, donors);
+    }
 }
 
 /// Both library navigation and build selection use the authored weapon preview.
@@ -534,12 +622,14 @@ fn map_details(map: &crate::recipe_library::MapLibraryEntry) -> &'static str {
 }
 
 /// The maps a search shows: every map under All Items, matched like recipes by name and details.
+/// A map has no type, damage, ammo or rarity, so an item filter hides maps as it hides other
+/// rows without them. The filters do not apply under Activities, which shows no items.
 fn matching_maps<'a>(
     maps: &'a [crate::recipe_library::MapLibraryEntry],
-    kind: Option<ItemKind>,
+    state: &LibraryState,
     query: &str,
 ) -> Vec<&'a crate::recipe_library::MapLibraryEntry> {
-    if kind.is_some() {
+    if state.kind.is_some() || (!state.activities_only && state.filter.is_active()) {
         return Vec::new();
     }
     maps.iter()
@@ -704,7 +794,7 @@ fn draw_bundled_recipe_selection(
             )
             .indeterminate(count > 0 && count < bundled.len()),
         )
-        .on_hover_text("Includes recipes hidden by the search.")
+        .on_hover_text("Includes recipes the search or filters hide.")
         .changed()
     {
         for entry in bundled {
@@ -912,20 +1002,22 @@ impl PackageAuthoringApp {
                     ui,
                     "build-selection-sort",
                     &mut self.build_selection_query,
-                    &mut self.library_state.sort,
-                    &mut self.library_state.kind,
-                    &mut self.library_state.activities_only,
+                    &mut self.library_state,
+                    (&self.recipe_entries, &self.library_donors),
                     &mut self.recipe_search_focus_pending,
                 );
                 let query = self.build_selection_query.trim().to_lowercase();
-                let mut shown = self.library_state.matching_entries(
+                let listing = self.library_state.take_listing(
                     &self.recipe_entries,
                     &self.library_donors,
                     &query,
                 );
-                self.library_state
-                    .sort_entries(&mut shown, &self.library_donors);
-                let shown_maps = matching_maps(&self.map_entries, self.library_state.kind, &query);
+                let shown = listing
+                    .shown
+                    .iter()
+                    .map(|(index, details)| (&self.recipe_entries[*index], details.as_str()))
+                    .collect::<Vec<_>>();
+                let shown_maps = matching_maps(&self.map_entries, &self.library_state, &query);
                 ui.separator();
                 draw_select_all_shown(
                     ui,
@@ -941,7 +1033,7 @@ impl PackageAuthoringApp {
                     .max_height(windowed_list_height(ui, footer_height))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (entry, details) in &shown {
+                        for &(entry, details) in &shown {
                             let included = draft.contains(&entry.path);
                             if draw_library_row(
                                 ui,
@@ -988,13 +1080,23 @@ impl PackageAuthoringApp {
                         .clicked();
                     cancel = ui.button("Cancel").clicked();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak(format!(
-                            "{} selected · {} shown",
+                        let hidden = hidden_selection(
+                            &draft,
+                            shown
+                                .iter()
+                                .map(|(entry, _)| &entry.path)
+                                .chain(shown_maps.iter().map(|map| &map.path)),
+                        );
+                        draw_selection_count(
+                            ui,
                             draft.len(),
-                            shown.len() + shown_maps.len()
-                        ));
+                            hidden,
+                            shown.len() + shown_maps.len(),
+                        );
                     });
                 });
+                drop(shown);
+                self.library_state.keep_listing(listing);
             });
         if apply {
             if let Err(error) = self.apply_build_selection(draft.clone()) {

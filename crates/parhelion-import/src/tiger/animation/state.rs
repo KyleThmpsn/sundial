@@ -99,22 +99,6 @@ fn weighted(
     append(out, field, 0x80803439, &bytes, 8)
 }
 
-pub fn clone_actions(
-    p: &Payload,
-    routes: &BTreeMap<u32, BTreeMap<usize, usize>>,
-) -> Result<Payload> {
-    let routes = routes
-        .iter()
-        .map(|(&name, map)| {
-            (
-                name,
-                map.iter().map(|(&from, &to)| (from, vec![to])).collect(),
-            )
-        })
-        .collect();
-    clone_variants(p, &routes)
-}
-
 /// By action name, the choices to replace by index, each as its descriptors with their
 /// cumulative weight cutoffs as `f32` bits.
 pub type ChoiceRoutes = BTreeMap<u32, BTreeMap<usize, Vec<(usize, u32)>>>;
@@ -163,9 +147,54 @@ pub fn extend_actions(
     Ok(result)
 }
 
+/// A complete native selector (`80803432` arrays) that replaces a named action's own. Its
+/// operations return ordinals into `choices` weighted variants.
+#[derive(Clone)]
+pub struct Selector {
+    pub choices: usize,
+    /// One input builtin per byte (`80808DA4`).
+    pub parameters: Vec<u8>,
+    /// 28-byte records (`8080347D`): sixteen mask bytes, name, child, sibling and output.
+    pub records: Vec<u8>,
+    /// Input builtin in the low byte and root record in the high half (`8080347C`).
+    pub operations: Vec<u8>,
+}
+
+impl Selector {
+    /// A standalone payload holding this selector, its structure at `+0x10`, for evaluation.
+    pub fn payload(&self) -> Result<Payload> {
+        let mut out = vec![0; 12];
+        out.extend(0x80803432u32.to_le_bytes());
+        out.extend([0; 120]);
+        self.fill(&mut out, 16)?;
+        Ok(Payload(out))
+    }
+
+    fn fill(&self, out: &mut Vec<u8>, target: usize) -> Result<()> {
+        for (offset, stride, class, bytes) in [
+            (16, 1, 0x80808DA4, &self.parameters),
+            (32, 28, 0x8080347D, &self.records),
+            (48, 4, 0x8080347C, &self.operations),
+        ] {
+            append(out, target + offset, class, bytes, stride)?;
+        }
+        Ok(())
+    }
+}
+
 /// Replace complete weighted choices while preserving the native selector and
 /// every unselected variant. Each named action receives a private node.
 pub fn replace_selected_choices(p: &Payload, routes: &ChoiceRoutes) -> Result<Payload> {
+    replace_routes(p, routes, &BTreeMap::new())
+}
+
+/// [`replace_selected_choices`], where an action named in `selectors` instead takes that
+/// selector. Its choices outside `routes` stay empty, so they must be unreachable.
+pub fn replace_routes(
+    p: &Payload,
+    routes: &ChoiceRoutes,
+    selectors: &BTreeMap<u32, Selector>,
+) -> Result<Payload> {
     let mut out = p.0.clone();
     let mut nodes = p
         .array(24, 16, Some(0x8080342F))?
@@ -183,70 +212,13 @@ pub fn replace_selected_choices(p: &Payload, routes: &ChoiceRoutes) -> Result<Pa
         .collect::<Result<Vec<_>>>()?;
     let mut replacements = BTreeMap::new();
     for (&name, replacements_by_choice) in routes {
-        let row = node(p, name)?;
-        let at = p.pointer(row + 8)?;
-        let kind = p.u64(row)?;
-        let selected = choices(p, row)?;
-        ensure!(
-            !replacements_by_choice.is_empty()
-                && replacements_by_choice
-                    .keys()
-                    .all(|&index| index < selected.len()),
-            "Selected action choice is absent"
-        );
-        let target = structure(&mut out, p, at, if kind == 1 { 16 } else { 120 })?;
-        let fields = if kind == 1 {
-            vec![target]
-        } else {
-            append(
-                &mut out,
-                target,
-                0x80803437,
-                &vec![0; selected.len() * 16],
-                16,
-            )?;
-            Payload(out.clone()).array(target, 16, Some(0x80803437))?
-        };
-        for (index, (field, choice)) in fields.into_iter().zip(selected).enumerate() {
-            let values = if let Some(values) = replacements_by_choice.get(&index) {
-                values.clone()
-            } else {
-                p.array(choice, 8, Some(0x80803439))?
-                    .into_iter()
-                    .map(|r| Ok((p.u32(r)? as usize, p.u32(r + 4)?)))
-                    .collect::<Result<Vec<_>>>()?
-            };
-            let mut previous = 0.;
-            let mut bytes = Vec::new();
-            for (descriptor, weight) in values {
-                let cutoff = f32::from_bits(weight);
-                ensure!(
-                    cutoff.is_finite() && cutoff >= previous && cutoff <= 1.,
-                    "Invalid weighted animation choice"
-                );
-                previous = cutoff;
-                bytes.extend(u32::try_from(descriptor)?.to_le_bytes());
-                bytes.extend(weight.to_le_bytes());
-            }
-            // Empty native variants can belong to unreachable profiles. Changed
-            // variants must cover the full interval, as do nonempty originals.
-            ensure!(
-                (bytes.is_empty() && !replacements_by_choice.contains_key(&index))
-                    || previous == 1.,
-                "Animation choice does not cover the interval"
-            );
-            append(&mut out, field, 0x80803439, &bytes, 8)?;
-        }
-        if kind == 2 {
-            for (offset, stride, class) in [
-                (16, 1, 0x80808DA4),
-                (32, 28, 0x8080347D),
-                (48, 4, 0x8080347C),
-            ] {
-                let bytes = &p.0[p.array_range(at + offset, stride, Some(class))?];
-                append(&mut out, target + offset, u64::from(class), bytes, stride)?;
-            }
-        }
+        let (kind, target) = build_route(
+            p,
+            &mut out,
+            name,
+            replacements_by_choice,
+            selectors.get(&name),
+        )?;
         replacements.insert(name, nodes.len());
         nodes.push((kind, Some(target)));
     }
@@ -353,4 +325,82 @@ pub fn clone_variants(
     let len = out.len() as u64;
     put(&mut out, 0, &len.to_le_bytes())?;
     Ok(Payload(out))
+}
+
+fn build_route(
+    p: &Payload,
+    out: &mut Vec<u8>,
+    name: u32,
+    replacements_by_choice: &BTreeMap<usize, Vec<(usize, u32)>>,
+    selector: Option<&Selector>,
+) -> Result<(u64, usize)> {
+    let row = node(p, name)?;
+    let at = p.pointer(row + 8)?;
+    let kind = if selector.is_some() { 2 } else { p.u64(row)? };
+    let selected = choices(p, row)?;
+    let count = selector.map_or(selected.len(), |s| s.choices);
+    ensure!(
+        !replacements_by_choice.is_empty()
+            && replacements_by_choice.keys().all(|&index| index < count),
+        "Selected action choice is absent"
+    );
+    let target = if selector.is_some() {
+        let start = (out.len() + 19) & !15;
+        out.resize(start - 4, 0);
+        out.extend(0x80803432u32.to_le_bytes());
+        out.extend([0; 120]);
+        start
+    } else {
+        structure(out, p, at, if kind == 1 { 16 } else { 120 })?
+    };
+    let fields = if kind == 1 {
+        vec![target]
+    } else {
+        append(out, target, 0x80803437, &vec![0; count * 16], 16)?;
+        Payload(out.clone()).array(target, 16, Some(0x80803437))?
+    };
+    for (index, field) in fields.into_iter().enumerate() {
+        let values = if let Some(values) = replacements_by_choice.get(&index) {
+            values.clone()
+        } else if selector.is_some() {
+            Vec::new()
+        } else {
+            p.array(selected[index], 8, Some(0x80803439))?
+                .into_iter()
+                .map(|r| Ok((p.u32(r)? as usize, p.u32(r + 4)?)))
+                .collect::<Result<Vec<_>>>()?
+        };
+        let mut previous = 0.;
+        let mut bytes = Vec::new();
+        for (descriptor, weight) in values {
+            let cutoff = f32::from_bits(weight);
+            ensure!(
+                cutoff.is_finite() && cutoff >= previous && cutoff <= 1.,
+                "Invalid weighted animation choice"
+            );
+            previous = cutoff;
+            bytes.extend(u32::try_from(descriptor)?.to_le_bytes());
+            bytes.extend(weight.to_le_bytes());
+        }
+        // Empty native variants can belong to unreachable profiles. Changed
+        // variants must cover the full interval, as do nonempty originals.
+        ensure!(
+            (bytes.is_empty() && !replacements_by_choice.contains_key(&index)) || previous == 1.,
+            "Animation choice does not cover the interval"
+        );
+        append(out, field, 0x80803439, &bytes, 8)?;
+    }
+    if let Some(selector) = selector {
+        selector.fill(out, target)?;
+    } else if kind == 2 {
+        for (offset, stride, class) in [
+            (16, 1, 0x80808DA4),
+            (32, 28, 0x8080347D),
+            (48, 4, 0x8080347C),
+        ] {
+            let bytes = &p.0[p.array_range(at + offset, stride, Some(class))?];
+            append(out, target + offset, u64::from(class), bytes, stride)?;
+        }
+    }
+    Ok((kind, target))
 }

@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 use tiger_pkg::{DestinyVersion, GameVersion, PackageManager, TagHash};
 pub(crate) mod channels;
@@ -109,40 +109,6 @@ pub fn audit(packages: &Path, stage: &Path, graph: &Path) -> Result<Value> {
     let base = PackageManager::new(packages, version, None)?;
     let staged = PackageManager::new(stage, version, None)?;
     audit_graph(&base, &staged, graph, &BTreeSet::new())
-}
-
-/// Reuses package indexes while checking each weapon's complete asset graph.
-/// A previously verified generation can supply existing weapon dependencies.
-/// Imported model assets must still stay outside the global loading root.
-pub fn audit_many(
-    packages: &Path,
-    stage: &Path,
-    graphs: &[PathBuf],
-    baseline: Option<&Path>,
-) -> Result<Vec<Value>> {
-    let version = GameVersion::Destiny(DestinyVersion::Destiny2Shadowkeep);
-    let base = PackageManager::new(packages, version, None)?;
-    let staged = PackageManager::new(stage, version, None)?;
-    let baseline_root = baseline
-        .map(|path| -> Result<BTreeSet<u32>> {
-            let manager = PackageManager::new(path, version, None)
-                .with_context(|| format!("opening baseline package view {}", path.display()))?;
-            let root = manager
-                .read_tag(TagHash(0x80EE8CBD))
-                .with_context(|| format!("reading baseline loading root in {}", path.display()))?;
-            dependencies(&Payload(root)).context("decoding baseline loading root")
-        })
-        .transpose()?
-        .unwrap_or_default();
-    graphs
-        .iter()
-        .map(|graph| {
-            let result = audit_graph(&base, &staged, graph, &baseline_root)
-                .with_context(|| format!("Auditing {}", graph.display()))?;
-            eprintln!("Verified {}", graph.display());
-            Ok(result)
-        })
-        .collect()
 }
 
 fn audit_graph(

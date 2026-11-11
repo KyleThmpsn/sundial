@@ -4,6 +4,32 @@ use crate::tiger::reader::Reader;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::fs;
+mod bc7;
+
+/// The BC7 surfaces of an RGBA8 mip chain of `levels` levels, each following the last and halving
+/// `width` by `height` to at least one texel, for a DXGI 98 or 99 data entry. The top level must
+/// be whole 4 by 4 blocks, as D3D11 requires of block-compressed textures.
+pub(crate) fn bc7_chain(width: usize, height: usize, levels: u8, rgba: &[u8]) -> Result<Vec<u8>> {
+    ensure!(
+        width > 0 && height > 0 && width.is_multiple_of(4) && height.is_multiple_of(4),
+        "BC7 texture top level {width} by {height} is not whole blocks"
+    );
+    let mut blocks = Vec::with_capacity(rgba.len() / 4);
+    let mut start = 0;
+    for level in 0..levels {
+        crate::cancellation::check()?;
+        let (w, h) = ((width >> level).max(1), (height >> level).max(1));
+        let end = start + w * h * 4;
+        let pixels = rgba.get(start..end).context("RGBA8 mip chain ends early")?;
+        blocks.extend(bc7::surface(w, h, pixels));
+        start = end;
+    }
+    ensure!(
+        start == rgba.len(),
+        "RGBA8 mip chain is longer than its levels"
+    );
+    Ok(blocks)
+}
 
 /// Immutable modern texture tiling and tile/layer counts used by material expressions.
 pub(crate) fn metadata(header: &crate::tiger::payload::Payload, opcode: u8) -> Result<[u8; 16]> {

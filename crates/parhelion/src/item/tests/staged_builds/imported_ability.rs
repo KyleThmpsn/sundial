@@ -18,6 +18,8 @@ use sundial::package_authoring::{
     },
 };
 
+mod hud;
+
 fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -97,6 +99,7 @@ fn persisted_imported_abilities_equip_private_roots_and_retarget_child_condition
         directory: directory.clone(),
         sha256: parhelion_import::d2_mot::native::attachment::fingerprint(&directory).unwrap(),
         symbol: symbol(source_root),
+        source: None,
     };
 
     // The native wrapper's declared resource points at a separately owned action controller.
@@ -175,9 +178,12 @@ fn persisted_imported_abilities_equip_private_roots_and_retarget_child_condition
             EntryEdits {
                 imported_ability: Some(imported.clone()),
                 custom_perks: vec![perk],
-                removed_perks: base.entry_perks[&entry].clone(),
-                removed_modifiers: base.entry_modifiers[&entry]
-                    .iter()
+                removed_perks: base.entry_perks.get(&entry).cloned().unwrap_or_default(),
+                removed_modifiers: base
+                    .entry_modifiers
+                    .get(&entry)
+                    .into_iter()
+                    .flatten()
                     .map(|&(key, row)| crate::subclass::StockModifier { key, row })
                     .collect(),
                 ..Default::default()

@@ -52,9 +52,24 @@ fn encoder<'a>(code: &'a Code, encoded: Value<'a>) -> Option<Value<'a>> {
         || !value(affine, at, lane, 2).number(1.0 / 13.0)
         || !value(affine, at, lane, 3).number(7.0 / 13.0)
     {
-        return folded_encoder(code, encoded);
+        return folded_encoder(code, encoded).or_else(|| scaled_encoder(code, encoded));
     }
     log_power(code, value(affine, at, lane, 1))
+}
+
+/// The compiler can keep the encoder's offset and scale as separate instructions and saturate
+/// the product. Both clamps remain, so the source needs no sign proof.
+fn scaled_encoder<'a>(code: &'a Code, encoded: Value<'a>) -> Option<Value<'a>> {
+    let (multiply, at, lane) = encoded.node(code)?;
+    if multiply.code != 56 || !multiply.saturate || !value(multiply, at, lane, 2).number(1.0 / 13.0)
+    {
+        return None;
+    }
+    let (add, at, lane) = value(multiply, at, lane, 1).node(code)?;
+    if add.code != 0 || add.saturate || !value(add, at, lane, 2).number(7.0) {
+        return None;
+    }
+    log_power(code, value(add, at, lane, 1))
 }
 
 fn log_power<'a>(code: &'a Code, logarithm: Value<'a>) -> Option<Value<'a>> {

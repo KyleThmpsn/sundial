@@ -163,4 +163,4 @@ fn address(value: i32, size: usize, mode: AddressMode) -> Option<i32> {
     })
 }
 
-pub(in super::super) const GLSL: &str = include_str!("sample.glsl");
+pub(in super::super) const GLSL: &str = include_str!("sample/sample.glsl");

@@ -70,8 +70,14 @@ impl Rebuild<'_> {
             .iter()
             .position(|&byte| byte == 0)
             .with_context(|| format!("String at {target:X} is unterminated"))?;
-        let start = (self.out.len() + 7) & !7;
-        self.out.resize(start, 0);
+        // The string pointer addresses text, but the physical stream also needs
+        // its native string marker and length, including the terminator.
+        let body = (self.out.len() + 11) & !7;
+        self.out.resize(body, 0);
+        self.out[body - 4..body].copy_from_slice(&0x80800065u32.to_le_bytes());
+        self.out
+            .extend_from_slice(&((length + 1) as u64).to_le_bytes());
+        let start = body + 8;
         self.out
             .extend_from_slice(&self.source.0[target..=target + length]);
         self.copied.insert(target, start);

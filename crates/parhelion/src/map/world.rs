@@ -4,7 +4,7 @@
 //! names, as Sunrise's activity inventory does, finds the map under its own name. The scenario
 //! still names the donor's world, unless the map has geometry: then its slice set, object
 //! registry and map root chain are the map's own, and its bubble takes the map's name.
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use sundial::package_authoring::PackageManager;
 use tiger_pkg::TagHash;
@@ -564,6 +564,18 @@ impl World {
     fn geometries(&self) -> impl Iterator<Item = &super::geometry::Geometry> {
         self.geometry.iter().chain(&self.extra_geometry)
     }
+
+    /// The packages of the donor's own records that the map copies: its activity root's and
+    /// scenario's, and its map root's, bubble parent's and bubble's in each area.
+    pub(super) fn donor_packages(&self) -> BTreeSet<u16> {
+        [self.root.tag.pkg_id(), self.scenario.tag.pkg_id()]
+            .into_iter()
+            .chain(
+                self.geometries()
+                    .flat_map(super::geometry::Geometry::donor_packages),
+            )
+            .collect()
+    }
     /// The scenario names its world and its activity in strings that end the payload, counted
     /// together. A Crucible donor's world takes its activity's name, so its scenario holds one
     /// string, while a mission's holds its world's then its activity's: The Other Side's ends with
@@ -646,15 +658,20 @@ impl World {
     /// The map's activity package entries starting at `first`, and the names that select them.
     pub(super) fn activity_tags(
         &self,
+        manager: &PackageManager,
         first: TagHash,
     ) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
         match &self.streaming {
-            Some(layout) => self.streaming_activity(first, layout),
-            None => self.single_activity(first),
+            Some(layout) => self.streaming_activity(manager, first, layout),
+            None => self.single_activity(manager, first),
         }
     }
 
-    fn single_activity(&self, first: TagHash) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
+    fn single_activity(
+        &self,
+        manager: &PackageManager,
+        first: TagHash,
+    ) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
         let at = |offset: usize| {
             let index = first.entry_index() as usize + offset;
             if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
@@ -714,7 +731,7 @@ impl World {
                 let first = at(ENTRIES + 1)?;
                 write_u32(&mut payload, SLICE_SET_REGISTRY, first.0)?;
                 tags.push(spec(owned.tag, payload));
-                tags.extend(registry.tags(first)?);
+                tags.extend(registry.tags(manager, first)?);
             } else {
                 tags.push(spec(owned.tag, payload));
             }
@@ -799,10 +816,11 @@ impl World {
 
     fn streaming_activity(
         &self,
+        manager: &PackageManager,
         first: TagHash,
         layout: &super::streaming::Layout,
     ) -> AuthoringResult<(Vec<NewTagSpec>, Vec<NamedTag>)> {
-        let (mut tags, names) = self.single_activity(first)?;
+        let (mut tags, names) = self.single_activity(manager, first)?;
         let at = |offset: usize| -> AuthoringResult<TagHash> {
             let index = first.entry_index() as usize + offset;
             if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
@@ -833,7 +851,7 @@ impl World {
                 payload,
                 storage: NewTagStorageMode::InheritTemplate,
             });
-            let mut records = registry.tags(registry_first)?;
+            let mut records = registry.tags(manager, registry_first)?;
             layout.patch_registry(&mut records, registry_first, bubble)?;
             tags.extend(records);
             slices.push(slice);
@@ -924,14 +942,14 @@ impl World {
                 geometry.bounds()?,
                 geometry.visible(),
             )?;
-            let assignments = cells.assignments(geometry.occlusion());
+            let lighting = cells.lighting(geometry.occlusion())?;
             let (mut tags, _, overrides) = geometry.split_tags_at(
                 first,
                 resources,
                 resource_offset,
                 &layout.names[bubble],
                 &mut textures,
-                Some(&assignments),
+                Some(&lighting),
             )?;
             let content = tags.split_off(geometry.chain_entries());
             layout.patch_chain(&mut tags, bubble)?;

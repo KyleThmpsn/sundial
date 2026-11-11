@@ -84,6 +84,8 @@ impl PackageAuthoringUtility for Parhelion {
         self.app.show_plug_safety_warnings = sundial::investment::show_plug_safety_warnings();
         self.app.initialize_storage();
         self.app.upgrade.request();
+        #[cfg(feature = "d2-model-importer")]
+        self.app.importer.sweep_again();
         self.app.plug_selection_mode = sundial::investment::default_plug_selection_mode();
         self.app.show_experimental_options = preferences.show_parhelion_experimental_options;
         self.app.preferences_changed = false;

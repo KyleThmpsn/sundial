@@ -16,80 +16,20 @@ const DCL_INPUT: u32 = 0x5F;
 const DCL_INPUT_SGV: u32 = 0x60;
 const DCL_INPUT_SIV: u32 = 0x61;
 
-fn md5_block(state: &mut [u32; 4], block: &[u8]) {
-    const SHIFT: [u32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-    let words: Vec<u32> = block
-        .chunks_exact(4)
-        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-        .collect();
-    let [mut a, mut b, mut c, mut d] = *state;
-    for i in 0..64 {
-        let (f, g) = match i / 16 {
-            0 => ((b & c) | (!b & d), i),
-            1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-            2 => (b ^ c ^ d, (3 * i + 5) % 16),
-            _ => (c ^ (b | !d), (7 * i) % 16),
-        };
-        let k = ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32;
-        let rotated = f
-            .wrapping_add(a)
-            .wrapping_add(k)
-            .wrapping_add(words[g])
-            .rotate_left(SHIFT[(i / 16) * 4 + i % 4]);
-        a = d;
-        d = c;
-        c = b;
-        b = b.wrapping_add(rotated);
-    }
-    for (value, add) in state.iter_mut().zip([a, b, c, d]) {
-        *value = value.wrapping_add(add);
-    }
-}
+/// Nested relative operand indices deeper than this are refused, as Parhelion's own reader does.
+/// Compiled programs nest one or two levels.
+const OPERAND_DEPTH: usize = 8;
 
-/// The DXBC container hash: MD5 rounds over everything after the hash field, with the bit
-/// length stored ahead of the tail and a derived length in the final word.
+/// The DXBC container hash the host computes for every shader edit.
 pub(crate) fn checksum(container: &[u8]) -> Result<[u8; 16]> {
-    let data = container.get(20..).context("shader container header")?;
-    let bits = u32::try_from(data.len() * 8).context("shader container size")?;
-    let tail_bits = (bits >> 2) | 1;
-    let mut state = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476];
-    let full = data.len() - data.len() % 64;
-    for block in data[..full].chunks_exact(64) {
-        md5_block(&mut state, block);
-    }
-    let left = &data[full..];
-    let mut block = Vec::with_capacity(128);
-    if left.len() < 56 {
-        block.extend(bits.to_le_bytes());
-        block.extend_from_slice(left);
-        block.push(0x80);
-        block.resize(60, 0);
-        block.extend(tail_bits.to_le_bytes());
-        md5_block(&mut state, &block);
-    } else {
-        block.extend_from_slice(left);
-        block.push(0x80);
-        block.resize(64, 0);
-        md5_block(&mut state, &block);
-        let mut last = bits.to_le_bytes().to_vec();
-        last.resize(60, 0);
-        last.extend(tail_bits.to_le_bytes());
-        md5_block(&mut state, &last);
-    }
-    let mut out = [0; 16];
-    for (i, word) in state.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-    Ok(out)
+    sundial::package_authoring::dxbc::checksum(container).map_err(anyhow::Error::msg)
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> Result<u32> {
-    Ok(u32::from_le_bytes(
-        bytes
-            .get(at..at + 4)
-            .context("shader container extent")?
-            .try_into()?,
-    ))
+    sundial::package_authoring::native_payload::bytes_at(bytes, at)
+        .map(u32::from_le_bytes)
+        .map_err(anyhow::Error::msg)
+        .context("shader container extent")
 }
 
 /// Byte range of one container chunk's data.
@@ -121,7 +61,20 @@ pub(crate) struct Operand {
     pub indices: Vec<Option<usize>>,
 }
 
-fn operand(tokens: &[u32], mut at: usize, operands: &mut Vec<Operand>) -> Result<usize> {
+fn operand(tokens: &[u32], at: usize, operands: &mut Vec<Operand>) -> Result<usize> {
+    nested_operand(tokens, at, operands, 0)
+}
+
+fn nested_operand(
+    tokens: &[u32],
+    mut at: usize,
+    operands: &mut Vec<Operand>,
+    depth: usize,
+) -> Result<usize> {
+    ensure!(
+        depth <= OPERAND_DEPTH,
+        "shader operand nesting exceeds the supported limit"
+    );
     let token = *tokens.get(at).context("truncated shader operand")?;
     let start = at;
     at += 1;
@@ -154,15 +107,15 @@ fn operand(tokens: &[u32], mut at: usize, operands: &mut Vec<Operand>) -> Result
             }
             2 => {
                 indices.push(None);
-                at = operand(tokens, at, operands)?;
+                at = nested_operand(tokens, at, operands, depth + 1)?;
             }
             3 => {
                 indices.push(None);
-                at = operand(tokens, at + 1, operands)?;
+                at = nested_operand(tokens, at + 1, operands, depth + 1)?;
             }
             4 => {
                 indices.push(None);
-                at = operand(tokens, at + 2, operands)?;
+                at = nested_operand(tokens, at + 2, operands, depth + 1)?;
             }
             other => bail!("unknown shader index representation {other}"),
         }
@@ -219,7 +172,12 @@ pub(crate) fn walk(tokens: &[u32]) -> Result<Vec<Instruction>> {
         {
             let mut cursor = at + 1;
             if token >> 31 != 0 {
+                // Extended opcode tokens chain on their top bit and stay inside the instruction.
                 loop {
+                    ensure!(
+                        cursor < at + length,
+                        "truncated extended shader opcode {opcode:X}"
+                    );
                     let extended = tokens[cursor];
                     cursor += 1;
                     if extended >> 31 == 0 {
@@ -438,6 +396,231 @@ pub(crate) fn patch(container: &[u8], remap: &Remap) -> Result<Patched> {
     let hash = checksum(&bytecode)?;
     bytecode[4..20].copy_from_slice(&hash);
     Ok(Patched { bytecode, changes })
+}
+
+/// Replaces the program's one four-component immediate operand whose bits equal `from`. Every
+/// other token and chunk is kept, and the container checksum is recomputed.
+pub(crate) fn replace_immediate(container: &[u8], from: [f32; 4], to: [f32; 4]) -> Result<Vec<u8>> {
+    const IMMEDIATE: u32 = 4;
+    let range = match chunk(container, b"SHEX")? {
+        Some(range) => range,
+        None => chunk(container, b"SHDR")?.context("shader has no program chunk")?,
+    };
+    let tokens: Vec<u32> = container[range.clone()]
+        .chunks_exact(4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect();
+    ensure!(
+        tokens.get(1).copied() == Some(tokens.len() as u32),
+        "shader program length differs"
+    );
+    let bits = from.map(f32::to_bits);
+    let mut found = Vec::new();
+    for instruction in walk(&tokens)? {
+        for operand in &instruction.operands {
+            let token = tokens[operand.token_at];
+            // An extended operand token would sit before the values. Compiled immediates carry none.
+            if operand.kind == IMMEDIATE
+                && token & 3 == 2
+                && token >> 31 == 0
+                && tokens.get(operand.token_at + 1..operand.token_at + 5) == Some(&bits[..])
+            {
+                found.push(operand.token_at + 1);
+            }
+        }
+    }
+    let [at] = found[..] else {
+        bail!(
+            "shader holds {} immediates with the expected value, not one",
+            found.len()
+        );
+    };
+    let mut bytecode = container.to_vec();
+    for (index, value) in to.into_iter().enumerate() {
+        ensure!(value.is_finite(), "shader immediate is not finite");
+        let offset = range.start + (at + index) * 4;
+        bytecode[offset..offset + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+    }
+    let hash = checksum(&bytecode)?;
+    bytecode[4..20].copy_from_slice(&hash);
+    Ok(bytecode)
+}
+
+/// A pixel program whose color output `register` never exceeds `limit` in R, G or B. Every write
+/// to the output moves to a new temporary register, and each return, conditional or not, first
+/// copies that register to the output with its declared RGB lanes clamped and any other declared
+/// lane unchanged. Other outputs and the signatures are kept. A program that does not declare the
+/// output, or declares it without all of R, G and B, is returned unchanged.
+pub(crate) fn limit_output(container: &[u8], register: u32, limit: f32) -> Result<Vec<u8>> {
+    const MIN: u32 = 0x33;
+    ensure!(limit.is_finite(), "output limit is not finite");
+    redirect_output(container, register, 1, &|temp, mask| {
+        // o<register>.xyz = min(r<temp>.xyzw, limit), o<register>.w = r<temp>.w.
+        let mut epilogue = vec![
+            MIN | (10 << 24),
+            0x0010_2072,
+            register,
+            0x0010_0E46,
+            temp,
+            0x0000_4002,
+            limit.to_bits(),
+            limit.to_bits(),
+            limit.to_bits(),
+            0,
+        ];
+        epilogue.extend(keep_alpha(register, temp, mask));
+        epilogue
+    })
+}
+
+/// A pixel program whose color output `register` keeps each pixel's luminance in `hue`. The
+/// luminance of the RGB the program writes, with Rec. 709 weights, multiplies `hue` scaled to unit
+/// luminance, so a texture's or vertex color's pattern and brightness stay and only the hue
+/// changes. Writes move to a temporary register as [`limit_output`] moves them, and any other
+/// declared lane is copied unchanged. A program that does not declare the output with all of R, G
+/// and B is returned unchanged.
+pub(crate) fn tint_output(container: &[u8], register: u32, hue: [f32; 3]) -> Result<Vec<u8>> {
+    const DP3: u32 = 0x10;
+    const MUL: u32 = 0x38;
+    const WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let luminance = hue.iter().zip(WEIGHTS).map(|(v, w)| v * w).sum::<f32>();
+    ensure!(
+        hue.iter().all(|v| v.is_finite() && *v >= 0.) && luminance > 1e-4,
+        "output hue has no luminance"
+    );
+    let scaled = hue.map(|v| v / luminance);
+    redirect_output(container, register, 2, &|temp, mask| {
+        // r<temp+1>.x = dot(r<temp>.xyz, weights), o<register>.xyz = r<temp+1>.xxxx * scaled.
+        let mut epilogue = vec![
+            DP3 | (10 << 24),
+            0x0010_0012,
+            temp + 1,
+            0x0010_0E46,
+            temp,
+            0x0000_4002,
+            WEIGHTS[0].to_bits(),
+            WEIGHTS[1].to_bits(),
+            WEIGHTS[2].to_bits(),
+            0,
+            MUL | (10 << 24),
+            0x0010_2072,
+            register,
+            0x0010_0006,
+            temp + 1,
+            0x0000_4002,
+            scaled[0].to_bits(),
+            scaled[1].to_bits(),
+            scaled[2].to_bits(),
+            0,
+        ];
+        epilogue.extend(keep_alpha(register, temp, mask));
+        epilogue
+    })
+}
+
+/// `mov o<register>.w, r<temp>.wwww` when the output declares its alpha lane.
+fn keep_alpha(register: u32, temp: u32, mask: u32) -> Vec<u32> {
+    const MOV: u32 = 0x36;
+    if mask & 8 == 0 {
+        return Vec::new();
+    }
+    vec![MOV | (5 << 24), 0x0010_2082, register, 0x0010_0FF6, temp]
+}
+
+/// Moves every write of pixel output `register` to the first of `extra` new temporary registers
+/// and places `epilogue(temp, mask)` before each return, conditional or not, where `mask` is the
+/// output's declared lanes. A program that does not declare the output with all of R, G and B is
+/// returned unchanged.
+fn redirect_output(
+    container: &[u8],
+    register: u32,
+    extra: u32,
+    epilogue: &dyn Fn(u32, u32) -> Vec<u32>,
+) -> Result<Vec<u8>> {
+    const OUTPUT: u32 = 2;
+    const DCL_OUTPUT: u32 = 0x65;
+    const DCL_TEMPS: u32 = 0x68;
+    const RET: u32 = 0x3E;
+    const RETC: u32 = 0x3F;
+    let range = match chunk(container, b"SHEX")? {
+        Some(range) => range,
+        None => chunk(container, b"SHDR")?.context("shader has no program chunk")?,
+    };
+    let tokens: Vec<u32> = container[range]
+        .chunks_exact(4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect();
+    ensure!(
+        tokens.len() >= 2 && tokens[1] as usize == tokens.len(),
+        "shader program length differs"
+    );
+    ensure!(
+        tokens[0] >> 16 == 0,
+        "output redirect needs a pixel program"
+    );
+    ensure!((1..=4).contains(&extra), "output redirect temporary count");
+    let instructions = walk(&tokens)?;
+    // dcl_output names its register in a one-dimensional immediate operand.
+    let mask = instructions
+        .iter()
+        .filter(|i| i.opcode == DCL_OUTPUT && i.end - i.start == 3)
+        .find(|i| (tokens[i.start + 1] >> 12) & 0xFF == OUTPUT && tokens[i.start + 2] == register)
+        .map(|i| (tokens[i.start + 1] >> 4) & 0xF);
+    let Some(mask) = mask.filter(|mask| mask & 7 == 7) else {
+        return Ok(container.to_vec());
+    };
+    let temps = instructions
+        .iter()
+        .find(|i| i.opcode == DCL_TEMPS)
+        .map_or(0, |i| tokens[i.start + 1]);
+    ensure!(temps < 4096, "shader temporary count differs");
+    let temp = temps;
+    let epilogue = epilogue(temp, mask);
+    let mut edited = tokens[..2].to_vec();
+    let mut declared_temps = temps > 0;
+    let mut moved = 0;
+    for instruction in &instructions {
+        let body = &tokens[instruction.start..instruction.end];
+        if instruction.opcode == DCL_TEMPS {
+            edited.extend([body[0], temps + extra]);
+            continue;
+        }
+        if !is_declaration(instruction.opcode) && instruction.opcode != CUSTOM_DATA {
+            if !declared_temps {
+                edited.extend([DCL_TEMPS | (2 << 24), extra]);
+                declared_temps = true;
+            }
+            if matches!(instruction.opcode, RET | RETC) {
+                edited.extend(&epilogue);
+            }
+        }
+        let at = edited.len();
+        edited.extend(body);
+        for operand in &instruction.operands {
+            let token = tokens[operand.token_at];
+            if (token >> 12) & 0xFF != OUTPUT {
+                continue;
+            }
+            // A relatively indexed output could be the limited one, so it is refused.
+            let [Some(index)] = operand.indices[..] else {
+                bail!("output limit needs immediate output indices");
+            };
+            if tokens[index] != register {
+                continue;
+            }
+            ensure!(
+                !is_declaration(instruction.opcode),
+                "output limit found an output in a declaration"
+            );
+            // Same token with the register file changed from output to temporary.
+            edited[at + operand.token_at - instruction.start] = token & !(0xFF << 12);
+            edited[at + index - instruction.start] = temp;
+            moved += 1;
+        }
+    }
+    ensure!(moved > 0, "pixel program never writes its declared output");
+    edited[1] = u32::try_from(edited.len())?;
+    rebuild(container, &edited, None)
 }
 
 /// Rewrites the input signature's registers in `bytecode` to match the remapped inputs.

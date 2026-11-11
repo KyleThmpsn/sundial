@@ -48,7 +48,20 @@ pub(super) fn build(
         })
         .collect();
     let groups = vec![0; mesh.groups.len()];
-    let encoded = geometry::encode_grouped(&mesh, &header, row, &stages, &groups)?;
+    let clipped = materials
+        .iter()
+        .filter(|(_, material)| material::clipped_caster(material))
+        .map(|(&key, _)| key)
+        .collect();
+    let encoded = geometry::encode_with_clipped_shadows(
+        &mesh,
+        &header,
+        row,
+        &stages,
+        &clipped,
+        Some(&groups),
+        None,
+    )?;
     buffers(native, graph, &header, row, &encoded)?;
     graph.add(
         "model",
@@ -73,7 +86,9 @@ pub(super) fn build(
             lightmap: None,
             vertex_data: None,
             statics: false,
+            paired_faces: &Default::default(),
             prefix: "",
+            prepass: false,
         },
     )?;
     Ok((

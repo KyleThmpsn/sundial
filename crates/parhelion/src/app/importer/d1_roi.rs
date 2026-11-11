@@ -15,11 +15,9 @@ impl PackageAuthoringApp {
         };
         let Ok(root) = data_root() else { return };
         let (sender, receiver) = mpsc::channel();
-        self.importer.receiver = Some(receiver);
+        self.importer.task = Some(Task::new(receiver, Work::Scan(ScanProgress::CheckingCache)));
         self.importer.read_requested = true;
         self.importer.catalog_target = self.packages.clone();
-        self.importer.scan_progress = Some(ScanProgress::CheckingCache);
-        self.importer.scan_started = Some(Instant::now());
         self.importer.scan_error = None;
         self.importer.roi = None;
         self.importer.weapons.clear();

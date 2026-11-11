@@ -553,6 +553,16 @@ fn draw_base_roll(
 ) -> Option<RowCommand> {
     let roll = choices.stock_roll.as_ref()?;
     ui.add_space(ui.spacing().item_spacing.y);
+    // A socket rolls from at most 64 choices, so the button says how many of these still fit.
+    let room = crate::item::MAX_ROLLED_CHOICES.saturating_sub(choices.current_len);
+    let label = if room >= roll.randomized.len() {
+        "Add to Randomized Plug Set".to_owned()
+    } else {
+        format!(
+            "Add {room} of {} to Randomized Plug Set",
+            roll.randomized.len()
+        )
+    };
     // A plain row, not a wrapping one: a scoped button in a wrapping line never moves to the next
     // line, and its label wraps per glyph in what is left.
     let command = ui
@@ -563,10 +573,18 @@ fn draw_base_roll(
             );
             ui.scope(|ui| {
                 crate::app::style::quiet(ui);
-                ui.add(
-                    egui::Button::new("Add to Randomized Plug Set")
-                        .wrap_mode(egui::TextWrapMode::Truncate),
+                ui.add_enabled(
+                    room > 0,
+                    egui::Button::new(label).wrap_mode(egui::TextWrapMode::Truncate),
                 )
+                .on_hover_text(format!(
+                    "Room for {room} more of the {} choices a socket rolls from. Plugs that don't fit stay here in order.",
+                    crate::item::MAX_ROLLED_CHOICES
+                ))
+                .on_disabled_hover_text(format!(
+                    "This socket has all {} choices a socket rolls from. Remove choices to make room.",
+                    crate::item::MAX_ROLLED_CHOICES
+                ))
             })
             .inner
             .clicked()

@@ -114,6 +114,7 @@ pub(super) fn build(
         &root.join("inspection"),
         false,
         None,
+        [None, None],
     )?;
     let prefix = |name: &str| format!("inspection-{name}");
     let nodes = art["nodes"].as_array_mut().context("Inventory art nodes")?;

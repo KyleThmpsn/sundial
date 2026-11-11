@@ -21,7 +21,6 @@ use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
 
 mod allocation;
-pub mod compatibility;
 mod embedded;
 mod emission;
 mod interfaces;

@@ -88,6 +88,53 @@ impl Row {
         Ok(())
     }
 
+    /// Write `rows` first, then keep every existing top-level row whose name is not in
+    /// `replaced`. Kept rows' child arrays and indirect targets stay where they are, so their
+    /// relative pointers are rebased to the rows' new positions.
+    pub(crate) fn replace(
+        rows: &[Self],
+        output: &mut Payload,
+        field: usize,
+        replaced: &[u32],
+    ) -> Result<()> {
+        let retained = output
+            .array(field, ROW_SIZE, Some(CLASS))?
+            .into_iter()
+            .filter(|&at| output.u32(at).is_ok_and(|name| !replaced.contains(&name)))
+            .collect::<Vec<_>>();
+        let old = retained
+            .iter()
+            .map(|&at| output.bytes::<ROW_SIZE>(at))
+            .collect::<Result<Vec<_>>>()?;
+        Self::write(rows, output, field)?;
+        let mut joined = output
+            .array(field, ROW_SIZE, Some(CLASS))?
+            .into_iter()
+            .map(|at| Ok((at, output.bytes::<ROW_SIZE>(at)?)))
+            .collect::<Result<Vec<_>>>()?;
+        joined.extend(retained.into_iter().zip(old));
+        append_array(
+            &mut output.0,
+            field,
+            u64::from(CLASS),
+            &vec![0; joined.len() * ROW_SIZE],
+            ROW_SIZE,
+        )?;
+        let written = output.array(field, ROW_SIZE, Some(CLASS))?;
+        for (&to, (from, bytes)) in written.iter().zip(joined) {
+            put(&mut output.0, to, &bytes)?;
+            for delta in [8, 32] {
+                let offset = i64::from_le_bytes(bytes[delta..delta + 8].try_into()?);
+                if offset != 0 {
+                    let target = i64::try_from(from + delta)? + offset;
+                    let relative = target - i64::try_from(to + delta)?;
+                    put(&mut output.0, to + delta, &relative.to_le_bytes())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn write_at(&self, output: &mut Payload, at: usize) -> Result<()> {
         put(&mut output.0, at, &self.name.to_le_bytes())?;
         put(&mut output.0, at + 16, &self.class.to_le_bytes())?;

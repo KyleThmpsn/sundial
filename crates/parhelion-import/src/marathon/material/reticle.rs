@@ -151,6 +151,42 @@ pub(super) fn framed(pixel: String, row: u8, framing: &geometry::Framing) -> Res
     Ok(pixel)
 }
 
+/// The source reticle draws only where its aperture mask set the stencil bit, so its artwork shows
+/// inside the aperture as the source eye sees it. Shadowkeep's reticle mask passes over the world
+/// as well, which left artwork wider than the aperture around the sight, such as a procedural ring
+/// at its unit extent. The vertex adapter passes each fragment's view tangent in the varying after
+/// the highest one the source reads, and fragments outside `window` discard. A framed reticle
+/// darkens its view outside the window instead.
+pub(super) fn windowed(mut pixel: String, window: &[[f32; 3]]) -> Result<String> {
+    ensure!(!window.is_empty(), "Reticle aperture window is empty");
+    let varying = scope::highest_texcoord(&pixel).map_or(8, |index| (index + 1).max(8));
+    ensure!(varying < 32, "Reticle leaves no free varying");
+    let start = pixel.find("void main(").context("Reticle entry")? + "void main(".len();
+    let end = pixel[start..]
+        .find(") {")
+        .context("Reticle parameter list")?
+        + start;
+    let mut code = String::from("\nfloat windowInside=1e20;\n");
+    for edge in window {
+        code.push_str(&format!(
+            "windowInside=min(windowInside,dot(float3(windowTangent.xy,1),float3({},{},{})));\n",
+            vertex::float(edge[0]),
+            vertex::float(edge[1]),
+            vertex::float(edge[2])
+        ));
+    }
+    code.push_str("clip(windowInside);\n");
+    pixel.insert_str(end + ") {".len(), &code);
+    // Ordinary inputs precede the system values a source list ends with, and a full register keeps
+    // the compiler from packing a source varying into its upper lanes, as for a scope cutout.
+    let comma = if start == end { "" } else { "," };
+    pixel.insert_str(
+        start,
+        &format!("float4 windowTangent:TEXCOORD{varying}{comma}"),
+    );
+    Ok(pixel)
+}
+
 pub(super) fn validate(native: &mut Reader, source: &Payload, shell: &Payload) -> Result<()> {
     ensure!(
         source
@@ -194,6 +230,8 @@ pub(super) struct Projection {
     pub vectors: usize,
     /// For a framed sight, the tangent of half the source horizontal view.
     pub framing: Option<f32>,
+    /// Whether the vertex stage passes the artwork's view tangent for [`windowed`].
+    pub windowed: bool,
 }
 
 pub(super) struct Vertex {
@@ -205,6 +243,7 @@ pub(super) struct Vertex {
     objects: u32,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn vertex(
     native: &mut Reader,
     material: &Payload,
@@ -213,6 +252,7 @@ pub(super) fn vertex(
     values: &[[u8; 16]],
     mut context: expression::Context<'_>,
     framing: Option<&geometry::Framing>,
+    windowed: bool,
 ) -> Result<Vertex> {
     // Source projection matrix, screen offset, then the source-owned depth channel.
     // The material's row allocation varies with its other declared inputs.
@@ -231,6 +271,7 @@ pub(super) fn vertex(
             .context("Reticle depth row overflow")?,
         vectors: values.len(),
         framing: framing.map(|framing| framing.tangent),
+        windowed,
     };
     ensure!(
         values.len() > usize::from(projection.depth),
@@ -347,6 +388,7 @@ pub(super) fn native_vertex(native: &mut Reader, shell: &Payload) -> Result<Vert
             depth: code[9] + 1,
             vectors: values.len(),
             framing: None,
+            windowed: false,
         },
         plane: Value::Null,
         code,

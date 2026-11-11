@@ -27,6 +27,7 @@ mod animation;
 pub use animation::inspect as inspect_animation;
 mod gameplay;
 mod geometry;
+pub(crate) use gameplay::inventory_icon;
 pub use gameplay::{apply_gameplay, author_gameplay};
 mod material;
 mod optic;

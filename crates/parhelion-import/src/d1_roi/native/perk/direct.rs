@@ -32,6 +32,121 @@ pub(super) fn read(
         );
     }
     let tag = p.u32(at + 16)?;
+    let checked = profile(source, native, tag)?;
+    if checked.health.is_some() {
+        ensure!(
+            p.u8(at + 2)? == 1,
+            "Source healing requires the owning player target"
+        );
+    } else {
+        ensure!(
+            p.u8(at + 2)? == 3,
+            "Source damage requires the event-object target"
+        );
+    }
+    let healing = checked.health.is_some();
+    // The authored direct response sets both flags, so only that source form carries here.
+    ensure!(
+        !healing || checked.flags == [1, 1],
+        "Source healing has another response mode or flags"
+    );
+    let template_tag = if healing { health::TEMPLATE } else { TEMPLATE };
+    let template = native.tag(template_tag, Some(0x80809C36))?;
+    if healing {
+        ability_damage::healing_profile(template_tag, &template.0)
+    } else {
+        ability_damage::neutral_profile(template_tag, &template.0)
+    }
+    .map_err(anyhow::Error::msg)?;
+    let mut bytes = vec![0; 24];
+    bytes[0] = 4;
+    bytes[2] = p.u8(at + 2)?;
+    put(&mut bytes, 16, &template_tag.to_le_bytes())?;
+    Ok((
+        Action::Native {
+            node: NativeNode { kind: 4, bytes },
+        },
+        FixedDamageProfile {
+            action_index: 0,
+            template: template_tag,
+            amount_bits: checked.amount.to_bits(),
+            damage_type: checked.mode,
+            health: checked.health,
+        },
+    ))
+}
+
+/// A direct effect whose profile has more than the plain fixed damage or healing form, such as
+/// audio, categories or feedback, translated whole into an imported group. The node keeps its
+/// target, whose bytes 1 and 3 name the owning player and the event object in both builds, and
+/// names the stock outgoing profile the group's private profile replaces.
+pub(super) fn imported(
+    source: &Source,
+    native: &mut Reader,
+    p: &Payload,
+    at: usize,
+    folder: &Path,
+) -> Result<(Action, ImportedAsset)> {
+    ensure!(
+        p.u8(at + 1)? == 0
+            && matches!(p.u8(at + 2)?, 1 | 3)
+            && p.bytes::<5>(at + 3)? == [0; 5]
+            && p.u32(at + 20)? == 0,
+        "Direct source effect requires a nonretained player or event-object target"
+    );
+    let tag = p.u32(at + 16)?;
+    ensure!(
+        source.reference(tag)? == 0x80800861,
+        "Direct source effect is not a typed profile"
+    );
+    let (template, group) = pattern::profile(source, native, tag, folder)?;
+    let mut bytes = vec![0; 24];
+    bytes[0] = 4;
+    bytes[2] = p.u8(at + 2)?;
+    put(&mut bytes, 16, &template.to_le_bytes())?;
+    Ok((
+        Action::Native {
+            node: NativeNode { kind: 4, bytes },
+        },
+        ImportedAsset {
+            action_index: 0,
+            directory: group.directory,
+            sha256: group.sha256,
+            symbol: group.symbol,
+            graph: None,
+        },
+    ))
+}
+
+/// A checked source profile owner: its fixed amount and damage mode, and the health response of
+/// the zero-damage healing family.
+pub(crate) struct Checked {
+    pub amount: f32,
+    pub mode: u8,
+    pub health: Option<HealthResponse>,
+    /// The health response's two flags, zero for the damage family.
+    pub flags: [u8; 2],
+}
+
+/// The healing family's response and its two flags, or a refusal for any other profile owner.
+pub(crate) fn healing(
+    source: &Source,
+    native: &mut Reader,
+    tag: u32,
+) -> Result<(HealthResponse, [u8; 2])> {
+    let checked = profile(source, native, tag)?;
+    Ok((
+        checked
+            .health
+            .context("Source profile is not the qualified healing family")?,
+        checked.flags,
+    ))
+}
+
+/// The stock profile a private healing copy starts from.
+pub(crate) const HEALING_TEMPLATE: u32 = health::TEMPLATE;
+
+fn profile(source: &Source, native: &mut Reader, tag: u32) -> Result<Checked> {
     ensure!(
         source.reference(tag)? == 0x80800861,
         "Direct source effect is not a typed profile"
@@ -112,45 +227,20 @@ pub(super) fn read(
         put(&mut expected, field, &value.to_le_bytes())?;
     }
     expected[root + 0x8C] = mode;
-    let health = if healing {
-        ensure!(
-            p.u8(at + 2)? == 1,
-            "Source healing requires the owning player target"
-        );
-        Some(health::read(source, native, &owner, &mut expected)?)
+    let (health, flags) = if healing {
+        let (health, flags) = health::read(source, native, &owner, &mut expected)?;
+        (Some(health), flags)
     } else {
-        ensure!(
-            p.u8(at + 2)? == 3,
-            "Source damage requires the event-object target"
-        );
-        None
+        (None, [0, 0])
     };
     ensure!(
         owner.0 == expected,
         "Source direct profile has additional scaling, filters, responses or feedback"
     );
-    let template_tag = if healing { health::TEMPLATE } else { TEMPLATE };
-    let template = native.tag(template_tag, Some(0x80809C36))?;
-    if healing {
-        ability_damage::healing_profile(template_tag, &template.0)
-    } else {
-        ability_damage::neutral_profile(template_tag, &template.0)
-    }
-    .map_err(anyhow::Error::msg)?;
-    let mut bytes = vec![0; 24];
-    bytes[0] = 4;
-    bytes[2] = p.u8(at + 2)?;
-    put(&mut bytes, 16, &template_tag.to_le_bytes())?;
-    Ok((
-        Action::Native {
-            node: NativeNode { kind: 4, bytes },
-        },
-        FixedDamageProfile {
-            action_index: 0,
-            template: template_tag,
-            amount_bits: amount.to_bits(),
-            damage_type: mode,
-            health,
-        },
-    ))
+    Ok(Checked {
+        amount,
+        mode,
+        health,
+        flags,
+    })
 }

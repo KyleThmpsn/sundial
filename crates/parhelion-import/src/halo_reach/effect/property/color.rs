@@ -3,6 +3,22 @@ use super::{Evaluation, Expr, Property};
 use anyhow::{Context, Result};
 
 impl Property {
+    /// The packed stops of a color property in coordinate order, normalized as the GPU path
+    /// reads them. A one-color property has one stop.
+    pub(in crate::halo_reach) fn stops(&self) -> Result<Vec<[f32; 3]>> {
+        let count = usize::from(self.function[2]);
+        anyhow::ensure!((1..=4).contains(&count), "Effect property is not a color");
+        let rgb = |at| -> Result<[f32; 3]> {
+            let color = self.word(at)?;
+            Ok([color >> 16 & 255, color >> 8 & 255, color & 255].map(|v| v as f32 / 255.))
+        };
+        let mut stops = (0..count - 1)
+            .map(|i| rgb(4 + i * 4))
+            .collect::<Result<Vec<_>>>()?;
+        stops.push(rgb(if count == 1 { 4 } else { 16 })?);
+        Ok(stops)
+    }
+
     pub(super) fn color(&self, count: u8, weight: Expr, evaluation: Evaluation) -> Result<Expr> {
         let cpu = evaluation == Evaluation::Cpu;
         // MCC 0017563F returns the first packed color for an unranged constant,

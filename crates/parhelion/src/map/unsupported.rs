@@ -51,6 +51,10 @@ impl Plan {
         0
     }
 
+    pub(crate) fn activity_tables(&self) -> &[ReplacementSpec] {
+        &[]
+    }
+
     pub(crate) fn part_count(&self, _index: usize, _part: Part) -> usize {
         0
     }
@@ -76,6 +80,7 @@ impl Plan {
         _index: usize,
         _part: Part,
         _ids: &[u16],
+        _manager: &PackageManager,
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,

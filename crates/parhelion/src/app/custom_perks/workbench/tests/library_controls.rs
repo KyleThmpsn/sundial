@@ -140,7 +140,7 @@ fn has_entry(workbench: &Workbench, id: &str) -> bool {
 /// Session one: two drafts, one of them saved to Custom Perks. Returns the saved perk's id.
 fn first_session(root: &Path, steps: &mut Vec<String>) -> String {
     let mut first = open_workbench(root);
-    assert!(first.drafts_writable, "{:?}", first.error);
+    assert!(first.drafts.writable, "{:?}", first.error);
     first.add_document(Document::new(named("Alpha"), None));
     first.documents[first.selected].recipe.description = "kept as a draft".into();
     first.persist_drafts();
@@ -190,9 +190,9 @@ fn a_bad_draft_is_set_aside(root: &Path, steps: &mut Vec<String>) -> Workbench {
         .any(|name| name.starts_with("workbench-drafts.rejected.") && name.ends_with(".json"));
     assert!(kept, "the rejected draft has no file of its own");
     assert!(names(&third).contains(&"Alpha".to_owned()));
-    assert!(third.drafts_writable);
+    assert!(third.drafts.writable);
     third.persist_drafts();
-    assert_eq!(third.drafts_error, None);
+    assert_eq!(third.drafts.error, None);
     let reread: Vec<serde_json::Value> =
         serde_json::from_slice(&std::fs::read(&drafts).unwrap()).unwrap();
     assert_eq!(reread.len(), entries.len() - 1);
@@ -245,10 +245,10 @@ fn two_windows_keep_both_drafts(root: &Path, steps: &mut Vec<String>) {
     let mut first = open_workbench(root);
     let mut second = open_workbench(root);
     first.add_document(Document::new(named("Charlie"), None));
-    assert_eq!(first.drafts_error, None);
+    assert_eq!(first.drafts.error, None);
     second.add_document(Document::new(named("Delta"), None));
     assert!(
-        second.drafts_error.is_some(),
+        second.drafts.error.is_some(),
         "the second window must see the conflict"
     );
     for text in ["second window", "second window, edited again"] {
@@ -272,7 +272,7 @@ fn two_windows_keep_both_drafts(root: &Path, steps: &mut Vec<String>) {
     assert_eq!(delta.recipe.description, "second window, edited again");
     steps.push(format!(
         "Two windows kept both drafts: {}. The next start opened {opened:?}",
-        second.drafts_error.unwrap_or_default()
+        second.drafts.error.unwrap_or_default()
     ));
 }
 

@@ -13,6 +13,13 @@ impl Dependency {
             Self::WolfpackRounds => "Wolfpack Rounds",
         }
     }
+
+    /// The channel the dependency's property writes, which the projectile's chain reads.
+    pub const fn key(self) -> u32 {
+        match self {
+            Self::WolfpackRounds => 0x456E_31D3,
+        }
+    }
 }
 
 impl Program {

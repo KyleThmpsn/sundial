@@ -13,6 +13,9 @@ pub(super) struct Key {
     /// Emission binds that appearance's art rows, dyes and icon to the plug item, so the plug
     /// carries one owner's appearance and is never shared, even with an identical variant.
     appearance: Option<(u32, String)>,
+    /// The item whose own imported projectile the variant fires. Its plug binds that item's
+    /// projectile root, so it is never shared with another item's identical variant.
+    projectile_owner: Option<usize>,
 }
 
 /// An imported appearance attached to an owner's recipe, read from its ornament link. It binds
@@ -121,6 +124,18 @@ pub(super) fn bound_appearances(_spec: &WeaponCloneSpec) -> AuthoringResult<Vec<
     Ok(Vec::new())
 }
 
+/// Clears the folder of every imported effect `program` and its nested programs name.
+fn forget_folders(program: &mut sundial::package_authoring::sandbox_perk::program::Program) {
+    for asset in &mut program.imported_assets {
+        asset.directory = std::path::PathBuf::new();
+    }
+    for edit in &mut program.native_asset_patches {
+        for child in &mut edit.programs {
+            forget_folders(&mut child.program);
+        }
+    }
+}
+
 impl Key {
     pub(super) fn new(
         sources: &sources::ProjectSources,
@@ -128,7 +143,16 @@ impl Key {
         classification: Option<crate::plug_classification::PlugClassification>,
         classification_perk_index: Option<usize>,
         appearance: Option<(u32, String)>,
+        item: usize,
     ) -> AuthoringResult<Self> {
+        let projectile_owner = variant
+            .sandbox_perks
+            .iter()
+            .filter_map(|perk| perk.program.as_ref())
+            .flat_map(sundial::package_authoring::sandbox_perk::program::Program::owned_programs)
+            .flat_map(sundial::package_authoring::sandbox_perk::program::Program::assets)
+            .any(|asset| asset.imported.is_some())
+            .then_some(item);
         let tooltip_category = classification_perk_index
             .map(|index| {
                 let detail = finished_sandbox_perk_at(&sources.stock_finished_sandbox_perks, index)
@@ -161,12 +185,22 @@ impl Key {
         variant.choice_index = 0;
         // Compare every field that classification copying writes, not the donor's identity.
         variant.classification_donor_hash = None;
+        // An imported effect is the same whichever item's folder holds its prepared files, so
+        // plugs compare its content pin and symbol, not its folder.
+        for program in variant
+            .sandbox_perks
+            .iter_mut()
+            .filter_map(|perk| perk.program.as_mut())
+        {
+            forget_folders(program);
+        }
         Ok(Self {
             variant,
             classification,
             tooltip_category,
             presentation_type,
             appearance,
+            projectile_owner,
         })
     }
 }

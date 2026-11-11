@@ -124,9 +124,12 @@ impl Program {
                     output = true;
                     (1, 1, 0)
                 }
-                1..=6 | 8..=11 | 15 | 57 => (2, 2, 1),
+                // 0x0C to 0x0E combine lanes of two vectors.
+                1..=6 | 8..=15 | 57 => (2, 2, 1),
                 16..=20 => (3, 3, 1),
-                7 | 21..=29 | 33..=35 | 53..=56 | 58 => (1, 1, 1),
+                // 0x1F is a periodic cosine, 0x26 a broadcast length, 0x27 a triangle wave and
+                // 0x28 to 0x2A periodic noise and hash helpers. Each keeps its stack pointer.
+                7 | 21..=29 | 31 | 33..=35 | 38..=42 | 53..=56 | 58 => (1, 1, 1),
                 _ => {
                     return Err(format!(
                         "The stack contract for instruction 0x{op:02X} is not recovered."

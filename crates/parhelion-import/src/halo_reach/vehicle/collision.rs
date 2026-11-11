@@ -2,6 +2,22 @@
 use super::*;
 
 pub(super) fn read(cache: &Cache, at: usize) -> Result<Value> {
+    // The physics model's shape blocks run spheres, multi-spheres, pills, boxes, triangles and
+    // polyhedra. A sphere is a translated convex shape: its radius at +0x40 as on a pill, and its
+    // centre at +0x60. The values are checked where a shape list names a sphere, so a model
+    // without spheres never depends on this block.
+    let spheres = cache
+        .block(at + 0x74, 0x70)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|row| -> Result<Value> {
+                    Ok(json!({"center_source":cache.floats::<3>(row + 0x60)?,
+                        "radius_source":cache.f32(row + 0x40)?,"material_index":cache.u8(row+4)? as i8}))
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .and_then(|rows| rows)
+        .unwrap_or_default();
     let capsules = cache
         .block(at + 0x8c, 0x70)?
         .into_iter()
@@ -102,5 +118,19 @@ pub(super) fn read(cache: &Cache, at: usize) -> Result<Value> {
                     .collect::<Result<Vec<_>>>()?}))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(json!({"polyhedra":polyhedra,"boxes":boxes,"capsules":capsules,"lists":lists,"mopps":mopps}))
+    // Entry counts of the shape blocks this reader does not decode, kept for shape kinds that
+    // need a new translation.
+    let undecoded = (0x5cusize..=0x1a0)
+        .step_by(12)
+        .filter(|offset| ![0x74, 0x8c, 0x98, 0xb0, 0xbc, 0xc8, 0xe0, 0xec, 0xf8].contains(offset))
+        .filter_map(|offset| {
+            cache
+                .u32(at + offset)
+                .ok()
+                .map(|count| (format!("{offset:#x}"), count))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    Ok(
+        json!({"spheres":spheres,"polyhedra":polyhedra,"boxes":boxes,"capsules":capsules,"lists":lists,"mopps":mopps,"undecoded_counts":undecoded}),
+    )
 }

@@ -72,10 +72,10 @@ pub(crate) fn append_fixed_rows_without_donor_dependencies(
     for index in 0..count {
         let row = rows + index * row_size;
         for &field in pointer_fields {
-            if read_u64(&data, row + field)? == 0 {
+            let Some(target) = crate::tag_payload::nested_header(&data, row + field, rows_end)?
+            else {
                 continue;
-            }
-            let target = relative_target(&data, row + field + 8)?;
+            };
             if target < rows_end {
                 return Err(invalid(format!(
                     "{description} nested array unexpectedly targets fixed rows"
@@ -356,20 +356,67 @@ pub(crate) fn append_collectible_child_to_node(
     write_relative_pointer(nodes, descriptor + 8, new_header)
 }
 
-pub(crate) fn add_collectible_children_to_node(
+/// Writes `added` into the collectible children of node `parent` from row `row` on, in place of
+/// the entries the node's first `stock` rows held. Rows from `stock` on are added there instead,
+/// before any the build added after the stock entries.
+pub(crate) fn write_collectible_children_from(
     nodes: &mut Vec<u8>,
     parent_index: usize,
-    members: &[(usize, usize)],
-    first: bool,
+    added: &[[u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]],
+    row: usize,
+    stock: usize,
 ) -> AuthoringResult<()> {
-    if members.is_empty() {
+    if added.is_empty() {
         return Ok(());
     }
+    let (descriptor, mut rows) = collectible_children(nodes, parent_index)?;
+    if rows.len() < stock {
+        return Err(invalid(
+            "A Collections node holds fewer entries than its stock ones",
+        ));
+    }
+    for (offset, &child) in added.iter().enumerate() {
+        let at = row + offset;
+        if at < stock {
+            rows[at] = child;
+        } else if at <= rows.len() {
+            rows.insert(at, child);
+        } else {
+            return Err(invalid(
+                "A Collections entry's row is past the node's entries",
+            ));
+        }
+    }
+    replace_collectible_children(nodes, descriptor, &rows)
+}
+
+/// Inserts `added` among the collectible children of node `parent` at row `at`.
+pub(crate) fn insert_collectible_children(
+    nodes: &mut Vec<u8>,
+    parent_index: usize,
+    at: usize,
+    added: &[[u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]],
+) -> AuthoringResult<()> {
+    let (descriptor, mut rows) = collectible_children(nodes, parent_index)?;
+    if at > rows.len() {
+        return Err(invalid(
+            "A Collections node holds fewer entries than the build places before",
+        ));
+    }
+    let after = rows.split_off(at);
+    rows.extend_from_slice(added);
+    rows.extend(after);
+    replace_collectible_children(nodes, descriptor, &rows)
+}
+
+/// The descriptor of node `parent`'s collectible children and their rows.
+pub(crate) fn collectible_children(
+    nodes: &[u8],
+    parent_index: usize,
+) -> AuthoringResult<(usize, Vec<[u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]>)> {
     let (node_count, _, node_rows, _) = array_at(nodes, 8)?;
     if parent_index >= node_count {
-        return Err(invalid(
-            "Weapon-page presentation node is outside the table",
-        ));
+        return Err(invalid("Presentation node is outside the table"));
     }
     let descriptor = node_rows
         + parent_index * PRESENTATION_NODE_ROW_SIZE
@@ -377,42 +424,49 @@ pub(crate) fn add_collectible_children_to_node(
     let (count, header, rows, class) = array_at(nodes, descriptor)?;
     if class != PRESENTATION_NODE_COLLECTIBLE_ROW_CLASS || count == 0 {
         return Err(invalid(
-            "Weapon-page presentation node has no collectible children",
+            "Presentation node has no compatible collectible children",
         ));
     }
-    let child_end = rows
+    let end = rows
         .checked_add(
             count
                 .checked_mul(PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE)
                 .ok_or_else(|| invalid("Presentation child row size overflowed"))?,
         )
         .ok_or_else(|| invalid("Presentation child row range overflowed"))?;
-    validate_presentation_child_array_terminator_at(nodes, header, child_end)?;
-    let added = members
-        .iter()
-        .map(|&(donor, authored)| clone_collectible_child(nodes, rows, count, donor, authored))
-        .collect::<AuthoringResult<Vec<_>>>()?;
-    // Before the stock entries, or after them where Sunrise's merge can add another mod's too.
-    let mut authored = nodes[header..rows].to_vec();
-    if !first {
-        authored.extend_from_slice(&nodes[rows..child_end]);
-    }
-    for row in added {
-        authored.extend_from_slice(&row);
-    }
-    if first {
-        authored.extend_from_slice(&nodes[rows..child_end]);
+    validate_presentation_child_array_terminator_at(nodes, header, end)?;
+    let children = nodes[rows..end]
+        .chunks_exact(PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE)
+        .map(|row| {
+            let mut child = [0; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE];
+            child.copy_from_slice(row);
+            child
+        })
+        .collect();
+    Ok((descriptor, children))
+}
+
+/// Points the collectible children at `descriptor` at a new array of `rows`, written after the
+/// table, as the other writers do, so the merge description reads the node's array as changed.
+fn replace_collectible_children(
+    nodes: &mut Vec<u8>,
+    descriptor: usize,
+    rows: &[[u8; PRESENTATION_NODE_COLLECTIBLE_ROW_SIZE]],
+) -> AuthoringResult<()> {
+    let (_, header, first, _) = array_at(nodes, descriptor)?;
+    let mut authored = nodes[header..first].to_vec();
+    for row in rows {
+        authored.extend_from_slice(row);
     }
     append_presentation_child_array_terminator(&mut authored)?;
-    write_u64(&mut authored, 0, (count + members.len()) as u64)?;
+    write_u64(&mut authored, 0, rows.len() as u64)?;
     let new_header = begin_array_block(nodes);
     nodes.extend_from_slice(&authored);
-    write_u64(nodes, descriptor, (count + members.len()) as u64)?;
+    write_u64(nodes, descriptor, rows.len() as u64)?;
     write_relative_pointer(nodes, descriptor + 8, new_header)
 }
 
 /// The child row that names `collectible` among a node's collectible children.
-#[cfg(feature = "d2-model-importer")]
 pub(crate) fn collectible_child_row(
     nodes: &[u8],
     parent_index: usize,
@@ -656,7 +710,9 @@ mod trailer_tests {
     #[test]
     fn authored_collectibles_lead_stock_page_in_build_order() {
         let mut nodes = synthetic_weapon_page(&[(10, 0xA001), (11, 0xB002), (12, 0xC003)]);
-        add_collectible_children_to_node(&mut nodes, 0, &[(11, 100), (10, 101)], true).unwrap();
+        let added =
+            crate::collection::front::donor_rows(&nodes, 0, &[(11, 100), (10, 101)]).unwrap();
+        crate::collection::front::place_first(&mut nodes, 0, &added).unwrap();
         let (_, _, node_rows, _) = array_at(&nodes, 8).unwrap();
         let (count, _, rows, class) =
             array_at(&nodes, node_rows + PRESENTATION_NODE_COLLECTIBLES_OFFSET).unwrap();

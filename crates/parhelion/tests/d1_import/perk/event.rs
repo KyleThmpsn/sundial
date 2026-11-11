@@ -405,6 +405,7 @@ pub(super) fn labels(
         let mut names = Vec::new();
         let mut original_mask = vec![0; 32];
         let mut expected = vec![0; 40];
+        let mut absent = false;
         for name in declared {
             let bits = match original_dictionary.get(&name) {
                 Some(bits) => bits,
@@ -419,11 +420,29 @@ pub(super) fn labels(
             if bits.iter().all(|&bit| bit == 0) {
                 continue;
             }
+            // No Shadowkeep object carries a label its registry lacks. Match any and exclude any
+            // lose that label, exclude all then always holds, and require all can never hold.
+            let Some(native_bits) = native_dictionary.get(&name) else {
+                assert_ne!(
+                    operation, 1,
+                    "A require-all filter with an absent label was kept"
+                );
+                absent = true;
+                continue;
+            };
             names.push(name);
-            for (out, bits) in expected.iter_mut().zip(&native_dictionary[&name]) {
+            for (out, bits) in expected.iter_mut().zip(native_bits) {
                 *out |= bits;
             }
         }
+        if absent && operation == 3 {
+            names.clear();
+            expected = vec![0; 40];
+        }
+        assert!(
+            !(absent && operation == 0 && names.is_empty()),
+            "A match-any filter with only absent labels was kept"
+        );
         // The source's empty flags describe compiled masks, including declarations
         // that contribute no bits. Every nonempty label keeps its symbolic identity.
         assert_eq!(

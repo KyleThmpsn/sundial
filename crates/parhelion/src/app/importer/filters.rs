@@ -234,6 +234,7 @@ fn draw_source(
         changed |= ui
             .checkbox(&mut browser.show_installed, "Show Installed")
             .changed();
+        changed |= show_imported(ui, browser);
         if source == Source::Marathon {
             ui.checkbox(preferences.marathon_animations, "Marathon Animations").on_hover_text(
                 "Experimental. Imports play the weapon's own Marathon animations instead of the donor's.",
@@ -244,6 +245,12 @@ fn draw_source(
         }
     });
     changed
+}
+
+fn show_imported(ui: &mut egui::Ui, browser: &mut browser::Browser) -> bool {
+    ui.checkbox(&mut browser.show_imported, "Show Imported")
+        .on_hover_text("Include items the library already has a recipe for.")
+        .changed()
 }
 
 /// The import preferences the filter bar shows beside the filters.
@@ -392,6 +399,7 @@ pub(super) fn draw(
                 142.0,
             );
         }
+        changed |= show_imported(ui, browser);
         if source != Source::D1RiseOfIron {
             changed |= ui
                 .checkbox(&mut browser.show_installed, "Show Installed")

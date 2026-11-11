@@ -439,7 +439,7 @@ pub(super) fn append(
                     .get(donor_text..donor_text + TEXT_BLOCK_SIZE)
                     .ok_or_else(|| invalid("A donor display text block leaves its table"))?
                     .to_vec();
-                let bank = u32::try_from(crate::package_profile::LOCALIZATION_DONOR_TABLE_INDEX)
+                let bank = u32::try_from(crate::package_profile::localization_table())
                     .map_err(|_| invalid("Localized bank index does not fit 32 bits"))?;
                 crate::tag_payload::write_localized_reference(
                     &mut block,

@@ -8,21 +8,39 @@ pub(crate) fn write(
     systems: &[String],
     locator: u8,
 ) -> Result<Vec<(usize, String)>> {
+    let systems = systems
+        .iter()
+        .map(|system| (system.clone(), vec![locator]))
+        .collect::<Vec<_>>();
+    write_bound(payload, event, &systems)
+}
+
+/// Locator ordinals retain their order and multiplicity. The particle definition's
+/// transform bindings select entries from each system's array.
+pub(crate) fn write_bound(
+    payload: &mut Payload,
+    event: usize,
+    systems: &[(String, Vec<u8>)],
+) -> Result<Vec<(usize, String)>> {
     ensure!(
         payload.u32(event - 4)? == 0x80806cc6 && payload.u32(event + 0x30)? == 4,
         "Particle event class differs"
     );
     let root = payload.pointer(24)?;
+    let locators = payload.array(root + 0x1b0, 6, Some(0x80808617))?.len();
     ensure!(
-        usize::from(locator) < payload.array(root + 0x1b0, 6, Some(0x80808617))?.len(),
-        "Particle event locator is undeclared"
+        systems.iter().all(|(_, bindings)| !bindings.is_empty()
+            && bindings
+                .iter()
+                .all(|&locator| usize::from(locator) < locators)),
+        "Particle event locator is absent or undeclared"
     );
     ensure!(!systems.is_empty(), "Particle event has no systems");
     put(&mut payload.0, event + 0x40, &[0; 0xe8])?;
     let rows = array(payload, event + 0x40, 0x80806cc8, 24, systems.len())?;
     let mut resources = Vec::new();
-    for (row, system) in rows.into_iter().zip(systems) {
-        append(&mut payload.0, row, 0x80800009, &[locator], 1)?;
+    for (row, (system, locators)) in rows.into_iter().zip(systems) {
+        append(&mut payload.0, row, 0x80800009, locators, 1)?;
         put(&mut payload.0, row + 16, &[0xff; 8])?;
         resources.push((row + 16, system.clone()));
     }

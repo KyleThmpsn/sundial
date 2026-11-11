@@ -1,8 +1,30 @@
-//! Non-executable runtime images used by cross-crate lifecycle tests.
-/// A non-executable PE image with a real version resource for filesystem lifecycle tests.
+//! Non-executable runtime images used by lifecycle tests in this crate and its dependants.
+
+/// A complete runtime image for filesystem lifecycle tests: settings schema `schema` and every
+/// capability string Sundial requires of `brand`. Each runtime stamps its generated
+/// content-manifest cache with its own magic, so a Dawn image carries `DAWNMANF` and any other
+/// carries `SUNCMANF`.
 pub fn module(brand: &str, version: [u16; 4], schema: u64) -> Vec<u8> {
-    let defaults = format!("{{\"version\":{schema}}}");
-    let defaults = defaults.as_bytes();
+    let manifest: &[u8] = if brand == "Dawn" {
+        b"DAWNMANF"
+    } else {
+        b"SUNCMANF"
+    };
+    image(
+        brand,
+        version,
+        format!("{{\"version\":{schema}}}").as_bytes(),
+        &[
+            b"mode=package_integrity_bypass",
+            b"ev=content_config stage=get route=manifest",
+            manifest,
+        ],
+    )
+}
+
+/// A non-executable PE image with a real version resource naming `brand` at `version`, the
+/// settings defaults resource `defaults`, and `strings` as NUL-terminated capability text.
+pub fn image(brand: &str, version: [u16; 4], defaults: &[u8], strings: &[&[u8]]) -> Vec<u8> {
     let version = version_resource(brand, version);
     let mut resources = vec![0; 160];
     directory(&mut resources, 0, &[(10, 32, true), (16, 96, true)]);
@@ -17,9 +39,10 @@ pub fn module(brand: &str, version: [u16; 4], schema: u64) -> Vec<u8> {
         resources.extend_from_slice(payload);
         align(&mut resources, 4);
     }
-    resources.extend_from_slice(
-        b"mode=package_integrity_bypass\0ev=content_config stage=get route=manifest\0SUNCMANF\0",
-    );
+    for text in strings {
+        resources.extend_from_slice(text);
+        resources.push(0);
+    }
     let resource_size = resources.len() as u32;
     align(&mut resources, 512);
     let mut image = vec![0; 512];

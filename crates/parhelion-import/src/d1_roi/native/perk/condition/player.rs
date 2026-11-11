@@ -51,10 +51,6 @@ pub(super) fn graph(
         );
         u32::MAX
     } else {
-        ensure!(
-            p.u8(at + 0xC0)? == 3,
-            "Source selected ability uses an unqualified slot"
-        );
         if p.u64(at + 0xB0)? != 0 {
             let path = p.pointer(at + 0xB0)?;
             ensure!(
@@ -62,17 +58,39 @@ pub(super) fn graph(
                 "Source selected ability path is unterminated"
             );
         }
-        ability_event::resolve(
-            source,
-            native.context("Source selected ability needs native ability definitions")?,
-            pattern,
-        )?
+        let native = native.context("Source selected ability needs native ability definitions")?;
+        // The selector keeps its ability through the shared counterpart rules. Force Multiplier's
+        // Ward of Dawn selects Sentinel Shield, where Bungie's port `80BBCA64` drops the gate.
+        let found = counterpart::find(source, native, pattern)?
+            .context("Source selected ability has no Shadowkeep version")?;
+        // Source 7782D0 and native B9CFA0 both index the controller's ability slots by the
+        // signed byte, and the source selector names the slot its ability fills. Stock Super
+        // selectors use slot 1 and the Blink talent slot 3, the bytes of those slots' banks.
+        ensure!(
+            found.slot.map(|slot| slot.byte()) == Some(p.u8(at + 0xC0)?),
+            "Source selected ability uses another slot than its Shadowkeep version"
+        );
+        found.entity
     };
+    // Source hold handler 6F4A50 arms only a positive hold, through setter 6F5010 at 6F4B45,
+    // which rounds seconds times the 60 Hz clock to the nearest tick, ties to even, and stores at
+    // least one tick in a signed Int16. The native timer keeps seconds, so it takes that tick
+    // count over 60, the setter adaptation the counter holds already use.
     let hold = p.f32(at + 0xC4)?;
     ensure!(
-        hold >= 0.0 && hold * 60.0 <= i16::MAX as f32 && (hold * 60.0).fract() == 0.0,
+        hold.is_finite() && hold >= 0.0,
         "Source player hold exceeds the qualified source timer domain"
     );
+    let hold = if hold > 0.0 {
+        let ticks = (hold * 60.0).round_ties_even().max(1.0);
+        ensure!(
+            ticks <= f32::from(i16::MAX),
+            "Source player hold exceeds the qualified source timer domain"
+        );
+        ticks / 60.0
+    } else {
+        0.0
+    };
     for offset in (8..0x38)
         .step_by(8)
         .chain((0x64..0x9C).step_by(8))
@@ -98,10 +116,15 @@ pub(super) fn graph(
     bytes[0x84..0xBC].copy_from_slice(&p.bytes::<0x38>(at + 0x64)?);
     // Source 7782D0 selects a roster object at +300 + slot*4 and reads its pattern.
     // Native F04840 selects the corresponding reference through B9CFA0, then follows
-    // the object definition to the canonical pattern. Only stock Jump slot identities
-    // are qualified. Private imported ability instances require a separate binding.
+    // the object definition to the canonical pattern. Private imported ability instances
+    // require a separate binding.
     bytes[0xC8..0xCC].copy_from_slice(&selected.to_le_bytes());
-    bytes[0xD0] = p.u8(at + 0xC0)?;
+    // An empty selector keeps slot zero, as source empty selectors store it.
+    bytes[0xD0] = if selected == u32::MAX {
+        0
+    } else {
+        p.u8(at + 0xC0)?
+    };
     bytes[0xD4..0xE0].copy_from_slice(&p.bytes::<12>(at + 0x9C)?);
     // Both schedulers arm on a true predicate, cancel on false and expire once.
     // D1 stores integral simulation ticks, while the native timer stores seconds.

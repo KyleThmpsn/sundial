@@ -132,6 +132,11 @@ pub(crate) struct Native {
     base_gain: Option<opaque::Gain>,
     paint: Option<opaque::Paint>,
     pub(in crate::model_preview) bindings: Vec<Binding>,
+    /// Composed character regions bind several independent native dye scopes at once.
+    /// Ordinary gear retains its live, selected-surface dye binding.
+    scopes: std::collections::BTreeMap<usize, Vec<[f32; 4]>>,
+    hair: bool,
+    modulate: bool,
 }
 
 struct Vertex {
@@ -162,6 +167,8 @@ pub(in crate::model_preview) enum Role {
     Gear,
     Detail,
     DetailNormal,
+    /// A texture supplied by a composed material scope at this pixel register.
+    Scope(usize),
     Depth,
     Mask,
     /// Absent atmospheric lookup, occlusion and volume inputs in the studio scene.
@@ -182,8 +189,41 @@ pub(in crate::model_preview) struct Binding {
 }
 
 impl Native {
+    pub(in crate::model_preview) fn plated(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|b| !b.vertex && matches!(b.role, Role::Albedo | Role::Normal | Role::Gear))
+    }
+    pub(in crate::model_preview) fn bind_scopes(
+        &mut self,
+        scopes: &std::collections::BTreeMap<usize, Vec<[f32; 4]>>,
+        textures: &std::collections::BTreeMap<(usize, usize), (usize, bool)>,
+    ) {
+        self.scopes = scopes.clone();
+        if self.hair {
+            self.decal = scopes.get(&4).is_some_and(|rows| rows[0][0] <= 0.0);
+        }
+        for binding in self.bindings.iter_mut().filter(|b| !b.vertex) {
+            let buffer = match binding.role {
+                Role::Scope(_) => Some(4),
+                Role::Detail | Role::DetailNormal if (3..=8).contains(&binding.slot) => {
+                    Some(7 - (binding.slot - 3) / 2)
+                }
+                _ => None,
+            };
+            if let Some(buffer) = buffer
+                && let Some(&(index, color)) = textures.get(&(buffer, binding.slot))
+            {
+                binding.role = Role::Texture(index);
+                binding.color = color;
+            }
+        }
+    }
     pub(in crate::model_preview) fn opaque(&self) -> bool {
-        self.opaque_uv.is_some() || self.deferred
+        !self.modulate && (self.opaque_uv.is_some() || self.deferred)
+    }
+    pub(in crate::model_preview) fn modulates(&self) -> bool {
+        self.modulate
     }
     pub(in crate::model_preview) fn base_gain(&self, frame: &Frame) -> Option<[f32; 3]> {
         self.base_gain.as_ref()?.value(frame)
@@ -277,9 +317,9 @@ fn load_vertex(
     let constants = super::read::stage_constants(manager, bytes, 0x48)?;
     check_constants(&code, &constants)?;
     let expression = Program::material(bytes, 0x48, globals, objects, surface, constants.len())?;
-    // Native matrix palettes multiply indices by three. Dual-quaternion palettes
-    // shift by one and consume quaternion pairs, including the single-bone form.
-    let quaternion = code.instructions.iter().any(|i| i.code == 41);
+    // Matrix palettes use either three packed rows or three rows in a four-row slot.
+    // Only a shift by one feeding the palette identifies a quaternion pair.
+    let quaternion = skinning::quaternion(&code);
     let (samplers, sampler_rows) = resource::samplers(manager, bytes, 0x48)?;
     Ok(Some(Vertex {
         code,
@@ -375,6 +415,9 @@ fn load_program(
             base_gain: None,
             paint: None,
             bindings,
+            scopes: Default::default(),
+            hair: false,
+            modulate: false,
         }),
         ..Default::default()
     };
@@ -430,6 +473,7 @@ fn contract(program: &program::Program, vertex: bool, deferred: bool) -> Result<
             (true, 11) => 8 + 256 * 3,
             (true, 12) => 14,
             (false, 2) => 1,
+            (false, 4) => 12,
             (false, 5..=7) => 27,
             (false, 8) => 8,
             (false, 11) => 4,

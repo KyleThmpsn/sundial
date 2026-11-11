@@ -37,12 +37,14 @@ pub(super) fn read(source: &Payload, row: usize, channels: usize) -> Result<Prog
         "Nonfinite source channel constant"
     );
     let inputs = source.array(row + 56, 4, Some(0x80800007))?;
+    // The declared value type. No native refresh, dispatch or interpreter path reads it, and
+    // Shadowkeep's stock computed and callback declarations store 0 to 5, so it is preserved.
     let flags = source.u16(row + 74)?;
     ensure!(
         source.u64(row + 40)? == inputs.len() as u64
             && source.u64(row + 48)? == 1
             && source.u16(row + 72)? == u16::MAX
-            && flags <= 1
+            && flags <= 5
             && source.u64(row + 80)? == 0
             && source.bytes::<2>(row + 104)? == [255, 254],
         "Source channel metadata requires translation"

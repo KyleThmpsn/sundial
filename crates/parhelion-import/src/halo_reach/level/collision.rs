@@ -100,6 +100,9 @@ pub struct Collision {
 impl Collision {
     /// Instance `instance`'s polygons in world space.
     pub fn placed(&self, instance: &Instance) -> Result<Vec<Polygon>> {
+        if instance.outside() {
+            return Ok(Vec::new());
+        }
         let polygons = self
             .definitions
             .get(instance.mesh)

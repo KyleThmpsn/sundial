@@ -11,7 +11,7 @@ pub(super) fn runtime_registry() -> Result<&'static RuntimeRegistry, String> {
 /// its binding slots reach, each as `[handle, definition hash, base, size, members, native
 /// layout]`, read from the running client's module image (SHA-256 74c5f6fa2d65bb24…).
 pub(super) fn build_runtime_registry() -> Result<RuntimeRegistry, String> {
-    let records = serde_json::from_str::<Vec<RegistryRecord>>(include_str!("schema.json"))
+    let records = serde_json::from_str::<Vec<RegistryRecord>>(include_str!("registry/schema.json"))
         .map_err(|error| format!("Embedded runtime schema is invalid: {error}"))?;
     if records.len() < 900 {
         return Err(format!(
@@ -72,7 +72,7 @@ pub(super) fn build_runtime_registry() -> Result<RuntimeRegistry, String> {
         }
     }
     let encoded_names =
-        serde_json::from_str::<BTreeMap<String, Vec<String>>>(include_str!("names.json"))
+        serde_json::from_str::<BTreeMap<String, Vec<String>>>(include_str!("registry/names.json"))
             .map_err(|error| format!("Embedded weapon runtime name map is invalid: {error}"))?;
     let mut names = BTreeMap::new();
     for (hash, mut candidates) in encoded_names {
@@ -99,9 +99,10 @@ pub(super) fn build_runtime_registry() -> Result<RuntimeRegistry, String> {
 fn build_inferred_names(
     verified: &BTreeMap<u32, Vec<String>>,
 ) -> Result<BTreeMap<u32, String>, String> {
-    let encoded =
-        serde_json::from_str::<BTreeMap<String, Vec<String>>>(include_str!("inferred_names.json"))
-            .map_err(|error| format!("Embedded inferred name table is invalid: {error}"))?;
+    let encoded = serde_json::from_str::<BTreeMap<String, Vec<String>>>(include_str!(
+        "registry/inferred_names.json"
+    ))
+    .map_err(|error| format!("Embedded inferred name table is invalid: {error}"))?;
     let mut inferred = BTreeMap::new();
     for (hash, candidates) in encoded {
         let hash = u32::from_str_radix(&hash, 16)

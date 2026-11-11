@@ -17,8 +17,8 @@ use sundial::{
 
 use super::{EntryEdits, StockModifier, SubclassChoice, layout};
 use crate::{ItemKind, WeaponRecipe, perk::PerkRecipe};
-mod revival;
-pub use revival::prepare as prepare_revival;
+mod grid;
+pub use grid::prepare as prepare_grid;
 
 pub struct Request<'a> {
     pub source_packages: &'a Path,

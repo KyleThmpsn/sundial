@@ -41,9 +41,9 @@ use super::world::{BubbleName, Owner, renamed_counted};
 mod cubemaps;
 mod environment;
 mod lights;
-pub(super) use cubemaps::Cubemap;
+pub(super) use cubemaps::{Cubemap, Grid as CubemapGrid};
 pub(super) use environment::Environment;
-pub(super) use lights::Light;
+pub(super) use lights::{Cone as LightCone, Light};
 
 const MAP_ROOT_CLASS: u32 = 0x8080_91DE;
 /// The map root names its bubble layout here, whose counted name is the world's.
@@ -171,6 +171,7 @@ const SKY_OBJECT_BOUNDS: usize = 0x40;
 const SKY_OBJECT_REFERENCE: usize = 0x60;
 const SKY_OBJECT_ORDER: usize = 0x64;
 const SKY_BOUNDS_CLASS: u32 = 0x8080_9673;
+const SKY_BOUNDS_SIZE: usize = 0x30;
 const SKY_INDEX_CLASS: u32 = 0x8080_0007;
 /// A sky object's model reference names its entity model at `+0x08`.
 const SKY_REFERENCE_CLASS: u32 = 0x8080_6F9B;
@@ -212,8 +213,9 @@ const ATMOSPHERE: u32 = 0x8080_7086;
 const ATMOSPHERE_VOLUME: usize = 0x90;
 /// A second volume, or none, which the sky reflection generator samples beside the first and
 /// blends toward by global channel 43. Midtown names one (`80B91A92`), and Distant Shore and
-/// `mission_proton` none. A map with its own atmosphere volume names none, the configuration
-/// whose global lighting sun read 15.1 on Nightfall, where Midtown's two-volume atmosphere lights
+/// `mission_proton` none. A map with its own atmosphere volume names its interior volume here,
+/// which its interior environment volumes select through channel 43, or none. With none, the
+/// global lighting sun read 15.1 on Nightfall, where Midtown's two-volume atmosphere lights
 /// itself through time of day channels with that sun at zero.
 const ATMOSPHERE_SECOND_VOLUME: usize = 0x94;
 /// The atmosphere's 2D distance lookup, 16 by 1,024 in Distant Shore's, which a map whose
@@ -235,7 +237,6 @@ const OCCLUSION_BUFFERS: [usize; 3] = [0x08, 0x20, 0x38];
 const OCCLUSION_PROBES: usize = 0x50;
 const OCCLUSION_PROBE_CLASS: u32 = 0x8080_726D;
 const OCCLUSION_PROBE_SIZE: usize = 48;
-const OCCLUSION_PROBE_VISIBILITY: usize = 16;
 /// The lowest elevation a baked light direction may give the sun, as the sine of its angle. A
 /// direction lower than this keeps the donor's tracks.
 const SUN_LOWEST: f32 = 0.05;
@@ -371,6 +372,24 @@ impl Container {
         match self {
             Self::Enrolled(_) => 2,
             Self::Unenrolled { .. } => 1,
+        }
+    }
+}
+
+impl Slot {
+    /// Entries a slot's copies take: none for a kept table, the table for moved rows or the map's
+    /// cubemap volumes, the table and the set or record it names for the others, and for the sun
+    /// its table, then copies of its sun record and direction track when the map has a `sun`.
+    fn entries(&self, sun: bool) -> usize {
+        match self {
+            Self::Table(_) => 0,
+            Self::Moved { .. } | Self::Cubemaps { .. } => 1,
+            Self::Spawns { .. }
+            | Self::World { .. }
+            | Self::Sky { .. }
+            | Self::Occlusion { .. } => 2,
+            Self::Sun { .. } if sun => 3,
+            Self::Sun { .. } => 1,
         }
     }
 }
@@ -558,6 +577,54 @@ pub(super) struct World<'a> {
     pub meshes: &'a [TagHash],
 }
 
+/// What the placement table places: the map's static instance group by its preheader, its props
+/// by entity and position, and its decorator records.
+pub(super) struct Placements<'a> {
+    pub statics: TagHash,
+    pub props: &'a [(TagHash, [f32; 3])],
+    pub decorators: &'a [TagHash],
+}
+
+/// The map's atmosphere, which the donor's beside its sun names in its place: its volume, its
+/// second volume for interiors, its distance lookup and its image.
+#[derive(Clone, Copy)]
+pub(super) struct Atmosphere {
+    pub volume: Option<TagHash>,
+    pub interior: Option<TagHash>,
+    pub lookup: Option<TagHash>,
+    pub image: Option<TagHash>,
+}
+
+/// The map's ambient occlusion ([`occlusion_record`]): its probes, the probe each cluster of the
+/// area's own tome takes, and the decorator occlusion buffer with each placed decorator record's
+/// identity and first row.
+#[derive(Clone, Copy)]
+pub(super) struct Occlusion<'a> {
+    pub probes: &'a [super::lighting::Probe],
+    pub clusters: Option<&'a [u16]>,
+    pub decorators: Option<(TagHash, &'a [(u64, u32)])>,
+}
+
+/// The converted tags and records a chain's copies name, gathered before its entries are assigned.
+pub(super) struct Inputs<'a> {
+    pub placements: Placements<'a>,
+    pub pieces: &'a [Piece],
+    pub spawns: &'a [Spawn],
+    pub world: World<'a>,
+    pub sky: &'a [SkyObject],
+    /// The map's sound point table, which its own container places.
+    pub sounds: Option<TagHash>,
+    pub atmosphere: Atmosphere,
+    pub occlusion: Occlusion<'a>,
+    pub cubemaps: &'a [Cubemap],
+    /// The textures the map's spot lights project, by their lights' gel indices.
+    pub gels: &'a [TagHash],
+    /// The map-owned native screen effect used by its global environment volume.
+    pub color_grade: Option<TagHash>,
+    /// Every tag the pieces, sky, sounds and atmosphere use, which the container's companion loads.
+    pub content: &'a [TagHash],
+}
+
 #[derive(Clone)]
 pub(super) struct Chain {
     root: Owner,
@@ -619,8 +686,8 @@ pub(super) struct Decorators {
 
 /// The decorator placement `table` places, when its only row places one: Distant Shore's
 /// `80EB0311` places entity `80C70D0D` with a resource naming record `80EB0310`, and its other
-/// decorator table the same entity. `loads` are the stock tags the copies name, which the map's
-/// container loads with the row's entity.
+/// decorator table the same entity. `loads` are the stock techniques the copies copy, which the
+/// map's container loads with the row's entity and the programs and samplers they name.
 pub(super) fn decorators(
     manager: &PackageManager,
     table: TagHash,
@@ -650,12 +717,69 @@ pub(super) fn decorators(
         return Err(invalid("The stock decorator row places no entity"));
     }
     let mut stock = vec![entity];
-    stock.extend_from_slice(loads);
+    for &technique in loads {
+        stock.push(technique);
+        stock.extend(technique_stage_tags(manager, technique)?);
+    }
     Ok(Decorators {
         row: payload[row..row + ROW_SIZE].to_vec(),
         resource,
         loads: stock,
     })
+}
+
+/// A technique's six stages, each with its program at `+0x00` (none as `FFFFFFFF`) and its sampler
+/// rows (`808073F3`, the sampler's tag at row `+0x00`) at `+0x40`.
+const TECHNIQUE_STAGES: [usize; 6] = [0x48, 0xE8, 0x188, 0x228, 0x2C8, 0x368];
+const STAGE_SAMPLERS: usize = 0x40;
+const SAMPLER_ROW_CLASS: u32 = 0x8080_73F3;
+const SAMPLER_ROW_SIZE: usize = 16;
+
+/// Each program and sampler technique `technique`'s stages name, and the data entry each of those
+/// names. A container that loads a stock technique leaves the programs and samplers it names
+/// unloaded, so on a map whose donor activity does not load them a copy that draws with them reads
+/// an unloaded tag. Distant Shore's grass draws with pixel programs in its own activity packages,
+/// which a campaign donor never loads. Loading a program's header leaves its bytecode, the data
+/// entry its entry references, unloaded in turn: on a converted Paradiso the grass surface pixel
+/// program `80FE1882` was resident and its bytecode `80FE1881` was not, and every decorator drew
+/// its whole cards into depth with no color.
+fn technique_stage_tags(
+    manager: &PackageManager,
+    technique: TagHash,
+) -> AuthoringResult<Vec<TagHash>> {
+    let payload = read_tag(manager, technique, "technique")?;
+    let mut tags = Vec::new();
+    for stage in TECHNIQUE_STAGES {
+        let program = read_u32(&payload, stage)?;
+        if program != 0 && program != u32::MAX {
+            tags.push(TagHash(program));
+        }
+        if read_u64(&payload, stage + STAGE_SAMPLERS)? == 0 {
+            continue;
+        }
+        let (count, _, rows, row_class) = array_at(&payload, stage + STAGE_SAMPLERS)?;
+        if row_class != SAMPLER_ROW_CLASS {
+            return Err(invalid(format!(
+                "Technique {technique} stage 0x{stage:X} samplers are class {row_class:08X}"
+            )));
+        }
+        for row in 0..count {
+            let sampler = read_u32(&payload, rows + row * SAMPLER_ROW_SIZE)?;
+            if sampler != 0 && sampler != u32::MAX {
+                tags.push(TagHash(sampler));
+            }
+        }
+    }
+    // A plain tag entry (type 8) references its class, and any other entry its data.
+    let data = tags
+        .iter()
+        .filter_map(|&tag| manager.get_entry(tag))
+        .filter(|entry| entry.file_type != 8)
+        .map(|entry| TagHash(entry.reference))
+        .filter(|&data| manager.get_entry(data).is_some())
+        .collect::<Vec<_>>();
+    tags.extend(data);
+    Ok(tags)
 }
 
 /// Crucible worlds whose sky table and sky objects a map copies when its donor's bubble places no
@@ -951,7 +1075,7 @@ fn keep(
             (Table::Geometry, Some(empty)) => Slot::Table(empty),
             (Table::Geometry, None) => {
                 let mut payload = read_tag(manager, TagHash(table), "placement table")?;
-                append_native_array(&mut payload, TABLE_ROWS, TABLE_ROW_CLASS, 0, &[])?;
+                replace_array(&mut payload, TABLE_ROWS, TABLE_ROW_CLASS, ROW_SIZE, 0, &[])?;
                 Slot::Moved {
                     template: table,
                     payload: synchronize_payload_size(payload)?,
@@ -1176,10 +1300,11 @@ fn retain_rows(
     }
     // Keep inline resources at their original offsets. Only the active placement array
     // changes, so resource-local pointers and shared resource targets remain intact.
-    append_native_array(
+    replace_array(
         &mut bytes,
         TABLE_ROWS,
         TABLE_ROW_CLASS,
+        ROW_SIZE,
         retained.len(),
         &rows,
     )?;
@@ -1376,14 +1501,21 @@ fn occlusion_slot(
 }
 
 /// The occlusion record's fixed header, through its selector at `+0x70`, and its arrays: the
-/// three buffers' identifier mappings, the probes and the instance-to-probe indices.
+/// three buffers' identifier mappings, the probes and the instance-to-probe indices. A mapping row
+/// is a 64-bit identifier, a 32-bit offset and four zero bytes. For decorator buffers B and C,
+/// the offset is an instance index. Shadowkeep 86657's binding routine at RVA 11634D0 adds the
+/// draw's instance index before multiplying by the 16-byte or four-byte stride, respectively.
+/// The third buffer holds grass decorators' four-byte instance rows ([`occlusion_record`]).
 const OCCLUSION_HEADER: usize = 0x78;
+const OCCLUSION_DECORATOR_BUFFER: usize = 0x38;
+const OCCLUSION_DECORATOR_MAPPINGS: usize = 0x40;
+const OCCLUSION_MAPPING_CLASS: u32 = 0x8080_726A;
 const OCCLUSION_INDICES: usize = 0x60;
 const OCCLUSION_INDEX_CLASS: u32 = 0x8080_000A;
 const OCCLUSION_ARRAYS: [(usize, usize, u32); 5] = [
-    (0x10, 16, 0x8080_726A),
-    (0x28, 16, 0x8080_726A),
-    (0x40, 16, 0x8080_726A),
+    (0x10, 16, OCCLUSION_MAPPING_CLASS),
+    (0x28, 16, OCCLUSION_MAPPING_CLASS),
+    (OCCLUSION_DECORATOR_MAPPINGS, 16, OCCLUSION_MAPPING_CLASS),
     (
         OCCLUSION_PROBES,
         OCCLUSION_PROBE_SIZE,
@@ -1394,19 +1526,26 @@ const OCCLUSION_ARRAYS: [(usize, usize, u32); 5] = [
 
 /// The map's own occlusion record from donor record `donor`: its header with the selector at
 /// `+0x70`, the donor's first probe, the native fallback that every stock record holds at the
-/// origin, then `probes`, each a position and a sky visibility with no directional terms.
+/// origin, then `probes`, each a position, visibility and native signed-axis gradients.
 ///
 /// The native consumer reads a lit object's probe through the `+0x60` array, which assigns a probe
 /// to each cluster of the bubble's spatial tome, the cluster a connected-region query finds
 /// around the object. The buffer lookups match identifiers of the donor's own instance sets. The
 /// donor's array assigned the donor tome's clusters to the donor's probes, so with the map's
-/// probes in their places it lit the map's objects from arbitrary points. The copy names no
-/// buffer, and `clusters` assigns each cluster of the area's own tome its probe. Without a tome
-/// of the map's own, no cluster is assigned and a lit object takes the native default.
+/// probes in their places it lit the map's objects from arbitrary points. The copy names none of
+/// the donor's buffers, and `clusters` assigns each cluster of the area's own tome its probe.
+/// Without a tome of the map's own, no cluster is assigned and a lit object takes the native
+/// default.
+///
+/// `decorators` names the map's decorator occlusion buffer and, for each decorator record the area
+/// places, its instance header identity and its first row there. The record maps them in its third
+/// buffer, as Distant Shore's maps its grass record's identity to its 11,520 instance rows. A
+/// decorator whose identity no row maps reads an ambient visibility of zero and draws black.
 fn occlusion_record(
     donor: &[u8],
-    probes: &[[f32; 4]],
+    probes: &[super::lighting::Probe],
     clusters: Option<&[u16]>,
+    decorators: Option<(TagHash, &[(u64, u32)])>,
 ) -> AuthoringResult<Vec<u8>> {
     if donor.len() < OCCLUSION_HEADER || read_u64(donor, 0)? != donor.len() as u64 {
         return Err(invalid("The donor occlusion record has an invalid size"));
@@ -1422,11 +1561,7 @@ fn occlusion_record(
             )));
         }
     }
-    if probes.len() + 1 >= usize::from(u16::MAX)
-        || probes.iter().any(|probe| {
-            !probe.iter().all(|value| value.is_finite()) || !(0. ..=1.).contains(&probe[3])
-        })
-    {
+    if probes.len() + 1 >= usize::from(u16::MAX) || probes.iter().any(|probe| !probe.valid()) {
         return Err(invalid(
             "The map's occlusion probes exceed the native range",
         ));
@@ -1444,11 +1579,7 @@ fn occlusion_record(
     }
     let mut table = donor[rows..rows + OCCLUSION_PROBE_SIZE].to_vec();
     for probe in probes {
-        let mut row = [0f32; OCCLUSION_PROBE_SIZE / 4];
-        row[..3].copy_from_slice(&probe[..3]);
-        row[3] = 1.;
-        row[OCCLUSION_PROBE_VISIBILITY / 4] = probe[3];
-        table.extend(row.into_iter().flat_map(f32::to_le_bytes));
+        table.extend(probe.row().into_iter().flat_map(f32::to_le_bytes));
     }
     append_native_array(
         &mut payload,
@@ -1473,6 +1604,24 @@ fn occlusion_record(
             OCCLUSION_INDICES,
             OCCLUSION_INDEX_CLASS,
             clusters.len(),
+            &rows,
+        )?;
+    }
+    if let Some((buffer, records)) = decorators
+        && !records.is_empty()
+    {
+        let mut rows = Vec::with_capacity(records.len() * 16);
+        for &(identity, offset) in records {
+            rows.extend(identity.to_le_bytes());
+            rows.extend(offset.to_le_bytes());
+            rows.extend(0u32.to_le_bytes());
+        }
+        write_u32(&mut payload, OCCLUSION_DECORATOR_BUFFER, buffer.0)?;
+        append_native_array(
+            &mut payload,
+            OCCLUSION_DECORATOR_MAPPINGS,
+            OCCLUSION_MAPPING_CLASS,
+            records.len(),
             &rows,
         )?;
     }
@@ -1557,7 +1706,7 @@ fn sky_collection(donor: &[u8], sky: &[SkyObject]) -> AuthoringResult<Vec<u8>> {
             .collect::<Vec<_>>()
     };
     let mut objects = Vec::with_capacity(sky.len() * SKY_OBJECT_SIZE);
-    let mut bounds = Vec::with_capacity(sky.len() * 32);
+    let mut bounds = Vec::with_capacity(sky.len() * SKY_BOUNDS_SIZE);
     let mut indices = Vec::with_capacity(sky.len() * 4);
     let mut low = [f32::MAX; 3];
     let mut high = [f32::MIN; 3];
@@ -1579,6 +1728,9 @@ fn sky_collection(donor: &[u8], sky: &[SkyObject]) -> AuthoringResult<Vec<u8>> {
         row[SKY_OBJECT_ORDER..SKY_OBJECT_ORDER + 4].copy_from_slice(&object.order.to_le_bytes());
         objects.extend_from_slice(&row);
         bounds.extend_from_slice(&extent);
+        // Native visibility registration reads 48-byte rows, including a separate
+        // 64-bit field after the bounds. Stock sky rows leave the final 16 bytes zero.
+        bounds.extend_from_slice(&[0; 16]);
         indices.extend_from_slice(
             &u32::try_from(index)
                 .map_err(|_| invalid("Too many sky objects"))?
@@ -1681,7 +1833,7 @@ fn world_record(donor: &[u8], world: &World) -> AuthoringResult<Vec<u8>> {
         .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
         .map(|(&material, _)| material)
         .ok_or_else(|| invalid("The donor world collision maps no materials"))?;
-    append_native_array(&mut payload, WORLD_MESH_RECORDS, 0, 0, &[])?;
+    replace_array(&mut payload, WORLD_MESH_RECORDS, 0, 4, 0, &[])?;
     let palettes = world
         .meshes
         .iter()
@@ -1714,10 +1866,11 @@ fn world_record(donor: &[u8], world: &World) -> AuthoringResult<Vec<u8>> {
         .iter()
         .flat_map(|tag| tag.0.to_le_bytes())
         .collect::<Vec<_>>();
-    append_native_array(
+    replace_array(
         &mut payload,
         WORLD_PACKFILES,
         packfiles_class,
+        4,
         world.meshes.len(),
         &packfiles,
     )?;
@@ -2060,7 +2213,40 @@ fn set_tag_rows(payload: &mut Vec<u8>, descriptor: usize, tags: &[TagHash]) -> A
         rows.extend_from_slice(&DIRECT_TAG_ROW.to_le_bytes());
         rows.extend_from_slice(&0u64.to_le_bytes());
     }
-    append_native_array(payload, descriptor, row_class, tags.len(), &rows)
+    replace_array(
+        payload,
+        descriptor,
+        row_class,
+        TAG_ROW_SIZE,
+        tags.len(),
+        &rows,
+    )
+}
+
+/// Replaces the native array at `descriptor`, whose rows are `stride` bytes, with `count` new
+/// `rows` appended to the payload, and blanks the rows it held. The old rows stay in the payload
+/// otherwise, where nothing reads them but a search of the payload still finds the donor tags they
+/// name: the copied container of a converted Paradiso still held the 20 tables of the Midtown
+/// container it copies, through which the donor trim ([`super::plan`]) found 3,344 of Midtown's
+/// records it does not place.
+fn replace_array(
+    payload: &mut Vec<u8>,
+    descriptor: usize,
+    class: u32,
+    stride: usize,
+    count: usize,
+    rows: &[u8],
+) -> AuthoringResult<()> {
+    if read_u64(payload, descriptor)? != 0 {
+        let (held, _, start, _) = array_at(payload, descriptor)?;
+        let end = held
+            .checked_mul(stride)
+            .and_then(|size| start.checked_add(size))
+            .filter(|&end| end <= payload.len())
+            .ok_or_else(|| invalid("A replaced native array runs past its payload"))?;
+        payload[start..end].fill(0);
+    }
+    append_native_array(payload, descriptor, class, count, rows)
 }
 
 impl Chain {
@@ -2396,47 +2582,73 @@ impl Chain {
         Ok(None)
     }
 
-    /// Entries the chain takes: the fixed ones, then each filtered container with its companion,
-    /// moved tables, and spawn set tables with their sets, then a borrowed sky's table and
-    /// collection.
+    /// Entries the chain takes ([`Addresses`]).
     pub(super) fn entries(&self) -> usize {
-        FIXED_ENTRIES
-            + if self.borrowed_sky.is_some() { 2 } else { 0 }
-            + lights::entries(self.placed_lights())
-            + environment::entries(self.placed_environment())
+        self.addresses().total
+    }
+
+    /// Where the chain's tags go, before any payload is built.
+    fn addresses(&self) -> Addresses {
+        let sun = self.sun().is_some();
+        let mut next = FIXED_ENTRIES;
+        let copies = self
+            .kept
+            .iter()
+            .map(|kept| match kept {
+                Kept::Unchanged => None,
+                Kept::Filtered { container, slots } => {
+                    let copy = next;
+                    let companion = matches!(container, Container::Enrolled(_)).then_some(copy + 1);
+                    next += container.entries();
+                    let slots = slots
+                        .iter()
+                        .map(|slot| {
+                            let first = next;
+                            next += slot.entries(sun);
+                            first
+                        })
+                        .collect();
+                    Some(CopyEntries {
+                        copy,
+                        companion,
+                        slots,
+                    })
+                }
+            })
+            .collect();
+        let borrowed_sky = next;
+        let lights = borrowed_sky
+            + self
+                .borrowed_sky
+                .as_ref()
+                .map_or(0, |slot| slot.entries(sun));
+        let bounds = lights
+            + self
+                .light_template
+                .as_ref()
+                .map_or(0, |template| template.entries(&self.lights));
+        let environment = bounds
             + 2 * self
                 .bounds_rows
                 .iter()
                 .filter(|(_, owner)| owner.is_some())
-                .count()
-            + self
-                .kept
-                .iter()
-                .map(|kept| match kept {
-                    Kept::Unchanged => 0,
-                    Kept::Filtered { container, slots } => {
-                        container.entries()
-                            + slots
-                                .iter()
-                                .map(|slot| match slot {
-                                    Slot::Table(_) => 0,
-                                    Slot::Moved { .. } | Slot::Cubemaps { .. } => 1,
-                                    Slot::Spawns { .. }
-                                    | Slot::World { .. }
-                                    | Slot::Sky { .. }
-                                    | Slot::Occlusion { .. } => 2,
-                                    Slot::Sun { .. } => {
-                                        if self.sun().is_some() {
-                                            3
-                                        } else {
-                                            1
-                                        }
-                                    }
-                                })
-                                .sum::<usize>()
-                    }
-                })
-                .sum::<usize>()
+                .count();
+        Addresses {
+            copies,
+            borrowed_sky,
+            lights,
+            bounds,
+            environment,
+            total: environment + environment::entries(self.placed_environment()),
+        }
+    }
+
+    /// The packages of the donor world records the chain copies: its map root's, bubble parent's
+    /// and bubble's.
+    pub(super) fn donor_packages(&self) -> impl Iterator<Item = u16> {
+        [self.root.tag, self.parent.tag, self.bubble.tag]
+            .into_iter()
+            .map(|tag| tag.pkg_id())
     }
 
     /// The donor prop, which converted pieces copy.
@@ -2478,14 +2690,6 @@ impl Chain {
     /// Sets the map's own lights, which its container places when a light template was found.
     pub(super) fn set_lights(&mut self, lights: Vec<Light>) {
         self.lights = lights;
-    }
-
-    /// The lights the map's container places.
-    fn placed_lights(&self) -> &[Light] {
-        match self.light_template {
-            Some(_) => &self.lights,
-            None => &[],
-        }
     }
 
     /// Sets the map's own environment, which its container places when an environment template
@@ -2672,374 +2876,405 @@ impl Chain {
         Ok(payload)
     }
 
-    /// The chain's entries starting at `first`, whose placement table places the static instance
-    /// group with preheader `statics`, which places `pieces`, whose spawn set holds `spawns`,
-    /// whose world collision is `world` and whose sky holds `sky`. The
-    /// container also places `sounds`, the map's sound point table, its atmosphere names
-    /// `atmosphere`, the map's atmosphere volume, and `lookup`, the map's distance lookup, its
-    /// occlusion record holds `occlusion`, the map's probes, its cubemap volume table places
-    /// `cubemaps`, and its companion loads `content`, every tag the pieces, sky, sounds and
-    /// atmosphere use. The placement table also places `decorators`, the map's decorator records.
-    #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
+    /// The chain's tags from entry `first`, in the order [`Addresses`] gives their entries, and its
+    /// map root. The placement table places the static instance group, props and decorator records
+    /// of `inputs`. The donor containers' copies place the map's spawn points, world collision,
+    /// sky, cubemap volumes and ambient occlusion, and the sun's names the map's atmosphere. The
+    /// map's own container places its sound points, lights and environment, and its companion
+    /// loads every tag the pieces, sky, sounds and atmosphere use.
     pub(super) fn tags(
         &self,
         first: TagHash,
-        statics: TagHash,
-        pieces: &[Piece],
-        props: &[(TagHash, [f32; 3])],
-        decorators: &[TagHash],
-        spawns: &[Spawn],
-        world: &World,
-        sky: &[SkyObject],
-        sounds: Option<TagHash>,
-        atmosphere: Option<TagHash>,
-        lookup: Option<TagHash>,
-        image: Option<TagHash>,
-        occlusion: &[[f32; 4]],
-        clusters: Option<&[u16]>,
-        cubemaps: &[Cubemap],
-        content: &[TagHash],
+        inputs: &Inputs,
     ) -> AuthoringResult<(Vec<NewTagSpec>, TagHash)> {
-        let at = |offset: usize| {
-            let index = first.entry_index() as usize + offset;
-            if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
-                return Err(invalid("The map root chain exceeds one package"));
-            }
-            Ok(TagHash::new(first.pkg_id(), index as u16))
-        };
-        let [
-            root,
-            root_companion,
-            parent,
-            parent_companion,
-            bubble,
-            bubble_companion,
-        ] = [at(0)?, at(1)?, at(2)?, at(3)?, at(4)?, at(5)?];
-        let (container, container_companion, table, layout) = (at(6)?, at(7)?, at(8)?, at(9)?);
-
-        let mut root_payload = self.root.payload.clone();
-        write_u32(&mut root_payload, ROOT_LAYOUT, layout.0)?;
-        set_tag_rows(&mut root_payload, ROOT_PARENTS, &[parent])?;
-        let mut parent_payload = self.parent.payload.clone();
-        write_u32(&mut parent_payload, PARENT_BUBBLE, bubble.0)?;
-        self.bubble_name.rename(&mut parent_payload);
-        let mut bubble_payload = self.bubble.payload.clone();
-        let (count, _, rows, row_class) = array_at(&bubble_payload, BUBBLE_CONTAINERS)?;
-        if count != self.kept.len() {
-            return Err(invalid("The donor bubble's containers changed"));
+        let addresses = self.addresses();
+        let entries = Entries(first);
+        let fixed = Fixed::new(entries)?;
+        let copies = self.container_copies(&addresses, entries, inputs)?;
+        let own = self.own_tags(&addresses, entries, inputs)?;
+        let mut tags = self.fixed_tags(&fixed, &copies, &own, inputs)?;
+        for copy in copies {
+            tags.extend(copy.specs()?);
         }
-        let direct = |tag: TagHash| {
-            let mut row = Vec::with_capacity(TAG_ROW_SIZE);
-            row.extend_from_slice(&tag.0.to_le_bytes());
-            row.extend_from_slice(&DIRECT_TAG_ROW.to_le_bytes());
-            row.extend_from_slice(&0u64.to_le_bytes());
-            row
-        };
-        let mut container_rows = Vec::new();
-        let mut filtered = Vec::new();
-        let mut next = FIXED_ENTRIES;
-        // The first of the donor's skies holds the map's sky, and any further one holds none.
-        let mut sky_left = sky;
-        // Likewise the first of the donor's cubemap volume tables places the map's volumes, and
-        // any further one places none, so no volume or identity is placed twice.
-        let mut cubemaps_left = cubemaps;
-        for (index, kept) in self.kept.iter().enumerate() {
-            match kept {
-                Kept::Unchanged => container_rows.extend_from_slice(
-                    &bubble_payload[rows + index * TAG_ROW_SIZE..rows + (index + 1) * TAG_ROW_SIZE],
-                ),
-                Kept::Filtered { container, slots } => {
-                    let copy = at(next)?;
-                    let copy_companion = match container {
-                        Container::Enrolled(_) => Some(at(next + 1)?),
-                        Container::Unenrolled { .. } => None,
-                    };
-                    next += container.entries();
-                    let mut tables = Vec::with_capacity(slots.len());
-                    // Tags the copy's tables add, which the copy's companion loads, and stock or
-                    // converted tags those name, which it also loads.
-                    let mut added = Vec::new();
-                    let mut named = Vec::new();
-                    // Donor tags the copy replaces, which its companion no longer loads.
-                    let mut replaced = Vec::new();
-                    for slot in slots {
-                        match slot {
-                            Slot::Table(table) => tables.push(*table),
-                            Slot::Moved { template, payload } => {
-                                let tag = at(next)?;
-                                next += 1;
-                                tables.push(tag.0);
-                                added.push((TagHash(*template), payload.clone(), tag));
-                            }
-                            Slot::Cubemaps { template, payload } => {
-                                let tag = at(next)?;
-                                next += 1;
-                                tables.push(tag.0);
-                                let volumes = std::mem::take(&mut cubemaps_left);
-                                added.push((
-                                    TagHash(*template),
-                                    cubemaps::table(payload, volumes)?,
-                                    tag,
-                                ));
-                                named.extend(volumes.iter().map(|cubemap| cubemap.texture));
-                            }
-                            Slot::Spawns {
-                                template,
-                                payload,
-                                fields,
-                                set,
-                                points,
-                            } => {
-                                let (table, own_set) = (at(next)?, at(next + 1)?);
-                                next += 2;
-                                let mut payload = payload.clone();
-                                for &field in fields {
-                                    write_u32(&mut payload, field, own_set.0)?;
-                                }
-                                tables.push(table.0);
-                                added.push((TagHash(*template), payload, table));
-                                added.push((*set, spawn_set(points, spawns)?, own_set));
-                            }
-                            Slot::World {
-                                template,
-                                payload,
-                                field,
-                                record,
-                                record_payload,
-                                donor,
-                            } => {
-                                replaced.extend_from_slice(donor);
-                                let (table, own_record) = (at(next)?, at(next + 1)?);
-                                next += 2;
-                                let mut payload = payload.clone();
-                                write_u32(&mut payload, *field, own_record.0)?;
-                                tables.push(table.0);
-                                added.push((TagHash(*template), payload, table));
-                                added.push((
-                                    *record,
-                                    world_record(record_payload, world)?,
-                                    own_record,
-                                ));
-                                // The client binds the record's shapes from what its container
-                                // loads, as the donor's container loads its own packfiles.
-                                named.push(world.compound);
-                                named.extend_from_slice(world.meshes);
-                            }
-                            Slot::Sun {
-                                template,
-                                payload,
-                                resource,
-                                record,
-                                record_payload,
-                                track,
-                                track_payload,
-                                atmosphere: atmosphere_resource,
-                            } => {
-                                let table = at(next)?;
-                                next += 1;
-                                let mut payload = payload.clone();
-                                // The donor's sun disc and lens flare draw Distant Shore's sun. The
-                                // map's sky draws its own.
-                                write_u32(&mut payload, resource + SUN_MATERIALS, u32::MAX)?;
-                                write_u32(&mut payload, resource + SUN_FLARE, u32::MAX)?;
-                                write_u32(
-                                    &mut payload,
-                                    resource + SUN_SCALAR,
-                                    SUN_SCALAR_VALUE.to_bits(),
-                                )?;
-                                if let (Some(row), Some(volume)) = (atmosphere_resource, atmosphere)
-                                {
-                                    write_u32(&mut payload, row + ATMOSPHERE_VOLUME, volume.0)?;
-                                    write_u32(
-                                        &mut payload,
-                                        row + ATMOSPHERE_SECOND_VOLUME,
-                                        u32::MAX,
-                                    )?;
-                                }
-                                if let (Some(row), Some(lookup)) = (atmosphere_resource, lookup) {
-                                    write_u32(&mut payload, row + ATMOSPHERE_LOOKUP, lookup.0)?;
-                                }
-                                if let (Some(row), Some(image)) = (atmosphere_resource, image) {
-                                    write_u32(&mut payload, row + ATMOSPHERE_IMAGE, image.0)?;
-                                }
-                                // New tags are written in the order their entries were taken.
-                                let mut copies = Vec::new();
-                                if let Some(direction) = self.sun() {
-                                    let (own_record, own_track) = (at(next)?, at(next + 1)?);
-                                    next += 2;
-                                    write_u32(&mut payload, resource + SUN_RECORD, own_record.0)?;
-                                    copies.push((
-                                        *record,
-                                        sun_record(record_payload, own_track)?,
-                                        own_record,
-                                    ));
-                                    copies.push((
-                                        *track,
-                                        sun_track(track_payload, direction)?,
-                                        own_track,
-                                    ));
-                                }
-                                tables.push(table.0);
-                                added.push((TagHash(*template), payload, table));
-                                added.extend(copies);
-                            }
-                            Slot::Sky {
-                                template,
-                                payload,
-                                field,
-                                collection,
-                                collection_payload,
-                            } => {
-                                replaced.push(*collection);
-                                let (table, own_collection) = (at(next)?, at(next + 1)?);
-                                next += 2;
-                                let mut payload = payload.clone();
-                                write_u32(&mut payload, *field, own_collection.0)?;
-                                tables.push(table.0);
-                                added.push((TagHash(*template), payload, table));
-                                let objects = std::mem::take(&mut sky_left);
-                                added.push((
-                                    *collection,
-                                    sky_collection(collection_payload, objects)?,
-                                    own_collection,
-                                ));
-                                // The container loads the sky's model references, as the donor's
-                                // container loads its own sky's.
-                                named.extend(objects.iter().map(|object| object.reference));
-                            }
-                            Slot::Occlusion {
-                                template,
-                                payload,
-                                field,
-                                record,
-                                record_payload,
-                            } => {
-                                let (table, own_record) = (at(next)?, at(next + 1)?);
-                                next += 2;
-                                let mut payload = payload.clone();
-                                write_u32(&mut payload, *field, own_record.0)?;
-                                tables.push(table.0);
-                                added.push((TagHash(*template), payload, table));
-                                // Without the map's probes the copy keeps the donor's record and
-                                // names its occlusion buffers, which the container loads as the
-                                // donor's loads them through its record. The map's own record
-                                // names no buffer.
-                                if occlusion.is_empty() {
-                                    added.push((*record, record_payload.clone(), own_record));
-                                    for buffer in OCCLUSION_BUFFERS {
-                                        let tag = read_u32(record_payload, buffer)?;
-                                        if tag != u32::MAX {
-                                            named.push(TagHash(tag));
-                                        }
-                                    }
-                                } else {
-                                    added.push((
-                                        *record,
-                                        occlusion_record(record_payload, occlusion, clusters)?,
-                                        own_record,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    container_rows.extend_from_slice(&direct(copy));
-                    filtered.push((
-                        container,
-                        tables,
-                        added,
-                        named,
-                        replaced,
-                        copy,
-                        copy_companion,
-                    ));
-                }
-            }
+        for (template, payload, _) in own.borrowed.into_iter().chain(own.lights) {
+            tags.push(spec(template, payload));
         }
-        container_rows.extend_from_slice(&direct(container));
-        append_native_array(
-            &mut bubble_payload,
-            BUBBLE_CONTAINERS,
-            row_class,
-            container_rows.len() / TAG_ROW_SIZE,
-            &container_rows,
-        )?;
-        // A borrowed sky's table and collection take the last entries, and the map's own
-        // container places the table.
-        let mut borrowed = Vec::new();
-        if let Some(Slot::Sky {
-            template,
-            payload,
-            field,
-            collection,
-            collection_payload,
-        }) = &self.borrowed_sky
-        {
-            let (sky_table, own_collection) = (at(next)?, at(next + 1)?);
-            let mut payload = payload.clone();
-            write_u32(&mut payload, *field, own_collection.0)?;
-            borrowed.push((TagHash(*template), payload, sky_table));
-            borrowed.push((
-                *collection,
-                sky_collection(collection_payload, sky)?,
-                own_collection,
+        for widened in own.bounds {
+            tags.push(spec(widened.owner.tag, widened.payload));
+            tags.push(spec(
+                widened.owner.companion_template(),
+                widened
+                    .owner
+                    .companion_with(widened.companion, widened.tag, &[])?,
             ));
         }
-        // The map's lights take the entries after a borrowed sky's, and the map's own container
-        // places their table.
-        let base = next + borrowed.len();
-        let (lit, techniques) = match &self.light_template {
+        for (template, payload, _) in own.environment {
+            tags.push(spec(template, payload));
+        }
+        if tags.len() != addresses.total {
+            return Err(invalid(
+                "The map root chain wrote other entries than it planned",
+            ));
+        }
+        Ok((tags, fixed.root))
+    }
+
+    /// The filtered containers' copies, in the bubble's container order. The first of the donor's
+    /// skies holds the map's sky and the first of its cubemap volume tables places the map's
+    /// volumes. Any further one holds or places none, so no object, volume or identity is placed
+    /// twice.
+    fn container_copies<'a>(
+        &'a self,
+        addresses: &Addresses,
+        entries: Entries,
+        inputs: &Inputs,
+    ) -> AuthoringResult<Vec<ContainerCopy<'a>>> {
+        let mut unplaced = Unplaced {
+            sky: inputs.sky,
+            cubemaps: inputs.cubemaps,
+        };
+        let mut copies = Vec::new();
+        for (kept, planned) in self.kept.iter().zip(&addresses.copies) {
+            let (Kept::Filtered { container, slots }, Some(planned)) = (kept, planned) else {
+                continue;
+            };
+            let mut copy = ContainerCopy {
+                container,
+                tag: entries.at(planned.copy)?,
+                companion: planned
+                    .companion
+                    .map(|entry| entries.at(entry))
+                    .transpose()?,
+                tables: Vec::with_capacity(slots.len()),
+                added: Vec::new(),
+                named: Vec::new(),
+                replaced: Vec::new(),
+            };
+            for (slot, &first) in slots.iter().zip(&planned.slots) {
+                self.copy_slot(slot, first, entries, inputs, &mut unplaced, &mut copy)?;
+            }
+            copies.push(copy);
+        }
+        Ok(copies)
+    }
+
+    /// Writes `slot`'s copies into `copy` from entry `first` ([`Slot::entries`]). A kept table
+    /// stays as it is.
+    fn copy_slot(
+        &self,
+        slot: &Slot,
+        first: usize,
+        entries: Entries,
+        inputs: &Inputs,
+        unplaced: &mut Unplaced,
+        copy: &mut ContainerCopy,
+    ) -> AuthoringResult<()> {
+        if let Slot::Table(table) = slot {
+            copy.tables.push(*table);
+            return Ok(());
+        }
+        let table = entries.at(first)?;
+        copy.tables.push(table.0);
+        match slot {
+            Slot::Table(_) => {}
+            Slot::Moved { template, payload } => {
+                copy.added
+                    .push((TagHash(*template), payload.clone(), table));
+            }
+            Slot::Cubemaps { template, payload } => {
+                let volumes = std::mem::take(&mut unplaced.cubemaps);
+                copy.added.push((
+                    TagHash(*template),
+                    cubemaps::table(payload, volumes)?,
+                    table,
+                ));
+                copy.named
+                    .extend(volumes.iter().map(|cubemap| cubemap.texture));
+            }
+            Slot::Spawns {
+                template,
+                payload,
+                fields,
+                set,
+                points,
+            } => {
+                let own_set = entries.at(first + 1)?;
+                let mut payload = payload.clone();
+                for &field in fields {
+                    write_u32(&mut payload, field, own_set.0)?;
+                }
+                copy.added.push((TagHash(*template), payload, table));
+                copy.added
+                    .push((*set, spawn_set(points, inputs.spawns)?, own_set));
+            }
+            Slot::World {
+                template,
+                payload,
+                field,
+                record,
+                record_payload,
+                donor,
+            } => {
+                copy.replaced.extend_from_slice(donor);
+                let own_record = entries.at(first + 1)?;
+                copy.added.push((
+                    TagHash(*template),
+                    naming(payload, *field, own_record)?,
+                    table,
+                ));
+                copy.added.push((
+                    *record,
+                    world_record(record_payload, &inputs.world)?,
+                    own_record,
+                ));
+                // The client binds the record's shapes from what its container loads, as the
+                // donor's container loads its own packfiles.
+                copy.named.push(inputs.world.compound);
+                copy.named.extend_from_slice(inputs.world.meshes);
+            }
+            Slot::Sun {
+                template,
+                payload,
+                resource,
+                record,
+                record_payload,
+                track,
+                track_payload,
+                atmosphere,
+            } => {
+                let mut payload = sun_table(payload, *resource, *atmosphere, inputs.atmosphere)?;
+                // New tags are written in the order their entries were taken.
+                let mut copies = Vec::new();
+                if let Some(direction) = self.sun() {
+                    let (own_record, own_track) = (entries.at(first + 1)?, entries.at(first + 2)?);
+                    write_u32(&mut payload, resource + SUN_RECORD, own_record.0)?;
+                    copies.push((*record, sun_record(record_payload, own_track)?, own_record));
+                    copies.push((*track, sun_track(track_payload, direction)?, own_track));
+                }
+                copy.added.push((TagHash(*template), payload, table));
+                copy.added.extend(copies);
+            }
+            Slot::Sky {
+                template,
+                payload,
+                field,
+                collection,
+                collection_payload,
+            } => {
+                copy.replaced.push(*collection);
+                let own_collection = entries.at(first + 1)?;
+                copy.added.push((
+                    TagHash(*template),
+                    naming(payload, *field, own_collection)?,
+                    table,
+                ));
+                let objects = std::mem::take(&mut unplaced.sky);
+                copy.added.push((
+                    *collection,
+                    sky_collection(collection_payload, objects)?,
+                    own_collection,
+                ));
+                // The container loads the sky's model references, as the donor's container loads
+                // its own sky's.
+                copy.named
+                    .extend(objects.iter().map(|object| object.reference));
+            }
+            Slot::Occlusion {
+                template,
+                payload,
+                field,
+                record,
+                record_payload,
+            } => {
+                let own_record = entries.at(first + 1)?;
+                copy.added.push((
+                    TagHash(*template),
+                    naming(payload, *field, own_record)?,
+                    table,
+                ));
+                copy_occlusion(*record, record_payload, own_record, inputs.occlusion, copy)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The tags of the map's own beyond the fixed entries ([`Own`]), each at its entry.
+    fn own_tags(
+        &self,
+        addresses: &Addresses,
+        entries: Entries,
+        inputs: &Inputs,
+    ) -> AuthoringResult<Own<'_>> {
+        let borrowed = match &self.borrowed_sky {
+            None => Vec::new(),
+            Some(Slot::Sky {
+                template,
+                payload,
+                field,
+                collection,
+                collection_payload,
+            }) => {
+                let (table, own_collection) = (
+                    entries.at(addresses.borrowed_sky)?,
+                    entries.at(addresses.borrowed_sky + 1)?,
+                );
+                vec![
+                    (
+                        TagHash(*template),
+                        naming(payload, *field, own_collection)?,
+                        table,
+                    ),
+                    (
+                        *collection,
+                        sky_collection(collection_payload, inputs.sky)?,
+                        own_collection,
+                    ),
+                ]
+            }
+            Some(_) => return Err(invalid("The map's borrowed sky is not a sky table")),
+        };
+        let (lights, techniques) = match &self.light_template {
             Some(template) if !self.lights.is_empty() => (
-                template.tags(&self.lights, &|offset| at(base + offset))?,
+                template.tags(&self.lights, inputs.gels, &|offset| {
+                    entries.at(addresses.lights + offset)
+                })?,
                 template.techniques(),
             ),
             _ => (Vec::new(), Vec::new()),
         };
-        // The map's environment takes the entries after the widened bounds records', and the
-        // map's own container places its table.
-        let bounded = self
+        // Each of the parent's bounds records that bounds something gives way to a copy widened to
+        // hold the level. With the donor's, its rooms bounded the level: on Tip of the Spear,
+        // players walking from the beach toward the hills were pulled back a few steps where The
+        // Other Side's boxes end, at y -94 to -99. Each copy and its companion take two entries.
+        let mut bounds = Vec::new();
+        for owner in self
             .bounds_rows
             .iter()
-            .filter(|(_, owner)| owner.is_some())
-            .count();
-        let environment_base = next + borrowed.len() + lit.len() + 2 * bounded;
-        let (environed, environment_entity) = match (&self.environment_template, &self.environment)
+            .filter_map(|(_, owner)| owner.as_ref())
         {
-            (Some(template), Some(environment)) => (
-                template.tags(environment, piece_bounds(pieces)?, &|offset| {
-                    at(environment_base + offset)
-                })?,
-                Some(template.entity()),
+            let entry = addresses.bounds + 2 * bounds.len();
+            bounds.push(Widened {
+                owner,
+                payload: widened_bounds(&owner.payload, inputs.pieces)?
+                    .unwrap_or_else(|| owner.payload.clone()),
+                tag: entries.at(entry)?,
+                companion: entries.at(entry + 1)?,
+            });
+        }
+        let (environment, environment_entity) =
+            match (&self.environment_template, &self.environment) {
+                (Some(template), Some(environment)) => (
+                    template.tags(
+                        environment,
+                        inputs.color_grade,
+                        piece_bounds(inputs.pieces)?,
+                        &|offset| entries.at(addresses.environment + offset),
+                    )?,
+                    Some(template.entity()),
+                ),
+                _ => (Vec::new(), None),
+            };
+        if lights.len() != addresses.bounds - addresses.lights
+            || environment.len() != addresses.total - addresses.environment
+        {
+            return Err(invalid(
+                "The map's lights or environment take other entries than planned",
+            ));
+        }
+        Ok(Own {
+            borrowed,
+            lights,
+            techniques,
+            bounds,
+            environment,
+            environment_entity,
+        })
+    }
+
+    /// The fixed entries' tags ([`Fixed`]): the map root, bubble parent, bubble and the map's own
+    /// container with their companions, then the placement table and the bubble layout.
+    fn fixed_tags(
+        &self,
+        fixed: &Fixed,
+        copies: &[ContainerCopy],
+        own: &Own,
+        inputs: &Inputs,
+    ) -> AuthoringResult<Vec<NewTagSpec>> {
+        let loads = self.container_loads(fixed.table, own, inputs);
+        let (bubble_loads, bubble_drops) = bubble_closure(fixed, copies);
+        let (parent_payload, parent_loads) = self.parent_payload(fixed, own)?;
+        let mut root_payload = self.root.payload.clone();
+        write_u32(&mut root_payload, ROOT_LAYOUT, fixed.layout.0)?;
+        set_tag_rows(&mut root_payload, ROOT_PARENTS, &[fixed.parent])?;
+        // World construction reads each parent and its bounds before requesting a bubble.
+        // Keep that metadata resident without enrolling the bubble's geometry closure.
+        let mut root_loads = vec![fixed.layout, fixed.parent, fixed.parent_companion];
+        root_loads.extend_from_slice(&parent_loads);
+        let root_drops = [bubble_drops.as_slice(), &[self.layout]].concat();
+        let placements = &inputs.placements;
+        Ok(vec![
+            spec(self.root.tag, synchronize_payload_size(root_payload)?),
+            spec(
+                self.root.companion_template(),
+                pruned_companion(
+                    &self.root,
+                    fixed.root,
+                    fixed.root_companion,
+                    &root_loads,
+                    &root_drops,
+                )?,
             ),
-            _ => (Vec::new(), None),
-        };
-        let mut container_payload = self.container.payload.clone();
-        let (_, _, _, table_class) = array_at(&container_payload, CONTAINER_TABLES)?;
-        let tables = std::iter::once(table)
-            .chain(sounds)
-            .chain(borrowed.first().map(|(_, _, tag)| *tag))
-            .chain(lit.first().map(|(_, _, tag)| *tag))
-            .chain(environed.first().map(|(_, _, tag)| *tag))
-            .flat_map(|tag| tag.0.to_le_bytes())
-            .collect::<Vec<_>>();
-        append_native_array(
-            &mut container_payload,
-            CONTAINER_TABLES,
-            table_class,
-            tables.len() / 4,
-            &tables,
-        )?;
-        // Each link loads the next, and the container loads its table and every converted tag,
-        // as a stock container loads what its tables place.
-        let mut loads = vec![
-            parent,
-            parent_companion,
-            bubble,
-            bubble_companion,
-            container,
-            container_companion,
-            table,
-        ];
-        loads.extend_from_slice(content);
+            spec(self.parent.tag, synchronize_payload_size(parent_payload)?),
+            spec(
+                self.parent.companion_template(),
+                pruned_companion(
+                    &self.parent,
+                    fixed.parent,
+                    fixed.parent_companion,
+                    &parent_loads,
+                    &bubble_drops,
+                )?,
+            ),
+            spec(
+                self.bubble.tag,
+                synchronize_payload_size(self.bubble_payload(copies, fixed.container)?)?,
+            ),
+            spec(
+                self.bubble.companion_template(),
+                pruned_companion(
+                    &self.bubble,
+                    fixed.bubble,
+                    fixed.bubble_companion,
+                    &bubble_loads,
+                    &bubble_drops,
+                )?,
+            ),
+            spec(
+                self.container.tag,
+                synchronize_payload_size(self.container_payload(fixed, own, inputs.sounds)?)?,
+            ),
+            spec(
+                self.container.companion_template(),
+                self.container.companion_with(
+                    fixed.container_companion,
+                    fixed.container,
+                    &loads,
+                )?,
+            ),
+            spec(
+                self.prop_table,
+                self.table(placements.statics, placements.props, placements.decorators)?,
+            ),
+            spec(self.layout, self.layout_payload.clone()),
+        ])
+    }
+
+    /// What the map's own container's companion loads: its placement `table` and every converted
+    /// tag, as a stock container loads what its tables place, and the stock tags the map's statics,
+    /// lights, environment and decorators draw or place with.
+    fn container_loads(&self, table: TagHash, own: &Own, inputs: &Inputs) -> Vec<TagHash> {
+        let mut loads = vec![table];
+        loads.extend_from_slice(inputs.content);
         // The static group's row places the donor's stock static entity, and every static draws
         // its depth prepass and shadows with the donor's stock techniques, which the container
         // loads as the donor's static container loads them.
@@ -3048,177 +3283,421 @@ impl Chain {
             TagHash(self.statics.templates.depth),
             TagHash(self.statics.templates.shadow),
         ]);
-        loads.extend(borrowed.iter().map(|(_, _, tag)| *tag));
+        loads.extend(own.borrowed.iter().map(|(_, _, tag)| *tag));
         // The map's lights draw with the template's stock techniques, which the container loads
         // as the template's container loads them.
-        loads.extend(lit.iter().map(|(_, _, tag)| *tag));
-        loads.extend(techniques);
+        loads.extend(own.lights.iter().map(|(_, _, tag)| *tag));
+        loads.extend_from_slice(&own.techniques);
         // The environment's rows place the template's stock volume entity.
-        loads.extend(environed.iter().map(|(_, _, tag)| *tag));
-        loads.extend(environment_entity);
+        loads.extend(own.environment.iter().map(|(_, _, tag)| *tag));
+        loads.extend(own.environment_entity);
         // The decorator rows place the stock decorator entity, and the decorator models draw with
-        // copies of stock techniques whose programs, textures and samplers stay stock.
-        if !decorators.is_empty()
+        // copies of stock techniques whose programs and samplers stay stock.
+        if !inputs.placements.decorators.is_empty()
             && let Some(decorator) = &self.decorators
         {
             loads.extend_from_slice(&decorator.loads);
         }
-        // The bubble's companion loads each copy and its companion, or, for a copy without one,
-        // the tables it adds.
-        let mut bubble_loads = loads[4..6].to_vec();
-        // Nor does it load donor tags a copy replaces.
-        let mut bubble_drops = Vec::new();
-        for (_, _, added, named, replaced, copy, copy_companion) in &filtered {
-            bubble_drops.extend_from_slice(replaced);
-            bubble_loads.push(*copy);
-            match copy_companion {
-                Some(companion) => bubble_loads.push(*companion),
-                None => {
-                    bubble_loads.extend(added.iter().map(|(_, _, tag)| *tag));
-                    bubble_loads.extend_from_slice(named);
-                }
-            }
-        }
+        loads
+    }
 
-        // Each of the parent's bounds records that bounds something gives way to a copy widened to
-        // hold the level, after a borrowed sky's entries. With the donor's, its rooms bounded the
-        // level: on Tip of the Spear, players walking from the beach toward the hills were pulled
-        // back a few steps where The Other Side's boxes end, at y -94 to -99.
-        // Each copy and its companion take two entries.
-        let mut own_bounds = Vec::new();
-        if self.bounds_rows.iter().any(|(_, owner)| owner.is_some()) {
-            let mut rows = Vec::with_capacity(self.bounds_rows.len());
-            for (tag, owner) in &self.bounds_rows {
-                match owner {
-                    Some(owner) => {
-                        let at_entry = next + borrowed.len() + lit.len() + 2 * own_bounds.len();
-                        let (own, own_companion) = (at(at_entry)?, at(at_entry + 1)?);
-                        let widened = widened_bounds(&owner.payload, pieces)?
-                            .unwrap_or_else(|| owner.payload.clone());
-                        own_bounds.push((owner, widened, own, own_companion));
-                        rows.push(own);
-                    }
-                    None => rows.push(*tag),
-                }
-            }
-            set_tag_rows(&mut parent_payload, PARENT_BOUNDS, &rows)?;
+    /// The bubble parent's copy, which names the map's bubble and each widened bounds record in
+    /// its donor's place, and what its companion loads: those records with their companions and
+    /// the bounds records kept as they are. Parent and bubble definitions are independently
+    /// requested native owners, so a parent must not pin its bubble's complete render and
+    /// collision closure.
+    fn parent_payload(&self, fixed: &Fixed, own: &Own) -> AuthoringResult<(Vec<u8>, Vec<TagHash>)> {
+        let mut payload = self.parent.payload.clone();
+        write_u32(&mut payload, PARENT_BUBBLE, fixed.bubble.0)?;
+        self.bubble_name.rename(&mut payload);
+        if !own.bounds.is_empty() {
+            let mut widened = own.bounds.iter().map(|widened| widened.tag);
+            let rows = self
+                .bounds_rows
+                .iter()
+                .map(|(tag, owner)| match owner {
+                    Some(_) => widened.next().unwrap_or(*tag),
+                    None => *tag,
+                })
+                .collect::<Vec<_>>();
+            set_tag_rows(&mut payload, PARENT_BOUNDS, &rows)?;
         }
-        // Parent and bubble definitions are independently requested native owners. A parent
-        // must not pin its bubble's complete render and collision closure.
-        let mut parent_loads = own_bounds
+        let mut loads = own
+            .bounds
             .iter()
-            .flat_map(|(_, _, own, companion)| [*own, *companion])
+            .flat_map(|widened| [widened.tag, widened.companion])
             .collect::<Vec<_>>();
-        parent_loads.extend(
+        loads.extend(
             self.bounds_rows
                 .iter()
                 .filter_map(|(tag, owner)| owner.is_none().then_some(*tag)),
         );
-        let spec = |template: TagHash, payload: Vec<u8>| NewTagSpec {
-            template_tag: template,
-            payload,
-            storage: NewTagStorageMode::InheritTemplate,
+        Ok((payload, loads))
+    }
+
+    /// The bubble's copy, which names the donor's containers, each filtered one's copy in its
+    /// place, then the map's own `container`.
+    fn bubble_payload(
+        &self,
+        copies: &[ContainerCopy],
+        container: TagHash,
+    ) -> AuthoringResult<Vec<u8>> {
+        let mut payload = self.bubble.payload.clone();
+        let (count, _, rows, row_class) = array_at(&payload, BUBBLE_CONTAINERS)?;
+        if count != self.kept.len() {
+            return Err(invalid("The donor bubble's containers changed"));
+        }
+        let mut copies = copies.iter();
+        let mut container_rows = Vec::new();
+        for (index, kept) in self.kept.iter().enumerate() {
+            match kept {
+                Kept::Unchanged => container_rows.extend_from_slice(
+                    &payload[rows + index * TAG_ROW_SIZE..rows + (index + 1) * TAG_ROW_SIZE],
+                ),
+                Kept::Filtered { .. } => {
+                    let copy = copies
+                        .next()
+                        .ok_or_else(|| invalid("A filtered donor container has no copy"))?;
+                    container_rows.extend_from_slice(&direct_row(copy.tag));
+                }
+            }
+        }
+        container_rows.extend_from_slice(&direct_row(container));
+        replace_array(
+            &mut payload,
+            BUBBLE_CONTAINERS,
+            row_class,
+            TAG_ROW_SIZE,
+            container_rows.len() / TAG_ROW_SIZE,
+            &container_rows,
+        )?;
+        Ok(payload)
+    }
+
+    /// The map's own container, whose tables are the placement table, the map's sound points, and
+    /// the tables of a borrowed sky, the map's lights and its environment.
+    fn container_payload(
+        &self,
+        fixed: &Fixed,
+        own: &Own,
+        sounds: Option<TagHash>,
+    ) -> AuthoringResult<Vec<u8>> {
+        let mut payload = self.container.payload.clone();
+        let (_, _, _, table_class) = array_at(&payload, CONTAINER_TABLES)?;
+        let first = |tags: &[Added]| tags.first().map(|(_, _, tag)| *tag);
+        let tables = std::iter::once(fixed.table)
+            .chain(sounds)
+            .chain(first(&own.borrowed))
+            .chain(first(&own.lights))
+            .chain(first(&own.environment))
+            .flat_map(|tag| tag.0.to_le_bytes())
+            .collect::<Vec<_>>();
+        replace_array(
+            &mut payload,
+            CONTAINER_TABLES,
+            table_class,
+            4,
+            tables.len() / 4,
+            &tables,
+        )?;
+        Ok(payload)
+    }
+}
+
+/// Where a chain's tags go, as offsets from its first entry, in the order they are written: the
+/// fixed entries ([`FIXED_ENTRIES`]), each filtered container's copy with its companion and its
+/// slots' copies, a borrowed sky's table and collection, the map's lights, each widened bounds
+/// record with its companion, then the map's environment. The plan is made before any payload, so
+/// counting the chain's entries and writing its tags read one assignment.
+struct Addresses {
+    /// Each donor container's entries when it is filtered, in the bubble's order.
+    copies: Vec<Option<CopyEntries>>,
+    borrowed_sky: usize,
+    lights: usize,
+    bounds: usize,
+    environment: usize,
+    total: usize,
+}
+
+/// A filtered container's entries: its copy, its companion when the donor has one, and the first
+/// of each slot's copies ([`Slot::entries`]).
+struct CopyEntries {
+    copy: usize,
+    companion: Option<usize>,
+    slots: Vec<usize>,
+}
+
+/// A chain's entries from its first, which all lie in the first's package.
+#[derive(Clone, Copy)]
+struct Entries(TagHash);
+
+impl Entries {
+    fn at(self, offset: usize) -> AuthoringResult<TagHash> {
+        let index = self.0.entry_index() as usize + offset;
+        if index >= crate::appended_tags::MAX_PACKAGE_ENTRY_COUNT {
+            return Err(invalid("The map root chain exceeds one package"));
+        }
+        Ok(TagHash::new(self.0.pkg_id(), index as u16))
+    }
+}
+
+/// The chain's fixed entries: the map root, bubble parent, bubble and the map's own container,
+/// each with its companion, then the placement table and the bubble layout.
+struct Fixed {
+    root: TagHash,
+    root_companion: TagHash,
+    parent: TagHash,
+    parent_companion: TagHash,
+    bubble: TagHash,
+    bubble_companion: TagHash,
+    container: TagHash,
+    container_companion: TagHash,
+    table: TagHash,
+    layout: TagHash,
+}
+
+impl Fixed {
+    fn new(entries: Entries) -> AuthoringResult<Self> {
+        Ok(Self {
+            root: entries.at(0)?,
+            root_companion: entries.at(1)?,
+            parent: entries.at(2)?,
+            parent_companion: entries.at(3)?,
+            bubble: entries.at(4)?,
+            bubble_companion: entries.at(5)?,
+            container: entries.at(6)?,
+            container_companion: entries.at(7)?,
+            table: entries.at(8)?,
+            layout: entries.at(9)?,
+        })
+    }
+}
+
+/// A new tag: its template, its payload and its own tag.
+type Added = (TagHash, Vec<u8>, TagHash);
+
+/// A filtered container's copy: its tag and companion, its tables, the tags its slots add, the
+/// stock or converted tags those name, which its companion also loads, and the donor tags it
+/// replaces, which no companion loads any longer.
+struct ContainerCopy<'a> {
+    container: &'a Container,
+    tag: TagHash,
+    companion: Option<TagHash>,
+    tables: Vec<u32>,
+    added: Vec<Added>,
+    named: Vec<TagHash>,
+    replaced: Vec<TagHash>,
+}
+
+impl ContainerCopy<'_> {
+    /// The copy's tags: the container naming its tables, its companion when the donor has one, then
+    /// the tags its slots add.
+    fn specs(self) -> AuthoringResult<Vec<NewTagSpec>> {
+        let mut payload = self.container.payload().to_vec();
+        let (count, rows) = if read_u64(&payload, CONTAINER_TABLES)? == 0 {
+            (0, 0)
+        } else {
+            let (count, _, rows, _) = array_at(&payload, CONTAINER_TABLES)?;
+            (count, rows)
         };
-        // World construction reads each parent and its bounds before requesting a bubble.
-        // Keep that metadata resident without enrolling the bubble's geometry closure.
-        let mut root_loads = vec![layout, parent, parent_companion];
-        root_loads.extend_from_slice(&parent_loads);
-        let root_drops = [bubble_drops.as_slice(), &[self.layout]].concat();
-        let tags = vec![
-            spec(self.root.tag, synchronize_payload_size(root_payload)?),
-            spec(
-                self.root.companion_template(),
-                crate::shared_tag_dependency_index::remove_dependencies(
-                    &self
-                        .root
-                        .companion_with(root_companion, root, &root_loads)?,
-                    root_companion,
-                    root,
-                    &root_drops,
-                )?,
-            ),
-            spec(self.parent.tag, synchronize_payload_size(parent_payload)?),
-            spec(
-                self.parent.companion_template(),
-                crate::shared_tag_dependency_index::remove_dependencies(
-                    &self
-                        .parent
-                        .companion_with(parent_companion, parent, &parent_loads)?,
-                    parent_companion,
-                    parent,
-                    &bubble_drops,
-                )?,
-            ),
-            spec(self.bubble.tag, synchronize_payload_size(bubble_payload)?),
-            spec(
-                self.bubble.companion_template(),
-                crate::shared_tag_dependency_index::remove_dependencies(
-                    &self
-                        .bubble
-                        .companion_with(bubble_companion, bubble, &bubble_loads)?,
-                    bubble_companion,
-                    bubble,
-                    &bubble_drops,
-                )?,
-            ),
-            spec(
-                self.container.tag,
-                synchronize_payload_size(container_payload)?,
-            ),
-            spec(
-                self.container.companion_template(),
-                self.container
-                    .companion_with(container_companion, container, &loads[6..])?,
-            ),
-            spec(self.prop_table, self.table(statics, props, decorators)?),
-            spec(self.layout, self.layout_payload.clone()),
-        ];
-        let mut tags = tags;
-        for (container, tables, added, named, replaced, copy, copy_companion) in filtered {
-            let mut payload = container.payload().to_vec();
-            let (count, rows) = if read_u64(&payload, CONTAINER_TABLES)? == 0 {
-                (0, 0)
-            } else {
-                let (count, _, rows, _) = array_at(&payload, CONTAINER_TABLES)?;
-                (count, rows)
-            };
-            if count != tables.len() {
-                return Err(invalid("A donor container's tables changed"));
-            }
-            for (index, &table) in tables.iter().enumerate() {
-                write_u32(&mut payload, rows + index * 4, table)?;
-            }
-            let mut added_tags = added.iter().map(|(_, _, tag)| *tag).collect::<Vec<_>>();
-            added_tags.extend(named);
-            tags.push(spec(container.tag(), payload));
-            if let (Container::Enrolled(owner), Some(companion)) = (container, copy_companion) {
-                tags.push(spec(
-                    owner.companion_template(),
-                    crate::shared_tag_dependency_index::remove_dependencies(
-                        &owner.companion_with(companion, copy, &added_tags)?,
-                        companion,
-                        copy,
-                        &replaced,
-                    )?,
-                ));
-            }
-            for (template, payload, _) in added {
-                tags.push(spec(template, payload));
-            }
+        if count != self.tables.len() {
+            return Err(invalid("A donor container's tables changed"));
         }
-        for (template, payload, _) in borrowed.into_iter().chain(lit) {
-            tags.push(spec(template, payload));
+        for (index, &table) in self.tables.iter().enumerate() {
+            write_u32(&mut payload, rows + index * 4, table)?;
         }
-        for (owner, payload, own, own_companion) in own_bounds {
-            tags.push(spec(owner.tag, payload));
+        let mut tags = vec![spec(self.container.tag(), payload)];
+        if let (Container::Enrolled(owner), Some(companion)) = (self.container, self.companion) {
+            let mut loads = self
+                .added
+                .iter()
+                .map(|(_, _, tag)| *tag)
+                .collect::<Vec<_>>();
+            loads.extend_from_slice(&self.named);
             tags.push(spec(
                 owner.companion_template(),
-                owner.companion_with(own_companion, own, &[])?,
+                pruned_companion(owner, self.tag, companion, &loads, &self.replaced)?,
             ));
         }
-        for (template, payload, _) in environed {
-            tags.push(spec(template, payload));
+        tags.extend(
+            self.added
+                .into_iter()
+                .map(|(template, payload, _)| spec(template, payload)),
+        );
+        Ok(tags)
+    }
+}
+
+/// The map's sky objects and cubemap volumes, until a copy places them.
+struct Unplaced<'a> {
+    sky: &'a [SkyObject],
+    cubemaps: &'a [Cubemap],
+}
+
+/// The tags of the map's own beyond the fixed entries: a borrowed sky's table and collection, the
+/// map's lights with the stock techniques they draw with, the parent's widened bounds records, and
+/// the map's environment with the stock volume entity its rows place.
+struct Own<'a> {
+    borrowed: Vec<Added>,
+    lights: Vec<Added>,
+    techniques: Vec<TagHash>,
+    bounds: Vec<Widened<'a>>,
+    environment: Vec<Added>,
+    environment_entity: Option<TagHash>,
+}
+
+/// One of the parent's bounds records widened to hold the level ([`widened_bounds`]): its owner,
+/// its payload, and the tags of its copy and the copy's companion.
+struct Widened<'a> {
+    owner: &'a Owner,
+    payload: Vec<u8>,
+    tag: TagHash,
+    companion: TagHash,
+}
+
+/// What the bubble's companion loads: the map's own container and its companion, then each copy and
+/// its companion, or, for a copy without one, the tags it adds and the tags they name. Beside it,
+/// the donor tags the copies replace, which no companion of the chain loads.
+fn bubble_closure(fixed: &Fixed, copies: &[ContainerCopy]) -> (Vec<TagHash>, Vec<TagHash>) {
+    let mut loads = vec![fixed.container, fixed.container_companion];
+    let mut drops = Vec::new();
+    for copy in copies {
+        drops.extend_from_slice(&copy.replaced);
+        loads.push(copy.tag);
+        match copy.companion {
+            Some(companion) => loads.push(companion),
+            None => {
+                loads.extend(copy.added.iter().map(|(_, _, tag)| *tag));
+                loads.extend_from_slice(&copy.named);
+            }
         }
-        Ok((tags, root))
+    }
+    (loads, drops)
+}
+
+/// The copy of the donor's ambient occlusion record `record`, at `own`, which a copy of its table
+/// names. The donor's record stays out of the companion, as the donor's sky collection does. Every
+/// occlusion record registers under its selector at `+0x70`, and on a converted Paradiso the
+/// donor's record, loaded beside the map's own and both under 0, left the map's decorators reading
+/// no ambient visibility: a runtime slot held their identity beside -1, and every blade drew black
+/// in sun while lit by a local light. That the lookups chose the donor's record is inferred from
+/// both being resident.
+///
+/// Without the map's probes the copy keeps the donor's record and names its occlusion buffers,
+/// which the container loads as the donor's loads them through its record. The map's own record
+/// names its own decorator buffer instead, and the donor's buffers stay out of the companion with
+/// their record.
+fn copy_occlusion(
+    record: TagHash,
+    payload: &[u8],
+    own: TagHash,
+    occlusion: Occlusion,
+    copy: &mut ContainerCopy,
+) -> AuthoringResult<()> {
+    copy.replaced.push(record);
+    let buffers = OCCLUSION_BUFFERS
+        .iter()
+        .map(|&buffer| read_u32(payload, buffer))
+        .collect::<AuthoringResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|&tag| tag != u32::MAX)
+        .map(TagHash);
+    if occlusion.probes.is_empty() {
+        copy.added.push((record, payload.to_vec(), own));
+        copy.named.extend(buffers);
+    } else {
+        copy.replaced.extend(buffers);
+        copy.added.push((
+            record,
+            occlusion_record(
+                payload,
+                occlusion.probes,
+                occlusion.clusters,
+                occlusion.decorators,
+            )?,
+            own,
+        ));
+    }
+    Ok(())
+}
+
+/// A copy of the donor's sun table `payload`, whose sun at `resource` draws no sun disc or lens
+/// flare, and whose atmosphere at `row`, when the table places one, names the map's own volumes,
+/// distance lookup and image wherever the map brings them.
+fn sun_table(
+    payload: &[u8],
+    resource: usize,
+    row: Option<usize>,
+    atmosphere: Atmosphere,
+) -> AuthoringResult<Vec<u8>> {
+    let mut payload = payload.to_vec();
+    // The donor's sun disc and lens flare draw Distant Shore's sun. The map's sky draws its own.
+    write_u32(&mut payload, resource + SUN_MATERIALS, u32::MAX)?;
+    write_u32(&mut payload, resource + SUN_FLARE, u32::MAX)?;
+    write_u32(
+        &mut payload,
+        resource + SUN_SCALAR,
+        SUN_SCALAR_VALUE.to_bits(),
+    )?;
+    let Some(row) = row else {
+        return Ok(payload);
+    };
+    if let Some(volume) = atmosphere.volume {
+        write_u32(&mut payload, row + ATMOSPHERE_VOLUME, volume.0)?;
+        write_u32(
+            &mut payload,
+            row + ATMOSPHERE_SECOND_VOLUME,
+            atmosphere.interior.map_or(u32::MAX, |volume| volume.0),
+        )?;
+    }
+    for (field, tag) in [
+        (ATMOSPHERE_LOOKUP, atmosphere.lookup),
+        (ATMOSPHERE_IMAGE, atmosphere.image),
+    ] {
+        if let Some(tag) = tag {
+            write_u32(&mut payload, row + field, tag.0)?;
+        }
+    }
+    Ok(payload)
+}
+
+/// A copy of donor table `payload` whose row at `field` names `record`.
+fn naming(payload: &[u8], field: usize, record: TagHash) -> AuthoringResult<Vec<u8>> {
+    let mut payload = payload.to_vec();
+    write_u32(&mut payload, field, record.0)?;
+    Ok(payload)
+}
+
+/// A tag row that names `tag` directly.
+fn direct_row(tag: TagHash) -> Vec<u8> {
+    let mut row = Vec::with_capacity(TAG_ROW_SIZE);
+    row.extend_from_slice(&tag.0.to_le_bytes());
+    row.extend_from_slice(&DIRECT_TAG_ROW.to_le_bytes());
+    row.extend_from_slice(&0u64.to_le_bytes());
+    row
+}
+
+/// `owner`'s companion for its copy at `tag`, written at `companion`, loading `loads` and none of
+/// `drops`.
+fn pruned_companion(
+    owner: &Owner,
+    tag: TagHash,
+    companion: TagHash,
+    loads: &[TagHash],
+    drops: &[TagHash],
+) -> AuthoringResult<Vec<u8>> {
+    crate::shared_tag_dependency_index::remove_dependencies(
+        &owner.companion_with(companion, tag, loads)?,
+        companion,
+        tag,
+        drops,
+    )
+}
+
+fn spec(template: TagHash, payload: Vec<u8>) -> NewTagSpec {
+    NewTagSpec {
+        template_tag: template,
+        payload,
+        storage: NewTagStorageMode::InheritTemplate,
     }
 }

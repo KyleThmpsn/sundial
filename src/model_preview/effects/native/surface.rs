@@ -3,6 +3,7 @@
 use super::*;
 use program::{Instruction, Operand, Program as Code};
 mod decal;
+mod hair;
 mod normal;
 
 fn literal(operand: &Operand, lane: usize, value: f32) -> bool {
@@ -76,7 +77,7 @@ fn visibility_contract(code: &Code) -> bool {
         || opaque::intensity::recover_translated(code)
 }
 
-fn supported(code: &Code, decal: bool) -> bool {
+fn supported(code: &Code, decal: bool, hair: bool, modulate: bool) -> bool {
     code.outputs.len() == 3
         && (0..3).all(|target| {
             code.outputs.iter().any(|s| {
@@ -88,7 +89,7 @@ fn supported(code: &Code, decal: bool) -> bool {
             .iter()
             // Frame and exposure inputs are already bounded and supplied by
             // load_program. Animated deferred materials use them too.
-            .all(|&(slot, _)| matches!(slot, 0 | 5..=7 | 12 | 13))
+            .all(|&(slot, _)| matches!(slot, 0 | 5..=7 | 12 | 13) || hair && slot == 4)
         && code.resources.len() <= super::TEXTURES
         && code
             .resources
@@ -100,7 +101,7 @@ fn supported(code: &Code, decal: bool) -> bool {
                     .iter()
                     .any(|o| o.indices.iter().any(|i| i.relative.is_some()))
         })
-        && (decal || normal_contract(code) && visibility_contract(code))
+        && (decal || hair || modulate || normal_contract(code) && visibility_contract(code))
 }
 
 /// Geometry decoding already applies the model placement. Compose a material's original
@@ -207,9 +208,12 @@ pub(in crate::model_preview) fn load(
             return Ok(None);
         }
     };
-    let full_decal = bytes[0x20] == 0x9a && decal::full(&code);
+    let receiver_decal = bytes[0x20] == 0x9a && decal::full(&code);
+    let full_decal = receiver_decal || bytes[0x20] == 0x9d && decal::paint(&code);
     let decal = full_decal || matches!(bytes[0x20], 0x96 | 0x97) && decal::supported(&code);
-    if !supported(&code, decal) {
+    let hair = hair::supported(&code);
+    let modulate = bytes[0x20] == 0xCC && decal::modulate(&code);
+    if !supported(&code, decal, hair, modulate) {
         if std::env::var_os("SUNDIAL_PREVIEW_TRACE").is_some() {
             model.notices.push(format!(
                 "Surface 0x{tag:08X}: unsupported deferred contract, normal {}, visibility {}, buffers {:?}",
@@ -219,10 +223,14 @@ pub(in crate::model_preview) fn load(
         return Ok(None);
     }
     let explicit = resource::explicit(&bytes, 0x2D0)?;
+    let scoped = code
+        .buffers
+        .iter()
+        .any(|&(slot, _)| (5..=7).contains(&slot));
     if code
         .resources
         .iter()
-        .any(|r| !explicit.contains_key(&r.slot) && !full_decal)
+        .any(|r| !explicit.contains_key(&r.slot) && !full_decal && !hair && !scoped)
     {
         return Ok(None);
     }
@@ -252,7 +260,9 @@ pub(in crate::model_preview) fn load(
     native.intensity = intensity;
     native.decal = decal;
     native.full_decal = full_decal;
-    if full_decal
+    native.hair = hair;
+    native.modulate = modulate;
+    if receiver_decal
         && (!native
             .bindings
             .iter()
@@ -264,7 +274,11 @@ pub(in crate::model_preview) fn load(
     {
         return Err("The deferred decal has no bound receiver normal".into());
     }
-    native.ambient_power = opaque::intensity::ambient_power(manager);
+    native.ambient_power = if modulate {
+        None
+    } else {
+        opaque::intensity::ambient_power(manager)
+    };
     if std::env::var_os("SUNDIAL_PREVIEW_TRACE").is_some() {
         trace(tag, &material, model);
     }
@@ -278,9 +292,10 @@ fn trace(tag: u32, material: &Material, model: &mut Model) {
         return;
     };
     let mut text = format!(
-        "Surface 0x{tag:08X}: intensity {}, decal {}, uv {:?}, {} samplers",
+        "Surface 0x{tag:08X}: intensity {}, decal {}, modulate {}, uv {:?}, {} samplers",
         native.intensity,
         native.decal,
+        native.modulates(),
         native.opaque_uv,
         material.samplers.len()
     );
@@ -386,10 +401,14 @@ pub(in crate::model_preview) fn sample(
     if radius < 1e-8 {
         return None;
     }
-    let ambient = native.ambient_power.map_or_else(
-        || (2.0 * targets[2][1]).clamp(0.0, 1.0) * targets[2][3].clamp(0.0, 1.0),
-        |power| ambient_visibility(targets[2][1], targets[2][3], power),
-    );
+    let ambient = if native.hair {
+        1.0
+    } else {
+        native.ambient_power.map_or_else(
+            || (2.0 * targets[2][1]).clamp(0.0, 1.0) * targets[2][3].clamp(0.0, 1.0),
+            |power| ambient_visibility(targets[2][1], targets[2][3], power),
+        )
+    };
     Some(Sample {
         surface: shader::Sample {
             albedo: std::array::from_fn(|i| targets[0][i].max(0.0)),

@@ -203,6 +203,10 @@ fn candidates(tool: Tool) -> Vec<PathBuf> {
             if let Some(path) = std::env::var_os("PATH") {
                 places.extend(std::env::split_paths(&path).map(|folder| folder.join(file)));
             }
+            // A build run outside the importer window reads no chosen paths, and a map recipe
+            // names no decoder unless one was chosen, so the folder Parhelion keeps tools in
+            // comes last.
+            places.extend(installed(tool).map(|folder| folder.join(file)));
         }
         Tool::Decompiler => {}
     }

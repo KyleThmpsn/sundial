@@ -23,6 +23,7 @@ mod animation;
 mod app;
 mod backups;
 mod catalog;
+mod character;
 mod dyes;
 mod entity;
 mod expression;

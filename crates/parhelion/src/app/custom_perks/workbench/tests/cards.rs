@@ -25,15 +25,13 @@ fn setup() -> (egui::Context, Workbench) {
     program.name = "Additional Conditions".into();
     program.native = Some(NativeProgram::empty());
     recipe.effects = vec![spawn, native, PerkRecipe::effect(421)];
-    (
-        ctx,
-        Workbench {
-            initialized: true,
-            open: true,
-            drafts_writable: true,
-            page: Page::Effects,
-            documents: vec![Document::new(recipe, None)],
-            ..Default::default()
-        },
-    )
+    let mut workbench = Workbench {
+        initialized: true,
+        open: true,
+        page: Page::Effects,
+        documents: vec![Document::new(recipe, None)],
+        ..Default::default()
+    };
+    workbench.drafts.writable = true;
+    (ctx, workbench)
 }

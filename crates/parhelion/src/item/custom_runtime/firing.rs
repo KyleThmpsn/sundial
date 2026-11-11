@@ -8,11 +8,12 @@ use sundial::package_authoring::entity::{
 
 const MOVEMENT: u32 = 0x0437_756D;
 
-/// `group` is the content group the weapon's pattern selects.
+/// `group` is the content group the weapon's pattern selects. `imported` is a private
+/// projectile root allocated with its asset group, with its trajectory rows when known.
 pub(super) fn fit(
     manager: &PackageManager,
     entity: &mut [u8],
-    (imported, group): (Option<TagHash>, Option<u32>),
+    (imported, group): (Option<(TagHash, Option<usize>)>, Option<u32>),
     allocator: AppendedTagAllocator,
     tags: &mut Vec<NewTagSpec>,
 ) -> AuthoringResult<()> {
@@ -62,10 +63,21 @@ pub(super) fn fit(
     let mut changed = false;
     let mut barrel_changed = false;
     for (graph, (slots, barrel_slots)) in graphs {
-        if imported.is_some_and(|tag| tag.0 == graph) {
-            return Err(invalid(
-                "Pellet barrels with imported firing graphs are not supported by the final trajectory-pool check.",
-            ));
+        if let Some((_, rows)) = imported.filter(|(tag, _)| tag.0 == graph) {
+            // An imported pool cannot grow here, so it must already hold every pellet.
+            match rows {
+                Some(rows) if rows >= usize::from(pellets) => continue,
+                Some(rows) => {
+                    return Err(invalid(format!(
+                        "The imported firing graph holds {rows} trajectories, fewer than the Barrel's {pellets} pellets."
+                    )));
+                }
+                None => {
+                    return Err(invalid(
+                        "Pellet barrels with imported firing graphs are not supported by the final trajectory-pool check.",
+                    ));
+                }
+            }
         }
         let first = tags.len();
         let private = match fit_graph(manager, graph, pellets, allocator, tags) {

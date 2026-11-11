@@ -90,16 +90,6 @@ impl WeaponTables {
             .count();
         let collectible_index = u16::try_from(context.stock_collectible_count + collected)
             .map_err(|_| invalid("Authored collectible index does not fit 16 bits"))?;
-        let (current_unlock_count, _, current_unlock_rows, _) = array_at(&self.unlocks, 8)?;
-        let unlock_definition_index = u16::try_from(current_unlock_count)
-            .map_err(|_| invalid("Authored unlock index does not fit 16 bits"))?;
-        let unlock_slot = first_free_unlock_slot(
-            &self.unlocks,
-            current_unlock_rows,
-            current_unlock_count,
-            ACCOUNT_UNLOCK_BANK,
-            SHADOWKEEP_ACCOUNT_FLAG_REGION_CAPACITY,
-        )?;
 
         let mut definition = donor.definition.clone();
         let mut strings = donor.strings.clone();
@@ -111,14 +101,11 @@ impl WeaponTables {
                 _ => Self::author_gear,
             };
             let row = WeaponRow {
-                current_unlock_count,
                 identity,
                 definition_tag,
                 string_tag,
                 item_index,
                 collectible_index,
-                unlock_definition_index,
-                unlock_slot,
                 authored_icon_index,
                 authored_icon_container,
                 authored_pattern_index,
@@ -138,7 +125,7 @@ impl WeaponTables {
             &mut definition,
             &mut strings,
             &donor.weapon.overrides,
-            donor.damage_carrier_source.as_ref(),
+            donor.donors.damage_carrier.as_ref(),
             context.sandbox_perk_definition_template,
             context.sandbox_perk_string_template,
         )?;
@@ -187,14 +174,11 @@ impl WeaponTables {
         )?;
 
         let row = WeaponRow {
-            current_unlock_count,
             identity,
             definition_tag,
             string_tag,
             item_index,
             collectible_index,
-            unlock_definition_index,
-            unlock_slot,
             authored_icon_index,
             authored_icon_container,
             authored_pattern_index,
@@ -308,7 +292,7 @@ impl WeaponTables {
             &strings,
             (!expected_socket_columns.is_empty()).then_some(expected_socket_columns.as_slice()),
             (&donor.weapon, &identity),
-            donor.dye_rows.as_ref(),
+            donor.dye_rows(),
         )?;
         validate_authored_item_icon(
             context.authored_item_icons,
@@ -341,7 +325,7 @@ impl WeaponTables {
         }
         let mut own_list = None;
         let mut entries = Vec::new();
-        let list_index = if let Some(list) = &donor.subclass_list {
+        let list_index = if let Some(list) = donor.subclass_list() {
             // Each pair of host tags holds a record and the one after it: the list and its
             // companion, the display record and its companion, then each authored entry's pool
             // and node record.
@@ -435,8 +419,7 @@ impl WeaponTables {
             list_index,
             own_list,
             path_names: donor
-                .subclass_list
-                .as_ref()
+                .subclass_list()
                 .map_or(0, |list| list.path_names.len()),
             entries,
             stock_super_lane_lists: self.subclass.super_lane_lists,
@@ -556,11 +539,12 @@ impl WeaponTables {
         let details = if donor.weapon.kind.is_weapon() {
             Some(WeaponBuildDetails {
                 runtime_source: donor.runtime_pattern_source.map(|source| source.row_index),
-                rig_donor: donor.appearance_rig_donor,
-                pinned_appearance: donor.pinned_appearance.map(|source| source.row_index),
-                animation_donor: donor
-                    .animation_pattern_source
+                rig_donor: donor.donors.appearance_rig,
+                pinned_appearance: donor
+                    .donors
+                    .pinned_appearance
                     .map(|source| source.row_index),
+                animation_donor: donor.donors.animation.map(|source| source.row_index),
                 damage_carrier: weapon_damage_carrier(&definition)?,
             })
         } else {
@@ -588,10 +572,7 @@ impl WeaponTables {
             collection: donor.collection.as_ref().map(|_| NewCollectionPlan {
                 collectible_hash: identity.collectible_hash,
                 collectible_index: row.collectible_index,
-                unlock_hash: identity.unlock_hash,
-                unlock_definition_index: row.unlock_definition_index,
-                unlock_bank: ACCOUNT_UNLOCK_BANK,
-                unlock_slot: row.unlock_slot,
+                unlock: None,
             }),
             template_item_hash: donor.weapon.donor_item_hash,
             template_definition_tag: donor.definition_tag,
@@ -607,7 +588,7 @@ impl WeaponTables {
                 pages: collection.pages,
                 classes: collection.classes,
                 source_acquired_flag: collection.source_acquired_flag,
-                authored_unlock_index: row.unlock_definition_index,
+                acquisition: Acquisition::Always,
                 count_selection: collection.count_selection.clone(),
             });
         }
@@ -871,23 +852,26 @@ impl WeaponTables {
         row: &WeaponRow,
     ) -> AuthoringResult<()> {
         let WeaponRow {
-            current_unlock_count,
             identity,
             definition_tag,
             string_tag,
             item_index,
             collectible_index,
-            unlock_definition_index,
-            unlock_slot,
             authored_icon_index,
             collection_material_set,
             ..
         } = *row;
+        // Every build acquires its collectibles unconditionally through the stock constant
+        // condition, so it takes no unlock flag, lookup row or account slot. Account unlock
+        // capacity then never limits a build, and the mods of a family share none.
+        let acquisition = Acquisition::Always;
         let collection = donor
             .collection
             .as_ref()
             .ok_or_else(|| validation("Authored item has no Collections entry"))?;
-        let parents = if donor.weapon.joins_sunrise_badge() {
+        // An item that joins its source's badge in a build without mod folders takes that badge's
+        // leaves as parents when the badge is added.
+        let parents = if crate::badge::joins_own_badge(&donor.weapon) {
             sunrise_badge_collectible_parents(collection.pages, collection.classes)
         } else {
             collection.pages.iter().collect()
@@ -900,7 +884,7 @@ impl WeaponTables {
                 item_index,
                 unlock: CollectibleUnlockClone {
                     source_index: collection.source_unlock_index,
-                    authored_index: unlock_definition_index,
+                    acquisition,
                 },
                 material_set_index: collection_material_set,
                 presentation_parents: &parents,
@@ -920,7 +904,7 @@ impl WeaponTables {
             &self.collectibles,
             usize::from(collectible_index),
             collection.source_unlock_index,
-            unlock_definition_index,
+            acquisition,
         )?;
         let mut collectible_identity = identity;
         if donor.weapon.text.collection_name.is_some() {
@@ -934,7 +918,7 @@ impl WeaponTables {
             collection.collectible_display_template_index,
             collectible_identity,
             authored_icon_index,
-            LOCALIZATION_DONOR_TABLE_INDEX as u32,
+            crate::package_profile::localization_table() as u32,
         )?;
         if donor.weapon.text.collection_requirement.is_some() {
             let (_, _, display_rows, display_class) = array_at(&self.collectible_displays, 8)?;
@@ -948,7 +932,7 @@ impl WeaponTables {
                 display_rows
                     + usize::from(collectible_index) * COLLECTIBLE_DISPLAY_ROW_SIZE
                     + COLLECTIBLE_DISPLAY_REQUIREMENT_REFERENCE_OFFSET,
-                LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                crate::package_profile::localization_table() as u32,
                 identity.collection_requirement_hash,
             )?;
         }
@@ -962,80 +946,26 @@ impl WeaponTables {
             &donor.weapon.overrides.raw_payload_patches,
         )?;
         validate_authored_collectible_display_row(&self.collectible_displays, collectible_index)?;
-        self.unlocks = append_unlock(
-            std::mem::take(&mut self.unlocks),
-            identity.unlock_hash,
-            ACCOUNT_UNLOCK_BANK,
-            unlock_slot,
-        )?;
-        apply_array_row_raw_payload_patches(
-            &mut self.unlocks,
-            8,
-            usize::from(unlock_definition_index),
-            UNLOCK_ROW_SIZE,
-            UNLOCK_FLAG_DEFINITION_ROW_CLASS,
-            WeaponRawPayloadTarget::UnlockDefinitionRow,
-            &donor.weapon.overrides.raw_payload_patches,
-        )?;
-        let unlock_sorted_position =
-            unlock_sorted_index_position(&self.unlocks, unlock_definition_index)?;
-        apply_array_row_raw_payload_patches(
-            &mut self.unlocks,
-            0x18,
-            unlock_sorted_position,
-            UNLOCK_FLAG_SORTED_INDEX_ROW_SIZE,
-            UNLOCK_FLAG_SORTED_INDEX_ROW_CLASS,
-            WeaponRawPayloadTarget::UnlockSortedIndexRow,
-            &donor.weapon.overrides.raw_payload_patches,
-        )?;
-        if !donor.weapon.overrides.raw_payload_patches.is_empty() {
-            // Only a raw payload patch can move the sorted index out from under the row that was
-            // just appended, so the re-read that proves it did not happens only when one exists.
-            unlock_sorted_index_position(&self.unlocks, unlock_definition_index)?;
+        // An item has no unlock rows for these patches to edit.
+        if donor
+            .weapon
+            .overrides
+            .raw_payload_patches
+            .iter()
+            .any(|patch| {
+                matches!(
+                    patch.target,
+                    WeaponRawPayloadTarget::UnlockDefinitionRow
+                        | WeaponRawPayloadTarget::UnlockSortedIndexRow
+                        | WeaponRawPayloadTarget::UnlockBankRow
+                        | WeaponRawPayloadTarget::UnlockDisplayRow
+                )
+            })
+        {
+            return Err(crate::error::input(
+                "Raw payload patches can't target unlock rows, since built items are always acquired and have none",
+            ));
         }
-        self.unlock_banks = append_unlock_flag_bank_row(
-            std::mem::take(&mut self.unlock_banks),
-            ACCOUNT_UNLOCK_BANK,
-            unlock_slot,
-            identity.unlock_hash,
-            unlock_definition_index,
-        )?;
-        apply_array_row_raw_payload_patches(
-            &mut self.unlock_banks,
-            unlock_flag_bank_descriptor(ACCOUNT_UNLOCK_BANK)?,
-            usize::from(unlock_slot),
-            crate::progression::UNLOCK_FLAG_BANK_ROW_SIZE,
-            crate::progression::UNLOCK_FLAG_BANK_ROW_CLASS,
-            WeaponRawPayloadTarget::UnlockBankRow,
-            &donor.weapon.overrides.raw_payload_patches,
-        )?;
-        validate_authored_unlock_flag_bank_row(
-            &self.unlock_banks,
-            ACCOUNT_UNLOCK_BANK,
-            unlock_slot,
-            identity.unlock_hash,
-            unlock_definition_index,
-        )?;
-        self.unlock_displays = append_unlock_display(
-            std::mem::take(&mut self.unlock_displays),
-            collection.source_unlock_index,
-            identity.unlock_hash,
-            current_unlock_count,
-        )?;
-        apply_array_row_raw_payload_patches(
-            &mut self.unlock_displays,
-            8,
-            usize::from(unlock_definition_index),
-            UNLOCK_DISPLAY_ROW_SIZE,
-            UNLOCK_FLAG_DISPLAY_ROW_CLASS,
-            WeaponRawPayloadTarget::UnlockDisplayRow,
-            &donor.weapon.overrides.raw_payload_patches,
-        )?;
-        validate_authored_unlock_display_row(
-            &self.unlock_displays,
-            unlock_definition_index,
-            identity.unlock_hash,
-        )?;
         validate_authored_tables(
             AuthoredTables {
                 items: &self.item_table,
@@ -1051,10 +981,10 @@ impl WeaponTables {
                 string_tag,
                 item_index,
                 collectible_index,
-                unlock_index: unlock_definition_index,
-                unlock_slot,
+                acquisition,
+                unlock: None,
                 collectible_icon_index: authored_icon_index,
-                localization_table_index: LOCALIZATION_DONOR_TABLE_INDEX as u32,
+                localization_table_index: crate::package_profile::localization_table() as u32,
                 expected_material_set: collection_material_set,
                 expected_presentation_parents: &parents,
                 collection_requirement_hash: donor
@@ -1071,14 +1001,11 @@ impl WeaponTables {
 
 #[derive(Clone, Copy)]
 struct WeaponRow {
-    current_unlock_count: usize,
     identity: WeaponCloneIdentity,
     definition_tag: TagHash,
     string_tag: TagHash,
     item_index: u16,
     collectible_index: u16,
-    unlock_definition_index: u16,
-    unlock_slot: u16,
     authored_icon_index: u16,
     authored_icon_container: TagHash,
     authored_pattern_index: Option<u16>,

@@ -479,330 +479,507 @@ pub enum Kind {
 /// Tracking stores its turn rate in radians per second and the tile shows degrees.
 const DEGREES_PER_RADIAN: f32 = 180.0 / std::f32::consts::PI;
 
+/// What a setting shows: its label, its hint, how its value reads, what a stored value is
+/// multiplied by to read as the tile shows it, and the range its field offers. Stock values
+/// outside the range stay as they are until changed.
+#[derive(Clone, Copy)]
+struct Meta {
+    label: &'static str,
+    hint: &'static str,
+    unit: Unit,
+    scale: f32,
+    range: (f32, f32),
+}
+
+impl Meta {
+    /// A setting whose stored value reads as the tile shows it.
+    const fn new(label: &'static str, hint: &'static str, unit: Unit, range: (f32, f32)) -> Self {
+        Self {
+            label,
+            hint,
+            unit,
+            scale: 1.0,
+            range,
+        }
+    }
+
+    /// The same setting shown at `scale` times its stored value. Its range is in shown units.
+    const fn scaled(self, scale: f32) -> Self {
+        Self { scale, ..self }
+    }
+}
+
 impl Kind {
+    /// Every shown property of this setting, defined in one place.
+    const fn meta(self) -> Meta {
+        match self {
+            Self::Native(property) => property.meta(),
+            Self::HealthScale => Meta::new(
+                "Health Scale",
+                "Health of this region of the object",
+                Unit::Factor,
+                (0.1, 5.0),
+            ),
+            Self::RecoveryDelay => Meta::new(
+                "Recovery Delay",
+                "Wait before the region recovers after damage",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            Self::DepletedRecoveryDelay => Meta::new(
+                "Depleted Recovery Delay",
+                "Wait before a depleted region recovers",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            Self::RecoveryTime => Meta::new(
+                "Recovery Time",
+                "Time the region takes to recover fully. Zero turns recovery off",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            Self::OwnerDamageOnly => Meta::new(
+                "Owner Damage Only",
+                "Only damage from the same owner counts",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::SourceFilter => Meta::new(
+                "Source Filter",
+                "Tests damage for the required source property",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::InvertSourceFilter => Meta::new(
+                "Invert Source Filter",
+                "Counts damage without the required source property",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::IncomingDamage => Meta::new(
+                "Incoming Damage",
+                "Scales the damage it takes while active",
+                Unit::Factor,
+                (0.1, 3.0),
+            ),
+            Self::ConditionalDamage => Meta::new(
+                "Conditional Damage",
+                "Scales matching damage it takes",
+                Unit::Factor,
+                (0.1, 3.0),
+            ),
+            Self::DamageBreakThreshold => Meta::new(
+                "Damage Break Threshold",
+                "Damage that breaks invisibility. Zero never breaks",
+                Unit::Number,
+                (0.0, 0.99),
+            ),
+            Self::SuppressionTime => Meta::new(
+                "Suppression Time",
+                "How long a break holds invisibility off",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::MovementThreshold => Meta::new(
+                "Movement Threshold",
+                "Movement that disrupts invisibility",
+                Unit::Number,
+                (0.0, 20.0),
+            ),
+            Self::IgnoreMovement => Meta::new(
+                "Ignore Movement",
+                "Movement does not disrupt invisibility",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::RetireOnRemoval => Meta::new(
+                "Retire on Removal",
+                "Removes the effect after Retirement Delay",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::RetirementDelay => Meta::new(
+                "Retirement Delay",
+                "Wait before the effect is removed",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::DisruptionGracePeriod => Meta::new(
+                "Grace Period",
+                "Wait before damage or movement can disrupt it",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::DamageBreakResponse => Meta::new(
+                "Hit Disruption",
+                "Disruption each qualifying hit adds. Breaks only past a Damage Break Threshold",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::StrengthLoss => Meta::new(
+                "Hit Strength Loss",
+                "Invisibility strength each qualifying hit removes",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::QueryScale => Meta::new(
+                "Target Search Size",
+                "Size of the shape it finds targets with",
+                Unit::Factor,
+                (0.0, 5.0),
+            ),
+            Self::TriggeredDuration => Meta::new(
+                "Life After Trigger",
+                "Seconds it lasts once it finds a target",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::EnergyCost => Meta::new(
+                "Energy Cost",
+                "Energy this spends. 1 is a full charge",
+                Unit::Number,
+                (0.0, 2.0),
+            ),
+            Self::RequiredEnergy => Meta::new(
+                "Required Energy",
+                "Energy needed to use it. 1 is a full charge",
+                Unit::Number,
+                (0.0, 2.0),
+            ),
+            Self::TrackingStrength => Meta::new(
+                "Tracking Strength",
+                "Steering strength over time",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::DistanceTracking => Meta::new(
+                "Distance Tracking",
+                "Steering strength by target distance",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::BounceTracking => Meta::new(
+                "Bounce Tracking",
+                "Turn strength after bounces",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::TrackingVariation => Meta::new(
+                "Tracking Variation",
+                "Variation in its steering",
+                Unit::Factor,
+                (0.0, 3.0),
+            ),
+            Self::TrackingSpeed => Meta::new(
+                "Tracking Speed",
+                "Speed while tracking",
+                Unit::Number,
+                (0.0, 200.0),
+            ),
+            Self::FastThrowTracking => Meta::new(
+                "Fast-Throw Tracking",
+                "Turn rate added by its fast-throw input",
+                Unit::Number,
+                (0.0, 4000.0),
+            ),
+            Self::TurnRateOffset => Meta::new(
+                "Turn Rate Offset",
+                "Turn rate added to the computed rate",
+                Unit::Number,
+                (0.0, 720.0),
+            ),
+            Self::AcquisitionScale => Meta::new(
+                "Spawn Search Size",
+                "Size of the shape it finds spawn targets with",
+                Unit::Factor,
+                (0.01, 4.0),
+            ),
+            Self::TargetLimit => Meta::new(
+                "Picks per Target",
+                "Times one target can be picked",
+                Unit::Count,
+                (1.0, 8.0),
+            ),
+            Self::SpawnChance => Meta::new(
+                "Spawn Chance",
+                "Chance each attempt passes, 0 to 1",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::SpawnCount => Meta::new(
+                "Spawn Attempts",
+                "Attempts for each spawn",
+                Unit::Count,
+                (0.0, 16.0),
+            ),
+            Self::GenerationLimit => Meta::new(
+                "Chain Depth",
+                "Generations of attachments allowed",
+                Unit::Count,
+                (0.0, 6.0),
+            ),
+            Self::SpawnLimit => Meta::new(
+                "Max Spawns",
+                "Accepted attempts in each batch",
+                Unit::Count,
+                (0.0, 16.0),
+            ),
+            Self::AcquisitionScaleOffset => Meta::new(
+                "Spawn Search Size Offset",
+                "Search size added to what its inputs give",
+                Unit::Number,
+                (0.0, 4.0),
+            ),
+            Self::SpawnCountOffset => Meta::new(
+                "Spawn Attempts Offset",
+                "Attempts added to what its inputs give",
+                Unit::Count,
+                (0.0, 16.0),
+            ),
+            Self::GenerationLimitOffset => Meta::new(
+                "Chain Depth Offset",
+                "Generations added to what its inputs give",
+                Unit::Count,
+                (0.0, 6.0),
+            ),
+            Self::SpawnLimitOffset => Meta::new(
+                "Max Spawns Offset",
+                "Attempts added to what its inputs give",
+                Unit::Count,
+                (0.0, 16.0),
+            ),
+            Self::ImpulseHoldTime => Meta::new(
+                "Impulse Hold Time",
+                "How long Glide's first phase holds",
+                Unit::Seconds,
+                (0.0, 3.0),
+            ),
+            Self::FallSpeedThreshold => Meta::new(
+                "Fall Speed Threshold",
+                "Fall speed that changes how Glide starts",
+                Unit::Number,
+                (0.0, 30.0),
+            ),
+            Self::ImpulseRampTime => Meta::new(
+                "Impulse Ramp Time",
+                "Time to the full preparation impulse",
+                Unit::Seconds,
+                (0.0, 5.0),
+            ),
+            Self::ImpulseFadeTime => Meta::new(
+                "Impulse Fade Time",
+                "Time for the preparation impulse to fade",
+                Unit::Seconds,
+                (0.0, 5.0),
+            ),
+            Self::VerticalBias => Meta::new(
+                "Vertical Bias",
+                "Tilts the Blink direction upward",
+                Unit::Number,
+                (0.0, 4.0),
+            ),
+            Self::MinimumFinishTime => Meta::new(
+                "Minimum Finish Time",
+                "Shortest finish timer it draws",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            Self::MaximumFinishTime => Meta::new(
+                "Maximum Finish Time",
+                "Longest finish timer it draws",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            Self::FinishTravelTime => Meta::new(
+                "Finish Travel Time",
+                "Age limit for finishing travel",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            Self::ExpirationTime => Meta::new(
+                "Expiration Time",
+                "Age it expires at",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            // -1 expires by age, as most stock projectiles do.
+            Self::ExpirationUpdates => Meta::new(
+                "Expiration Updates",
+                "Updates before it expires. By Age uses Expiration Time",
+                Unit::Count,
+                (-1.0, 127.0),
+            ),
+            Self::ExpirationResponse => Meta::new(
+                "Expiration Response",
+                "What it does when it expires",
+                Unit::Count,
+                (0.0, 2.0),
+            ),
+            Self::PierceLimit => Meta::new(
+                "Pierce Limit",
+                "Targets it passes through. 0 has no limit",
+                Unit::Count,
+                (0.0, 31.0),
+            ),
+            Self::BounceLimit => Meta::new(
+                "Bounce Limit",
+                "Bounces it makes. 0 has no limit",
+                Unit::Count,
+                (0.0, 127.0),
+            ),
+            Self::CollisionMode => Meta::new(
+                "Collision Mode",
+                "How it finds contacts",
+                Unit::Count,
+                (0.0, 2.0),
+            ),
+            Self::CollisionRadius => Meta::new(
+                "Collision Radius",
+                "Contact size",
+                Unit::Distance,
+                (0.0, 1.0),
+            ),
+            Self::TurnRate => Meta::new(
+                "Turn Rate",
+                "Base steering speed in degrees per second",
+                Unit::Number,
+                (0.0, 20000.0),
+            )
+            .scaled(DEGREES_PER_RADIAN),
+            Self::LeadTimeLimit => Meta::new(
+                "Lead Time Limit",
+                "Most it leads a moving target",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::LeadDistanceLimit => Meta::new(
+                "Lead Distance Limit",
+                "Farthest it leads a moving target",
+                Unit::Distance,
+                (0.0, 200.0),
+            ),
+            Self::SteeringAxisThreshold => Meta::new(
+                "Steering Axis Threshold",
+                "When it turns about a fallback axis",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::TargetLead => Meta::new(
+                "Target Lead",
+                "How much it leads a moving target",
+                Unit::Factor,
+                (0.0, 1.0),
+            ),
+            Self::ProximityRange => Meta::new(
+                "Proximity Range",
+                "Target distance that triggers it. 0 is off",
+                Unit::Distance,
+                (0.0, 20.0),
+            ),
+            // Below zero sets no timer, as every stock trigger does.
+            Self::MinimumProximityTime => Meta::new(
+                "Minimum Proximity Time",
+                "Shortest timer a trigger sets",
+                Unit::Seconds,
+                (-1.0, 10.0),
+            ),
+            Self::MaximumProximityTime => Meta::new(
+                "Maximum Proximity Time",
+                "Longest timer a trigger sets",
+                Unit::Seconds,
+                (-1.0, 10.0),
+            ),
+            Self::SearchDelay => Meta::new(
+                "Search Delay",
+                "Wait before it searches for targets",
+                Unit::Seconds,
+                (0.0, 10.0),
+            ),
+            Self::SearchRange => Meta::new(
+                "Search Range",
+                "Farthest target it accepts",
+                Unit::Distance,
+                (0.0, 50.0),
+            ),
+            Self::IncludeSelf => Meta::new(
+                "Include Self",
+                "Lets its owner pass the target check",
+                Unit::Flag,
+                (0.0, 1.0),
+            ),
+            Self::ActivationEnergy => Meta::new(
+                "Activation Energy",
+                "Energy activating spends. 1 is a full charge",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::ActiveEnergyRate => Meta::new(
+                "Active Energy Rate",
+                "Energy spent each second while active",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::EndingEnergyCost => Meta::new(
+                "Ending Energy Cost",
+                "Energy spent when it ends. 1 is a full charge",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::RechargeDelay => Meta::new(
+                "Recharge Delay",
+                "Wait after it ends before recharging",
+                Unit::Seconds,
+                (0.0, 30.0),
+            ),
+            Self::MinimumActivationEnergy => Meta::new(
+                "Minimum Activation Energy",
+                "Energy it needs to be ready. 1 is a full charge",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            Self::EnergyFloor => Meta::new(
+                "Energy Floor",
+                "Lowest energy kept when energy syncs",
+                Unit::Number,
+                (0.0, 1.0),
+            ),
+            // A fraction of the shape's distance, shown in percent. At 100% the fall would be
+            // infinitely steep.
+            Self::FalloffStart => Meta::new(
+                "Falloff Start",
+                "Share of its area at full strength. Past it the effect fades to nothing at the edge",
+                Unit::Number,
+                (0.0, 99.0),
+            )
+            .scaled(100.0),
+        }
+    }
+
     #[must_use]
     pub const fn label(self) -> &'static str {
-        match self {
-            Self::Native(property) => property.label(),
-            Self::HealthScale => "Health Scale",
-            Self::RecoveryDelay => "Recovery Delay",
-            Self::DepletedRecoveryDelay => "Depleted Recovery Delay",
-            Self::RecoveryTime => "Recovery Time",
-            Self::OwnerDamageOnly => "Owner Damage Only",
-            Self::SourceFilter => "Source Filter",
-            Self::InvertSourceFilter => "Invert Source Filter",
-            Self::IncomingDamage => "Incoming Damage",
-            Self::ConditionalDamage => "Conditional Damage",
-            Self::DamageBreakThreshold => "Damage Break Threshold",
-            Self::SuppressionTime => "Suppression Time",
-            Self::MovementThreshold => "Movement Threshold",
-            Self::IgnoreMovement => "Ignore Movement",
-            Self::RetireOnRemoval => "Retire on Removal",
-            Self::RetirementDelay => "Retirement Delay",
-            Self::DisruptionGracePeriod => "Grace Period",
-            Self::DamageBreakResponse => "Hit Disruption",
-            Self::StrengthLoss => "Hit Strength Loss",
-            Self::QueryScale => "Target Search Size",
-            Self::TriggeredDuration => "Life After Trigger",
-            Self::EnergyCost => "Energy Cost",
-            Self::RequiredEnergy => "Required Energy",
-            Self::TrackingStrength => "Tracking Strength",
-            Self::DistanceTracking => "Distance Tracking",
-            Self::BounceTracking => "Bounce Tracking",
-            Self::TrackingVariation => "Tracking Variation",
-            Self::TrackingSpeed => "Tracking Speed",
-            Self::FastThrowTracking => "Fast-Throw Tracking",
-            Self::TurnRateOffset => "Turn Rate Offset",
-            Self::AcquisitionScale => "Spawn Search Size",
-            Self::TargetLimit => "Picks per Target",
-            Self::SpawnChance => "Spawn Chance",
-            Self::SpawnCount => "Spawn Attempts",
-            Self::GenerationLimit => "Chain Depth",
-            Self::SpawnLimit => "Max Spawns",
-            Self::AcquisitionScaleOffset => "Spawn Search Size Offset",
-            Self::SpawnCountOffset => "Spawn Attempts Offset",
-            Self::GenerationLimitOffset => "Chain Depth Offset",
-            Self::SpawnLimitOffset => "Max Spawns Offset",
-            Self::ImpulseHoldTime => "Impulse Hold Time",
-            Self::FallSpeedThreshold => "Fall Speed Threshold",
-            Self::ImpulseRampTime => "Impulse Ramp Time",
-            Self::ImpulseFadeTime => "Impulse Fade Time",
-            Self::VerticalBias => "Vertical Bias",
-            Self::MinimumFinishTime => "Minimum Finish Time",
-            Self::MaximumFinishTime => "Maximum Finish Time",
-            Self::FinishTravelTime => "Finish Travel Time",
-            Self::ExpirationTime => "Expiration Time",
-            Self::ExpirationUpdates => "Expiration Updates",
-            Self::ExpirationResponse => "Expiration Response",
-            Self::PierceLimit => "Pierce Limit",
-            Self::BounceLimit => "Bounce Limit",
-            Self::CollisionMode => "Collision Mode",
-            Self::CollisionRadius => "Collision Radius",
-            Self::TurnRate => "Turn Rate",
-            Self::LeadTimeLimit => "Lead Time Limit",
-            Self::LeadDistanceLimit => "Lead Distance Limit",
-            Self::SteeringAxisThreshold => "Steering Axis Threshold",
-            Self::TargetLead => "Target Lead",
-            Self::ProximityRange => "Proximity Range",
-            Self::MinimumProximityTime => "Minimum Proximity Time",
-            Self::MaximumProximityTime => "Maximum Proximity Time",
-            Self::SearchDelay => "Search Delay",
-            Self::SearchRange => "Search Range",
-            Self::IncludeSelf => "Include Self",
-            Self::ActivationEnergy => "Activation Energy",
-            Self::ActiveEnergyRate => "Active Energy Rate",
-            Self::EndingEnergyCost => "Ending Energy Cost",
-            Self::RechargeDelay => "Recharge Delay",
-            Self::MinimumActivationEnergy => "Minimum Activation Energy",
-            Self::EnergyFloor => "Energy Floor",
-            Self::FalloffStart => "Falloff Start",
-        }
+        self.meta().label
     }
 
     #[must_use]
     pub const fn hint(self) -> &'static str {
-        match self {
-            Self::Native(property) => property.hint(),
-            Self::HealthScale => "Health of this region of the object",
-            Self::RecoveryDelay => "Wait before the region recovers after damage",
-            Self::DepletedRecoveryDelay => "Wait before a depleted region recovers",
-            Self::RecoveryTime => "Time the region takes to recover fully. Zero turns recovery off",
-            Self::OwnerDamageOnly => "Only damage from the same owner counts",
-            Self::SourceFilter => "Tests damage for the required source property",
-            Self::InvertSourceFilter => "Counts damage without the required source property",
-            Self::IncomingDamage => "Scales the damage it takes while active",
-            Self::ConditionalDamage => "Scales matching damage it takes",
-            Self::DamageBreakThreshold => "Damage that breaks invisibility. Zero never breaks",
-            Self::SuppressionTime => "How long a break holds invisibility off",
-            Self::MovementThreshold => "Movement that disrupts invisibility",
-            Self::IgnoreMovement => "Movement does not disrupt invisibility",
-            Self::RetireOnRemoval => "Removes the effect after Retirement Delay",
-            Self::RetirementDelay => "Wait before the effect is removed",
-            Self::DisruptionGracePeriod => "Wait before damage or movement can disrupt it",
-            Self::DamageBreakResponse => {
-                "Disruption each qualifying hit adds. Breaks only past a Damage Break Threshold"
-            }
-            Self::StrengthLoss => "Invisibility strength each qualifying hit removes",
-            Self::QueryScale => "Size of the shape it finds targets with",
-            Self::TriggeredDuration => "Seconds it lasts once it finds a target",
-            Self::EnergyCost => "Energy this spends. 1 is a full charge",
-            Self::RequiredEnergy => "Energy needed to use it. 1 is a full charge",
-            Self::TrackingStrength => "Steering strength over time",
-            Self::DistanceTracking => "Steering strength by target distance",
-            Self::BounceTracking => "Turn strength after bounces",
-            Self::TrackingVariation => "Variation in its steering",
-            Self::TrackingSpeed => "Speed while tracking",
-            Self::FastThrowTracking => "Turn rate added by its fast-throw input",
-            Self::TurnRateOffset => "Turn rate added to the computed rate",
-            Self::AcquisitionScale => "Size of the shape it finds spawn targets with",
-            Self::TargetLimit => "Times one target can be picked",
-            Self::SpawnChance => "Chance each attempt passes, 0 to 1",
-            Self::SpawnCount => "Attempts for each spawn",
-            Self::GenerationLimit => "Generations of attachments allowed",
-            Self::SpawnLimit => "Accepted attempts in each batch",
-            Self::AcquisitionScaleOffset => "Search size added to what its inputs give",
-            Self::SpawnCountOffset => "Attempts added to what its inputs give",
-            Self::GenerationLimitOffset => "Generations added to what its inputs give",
-            Self::SpawnLimitOffset => "Attempts added to what its inputs give",
-            Self::ImpulseHoldTime => "How long Glide's first phase holds",
-            Self::FallSpeedThreshold => "Fall speed that changes how Glide starts",
-            Self::ImpulseRampTime => "Time to the full preparation impulse",
-            Self::ImpulseFadeTime => "Time for the preparation impulse to fade",
-            Self::VerticalBias => "Tilts the Blink direction upward",
-            Self::MinimumFinishTime => "Shortest finish timer it draws",
-            Self::MaximumFinishTime => "Longest finish timer it draws",
-            Self::FinishTravelTime => "Age limit for finishing travel",
-            Self::ExpirationTime => "Age it expires at",
-            Self::ExpirationUpdates => "Updates before it expires. By Age uses Expiration Time",
-            Self::ExpirationResponse => "What it does when it expires",
-            Self::PierceLimit => "Targets it passes through. 0 has no limit",
-            Self::BounceLimit => "Bounces it makes. 0 has no limit",
-            Self::CollisionMode => "How it finds contacts",
-            Self::CollisionRadius => "Contact size",
-            Self::TurnRate => "Base steering speed in degrees per second",
-            Self::LeadTimeLimit => "Most it leads a moving target",
-            Self::LeadDistanceLimit => "Farthest it leads a moving target",
-            Self::SteeringAxisThreshold => "When it turns about a fallback axis",
-            Self::TargetLead => "How much it leads a moving target",
-            Self::ProximityRange => "Target distance that triggers it. 0 is off",
-            Self::MinimumProximityTime => "Shortest timer a trigger sets",
-            Self::MaximumProximityTime => "Longest timer a trigger sets",
-            Self::SearchDelay => "Wait before it searches for targets",
-            Self::SearchRange => "Farthest target it accepts",
-            Self::IncludeSelf => "Lets its owner pass the target check",
-            Self::ActivationEnergy => "Energy activating spends. 1 is a full charge",
-            Self::ActiveEnergyRate => "Energy spent each second while active",
-            Self::EndingEnergyCost => "Energy spent when it ends. 1 is a full charge",
-            Self::RechargeDelay => "Wait after it ends before recharging",
-            Self::MinimumActivationEnergy => "Energy it needs to be ready. 1 is a full charge",
-            Self::EnergyFloor => "Lowest energy kept when energy syncs",
-            Self::FalloffStart => {
-                "Share of its area at full strength. Past it the effect fades to nothing at the edge"
-            }
-        }
+        self.meta().hint
     }
 
     #[must_use]
     pub const fn unit(self) -> Unit {
-        match self {
-            Self::Native(property) => property.unit(),
-            Self::HealthScale
-            | Self::IncomingDamage
-            | Self::ConditionalDamage
-            | Self::QueryScale
-            | Self::TrackingStrength
-            | Self::DistanceTracking
-            | Self::BounceTracking
-            | Self::TrackingVariation
-            | Self::AcquisitionScale
-            | Self::TargetLead => Unit::Factor,
-            Self::RecoveryDelay
-            | Self::DepletedRecoveryDelay
-            | Self::RecoveryTime
-            | Self::SuppressionTime
-            | Self::RetirementDelay
-            | Self::DisruptionGracePeriod
-            | Self::TriggeredDuration
-            | Self::ImpulseHoldTime
-            | Self::ImpulseRampTime
-            | Self::ImpulseFadeTime
-            | Self::MinimumFinishTime
-            | Self::MaximumFinishTime
-            | Self::FinishTravelTime
-            | Self::ExpirationTime
-            | Self::LeadTimeLimit
-            | Self::MinimumProximityTime
-            | Self::MaximumProximityTime
-            | Self::SearchDelay
-            | Self::RechargeDelay => Unit::Seconds,
-            Self::OwnerDamageOnly
-            | Self::SourceFilter
-            | Self::InvertSourceFilter
-            | Self::IgnoreMovement
-            | Self::RetireOnRemoval
-            | Self::IncludeSelf => Unit::Flag,
-            Self::DamageBreakThreshold
-            | Self::MovementThreshold
-            | Self::EnergyCost
-            | Self::RequiredEnergy
-            | Self::TrackingSpeed
-            | Self::FastThrowTracking
-            | Self::TurnRateOffset
-            | Self::SpawnChance
-            | Self::AcquisitionScaleOffset
-            | Self::DamageBreakResponse
-            | Self::StrengthLoss
-            | Self::FallSpeedThreshold
-            | Self::VerticalBias
-            | Self::TurnRate
-            | Self::SteeringAxisThreshold
-            | Self::ActivationEnergy
-            | Self::ActiveEnergyRate
-            | Self::EndingEnergyCost
-            | Self::MinimumActivationEnergy
-            | Self::EnergyFloor
-            | Self::FalloffStart => Unit::Number,
-            Self::CollisionRadius
-            | Self::LeadDistanceLimit
-            | Self::ProximityRange
-            | Self::SearchRange => Unit::Distance,
-            Self::TargetLimit
-            | Self::SpawnCount
-            | Self::GenerationLimit
-            | Self::SpawnLimit
-            | Self::SpawnCountOffset
-            | Self::GenerationLimitOffset
-            | Self::SpawnLimitOffset
-            | Self::ExpirationUpdates
-            | Self::ExpirationResponse
-            | Self::PierceLimit
-            | Self::BounceLimit
-            | Self::CollisionMode => Unit::Count,
-        }
+        self.meta().unit
     }
 
     /// What a stored value is multiplied by to read as the tile shows it.
     #[must_use]
     pub const fn scale(self) -> f32 {
-        match self {
-            Self::Native(property) => property.scale(),
-            Self::TurnRate => DEGREES_PER_RADIAN,
-            // A fraction of the shape's distance, shown in percent.
-            Self::FalloffStart => 100.0,
-            _ => 1.0,
-        }
+        self.meta().scale
     }
 
     /// The range its field offers. Stock values outside it stay as they are until changed.
     #[must_use]
     pub const fn range(self) -> (f32, f32) {
-        match self {
-            Self::Native(property) => property.range(),
-            Self::HealthScale => (0.1, 5.0),
-            Self::RecoveryDelay | Self::DepletedRecoveryDelay => (0.0, 30.0),
-            Self::RecoveryTime => (0.0, 30.0),
-            Self::IncomingDamage | Self::ConditionalDamage => (0.1, 3.0),
-            Self::DamageBreakThreshold => (0.0, 0.99),
-            Self::SuppressionTime | Self::RetirementDelay => (0.0, 10.0),
-            Self::MovementThreshold => (0.0, 20.0),
-            Self::OwnerDamageOnly
-            | Self::SourceFilter
-            | Self::InvertSourceFilter
-            | Self::IgnoreMovement
-            | Self::RetireOnRemoval
-            | Self::SpawnChance
-            | Self::DamageBreakResponse
-            | Self::StrengthLoss => (0.0, 1.0),
-            Self::QueryScale => (0.0, 5.0),
-            Self::TriggeredDuration | Self::DisruptionGracePeriod => (0.0, 10.0),
-            Self::EnergyCost | Self::RequiredEnergy => (0.0, 2.0),
-            Self::TrackingStrength
-            | Self::DistanceTracking
-            | Self::BounceTracking
-            | Self::TrackingVariation => (0.0, 3.0),
-            Self::TrackingSpeed => (0.0, 200.0),
-            Self::FastThrowTracking => (0.0, 4000.0),
-            Self::TurnRateOffset => (0.0, 720.0),
-            Self::AcquisitionScale => (0.01, 4.0),
-            Self::AcquisitionScaleOffset => (0.0, 4.0),
-            Self::TargetLimit => (1.0, 8.0),
-            Self::SpawnCount
-            | Self::SpawnLimit
-            | Self::SpawnCountOffset
-            | Self::SpawnLimitOffset => (0.0, 16.0),
-            Self::GenerationLimit | Self::GenerationLimitOffset => (0.0, 6.0),
-            Self::ImpulseHoldTime => (0.0, 3.0),
-            Self::FallSpeedThreshold | Self::MinimumFinishTime | Self::MaximumFinishTime => {
-                (0.0, 30.0)
-            }
-            Self::FinishTravelTime | Self::ExpirationTime => (0.0, 30.0),
-            Self::ImpulseRampTime | Self::ImpulseFadeTime => (0.0, 5.0),
-            Self::VerticalBias => (0.0, 4.0),
-            // -1 expires by age, as most stock projectiles do.
-            Self::ExpirationUpdates => (-1.0, 127.0),
-            Self::ExpirationResponse | Self::CollisionMode => (0.0, 2.0),
-            Self::PierceLimit => (0.0, 31.0),
-            Self::BounceLimit => (0.0, 127.0),
-            Self::CollisionRadius
-            | Self::SteeringAxisThreshold
-            | Self::TargetLead
-            | Self::IncludeSelf
-            | Self::ActivationEnergy
-            | Self::ActiveEnergyRate
-            | Self::EndingEnergyCost
-            | Self::MinimumActivationEnergy
-            | Self::EnergyFloor => (0.0, 1.0),
-            Self::RechargeDelay => (0.0, 30.0),
-            Self::TurnRate => (0.0, 20000.0),
-            Self::LeadTimeLimit | Self::SearchDelay => (0.0, 10.0),
-            Self::LeadDistanceLimit => (0.0, 200.0),
-            Self::ProximityRange => (0.0, 20.0),
-            // Below zero sets no timer, as every stock trigger does.
-            Self::MinimumProximityTime | Self::MaximumProximityTime => (-1.0, 10.0),
-            Self::SearchRange => (0.0, 50.0),
-            // At 100% the fall would be infinitely steep.
-            Self::FalloffStart => (0.0, 99.0),
-        }
+        self.meta().range
     }
 }
 

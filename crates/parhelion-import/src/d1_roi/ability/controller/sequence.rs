@@ -152,6 +152,20 @@ impl Sequences {
         self.bindings.iter().map(|binding| &binding.connection)
     }
 
+    /// Each consumer's native definition offset, relative to the retained controller's
+    /// definition root, with its source provider occurrence.
+    pub fn consumers(&self) -> Vec<(usize, usize)> {
+        self.bindings
+            .iter()
+            .map(|binding| {
+                (
+                    binding.native_definition,
+                    binding.connection.provider.selector as usize,
+                )
+            })
+            .collect()
+    }
+
     /// Construct and connect all nine consumers atomically. Every provider must already have
     /// a native owner and checked dispatch metadata. The containing graph must retain its other
     /// connections and finish every controller field and event before sealing or publication.

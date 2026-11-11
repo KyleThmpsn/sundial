@@ -4,7 +4,7 @@ pub(super) fn canonical_single_flag_program(
     template: &[u8],
     count: usize,
     source_flag: u16,
-    authored_flag: u16,
+    acquisition: Acquisition,
 ) -> AuthoringResult<Vec<u8>> {
     let flag_template = (0..count)
         .map(|index| NumericInstruction::read(template, 16 + index * NUMERIC_INSTRUCTION_ROW_SIZE))
@@ -21,11 +21,10 @@ pub(super) fn canonical_single_flag_program(
         .ok_or_else(|| invalid("Donor collectible acquisition header is truncated"))?
         .to_vec();
     write_u64(&mut program, 0, 1)?;
-    program.extend_from_slice(
-        &flag_template
-            .with_semantics(NUMERIC_FLAG_INSTRUCTION, authored_flag)
-            .serialized,
-    );
+    // A stock constant instruction has the flag instruction's layout, the opcode at `+0` and the
+    // operand at `+4` with zeros between and after.
+    let (opcode, operand) = acquisition.token();
+    program.extend_from_slice(&flag_template.with_semantics(opcode, operand).serialized);
     while !(program.len() + NESTED_ARRAY_TRAILER.len()).is_multiple_of(16) {
         program.push(0);
     }
@@ -53,7 +52,12 @@ pub(crate) fn add_direct_acquired_counts(
     let (_, _, node_rows, _) = array_at(nodes, 8)?;
     let (objective_count, _, objective_rows, _) = array_at(objectives, 8)?;
     let mut additions = BTreeMap::<u16, BTreeSet<u16>>::new();
-    for row in rows.iter().filter(|row| row.count_selection.is_direct()) {
+    // An entry acquired unconditionally has no flag to count, and leaves the counts as they are.
+    for (row, flag) in rows
+        .iter()
+        .filter(|row| row.count_selection.is_direct())
+        .filter_map(|row| Some((row, row.acquisition.flag()?)))
+    {
         for node in presentation_ancestor_nodes(nodes, &row.pages.iter().collect::<Vec<_>>())? {
             let objective = read_u16(
                 nodes,
@@ -62,10 +66,7 @@ pub(crate) fn add_direct_acquired_counts(
                     + PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
             )?;
             if objective != u16::MAX {
-                additions
-                    .entry(objective)
-                    .or_default()
-                    .insert(row.authored_unlock_index);
+                additions.entry(objective).or_default().insert(flag);
             }
         }
     }
@@ -95,6 +96,126 @@ pub(crate) fn add_direct_acquired_counts(
             );
             instructions.push(add.serialized);
         }
+        super::presentation::append_numeric_program(
+            objectives,
+            row + field,
+            &instructions,
+            "Collections acquired count",
+        )?;
+    }
+    Ok(())
+}
+
+/// How many entries acquired unconditionally, as every built item on Sunrise's mod loader is,
+/// each stock objective below `stock_objectives` counts: the objectives of the pages the entries
+/// join and of every ancestor of those pages. An entry on several pages counts once at an
+/// objective they share.
+pub(crate) fn constant_acquired_counts(
+    nodes: &[u8],
+    rows: &[ProjectAuthoredRow],
+    stock_objectives: usize,
+) -> AuthoringResult<BTreeMap<u16, usize>> {
+    let (_, _, node_rows, _) = array_at(nodes, 8)?;
+    let mut entries = BTreeMap::<u16, BTreeSet<usize>>::new();
+    for row in rows.iter().filter(|row| row.acquisition.flag().is_none()) {
+        for node in presentation_ancestor_nodes(nodes, &row.pages.iter().collect::<Vec<_>>())? {
+            let objective = read_u16(
+                nodes,
+                node_rows
+                    + node * PRESENTATION_NODE_ROW_SIZE
+                    + PRESENTATION_NODE_OBJECTIVE_INDEX_OFFSET,
+            )?;
+            if objective != u16::MAX && usize::from(objective) < stock_objectives {
+                entries
+                    .entry(objective)
+                    .or_default()
+                    .insert(row.authored_collectible_index);
+            }
+        }
+    }
+    Ok(entries
+        .into_iter()
+        .map(|(objective, entries)| (objective, entries.len()))
+        .collect())
+}
+
+/// Counts `counts` entries acquired unconditionally in their objectives: each objective's
+/// completion target and acquired count rise by its number, the acquired count by a constant
+/// added to its program. An objective the game leaves uncounted, with a zero target or no
+/// acquired-count program, is left alone. Before 2026-11-09 such entries counted nowhere, so a
+/// Collections page on Sunrise's mod loader showed its stock count beside the built items.
+/// `pools` only supply instruction templates, so programs a build appended after them are fine.
+pub(crate) fn add_constant_acquired_counts(
+    objectives: &mut Vec<u8>,
+    pools: &[u8],
+    counts: &BTreeMap<u16, usize>,
+) -> AuthoringResult<()> {
+    let (pool_rows, _) = validate_shared_expression_table(pools, false)?;
+    let template =
+        shared_numeric_instruction_template(pools, pool_rows, NUMERIC_FLAG_INSTRUCTION, None)?;
+    let add = shared_numeric_instruction_template(
+        pools,
+        pool_rows,
+        NUMERIC_ADD_INSTRUCTION,
+        Some(u16::MAX),
+    )?;
+    let (objective_count, _, objective_rows, _) = array_at(objectives, 8)?;
+    // +08 counts acquisitions, as for flagged entries.
+    let field = 0x08;
+    for (&objective, &count) in counts.iter().filter(|(_, count)| **count > 0) {
+        if usize::from(objective) >= objective_count {
+            return Err(invalid("Collections objective is out of range"));
+        }
+        let row = objective_rows + usize::from(objective) * OBJECTIVE_ROW_SIZE;
+        let completion = row + OBJECTIVE_COMPLETION_VALUE_OFFSET;
+        let target = read_i32(objectives, completion)?;
+        if target == 0 || read_u64(objectives, row + field)? == 0 {
+            continue;
+        }
+        let constant = u16::try_from(count)
+            .map_err(|_| invalid("A Collections count does not fit its constant"))?;
+        let increment =
+            i32::try_from(count).map_err(|_| invalid("A Collections count does not fit i32"))?;
+        write_i32(
+            objectives,
+            completion,
+            target
+                .checked_add(increment)
+                .ok_or_else(|| invalid("Collections objective overflowed"))?,
+        )?;
+        let layout = numeric_program_layout(objectives, row + field)?;
+        // A program that already ends by adding a constant, as an earlier count leaves it, takes
+        // the new entries in that constant. Entries counted one at a time, as imported ornaments
+        // are, then keep one copy of the program rather than one per entry.
+        if let [.., last_constant, last_add] = layout.instructions.as_slice()
+            && last_add.serialized == add.serialized
+            && last_constant.serialized
+                == template
+                    .with_semantics(NUMERIC_CONSTANT_INSTRUCTION, last_constant.operand)
+                    .serialized
+        {
+            let total = last_constant
+                .operand
+                .checked_add(constant)
+                .ok_or_else(|| invalid("A Collections count does not fit its constant"))?;
+            write_u16(
+                objectives,
+                layout.rows_end - 2 * NUMERIC_INSTRUCTION_ROW_SIZE + 4,
+                total,
+            )?;
+            continue;
+        }
+        let mut instructions = layout
+            .instructions
+            .into_iter()
+            .map(|i| i.serialized)
+            .collect::<Vec<_>>();
+        instructions.push(
+            template
+                .with_semantics(NUMERIC_CONSTANT_INSTRUCTION, constant)
+                .serialized,
+        );
+        instructions.push(add.serialized);
         super::presentation::append_numeric_program(
             objectives,
             row + field,
@@ -667,7 +788,11 @@ pub(crate) fn patch_project_acquired_count_programs(
     let mut data = original.clone();
     let (pool_rows, _) = validate_shared_expression_table(&original, true)?;
     let mut additions = BTreeMap::<usize, Vec<(u16, u16)>>::new();
-    for row in rows {
+    // An entry acquired unconditionally has no flag to count, and leaves the pools as they are.
+    for (row, flag) in rows
+        .iter()
+        .filter_map(|row| Some((row, row.acquisition.flag()?)))
+    {
         let direct = direct_acquired_count_pool_links(
             &original,
             pool_rows,
@@ -693,7 +818,7 @@ pub(crate) fn patch_project_acquired_count_programs(
             additions
                 .entry(link.pool_index)
                 .or_default()
-                .push((row.authored_unlock_index, link.source_operand));
+                .push((flag, link.source_operand));
         }
     }
     let add_template = shared_numeric_instruction_template(

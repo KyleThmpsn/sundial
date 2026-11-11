@@ -107,16 +107,45 @@ fn prepare(
     drop(binding);
     let _payloads = timing::stage("imported payloads");
     let models = crate::model_symbols(graph).map_err(|e| e.to_string())?;
+    let sections = section_symbols(graph);
     let entries = nodes
         .iter()
         .map(|node| {
             let model = node["symbol"]
                 .as_str()
                 .is_some_and(|name| models.contains(name));
-            entry(node, model, root, &symbols, manager, &mut bound)
+            entry(node, model, root, &symbols, &sections, manager, &mut bound)
         })
         .collect::<Result<_, _>>()?;
     Ok((package, symbols, entries))
+}
+
+/// Symbols the graph's asset sections define, such as a vehicle barrel's converted projectile.
+/// The item build links those sections. A preview draws without them, so a main node's reference
+/// to one stays unresolved.
+fn section_symbols(graph: &Value) -> BTreeSet<String> {
+    [
+        "particles",
+        "projectile",
+        "attachments",
+        "runtime_presentation",
+        "audio_assets",
+        "sword",
+    ]
+    .into_iter()
+    .filter_map(|section| graph.get(section)?.get("nodes")?.as_array())
+    // Additional projectiles, such as a vehicle's secondary or gunner projectiles, link the same way.
+    .chain(
+        graph
+            .get("additional_projectiles")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|section| section.get("nodes")?.as_array()),
+    )
+    .flatten()
+    .filter_map(|node| node["symbol"].as_str().map(str::to_owned))
+    .collect()
 }
 
 fn entry(
@@ -124,6 +153,7 @@ fn entry(
     model: bool,
     root: &Path,
     symbols: &Symbols,
+    sections: &BTreeSet<String>,
     manager: &PackageManager,
     bound: &mut BTreeMap<String, Vec<u8>>,
 ) -> Result<Entry, String> {
@@ -178,6 +208,12 @@ fn entry(
                 return Err(
                     "Imported preview fixup overlaps or is not an unresolved reference".into(),
                 );
+            }
+            if patch["symbol"]
+                .as_str()
+                .is_some_and(|name| !symbols.contains_key(name) && sections.contains(name))
+            {
+                continue;
             }
             target.copy_from_slice(&tag(symbols, &patch["symbol"])?.to_le_bytes());
         }

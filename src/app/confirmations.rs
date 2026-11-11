@@ -1,7 +1,7 @@
 //! Confirmation dialogs for explicit user actions.
 mod parhelion;
 mod recovery;
-use super::account_workspace::AccountSourceKind;
+use super::account_workspace::{self as account, AccountSourceKind};
 use super::change_review::collect_change_summaries;
 use super::preferences::{PlugSelectionMode, SettingsLayout};
 use super::saving::SaveAction;
@@ -84,20 +84,27 @@ impl SundialApp {
     }
 
     pub(super) fn draw_reset_defaults_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation == Some(ConfirmationDialog::ResetDefaults) {
+        if matches!(self.confirmation, Some(ConfirmationDialog::ResetDefaults)) {
             let mut reset = false;
             let mut cancel = false;
             let account_source = self.document.source_kind();
+            let runtime = self.runtime_name();
+            // Dawn's account is player-state.db whatever its state, and Sunrise's investment.sqlite3.
+            let database = if self.document.account_is_dawn() {
+                crate::persistence::DAWN_DATABASE_NAME
+            } else {
+                "investment.sqlite3"
+            };
             let response = egui::Modal::new("restore_sunrise_defaults".into()).show(ctx, |ui| {
                 ui.set_width(500.0);
-                ui.heading("Restore Sunrise Defaults?");
+                ui.heading(format!("Restore {runtime} Defaults?"));
                 ui.add_space(6.0);
                 ui.label(match account_source {
                     AccountSourceKind::Json => {
-                        "Replaces all of settings.json with your Project Sunrise defaults."
+                        format!("Replaces all of settings.json with your {runtime} defaults.")
                     }
                     AccountSourceKind::Sqlite | AccountSourceKind::Dawn | AccountSourceKind::Blocked => {
-                        "Restores settings.json defaults and keeps its inactive /state/account and /state/characters data. investment.sqlite3 is unchanged."
+                        format!("Restores settings.json defaults and keeps its inactive /state/account and /state/characters data. {database} is unchanged.")
                     }
                 });
                 ui.add_space(6.0);
@@ -128,52 +135,44 @@ impl SundialApp {
     }
 
     pub(super) fn draw_sqlite_restore_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation == Some(ConfirmationDialog::RestoreSqliteBackup) {
-            if let Some(backup) = self.pending_sqlite_restore.clone() {
-                let mut restore = false;
-                let mut cancel = false;
-                let response =
-                    egui::Modal::new("restore_sqlite_backup".into()).show(ctx, |ui| {
-                        ui.set_width(560.0);
-                        ui.heading("Restore This Account Database Backup?");
-                        ui.add_space(6.0);
-                        ui.label("Replaces investment.sqlite3 with this backup. The current database is saved and checked first.");
-                        ui.add_space(6.0);
-                        ui.label("Close Destiny 2 first. Unsaved changes are discarded. settings.json is unchanged.");
-                        ui.add_space(8.0);
-                        ui.strong("Selected Backup");
-                        ui.label(
-                            egui::RichText::new(backup.display().to_string())
-                                .weak()
-                                .small(),
-                        );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Restore Account Database").clicked() {
-                                restore = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                cancel = true;
-                            }
-                        });
-                    });
-                cancel |= response.should_close();
-                if restore {
-                    self.confirmation = None;
-                    self.restore_selected_sqlite_backup();
-                } else if cancel {
-                    self.confirmation = None;
-                    self.pending_sqlite_restore = None;
-                    self.set_status("Database restore cancelled. No files were changed", false);
-                }
-            } else {
-                self.confirmation = None;
-            }
+        let Some(ConfirmationDialog::RestoreSqliteBackup(backup)) = &self.confirmation else {
+            return;
+        };
+        let mut restore = false;
+        let mut cancel = false;
+        let response = egui::Modal::new("restore_sqlite_backup".into()).show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.heading("Restore This Account Database Backup?");
+            ui.add_space(6.0);
+            ui.label("Replaces investment.sqlite3 with this backup. The current database is saved and checked first.");
+            ui.add_space(6.0);
+            ui.label("Close Destiny 2 first. Unsaved changes are discarded. settings.json is unchanged.");
+            ui.add_space(8.0);
+            ui.strong("Selected Backup");
+            ui.label(
+                egui::RichText::new(backup.display().to_string())
+                    .weak()
+                    .small(),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                restore = ui.button("Restore Account Database").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        cancel |= response.should_close();
+        if restore
+            && let Some(ConfirmationDialog::RestoreSqliteBackup(backup)) = self.confirmation.take()
+        {
+            self.restore_selected_sqlite_backup(backup);
+        } else if cancel {
+            self.confirmation = None;
+            self.set_status("Database restore cancelled. No files were changed", false);
         }
     }
 
     pub(super) fn draw_unsafe_mode_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation == Some(ConfirmationDialog::ReallyUnsafe) {
+        if let Some(ConfirmationDialog::ReallyUnsafe { remember }) = self.confirmation {
             let mut enable = false;
             let mut cancel = false;
             let account_source = self.document.source_kind();
@@ -214,14 +213,15 @@ impl SundialApp {
                 });
             });
             cancel |= response.should_close();
-            self.confirmation = (!enable && !cancel).then_some(ConfirmationDialog::ReallyUnsafe);
+            if enable || cancel {
+                self.confirmation = None;
+            }
             if enable {
                 self.plug_selection_mode = PlugSelectionMode::AnyPlug;
-                if self.remember_plug_selection_mode_after_confirmation {
+                if remember {
                     self.preferences.default_plug_selection_mode = PlugSelectionMode::AnyPlug;
                 }
                 self.preferences.really_unsafe_warning_acknowledged = true;
-                self.remember_plug_selection_mode_after_confirmation = false;
                 if let Err(error) = self.save_preferences() {
                     self.set_status(
                         format!(
@@ -230,14 +230,12 @@ impl SundialApp {
                         true,
                     );
                 }
-            } else if cancel {
-                self.remember_plug_selection_mode_after_confirmation = false;
             }
         }
     }
 
     pub(super) fn draw_save_review_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation == Some(ConfirmationDialog::ReviewSave) {
+        if let Some(ConfirmationDialog::ReviewSave(action)) = self.confirmation {
             let mut changes = self
                 .document
                 .account_change_summaries(&self.persisted_document, CHANGE_REVIEW_LIMIT + 1);
@@ -259,7 +257,6 @@ impl SundialApp {
             let total = changes.len();
             let mut confirm = false;
             let mut cancel = false;
-            let action = self.pending_save_action.unwrap_or(SaveAction::Save);
             let review_width = (ctx.content_rect().width() - 40.0).clamp(280.0, 760.0);
             let review_height = (ctx.content_rect().height() - 180.0).clamp(120.0, 430.0);
             let response = egui::Modal::new("review_settings_changes".into()).show(ctx, |ui| {
@@ -328,59 +325,65 @@ impl SundialApp {
             cancel |= response.should_close();
             if confirm {
                 self.confirmation = None;
-                self.pending_save_action = None;
                 self.perform_save_action(ctx, action);
             } else if cancel {
                 self.confirmation = None;
-                self.pending_save_action = None;
                 self.set_status("Save cancelled. No files were changed", false);
             }
         }
     }
 
     pub(super) fn draw_delete_equipment_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation == Some(ConfirmationDialog::DeleteEquipment) {
-            let pending = self.pending_equipment_delete.clone();
-            let mut delete = false;
-            let mut cancel = false;
-            if let Some(pending) = pending.as_ref() {
-                let response = egui::Modal::new("delete_equipped_item".into()).show(ctx, |ui| {
-                    ui.set_width(460.0);
-                    ui.heading(format!("Delete {}?", pending.item_name));
-                    ui.add_space(6.0);
-                    ui.label(format!(
-                        "Empties the {} slot. The item is not moved to inventory.",
-                        equipment::equipment_slot_label(&pending.slot)
-                    ));
-                    ui.label("Undo works until you save.");
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Delete Item").clicked() {
-                            delete = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
-                        }
-                    });
-                });
-                cancel |= response.should_close();
+        let Some(ConfirmationDialog::DeleteEquipment(pending)) = &self.confirmation else {
+            return;
+        };
+        let mut delete = false;
+        let mut cancel = false;
+        let response = egui::Modal::new("delete_equipped_item".into()).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.heading(format!("Delete {}?", pending.item_name));
+            ui.add_space(6.0);
+            ui.label(format!(
+                "Empties the {} slot. The item is not moved to inventory.",
+                equipment::equipment_slot_label(pending.slot)
+            ));
+            ui.label("Undo works until you save.");
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                delete = ui.button("Delete Item").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        cancel |= response.should_close();
+        if delete
+            && let Some(ConfirmationDialog::DeleteEquipment(pending)) = self.confirmation.take()
+        {
+            if self.settings_path == pending.settings_path
+                && account::character_soid(&self.document, pending.character_index)
+                    == pending.character_soid
+                && account::equipped_item_snapshots(&self.document, pending.character_index)
+                    .is_ok_and(|items| {
+                        items.into_iter().any(|item| {
+                            item.slot == pending.slot
+                                && item.instance_soid == Some(pending.instance_soid)
+                                && item.definition_hash == Some(pending.definition_hash)
+                        })
+                    })
+            {
+                self.empty_weapon(pending.character_index, pending.slot);
             } else {
-                cancel = true;
+                self.set_status(
+                    "The equipped item changed. Review the slot before deleting.",
+                    true,
+                );
             }
-            if delete {
-                if let Some(pending) = self.pending_equipment_delete.take() {
-                    self.empty_weapon(pending.character_index, &pending.slot);
-                }
-                self.confirmation = None;
-            } else if cancel {
-                self.pending_equipment_delete = None;
-                self.confirmation = None;
-            }
+        } else if cancel {
+            self.confirmation = None;
         }
     }
 
     pub(super) fn draw_reload_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation == Some(ConfirmationDialog::Reload) {
+        if matches!(self.confirmation, Some(ConfirmationDialog::Reload)) {
             let mut discard = false;
             let mut cancel = false;
             let response = egui::Modal::new("reload_confirmation".into()).show(ctx, |ui| {
@@ -406,7 +409,7 @@ impl SundialApp {
     }
 
     pub(super) fn draw_exit_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation == Some(ConfirmationDialog::Exit) {
+        if matches!(self.confirmation, Some(ConfirmationDialog::Exit)) {
             let mut save_and_exit = false;
             let mut discard_and_exit = false;
             let mut cancel = false;
@@ -446,10 +449,9 @@ impl SundialApp {
     /// Asked on the way out while Parhelion work kept outside its recipe, such as perk drafts,
     /// could not be saved. Trying again exits once the work saves.
     pub(super) fn draw_unsaved_authoring_work_confirmation(&mut self, ctx: &egui::Context) {
-        if self.confirmation != Some(ConfirmationDialog::UnsavedAuthoringWork) {
+        let Some(ConfirmationDialog::UnsavedAuthoringWork(reason)) = &self.confirmation else {
             return;
-        }
-        let reason = self.unsaved_authoring_work.clone().unwrap_or_default();
+        };
         let mut retry = false;
         let mut exit = false;
         let mut cancel = false;
@@ -479,15 +481,12 @@ impl SundialApp {
             self.confirmation = None;
         }
         if exit {
-            self.unsaved_authoring_work = None;
             if let Some(message) = self.package_authoring_exit_blocker() {
                 self.set_status(message, true);
             } else {
                 self.exit_confirmed = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-        } else if cancel {
-            self.unsaved_authoring_work = None;
         }
     }
 }

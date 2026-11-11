@@ -203,6 +203,43 @@ impl Source<'_> {
         );
         Ok((number(row[3])?, number(row[0])?))
     }
+    /// The native expression for source vertex output `TEXCOORD{index}`. The first varyings
+    /// carry the frame and texture coordinates the native program already has, and any other
+    /// is rebuilt lane by lane from the scalar each source write computes. `colors` is set when
+    /// a rebuilt lane reads the vertex color.
+    fn varying(
+        &self,
+        writes: &BTreeMap<(u32, u32), &str>,
+        ordinal: usize,
+        index: u32,
+        width: usize,
+        colors: &mut bool,
+    ) -> Result<String> {
+        Ok(match index {
+            0 => "float4(n,saturate(objectData[7].w+saturate(objectData[7].z*n.z)))".into(),
+            1 => "float4(t,p.z)".into(),
+            2 => "cross(n,t)*tangent.w".into(),
+            3 => "tex.xyxy".into(),
+            4 if self.surface.stage == 17 => "reticleView".into(),
+            4 | 7 if self.surface.stage == 17 => "world".into(),
+            4 => "world".into(),
+            _ => {
+                let components = (0..width)
+                    .map(|lane| {
+                        let write = writes
+                            .get(&(ordinal as u32, lane as u32))
+                            .context("Missing source varying lane")?;
+                        self.scalar(write, 0).with_context(|| {
+                            format!("Source vertex varying TEXCOORD{index} lane {lane}")
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                *colors |= components.iter().any(|s| s.contains("vertexColor"));
+                format!("float{width}({})", components.join(","))
+            }
+        })
+    }
+
     fn scalar(&self, value: &str, depth: usize) -> Result<String> {
         ensure!(depth < 32, "Source varying expression exceeds budget");
         let value = self.selected(value, 0)?;
@@ -408,15 +445,18 @@ pub(super) fn hlsl(
     if let Some(value) = source.literal_position(&outputs, &writes)? {
         assignments.push(format!("projected={value};"));
     }
-    // A scope cutout adds its aperture point above every source varying, so it is the highest
-    // pixel varying.
-    let aperture = surface.cutout.as_ref().and_then(|_| {
-        pixel_fields
-            .iter()
-            .filter(|(semantic, ..)| semantic == "TEXCOORD")
-            .map(|(_, index, ..)| *index)
-            .max()
-    });
+    // A scope cutout adds its aperture point, and a windowed reticle its view tangent, above every
+    // source varying, so it is the highest pixel varying.
+    let windowed = projection.filter(|projection| projection.windowed);
+    let aperture = (surface.cutout.is_some() || windowed.is_some())
+        .then(|| {
+            pixel_fields
+                .iter()
+                .filter(|(semantic, ..)| semantic == "TEXCOORD")
+                .map(|(_, index, ..)| *index)
+                .max()
+        })
+        .flatten();
     for (pixel_ordinal, (semantic, index, _, mask)) in pixel_fields.iter().enumerate() {
         if semantic.eq_ignore_ascii_case("SV_Position") {
             parameters.push("out float4 projected:SV_POSITION0".into());
@@ -442,6 +482,22 @@ pub(super) fn hlsl(
                 vector(&lens.center), vector(&lens.axes[0]), vector(&lens.axes[1])));
             continue;
         }
+        // Artwork X and Y over the source depth is the view tangent from the source eye. The
+        // reticle rows' axis signs turn it to the screen, as the projection does, so it compares
+        // with the window's right and up tangents. Its planar artwork interpolates linearly.
+        if aperture == Some(*index)
+            && let Some(projection) = windowed
+        {
+            ensure!(width == 4, "Reticle window varying width differs");
+            parameters.push(format!("out float4 windowTangent:TEXCOORD{index}"));
+            assignments.push(format!(
+                "windowTangent=float4(float2(reticlePosition.x*sign(reticleData[{m}].x),reticlePosition.y*sign(reticleData[{m1}].y))/reticleData[{depth}].x,0,0);",
+                m = projection.matrix,
+                m1 = projection.matrix + 1,
+                depth = projection.depth
+            ));
+            continue;
+        }
         let (ordinal, field) = outputs
             .iter()
             .enumerate()
@@ -465,33 +521,7 @@ pub(super) fn hlsl(
             );
             "tex".to_owned()
         } else {
-            match field.index {
-                0 => "float4(n,saturate(objectData[7].w+saturate(objectData[7].z*n.z)))".into(),
-                1 => "float4(t,p.z)".into(),
-                2 => "cross(n,t)*tangent.w".into(),
-                3 => "tex.xyxy".into(),
-                4 if surface.stage == 17 => "reticleView".into(),
-                4 | 7 if surface.stage == 17 => "world".into(),
-                4 => "world".into(),
-                _ => {
-                    let components = (0..width)
-                        .map(|lane| {
-                            source
-                                .scalar(
-                                    writes
-                                        .get(&(ordinal as u32, lane as u32))
-                                        .context("Missing source varying lane")?,
-                                    0,
-                                )
-                                .with_context(|| {
-                                    format!("Source vertex varying TEXCOORD{index} lane {lane}")
-                                })
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    colors |= components.iter().any(|s| s.contains("vertexColor"));
-                    format!("float{width}({})", components.join(","))
-                }
-            }
+            source.varying(&writes, ordinal, field.index, width, &mut colors)?
         };
         parameters.push(format!("out float{width} o{index}:TEXCOORD{index}"));
         assignments.push(format!("o{}={expression};", field.index));

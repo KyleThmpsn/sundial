@@ -3,10 +3,12 @@
 mod animation;
 mod audio;
 mod behavior;
+mod blast;
 pub mod browse;
 mod cache;
 mod damage;
 mod effect;
+mod firing;
 mod gltf;
 mod hud;
 pub mod level;
@@ -44,7 +46,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const REVISION: u32 = 56;
+pub const REVISION: u32 = 199;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,6 +78,26 @@ struct Parent {
     model: usize,
     bone: Option<usize>,
     transform: [f32; 16],
+    /// The attached child object and the parent marker it attaches at.
+    object: Tag,
+    marker: String,
+}
+
+/// A source seat a player takes apart from the driver's, which rides as its own seated native
+/// entity on the vehicle unit's turret rows.
+#[derive(Clone, Debug, Serialize)]
+struct Mount {
+    /// The source object whose seat this is: the vehicle, or a child attached to it.
+    object: Tag,
+    /// The child's parent marker on the vehicle, empty for a seat of the vehicle itself.
+    parent_marker: String,
+    /// The source seat row: flags, animation role, marker and entry marker.
+    seat: Value,
+    /// Whether the seat aims and fires its child's own weapon.
+    gunner: bool,
+    /// A gunner's converted source projectile section, which its seated child's barrel fires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projectile: Option<Value>,
 }
 #[derive(Clone, Debug, Serialize)]
 struct PlacedModel {
@@ -92,6 +114,8 @@ struct Scene {
     scale: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     damage: Option<damage::Geometry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mounts: Vec<Mount>,
 }
 
 impl Scene {
@@ -117,6 +141,79 @@ fn source_path(maps: &Path, name: &str) -> Result<PathBuf> {
         "Cache resolves outside maps directory"
     );
     Ok(path)
+}
+
+/// One cache's tag as the importer reads it, for diagnostics: an animation graph's clips, a render
+/// model's bones, regions and markers, a vehicle's behavior closure (group `behavior`), an
+/// object's definition, or with an empty path every tag path of the group. Reads only.
+pub fn inspect(maps: &Path, cache: &str, group: &str, path: &str) -> Result<Value> {
+    let source = source_path(maps, cache)?;
+    let name = cache;
+    let cache = cache::Cache::open(&source)?;
+    if group == "behavior" {
+        let mut pages = resource::Pages::default();
+        pages.record(&source)?;
+        let request = ExportRequest {
+            cache: name.to_owned(),
+            group: "vehi".into(),
+            path: path.to_owned(),
+            view: View::World,
+            variant: None,
+            permutations: BTreeMap::new(),
+            audio: None,
+        };
+        let scene = scene(&cache, &mut pages, &request)?;
+        return behavior::read(&cache, &scene);
+    }
+    // `raw` reads `address:length` (hexadecimal) as words, each as hex and as a float, which is
+    // null when the word is not a finite float. A `p` prefix reads a tag data pointer instead.
+    if group == "raw" {
+        let (address, length) = path
+            .split_once(':')
+            .context("Raw read needs address:length")?;
+        let address = match address.strip_prefix('p') {
+            Some(pointer) => cache.expand(u32::from_str_radix(pointer, 16)?)?,
+            None => usize::from_str_radix(address.trim_start_matches("0x"), 16)?,
+        };
+        let length = usize::from_str_radix(length.trim_start_matches("0x"), 16)?;
+        return (0..length / 4)
+            .map(|index| {
+                let at = address + index * 4;
+                let word = cache.u32(at)?;
+                let float = Some(f32::from_bits(word)).filter(|value| value.is_finite());
+                Ok(
+                    json!({"offset":format!("{:#x}", index * 4),"address":format!("{at:#x}"),
+                    "word":format!("{word:08X}"),"float":float}),
+                )
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Value::from);
+    }
+    if path.is_empty() {
+        return Ok(json!(
+            cache
+                .tags
+                .iter()
+                .flatten()
+                .filter(|tag| tag.group == group)
+                .map(|tag| tag.path.as_str())
+                .collect::<Vec<_>>()
+        ));
+    }
+    let tag = cache.find(group, path)?;
+    if group == "jmad" {
+        return behavior::animation_data(&cache, tag);
+    }
+    if group == "mode" {
+        let mut pages = resource::Pages::default();
+        pages.record(&source)?;
+        let model = model::read(&cache, &mut pages, tag, &BTreeMap::new())?;
+        return Ok(json!({
+            "bones": model.bones, "markers": model.markers, "regions": model.regions,
+            "selected": model.selected,
+        }));
+    }
+    Ok(serde_json::to_value(Object::read(&cache, tag)?)?)
 }
 
 /// Catalog every weapon and vehicle definition without collapsing map-local data.
@@ -237,7 +334,7 @@ fn scene(
         .context("Selected object branch has no render model")?;
     let selection = choices(&object, request.variant.as_deref(), &request.permutations)?;
     let model = model::read(cache, pages, tag, &selection)?;
-    let mut result=Scene {object:object.clone(),models:vec![PlacedModel {model,animation:branch.animation.clone(),parent:None}],scale:1.,damage:None,limits:vec![
+    let mut result=Scene {object:object.clone(),models:vec![PlacedModel {model,animation:branch.animation.clone(),parent:None}],scale:1.,damage:None,mounts:Vec::new(),limits:vec![
         "Source material roles are approximated by portable surface shading. Dynamic effects, shader functions and gameplay are separate from this export.".into(),
     ]};
     if request.variant.is_none()
@@ -343,6 +440,8 @@ fn children(
                 model: parent_model,
                 bone: parent_bone,
                 transform,
+                object: object.tag.clone(),
+                marker: child.parent_marker.clone(),
             }),
         });
         children(cache, pages, &object, variant, index, ancestry, scene)?;

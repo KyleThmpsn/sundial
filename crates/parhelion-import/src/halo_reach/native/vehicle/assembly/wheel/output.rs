@@ -6,6 +6,8 @@ pub(super) fn build(
     native: &mut Reader,
     graph: &mut Graph,
     before: usize,
+    added: usize,
+    prefix: &str,
 ) -> Result<Value> {
     let owner = assembly.owner(0x808036e2)?;
     let p = assembly.payloads.get_mut(&owner).unwrap();
@@ -27,20 +29,20 @@ pub(super) fn build(
                 && p.u32(definition + 4)? == implementation
                 && p.u64(definition + 8)? == instance as u64
                 && p.u32(definition + 16)? as usize == before,
-            "Wheel output buffer definition differs"
+            "Pose output buffer definition differs"
         );
         let rows = p.array(instance + 32, stride, Some(row_class))?;
-        ensure!(rows.len() == before, "Wheel output buffer count differs");
+        ensure!(rows.len() == before, "Pose output buffer count differs");
         let mut data = bytes(p, &rows, stride);
-        data.resize(data.len() + 3 * stride, 0);
+        data.resize(data.len() + added * stride, 0);
         append(&mut p.0, instance + 32, u64::from(row_class), &data, stride)?;
         put(
             &mut p.0,
             definition + 16,
-            &u32::try_from(before + 3)?.to_le_bytes(),
+            &u32::try_from(before + added)?.to_le_bytes(),
         )?;
         arrays.push(
-            json!({"instance":instance,"definition":definition,"class":row_class,"count":before+3}),
+            json!({"instance":instance,"definition":definition,"class":row_class,"count":before+added}),
         );
     }
     let allocation_tag = p.u32(0x44)?;
@@ -51,7 +53,7 @@ pub(super) fn build(
     while let Some(row) = pending.pop() {
         ensure!(
             seen.insert(row) && seen.len() < 1024,
-            "Wheel output allocation repeats a node"
+            "Pose output allocation repeats a node"
         );
         let kind = match (allocation.u32(row)?, allocation.u32(row + 16)?) {
             (0xe5b438c2, 0x8080371a) => Some(0),
@@ -61,12 +63,12 @@ pub(super) fn build(
         if let Some(kind) = kind {
             ensure!(
                 allocation.u32(row + 20)? as usize == before,
-                "Wheel output allocation count differs"
+                "Pose output allocation count differs"
             );
             put(
                 &mut allocation.0,
                 row + 20,
-                &u32::try_from(before + 3)?.to_le_bytes(),
+                &u32::try_from(before + added)?.to_le_bytes(),
             )?;
             counts[kind] += 1;
         }
@@ -75,16 +77,16 @@ pub(super) fn build(
         }
         pending.extend(allocation.array(row + 24, 40, Some(0x80808852))?);
     }
-    ensure!(counts == [2, 3], "Wheel output allocation is incomplete");
-    let allocation_symbol = "vehicle-wheel-output-allocation";
+    ensure!(counts == [2, 3], "Pose output allocation is incomplete");
+    let allocation_symbol = format!("{prefix}-output-allocation");
     graph.add(
-        allocation_symbol,
+        &allocation_symbol,
         allocation_tag,
         &allocation.0,
         None,
         Vec::new(),
     )?;
-    assembly.allocations.insert(owner, allocation_symbol.into());
+    assembly.allocations.insert(owner, allocation_symbol);
     let symbol = &assembly.symbols[&owner];
     let mut declared = patches(graph, symbol)?;
     let end = p.0.len();

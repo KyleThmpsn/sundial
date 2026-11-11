@@ -217,6 +217,7 @@ struct Uploaded {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
+    dye_bank: Option<usize>,
     /// Native transparents follow every opaque surface, including emissive panels.
     effect: Option<usize>,
     /// Keep particle and object draws distinct even when their materials match.
@@ -392,14 +393,7 @@ impl State {
 
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
             gl.viewport(0, 0, size[0], size[1]);
-            gl.disable(glow::SCISSOR_TEST);
-            gl.disable(glow::BLEND);
-            gl.disable(glow::FRAMEBUFFER_SRGB);
-            gl.disable(glow::CULL_FACE);
-            gl.enable(glow::DEPTH_TEST);
-            // Equal passes so emissive panels coincident with a surface win by draw order.
-            gl.depth_func(glow::LEQUAL);
-            gl.depth_mask(true);
+            draw::begin(gl);
             let background = super::output::background(frame.scene, frame.style);
             gl.clear_color(background[0], background[1], background[2], 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
@@ -494,7 +488,11 @@ impl State {
             if frame.style == Style::Wireframe {
                 gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
             }
-            if let Err(error) = order::update(gl, programs, &view, uploaded, frame, target) {
+            let ordered = {
+                let _stage = super::timing::stage("gpu transparent depth");
+                order::update(gl, programs, &view, uploaded, frame, target)
+            };
+            if let Err(error) = ordered {
                 self.fallback = Some((
                     frame.model.clone(),
                     format!("Software rendering is active. {error}"),
@@ -518,15 +516,18 @@ impl State {
                 groups.len()
             };
             let remaining = study.then(|| groups[split..].to_vec());
-            draw::groups(
-                gl,
-                (programs, &view),
-                uploaded,
-                frame,
-                target,
-                &groups[..split],
-                draw::Pass::Color,
-            );
+            {
+                let _stage = super::timing::stage("gpu material draw");
+                draw::groups(
+                    gl,
+                    (programs, &view),
+                    uploaded,
+                    frame,
+                    target,
+                    &groups[..split],
+                    draw::Pass::Color,
+                );
+            }
             if study {
                 if let Err(error) = particle::paint(
                     gl,
@@ -590,17 +591,20 @@ impl State {
             gl.disable(glow::DEPTH_TEST);
             gl.active_texture(glow::TEXTURE0);
 
-            target.resolve.paint(
-                gl,
-                target,
-                previous,
-                origin,
-                Scene {
-                    filmic: frame.scene.filmic && frame.style == Style::Textured,
-                    bloom: frame.scene.bloom && frame.style == Style::Textured,
-                    ..frame.scene
-                },
-            );
+            {
+                let _stage = super::timing::stage("gpu output resolve");
+                target.resolve.paint(
+                    gl,
+                    target,
+                    previous,
+                    origin,
+                    Scene {
+                        filmic: frame.scene.filmic && frame.style == Style::Textured,
+                        bloom: frame.scene.bloom && frame.style == Style::Textured,
+                        ..frame.scene
+                    },
+                );
+            }
             if let Some(uploaded) = self.model.as_mut()
                 && !uploaded.drawn
             {
@@ -978,6 +982,25 @@ unsafe fn link_feedback(
 }
 
 impl Uniforms {
+    /// Keep sampler types on distinct units in both real draws and helper preparation.
+    unsafe fn bind_samplers(&self, gl: &glow::Context) {
+        // SAFETY: this program is current and these are its uniform locations.
+        unsafe {
+            gl.uniform_1_i32(self.geometry.as_ref(), 11);
+            for (unit, location) in self.samplers.iter().enumerate() {
+                gl.uniform_1_i32(location.as_ref(), unit as i32);
+            }
+            gl.uniform_1_i32(self.scene_depth.as_ref(), 9);
+            for (unit, location) in self.effect_textures.iter().enumerate() {
+                gl.uniform_1_i32(location.as_ref(), 6 + unit as i32);
+            }
+            for (unit, location) in self.native_textures.iter().enumerate() {
+                let unit = crate::model_preview::effects::native::gl_unit(9 + unit);
+                gl.uniform_1_i32(location.as_ref(), unit as i32);
+            }
+        }
+    }
+
     unsafe fn locate(gl: &glow::Context, program: glow::Program) -> Self {
         // SAFETY: the caller supplies the context the linked program belongs to.
         let location = |name: &str| unsafe { gl.get_uniform_location(program, name) };

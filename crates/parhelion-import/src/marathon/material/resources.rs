@@ -226,6 +226,16 @@ pub(super) fn bindings(
 }
 
 impl Bindings {
+    /// The bindings of a technique without a pixel stage.
+    pub fn none() -> Self {
+        Self {
+            textures: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            sampler_indices: BTreeSet::new(),
+            table: Vec::new(),
+        }
+    }
+
     pub fn append(
         &self,
         native: &mut Reader,

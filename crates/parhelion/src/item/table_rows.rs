@@ -1165,8 +1165,9 @@ pub(super) struct AuthoredRows<'a> {
     pub string_tag: TagHash,
     pub item_index: u16,
     pub collectible_index: u16,
-    pub unlock_index: u16,
-    pub unlock_slot: u16,
+    pub acquisition: Acquisition,
+    /// The unlock definition row and account slot, when the collectible reads a flag.
+    pub unlock: Option<(u16, u16)>,
     pub collectible_icon_index: u16,
     pub localization_table_index: u32,
     pub expected_material_set: u16,
@@ -1192,8 +1193,8 @@ pub(super) fn validate_authored_tables(
         string_tag,
         item_index,
         collectible_index,
-        unlock_index,
-        unlock_slot,
+        acquisition,
+        unlock,
         collectible_icon_index,
         localization_table_index,
         expected_material_set,
@@ -1253,7 +1254,7 @@ pub(super) fn validate_authored_tables(
             collectibles,
             collectible_row + COLLECTIBLE_MATERIAL_SET_OFFSET,
         )? != expected_material_set
-        || collection_unlock_index(collectibles, collectible_row)? != usize::from(unlock_index)
+        || !acquires_by(collectibles, collectible_row, acquisition)?
         || parent_class != PRESENTATION_NODE_INDEX_ROW_CLASS
         || authored_parents != expected_presentation_parents
     {
@@ -1320,6 +1321,9 @@ pub(super) fn validate_authored_tables(
             "Authored collectible display is not aligned with collectible definitions",
         ));
     }
+    let Some((unlock_index, unlock_slot)) = unlock else {
+        return Ok(());
+    };
     let (unlock_count, _, unlock_rows, unlock_class) = array_at(unlocks, 8)?;
     if unlock_class != UNLOCK_FLAG_DEFINITION_ROW_CLASS
         || unlock_count.checked_sub(1) != Some(usize::from(unlock_index))

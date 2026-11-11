@@ -191,6 +191,10 @@ pub(super) fn steering(source: &Payload, parameters: &Payload) -> Result<Steerin
     })
 }
 
+/// The projectile sequence event kind that plays a sound. Its report rows carry the kind, so a
+/// caller that binds the source's own audio can drop them without reading their wording.
+pub(crate) const SOUND_EVENT: u32 = 6;
+
 pub(crate) fn sequence(
     source: &Payload,
     particles: &Value,
@@ -254,7 +258,7 @@ pub(crate) fn sequence(
                 }
                 ready
             }
-            6 => {
+            SOUND_EVENT => {
                 bindings.resources.insert(
                     event + 0x50,
                     sequence::Resource {
@@ -263,7 +267,7 @@ pub(crate) fn sequence(
                         tag: sound,
                     },
                 );
-                report.push(json!({"event":index,"difference":"Projectile audio uses the native compatibility cue."}));
+                report.push(json!({"event":index,"kind":kind,"difference":"Projectile audio uses the native compatibility cue."}));
                 true
             }
             33 | 39 => false,

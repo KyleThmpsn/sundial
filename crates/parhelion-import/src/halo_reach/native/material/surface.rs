@@ -74,77 +74,6 @@ impl<'a> Surface<'a> {
         format!("({}).rgb", self.value(name, default))
     }
 
-    pub fn emission(&self, samples: &BTreeMap<usize, String>, albedo: &str) -> String {
-        let tint = self.color(
-            if self.constants.contains_key("self_illum_color") {
-                "self_illum_color"
-            } else {
-                "self_illum_tint_color"
-            },
-            [1.; 4],
-        );
-        let scale = format!("max({},0)", self.scalar("self_illum_intensity", 1.));
-        let source = match self
-            .material
-            .options
-            .get("self_illumination")
-            .map(String::as_str)
-        {
-            Some("off") | None => return "float3(0,0,0)".into(),
-            Some("from_diffuse" | "from_albedo") => format!("({albedo}).rgb"),
-            Some("3_channel_self_illum") => {
-                let Some(mask) = samples.get(&4) else {
-                    return "float3(0,0,0)".into();
-                };
-                let terms = ["channel_a", "channel_b", "channel_c"]
-                    .into_iter()
-                    .zip(["r", "g", "b"])
-                    .map(|(name, lane)| {
-                        let c = self.value(name, [0.; 4]);
-                        format!("({mask}).{lane}*({c}).rgb*({c}).a")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("+");
-                return format!("max(({terms})*{scale},0)");
-            }
-            Some("palettized_plasma") => {
-                let (Some(a), Some(b)) = (samples.get(&6), samples.get(&7)) else {
-                    return "float3(0,0,0)".into();
-                };
-                if !samples.contains_key(&8) {
-                    return "float3(0,0,0)".into();
-                }
-                let alpha = samples
-                    .get(&3)
-                    .map_or_else(|| "1".into(), |a| format!("({a}).a"));
-                let modulation = self.scalar("alpha_modulation_factor", 0.);
-                let v = self.scalar("v_coordinate", 0.5);
-                format!(
-                    "Map8.Sample(ClampSampler,float2(saturate(abs(({a}).r-({b}).r)+(1-{alpha})*{modulation}),{v})).rgb"
-                )
-            }
-            Some("multilayer_additive") => {
-                let Some((map, sampler, uv)) = samples.get(&4).and_then(|s| sample_parts(s)) else {
-                    return "float3(0,0,0)".into();
-                };
-                let value = |name: &str, default: f32| self.scalar(name, default);
-                let transform = self.value("self_illum_map", [1., 1., 0., 0.]);
-                format!(
-                    "multilayerIllumination({map},{sampler},{uv},({transform}).xy,v5.xyz,v1.xyz,v2.xyz,{},{},clamp({},1,64),{},{})",
-                    value("layer_depth", 1.),
-                    value("texcoord_aspect_ratio", 1.),
-                    value("layers_of_4", 1.),
-                    value("depth_darken", 1.),
-                    value("layer_contrast", 1.),
-                )
-            }
-            _ => samples
-                .get(&4)
-                .map_or_else(|| "float3(0,0,0)".into(), |s| format!("({s}).rgb")),
-        };
-        format!("max(({source})*{tint}*{scale},0)")
-    }
-
     pub fn transparent(&self) -> bool {
         self.lens.is_some() || self.material.alpha_mode() == "BLEND"
     }
@@ -157,14 +86,19 @@ impl<'a> Surface<'a> {
     /// `saturate(coefficient * (1 - n.v)^steepness + bias)` on the vertex normal facing the camera
     /// and zero facing away. Without them it is the coverage. Glass lights its albedo only by
     /// analytical and dynamic lights, which these levels lack, so its color is its environment
-    /// reflection times `1 + fresnel`, which Reach lights with the ambient light. The reflection
-    /// stands in the ambient light for the environment map, which is not translated: the level's
-    /// decoded ambient light at `ambient_scale`, or neutral light without a lightmap. `v2.w`
-    /// carries the vertex normal's cosine to the camera.
+    /// reflection times `1 + fresnel`. The dynamic environment cube `environment` samples is
+    /// normalized to an average of one ([`super::environment`]), so, as opaque surfaces scale it by
+    /// their baked light, glass scales it by the light at its lightmap coordinates or vertex record:
+    /// irradiance from half its lobe, the stand-in for an average normal, plus its ambient color,
+    /// at `light_scale`. Without a lightmap the light is neutral, and without a cube it stands in
+    /// for the cube's average. Taken from the ambient color alone, with no cube, Paradiso's Forge
+    /// glass reflected about 0.004 and drew as a faint darkening. `v2.w` carries the vertex
+    /// normal's cosine to the camera.
     pub fn glass(
         &self,
         samples: &BTreeMap<usize, String>,
-        ambient_scale: Option<f32>,
+        light_scale: Option<f32>,
+        environment: Option<&str>,
     ) -> (String, String) {
         let tint = self.value("albedo_color", [1.; 4]);
         let base = samples
@@ -193,12 +127,13 @@ impl<'a> Surface<'a> {
         let coverage = samples
             .get(&GLASS_OPACITY_SLOT)
             .map_or_else(|| "albedo.a".to_owned(), |s| format!("({s}).a"));
-        let ambient = match ambient_scale {
-            Some(scale) => format!(
-                "float3 glassAmbient=LightAmbient.Sample(ClampSampler,abs(v3.zw)).rgb;glassAmbient={}*{scale:.9};",
-                crate::halo_reach::level::lightmap::decode_share_hlsl("glassAmbient")
-            ),
-            None => "float3 glassAmbient=float3(1,1,1);".to_owned(),
+        let light = match light_scale {
+            Some(scale) => {
+                format!(
+                    "float4 glassLobe;float4 glassAmbient;float3 glassDirection;if(v8.w>0.5){{glassLobe=v6;glassAmbient=v7;}}else{{reachLightmap(abs(v3.zw),glassLobe,glassAmbient,glassDirection);}}float3 glassLight=3.141592654*(glassLobe.rgb*0.5+glassAmbient.rgb)*{scale:.9};"
+                )
+            }
+            None => "float3 glassLight=float3(1,1,1);".to_owned(),
         };
         let reflection = if self
             .material
@@ -209,13 +144,14 @@ impl<'a> Surface<'a> {
             "float3(0,0,0)".to_owned()
         } else {
             let contribution = self.scalar("environment_map_specular_contribution", 0.);
+            let cube = environment.map_or_else(String::new, |sample| format!("({sample})*"));
             format!(
-                "glassAmbient*{}*{contribution}*(1+fresnel)",
+                "{cube}glassLight*{}*{contribution}*(1+fresnel)",
                 self.color("env_tint_color", [1.; 4])
             )
         };
         let shading = format!(
-            "{fresnel}float opacity=saturate(1-(1-{coverage})*(1-fresnel));{ambient}albedo=float4({reflection},opacity);"
+            "{fresnel}float opacity=saturate(1-(1-{coverage})*(1-fresnel));{light}albedo=float4({reflection},opacity);"
         );
         (albedo, shading)
     }
@@ -240,7 +176,7 @@ impl<'a> Surface<'a> {
             };
         }
         if self.transparent() {
-            if let Some(finish) = decal::multiplication(self.material) {
+            if let Some(finish) = decal::multiplication(self.material, "float3(0,0,0)") {
                 finish
             } else if self
                 .material

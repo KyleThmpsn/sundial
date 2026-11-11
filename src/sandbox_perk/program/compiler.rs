@@ -32,6 +32,27 @@ pub struct Compiled {
     pub asset_offsets: Vec<(usize, Vec<usize>)>,
     /// Behavior scripts whose graphs the program edits, each copied privately by the build.
     pub scripts: Vec<ScriptCopy>,
+    /// For a complete native program, every relocated resource lane by the tag it names.
+    /// Its private resource edits bind by graph, so each rewrites every lane of its graph.
+    pub resource_lanes: Option<std::collections::BTreeMap<u32, Vec<usize>>>,
+}
+
+impl Compiled {
+    /// The lanes a private resource edit rewrites: the lane of guided action `action`, or
+    /// in a complete native program every lane naming `graph`. Empty when nothing names it.
+    #[must_use]
+    pub fn bound_lanes(&self, action: usize, graph: u32) -> Vec<usize> {
+        match &self.resource_lanes {
+            Some(lanes) => lanes.get(&graph).cloned().unwrap_or_default(),
+            None => self
+                .graph_offsets
+                .get(action)
+                .copied()
+                .flatten()
+                .into_iter()
+                .collect(),
+        }
+    }
 }
 
 /// A behavior script a Run a Game Script effect runs, with edited graphs. `operands` are the
@@ -74,7 +95,7 @@ pub fn compile_with_labels(
     labels: &[u8],
 ) -> Result<Compiled, String> {
     crate::package_runtime::labels::Registry::read(labels)?;
-    if program.native.is_some() || program.imported_labels.is_none() {
+    if program.imported_labels.is_none() {
         return Err("A private label dictionary requires its imported program binding.".into());
     }
     compile_using_labels(manager, program, Some(labels))
@@ -86,19 +107,27 @@ fn compile_using_labels(
     labels: Option<&[u8]>,
 ) -> Result<Compiled, String> {
     program.validate()?;
+    if program.subclass_damage_type.is_some() {
+        return Err(
+            "This program's subclass gate needs the installed subclasses before it compiles."
+                .into(),
+        );
+    }
     if let Some(native) = &program.native {
-        return native::compile(manager, native);
+        return native::compile(manager, native, labels);
     }
     for action in &program.actions {
         validate_asset(manager, action)?;
     }
     let mut program = program.clone();
     if let Some(labels) = labels {
+        let allocated = program.allocated_entities.clone();
         prepare_native_nodes(
             &mut program,
             &mut Installed {
                 manager,
                 registry: Some(labels.to_vec()),
+                allocated: &allocated,
             },
         )?;
     } else {
@@ -260,6 +289,7 @@ fn assemble_records(program: &Program, label_mask: LabelMask) -> Result<Compiled
             .collect(),
         graph_offsets,
         scripts: Vec::new(),
+        resource_lanes: None,
     })
 }
 
@@ -283,6 +313,13 @@ fn validate_asset(manager: &PackageManager, action: &Action) -> Result<(), Strin
         .map_err(|error| format!("Could not read asset {tag}: {error}"))?;
     validate_weapon_entity(&payload)?;
     let kind = entity::spawn_kind(&payload)?;
+    // The build names an imported projectile root in this graph's place, so the graph the action
+    // compiles against must be a projectile too.
+    if asset.imported.is_some() && kind != Some(entity::Kind::Projectile) {
+        return Err(format!(
+            "An imported projectile must stand in for a native projectile, and {tag} is not one."
+        ));
+    }
     let acceptable = match action {
         Action::Attach { .. }
         | Action::ExtendTimers { .. }
@@ -330,6 +367,8 @@ pub(super) trait NativeResolver {
 struct Installed<'a> {
     manager: &'a PackageManager,
     registry: Option<Vec<u8>>,
+    /// Entities the build allocates for this program, live before the manager lists them.
+    allocated: &'a std::collections::BTreeSet<u32>,
 }
 
 impl NativeResolver for Installed<'_> {
@@ -348,14 +387,16 @@ impl NativeResolver for Installed<'_> {
         &self,
         graph: &crate::sandbox_perk::action::native::Graph,
     ) -> Result<(), String> {
-        validate_native_resources(self.manager, graph)
+        validate_native_resources(self.manager, graph, self.allocated)
     }
 }
 
 fn prepare_native(manager: &PackageManager, program: &mut Program) -> Result<(), String> {
+    let allocated = program.allocated_entities.clone();
     let mut resolver = Installed {
         manager,
         registry: None,
+        allocated: &allocated,
     };
     prepare_native_nodes(program, &mut resolver)
 }
@@ -421,11 +462,15 @@ pub(super) fn referenced_resources(
 fn validate_native_resources(
     manager: &PackageManager,
     graph: &crate::sandbox_perk::action::native::Graph,
+    allocated: &std::collections::BTreeSet<u32>,
 ) -> Result<(), String> {
     for block in graph.blocks.iter().filter(|b| b.class != 0) {
         validate_native_entity(manager, block)?;
     }
     for (_, tag) in referenced_resources(graph)? {
+        if allocated.contains(&tag) {
+            continue;
+        }
         let entry = manager
             .get_entry(TagHash(tag))
             .ok_or_else(|| format!("Native resource 0x{tag:08X} is missing."))?;

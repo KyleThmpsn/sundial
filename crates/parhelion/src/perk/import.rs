@@ -307,6 +307,107 @@ fn node(node: lower::Node) -> NativeNode {
     }
 }
 
+/// The name the request gives the plug, or the source plug's own.
+fn plug_name(request: &Request<'_>, presentation: &presentation::Presentation) -> String {
+    if request.name.trim().is_empty() {
+        presentation.name.clone()
+    } else {
+        request.name.into()
+    }
+}
+
+/// A translated plug for the selected socket choice: its finished perks, the projectile they
+/// fire, and its name over the source plug's description and artwork.
+struct Plug<'a> {
+    presentation: &'a presentation::Presentation,
+    name: String,
+    sandbox_perks: Vec<crate::recipe::WeaponSandboxPerkRuntimeRecipe>,
+    projectile: Option<crate::weapon::projectile::Preset>,
+}
+
+/// Makes `plug` the private variant of the selected socket choice in a copy of the request's
+/// recipe. A socket the recipe does not author yet takes the donor socket's `choices`. `edit`
+/// changes anything else the translation needs. The recipe must still validate, and is written
+/// with `provenance`, which gains the digests of the prepared and baseline recipes. Translators
+/// finish their readers first, so nothing is written while a source read can still fail.
+fn finish(
+    request: &Request<'_>,
+    output: &Path,
+    donor: &WeaponDonor,
+    choices: Vec<HexHash>,
+    plug: Plug<'_>,
+    edit: impl FnOnce(&mut WeaponRecipe),
+    mut provenance: Value,
+) -> Result<Prepared, String> {
+    let mut recipe = request.recipe.clone();
+    let index = usize::from(request.socket_index);
+    if recipe
+        .overrides
+        .socket_columns
+        .get(index)
+        .and_then(Option::as_ref)
+        .is_none()
+    {
+        let count = donor
+            .sockets
+            .len()
+            .max(recipe.overrides.socket_columns.len())
+            .max(index + 1);
+        recipe.overrides.socket_columns.resize_with(count, || None);
+        recipe.overrides.socket_columns[index] = Some(WeaponSocketColumnRecipe {
+            choices,
+            ..WeaponSocketColumnRecipe::default()
+        });
+    }
+    let icon = plug
+        .presentation
+        .icon_png
+        .as_deref()
+        .map(|bytes| {
+            crate::icon_edit::ImportedIcon::from_bytes(bytes).map(|image| super::Icon::Image {
+                name: plug.presentation.name.clone(),
+                image,
+            })
+        })
+        .transpose()?;
+    recipe
+        .overrides
+        .socket_plug_variants
+        .push(WeaponSocketPlugVariantRecipe {
+            projectile: plug.projectile,
+            offer_everywhere: false,
+            replace_effects: true,
+            socket_index: request.socket_index,
+            choice_index: request.choice_index,
+            source_plug_hash: HexHash::new(request.source_plug_hash),
+            name: Some(plug.name),
+            description: Some(plug.presentation.description.clone()),
+            icon,
+            classification_donor_hash: None,
+            investment_stats: Vec::new(),
+            additional_sandbox_perks: Vec::new(),
+            sandbox_perks: plug.sandbox_perks,
+        });
+    edit(&mut recipe);
+    recipe.to_spec().map_err(error)?.validate().map_err(error)?;
+    let encoded = recipe.to_json_pretty().map_err(error)?;
+    provenance["prepared_recipe_sha256"] = json!(digest(encoded.as_bytes()));
+    provenance["baseline_recipe_sha256"] = json!(digest(
+        request.recipe.to_json_pretty().map_err(error)?.as_bytes()
+    ));
+    fs::write(output.join("prepared-weapon.parhelion.json"), encoded).map_err(error)?;
+    fs::write(
+        output.join("provenance.json"),
+        serde_json::to_vec_pretty(&provenance).map_err(error)?,
+    )
+    .map_err(error)?;
+    Ok(Prepared {
+        baseline: request.recipe.clone(),
+        recipe,
+        provenance,
+    })
+}
+
 fn program(
     request: &Request<'_>,
     source: &translate::Source,
@@ -510,16 +611,6 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     }
     let source = translate::extract(&mut reader, request.plug_hash).map_err(error)?;
     let presentation = presentation::read(&mut reader, request.plug_hash).map_err(error)?;
-    let icon = presentation
-        .icon_png
-        .as_deref()
-        .map(|bytes| {
-            crate::icon_edit::ImportedIcon::from_bytes(bytes).map(|image| super::Icon::Image {
-                name: presentation.name.clone(),
-                image,
-            })
-        })
-        .transpose()?;
     let profile = SwordProfileRecipe {
         key: HexHash::new(request.profile_key),
         near_scale_bits: source.angular.scales.near_bits,
@@ -536,11 +627,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
     }
     let native_lunge = modifier(&manager, &source.lunge.owner, source.lunge.modifier_offset)?;
     let status = HudStatus {
-        name: if request.name.trim().is_empty() {
-            presentation.name.clone()
-        } else {
-            request.name.into()
-        },
+        name: plug_name(request, &presentation),
         // Rapid Hit supplies the native generic buff row and RGBA icon-layer envelope.
         // The build gives the report its own key, text and imported artwork.
         icon: Some(0xC35D_D059),
@@ -550,61 +637,14 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
     };
     let program = program(request, &source, native_lunge.patch.clone(), status)?;
-    let mut recipe = request.recipe.clone();
-    let index = usize::from(request.socket_index);
-    if recipe
-        .overrides
-        .socket_columns
-        .get(index)
-        .and_then(Option::as_ref)
-        .is_none()
-    {
-        let count = donor
-            .sockets
-            .len()
-            .max(recipe.overrides.socket_columns.len())
-            .max(index + 1);
-        recipe.overrides.socket_columns.resize_with(count, || None);
-        recipe.overrides.socket_columns[index] = Some(WeaponSocketColumnRecipe {
-            choices,
-            ..WeaponSocketColumnRecipe::default()
-        });
-    }
     let mut effect = super::PerkRecipe::effect(request.source_perk_index);
     effect.program = Some(program);
-    recipe
-        .overrides
-        .socket_plug_variants
-        .push(WeaponSocketPlugVariantRecipe {
-            projectile: None,
-            offer_everywhere: false,
-            replace_effects: true,
-            socket_index: request.socket_index,
-            choice_index: request.choice_index,
-            source_plug_hash: HexHash::new(request.source_plug_hash),
-            name: Some(if request.name.trim().is_empty() {
-                presentation.name.clone()
-            } else {
-                request.name.into()
-            }),
-            description: Some(presentation.description.clone()),
-            icon,
-            classification_donor_hash: None,
-            investment_stats: Vec::new(),
-            additional_sandbox_perks: Vec::new(),
-            sandbox_perks: vec![effect],
-        });
-    recipe.overrides.sword_profile = Some(profile);
-    recipe.to_spec().map_err(error)?.validate().map_err(error)?;
     reader.finish().map_err(error)?;
-    let encoded = recipe.to_json_pretty().map_err(error)?;
     let provenance = json!({
         "status": "experimental package candidate",
         "full_perk_installable": false,
         "gameplay_verified": false,
         "presentation": presentation.report,
-        "prepared_recipe_sha256": digest(encoded.as_bytes()),
-        "baseline_recipe_sha256": digest(request.recipe.to_json_pretty().map_err(error)?.as_bytes()),
         "remaining": ["Native swing publication and channel-2 timing proof", "In-game HUD visibility and cleanup", "Gameplay verification"],
         "source": {
             "plug_hash": source.plug_hash,
@@ -634,7 +674,7 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
             "lunge_modifier_offset": native_lunge.offset,
             "lunge_graph_sha256": digest(&native_lunge.graph),
             "lunge_owner_sha256": digest(&native_lunge.owner),
-            "profile": recipe.overrides.sword_profile,
+            "profile": Some(&profile),
             "effect_order": [2, 41, 36],
             "removal_order": [18, 1, 41, 8, 20],
             "hud_report": {"class":"80804085", "state_mask":6,
@@ -642,17 +682,22 @@ pub fn prepare(request: &Request<'_>) -> Result<Prepared, String> {
                 "private_text_and_icon":true, "rendered_in_game":false},
         }
     });
+    let plug = Plug {
+        presentation: &presentation,
+        name: plug_name(request, &presentation),
+        sandbox_perks: vec![effect],
+        projectile: None,
+    };
+    let prepared = finish(
+        request,
+        &output,
+        &donor,
+        choices,
+        plug,
+        |recipe| recipe.overrides.sword_profile = Some(profile),
+        provenance,
+    )?;
     fs::write(output.join("native-lunge-graph.bin"), &native_lunge.graph).map_err(error)?;
     fs::write(output.join("native-lunge-owner.bin"), &native_lunge.owner).map_err(error)?;
-    fs::write(output.join("prepared-weapon.parhelion.json"), encoded).map_err(error)?;
-    fs::write(
-        output.join("provenance.json"),
-        serde_json::to_vec_pretty(&provenance).map_err(error)?,
-    )
-    .map_err(error)?;
-    Ok(Prepared {
-        baseline: request.recipe.clone(),
-        recipe,
-        provenance,
-    })
+    Ok(prepared)
 }

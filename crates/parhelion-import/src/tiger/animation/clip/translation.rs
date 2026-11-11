@@ -2,6 +2,9 @@
 use super::*;
 use anyhow::Context;
 
+/// Shift a curve track's stored samples, or return false, changing nothing, when the shifted
+/// samples leave the track's signed-short range. Shifting both keys of a segment leaves its
+/// tangents unchanged.
 fn curve(
     p: &Payload,
     out: &mut [u8],
@@ -9,7 +12,7 @@ fn curve(
     track: usize,
     frames: usize,
     delta: [f32; 3],
-) -> Result<()> {
+) -> Result<bool> {
     use sundial::package_authoring::animation_curve::{Channel, Decoder};
     let counts = [
         p.u16(base + 2)? as usize,
@@ -54,6 +57,7 @@ fn curve(
         (at + 3, segments + 1)
     };
     let shifts = delta.map(|v| (v / range * 32767.).round() as i32);
+    let mut shifted = Vec::with_capacity(count * 3);
     for frame in 0..count {
         for (axis, shift) in shifts.iter().enumerate() {
             let at = *rows
@@ -62,14 +66,16 @@ fn curve(
             let value = i32::from(p.u16(at)? as i16)
                 .checked_add(*shift)
                 .context("Native curve translation overflow")?;
-            ensure!(
-                (-32767..=32767).contains(&value),
-                "Held offset exceeds native curve translation range"
-            );
-            put(out, at, &(value as i16).to_le_bytes())?;
+            if !(-32767..=32767).contains(&value) {
+                return Ok(false);
+            }
+            shifted.push((at, value as i16));
         }
     }
-    Ok(())
+    for (at, value) in shifted {
+        put(out, at, &value.to_le_bytes())?;
+    }
+    Ok(true)
 }
 
 /// Adjust one control in an absolute clip. The caller establishes its playback mode.
@@ -89,8 +95,9 @@ pub fn translate(
             && slots <= 256,
         "Native clip dimensions differ: {frames} frames, {slots} controls, selected control {slot}"
     );
-    // The caller bounds manual adjustments. A source-frame mapping can be larger,
-    // while every native codec still enforces its own representable range below.
+    // The caller bounds manual adjustments. A source-frame mapping can be larger. A curve track
+    // whose shifted samples leave its range, which authored curves fit tightly, is rewritten as
+    // float samples with the other codecs below.
     ensure!(
         delta.iter().chain(&default).all(|v| v.is_finite()),
         "Native clip translation must be finite"
@@ -119,7 +126,7 @@ pub fn translate(
             "Native position map differs from codec"
         );
         match original.u16(base)? {
-            1 => curve(original, &mut out, base, track, count, delta)?,
+            1 if curve(original, &mut out, base, track, count, delta)? => {}
             2 => {
                 ensure!(
                     original.u32(base - 4)? == 0x80808F71

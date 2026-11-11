@@ -39,11 +39,9 @@ fn catalog_edit_save_reopen_readback_keeps_native_configuration_and_provenance()
     let request =
         Request::new(&recipe, 405, 0, Placement::Action, node.clone(), Some(406)).unwrap();
     let stale = request.clone();
-    request.apply(&mut recipe).unwrap();
-    let after = recipe.clone();
-    assert!(stale.apply(&mut recipe).is_err());
-    assert_eq!(
-        recipe, after,
+    recipe = request.applied(&recipe).unwrap();
+    assert!(
+        stale.applied(&recipe).is_err(),
         "a stale catalog window cannot change a new graph"
     );
     let entry = library.save(&recipe, None).unwrap();
@@ -229,7 +227,7 @@ fn catalog_to_staged_private_perk_has_a_repeatable_package_receipt() {
     let mut perk = PerkRecipe::new();
     perk.name = "Catalog Workflow Perk".into();
     perk.effects.push(authored(405, Trigger::Drawn, 1));
-    Request::new(
+    let perk = Request::new(
         &perk,
         405,
         0,
@@ -238,7 +236,7 @@ fn catalog_to_staged_private_perk_has_a_repeatable_package_receipt() {
         Some(u16::try_from(stock.index).unwrap()),
     )
     .unwrap()
-    .apply(&mut perk)
+    .applied(&perk)
     .unwrap();
     library.save(&perk, None).unwrap();
     let perk = library.scan().unwrap().entries.remove(0).recipe;

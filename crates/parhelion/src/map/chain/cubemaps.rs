@@ -34,20 +34,34 @@ const IDENTITY: usize = 0xB0;
 /// The box's three axes scaled by its half sizes, then its middle with w 1.
 const AXES: usize = 0xC0;
 const TRANSFORM: usize = 0x100;
+/// Native voxel dimensions and visibility-squared reference, copied to CB11[13]. The imported
+/// cube contains the shared open-light reference, so its visibility denominator is one.
+const PROBE_DIMENSIONS: usize = 0x140;
+const VISIBILITY_REFERENCE: usize = 0x14C;
 /// CB11[17].w selects linear sampling for the imported floating-point cube texels.
 const LINEAR_COLOUR: usize = 0x16C;
 const NAME: usize = 0x190;
 const TEXTURE: usize = 0x198;
+/// Optional donor probe and sky-mask textures do not describe the imported map.
+const AUXILIARY_TEXTURES: [usize; 2] = [0x19C, 0x1A0];
 const IDENTITY_LOW: usize = 0x1B4;
 
 /// One of the map's cubemap volumes: its cube texture, its box's middle and half sizes, where its
 /// cube was captured and its identifier.
 pub(in crate::map) struct Cubemap {
     pub texture: TagHash,
+    pub grid: Option<Grid>,
     pub center: [f32; 3],
     pub extents: [f32; 3],
     pub capture: [f32; 3],
     pub identity: u64,
+}
+
+/// Native RGBA8 spatial modulation, independent of cube radiance and visibility magnitude.
+pub(in crate::map) struct Grid {
+    pub texture: TagHash,
+    pub dimensions: [u32; 3],
+    pub strength: f32,
 }
 
 fn put_floats(payload: &mut [u8], at: usize, values: &[f32]) {
@@ -80,6 +94,23 @@ pub(super) fn table(donor: &[u8], volumes: &[Cubemap]) -> AuthoringResult<Vec<u8
     let mut payload = donor.to_vec();
     let mut resources = Vec::with_capacity(volumes.len());
     for volume in volumes {
+        if !volume
+            .center
+            .iter()
+            .chain(&volume.capture)
+            .all(|v| v.is_finite())
+            || !volume.extents.iter().all(|v| v.is_finite() && *v > 0.)
+        {
+            return Err(invalid("The cubemap volume has invalid bounds"));
+        }
+        if let Some(grid) = &volume.grid
+            && (grid.texture.is_none()
+                || !grid.dimensions.iter().all(|v| (2..=16).contains(v))
+                || !grid.strength.is_finite()
+                || !(0.0..=255.0).contains(&grid.strength))
+        {
+            return Err(invalid("The cubemap modulation grid is invalid"));
+        }
         while !(payload.len() + 4).is_multiple_of(16) {
             payload.push(0);
         }
@@ -95,7 +126,27 @@ pub(super) fn table(donor: &[u8], volumes: &[Cubemap]) -> AuthoringResult<Vec<u8
             &[volume.capture[0], volume.capture[1], volume.capture[2], 1.],
         );
         put_floats(&mut payload, at + INTENSITY, &[1.]);
+        payload[at + PROBE_DIMENSIONS..at + PROBE_DIMENSIONS + 12].fill(0);
+        put_floats(&mut payload, at + VISIBILITY_REFERENCE, &[1.]);
         put_floats(&mut payload, at + LINEAR_COLOUR, &[1.]);
+        for field in AUXILIARY_TEXTURES {
+            payload[at + field..at + field + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        // Positive +0x90 RGB selects parallax. +0x164 enables the separate relighting technique.
+        // These volumes use their own cube and grid, without either donor-specific input.
+        payload[at + 0x90..at + 0xB0].fill(0);
+        payload[at + 0x160..at + 0x16C].fill(0);
+        put_floats(&mut payload, at + 0x150, &[0., 0., 0.5]);
+        if let Some(grid) = &volume.grid {
+            for (axis, size) in grid.dimensions.iter().enumerate() {
+                let field = at + PROBE_DIMENSIONS + axis * 4;
+                payload[field..field + 4].copy_from_slice(&size.to_le_bytes());
+            }
+            // Native decoding maps +0x150 to grid amplitude, +0x154 to normal displacement
+            // and +0x158 = 0.5 to alpha exponent one. Alpha is coverage, not light magnitude.
+            put_floats(&mut payload, at + 0x150, &[grid.strength]);
+            payload[at + 0x1A0..at + 0x1A4].copy_from_slice(&grid.texture.0.to_le_bytes());
+        }
         for field in INVERSE_EXTENTS {
             put_floats(&mut payload, at + field, &[2. / ex, 2. / ey, 0., 0.]);
         }

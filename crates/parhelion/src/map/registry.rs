@@ -21,7 +21,12 @@
 //! map's in its copy.
 use std::path::Path;
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+mod loading;
 
 use parhelion_import::halo_reach::level::{
     objectives::Objective, spawn::Spawn, squads::Squad, volumes::Volume,
@@ -235,6 +240,7 @@ pub(super) struct Donor {
     registry: Option<TagHash>,
     /// Each array's objects, their payloads and their handles per bubble.
     objects: [Vec<DonorObject>; 3],
+    dependencies: Arc<BTreeSet<u32>>,
     templates: Option<Option<Templates>>,
     triggers: Option<Option<super::triggers::Triggers>>,
 }
@@ -290,6 +296,15 @@ impl Donor {
                 list.push((TagHash(object), payload, bubbles));
             }
         }
+        self.dependencies = Arc::new(loading::dependencies(
+            manager,
+            REGISTRY_OBJECTS
+                .iter()
+                .map(|&field| words(owner, field))
+                .collect::<AuthoringResult<Vec<_>>>()?
+                .into_iter()
+                .flatten(),
+        )?);
         self.registry = Some(tag);
         Ok(())
     }
@@ -335,6 +350,7 @@ impl Donor {
 
 pub(super) struct Registry {
     owner: Owner,
+    dependencies: Arc<BTreeSet<u32>>,
     /// The objects of each of the registry's arrays.
     objects: [Vec<Object>; 3],
     spawns: Vec<Spawn>,
@@ -845,6 +861,7 @@ impl Registry {
         };
         Ok(Self {
             owner,
+            dependencies: donor.dependencies.clone(),
             objects,
             spawns: spawns.to_vec(),
             volumes: volumes.to_vec(),
@@ -855,7 +872,11 @@ impl Registry {
     }
 
     /// The registry's entries starting at `first`, the first being the registry itself.
-    pub(super) fn tags(&self, first: TagHash) -> AuthoringResult<Vec<NewTagSpec>> {
+    pub(super) fn tags(
+        &self,
+        manager: &PackageManager,
+        first: TagHash,
+    ) -> AuthoringResult<Vec<NewTagSpec>> {
         let at = |offset: usize| {
             u16::try_from(first.entry_index() as usize + offset)
                 .map(|index| TagHash::new(first.pkg_id(), index))
@@ -1048,6 +1069,7 @@ impl Registry {
             ),
         ];
         tags.extend(content);
+        loading::prune(manager, first, &mut tags, &self.dependencies, &added)?;
         Ok(tags)
     }
 

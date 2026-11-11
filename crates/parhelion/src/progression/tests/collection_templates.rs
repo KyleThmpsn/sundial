@@ -119,7 +119,7 @@ fn appended_collectible_discards_all_secondary_programs_and_preserves_stock() {
             item_index: 10,
             unlock: CollectibleUnlockClone {
                 source_index: 7,
-                authored_index: 11,
+                acquisition: Acquisition::Flag(11),
             },
             material_set_index: COLLECTIBLE_CURATED_WEAPON_MATERIAL_SET,
             presentation_parents: &[12],
@@ -164,16 +164,20 @@ fn collectible_validation_rejects_additional_account_dependencies() {
     ] {
         let data = collectible_table(&[&tokens]);
         assert!(
-            validate_authored_collectible_nested_isolation(&data, 0, 7, 11).is_err(),
+            validate_authored_collectible_nested_isolation(&data, 0, 7, Acquisition::Flag(11))
+                .is_err(),
             "{tokens:?}"
         );
     }
     let data = collectible_table(&[&[(flag, 11)]]);
-    validate_authored_collectible_nested_isolation(&data, 0, 7, 11).unwrap();
+    validate_authored_collectible_nested_isolation(&data, 0, 7, Acquisition::Flag(11)).unwrap();
     let (_, _, rows, _) = array_at(&data, 8).unwrap();
     for field in COLLECTIBLE_SECONDARY_CONDITION_OFFSETS {
         let mut modified = data.clone();
         write_u64(&mut modified, rows + field, 1).unwrap();
-        assert!(validate_authored_collectible_nested_isolation(&modified, 0, 7, 11).is_err());
+        assert!(
+            validate_authored_collectible_nested_isolation(&modified, 0, 7, Acquisition::Flag(11))
+                .is_err()
+        );
     }
 }

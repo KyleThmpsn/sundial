@@ -47,7 +47,7 @@ pub(super) fn author(
             // Validate the prepared change against stock, then compose it with
             // the character binding already applied to this private owner.
             let mut original =
-                parhelion_import::d2_mot::payload::Payload(animation.attachment_owner.1.clone());
+                parhelion_import::tiger::payload::Payload(animation.attachment_owner.1.clone());
             profile::apply(&mut original, &patch)
                 .map_err(|error| invalid(format!("Prepared animation profile: {error:#}")))?;
             if existing.is_none()
@@ -63,7 +63,7 @@ pub(super) fn author(
             patch.before = binding.private;
             patch.after = binding.private;
         }
-        let mut data = parhelion_import::d2_mot::payload::Payload(payload);
+        let mut data = parhelion_import::tiger::payload::Payload(payload);
         profile::apply(&mut data, &patch)
             .map_err(|error| invalid(format!("Imported animation profile: {error:#}")))?;
         payload = data.0;

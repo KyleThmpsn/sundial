@@ -82,6 +82,61 @@ pub(super) fn reading(program: &Program, index: usize) -> Option<Reading> {
     Some(Reading { title, lines })
 }
 
+/// The stock modifier rows a private patch rewrites, each with its operation and amount,
+/// as an attachment's added rows edit. The patch's other edits stay as they are.
+pub(in crate::app::custom_perks::workbench) fn private_changes(
+    ui: &mut egui::Ui,
+    edit: &mut sundial::package_authoring::sandbox_perk::program::NativeAssetPatch,
+) {
+    const OPERATIONS: [&str; 2] = ["Add", "Multiply"];
+    let graph = edit.source_graph;
+    let mut other = !edit.appends.is_empty()
+        || !edit.remove_owners.is_empty()
+        || !edit.components.is_empty()
+        || !edit.programs.is_empty();
+    let mut shown = false;
+    for (index, patch) in edit.patches.iter_mut().enumerate() {
+        let Some(row) = patch.modifier() else {
+            other = true;
+            continue;
+        };
+        if !shown {
+            ui.add_space(4.0);
+            ui.strong("Changed Rows");
+            shown = true;
+        }
+        let mut operation = row.operation;
+        let mut amount = row.amount();
+        ui.push_id(("changed-row", graph, index), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(name(&row));
+                egui::ComboBox::from_id_salt("operation")
+                    .selected_text(OPERATIONS[usize::from(operation)])
+                    .show_ui(ui, |ui| {
+                        for (value, label) in (0..).zip(OPERATIONS) {
+                            ui.selectable_value(&mut operation, value, label);
+                        }
+                    });
+                let mut drag = egui::DragValue::new(&mut amount)
+                    .speed(0.05)
+                    .max_decimals(3);
+                if operation == 0 && seconds(&row) {
+                    drag = drag.suffix(" s");
+                }
+                ui.add(drag);
+            });
+        });
+        if (operation, amount.to_bits()) != (row.operation, row.amount_bits)
+            && let Err(error) = patch.set_modifier(operation, amount)
+        {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+    }
+    if other {
+        ui.small("Other private resource edits are kept.");
+    }
+}
+
 fn has_counter(program: &Program) -> bool {
     program
         .native_removal

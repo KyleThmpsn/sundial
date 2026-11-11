@@ -32,6 +32,7 @@ use crate::runtime::{
     WeaponRuntimeValue, WeaponRuntimeValueOverride,
 };
 mod bank;
+pub mod evade;
 pub use bank::validate_context as validate_bank_context;
 
 /// How a movement value's four bytes read.

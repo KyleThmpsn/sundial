@@ -72,6 +72,7 @@ pub mod subclass;
 mod tag_payload;
 #[cfg(test)]
 mod test_support;
+mod turn_cache;
 pub mod vehicle;
 mod watermark;
 pub mod weapon;
@@ -82,7 +83,6 @@ pub use armor::Class as ArmorClass;
 pub use artifact::ArtifactMetadata;
 pub(crate) use badge::SunriseProjectMetadata;
 pub(crate) use badge::{
-    SUNRISE_BADGE_DESCRIPTION_HASH, SUNRISE_BADGE_NAME_HASH, SUNRISE_BADGE_NODE_HASHES,
     SunriseBadgePlacement, append_badge_icon_row, author_sunrise_badge_graph,
     sunrise_badge_collectible_parents,
 };
@@ -137,5 +137,6 @@ pub(crate) use recipe_library::{RecipeLibrary, RecipeLibraryEntry};
 pub(crate) use watermark::{WeaponIconRequest, item_icon_row_with_container};
 pub use workflow::{
     BatchBuildRequest, BatchBuildSnapshot, BuildActivity, BuildFailure, BuildProgress, BuildReport,
-    OperationStatus, build_and_stage_snapshot_reporting, build_and_stage_snapshot_with_progress,
+    MemberProgress, OperationStatus, SkippedRecipe, build_and_stage_snapshot_reporting,
+    build_and_stage_snapshot_skipping, build_and_stage_snapshot_with_progress,
 };

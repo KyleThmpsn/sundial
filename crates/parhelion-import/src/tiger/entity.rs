@@ -1,6 +1,7 @@
 //! Resource pointers embedded in native model entities are (owner, class, offset)
 //! triples in addition to the top-level component rows. They must move together.
 use crate::tiger::payload::Payload;
+pub mod anchor;
 pub mod compiled;
 pub mod lifecycle;
 pub mod links;

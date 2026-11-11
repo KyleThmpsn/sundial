@@ -159,10 +159,100 @@ fn within(actual: f32, expected: f32, tolerance: f32) -> Result<()> {
     Ok(())
 }
 
+// A codec 1 track is a signed short per frame and stored component, or Hermite segments between
+// signed-short keys with a frame delta and two four-bit tangent codes per segment and component.
+// A rotation stores w, x and y, with z's sign in the low bit of x, and is normalized after
+// interpolation. Scale and position share one range and bias per track. The writer keeps a unit
+// quaternion component within 4.5e-3, the resolution of a key whose derived z is near zero plus
+// the interior budget, and a linear value within 1e-4 plus one step of its range.
+fn curve(
+    bytes: &Payload,
+    base: usize,
+    counts: [usize; 3],
+    (kind, track, frame): (usize, usize, usize),
+) -> Result<Vec<(f32, f32)>> {
+    let width = [1, 4, 3][kind];
+    let stored = [1, 3, 3][kind];
+    let shorts = |at: usize| -> Result<Vec<i16>> {
+        bytes
+            .array(base + at, 2, Some(0x80800006))?
+            .into_iter()
+            .map(|row| Ok(bytes.u16(row)? as i16))
+            .collect()
+    };
+    let codes = |at: usize| -> Result<Vec<u8>> {
+        bytes
+            .array(base + at, 1, Some(0x80800009))?
+            .into_iter()
+            .map(|row| bytes.u8(row))
+            .collect()
+    };
+    let (raw, keys, maps) = (shorts(0x10)?, shorts(0x20)?, shorts(0x70)?);
+    let (times, tangents) = (codes(0x30)?, codes(0x40)?);
+    let sample = |table: &[i16], at: usize| {
+        let mut point = [0f32; 4];
+        for (axis, value) in point.iter_mut().enumerate().take(stored) {
+            *value = f32::from(table[at + axis]) / 32767.;
+        }
+        if kind == 1 {
+            let [w, x, y, _] = point;
+            let z = (1. - w * w - x * x - y * y).max(0.).sqrt();
+            point = [x, y, if table[at + 1] & 1 == 1 { -z } else { z }, w];
+        }
+        point
+    };
+    let map = maps[counts[..kind].iter().sum::<usize>() + track];
+    let point = if map < 0 {
+        sample(&raw, (-i32::from(map) - 1) as usize + frame * stored)
+    } else {
+        let start = map as usize - 1;
+        let (time, tangent, segments) = (
+            keys[start] as usize,
+            keys[start + 1] as usize,
+            keys[start + 2] as usize,
+        );
+        let (mut first, mut segment) = (0, 0);
+        while frame > first + usize::from(times[time + segment]) {
+            first += usize::from(times[time + segment]);
+            segment += 1;
+        }
+        ensure!(segment < segments, "Frame {frame} is past the curve");
+        let t = (frame - first) as f32 / f32::from(times[time + segment]);
+        let a = sample(&keys, start + 3 + segment * stored);
+        let b = sample(&keys, start + 3 + (segment + 1) * stored);
+        let mut point = [0f32; 4];
+        for (axis, value) in point.iter_mut().enumerate().take(width) {
+            let code = tangents[tangent + segment * width + axis];
+            let chord = b[axis] - a[axis];
+            let slope = |n: u8| {
+                let v = (f32::from(n) - 7.) / 7.;
+                chord + 0.3 * v * v.abs()
+            };
+            let (t2, t3) = (t * t, t * t * t);
+            *value = (2. * t3 - 3. * t2 + 1.) * a[axis]
+                + (t3 - 2. * t2 + t) * slope(code >> 4)
+                + (-2. * t3 + 3. * t2) * b[axis]
+                + (t3 - t2) * slope(code & 15);
+        }
+        point
+    };
+    if kind == 1 {
+        let length = point.iter().map(|v| v * v).sum::<f32>().sqrt();
+        return Ok(point.iter().map(|v| (v / length, 4.5e-3 + 2e-5)).collect());
+    }
+    let interval = track + if kind == 2 { counts[0] } else { 0 };
+    let range = bytes.f32(bytes.array(base + 0x50, 4, Some(0x8080000F))?[interval])?;
+    let bias = bytes.f32(bytes.array(base + 0x60, 4, Some(0x8080000F))?[interval])?;
+    Ok(point[..width]
+        .iter()
+        .map(|v| (v * range + bias, 1e-4 + range / 32767. + 0.00002))
+        .collect())
+}
+
 // Decode the emitted pose spans directly, without the production codec reader. A track that
-// never moves is one float sample in the static span. A moving track is 16-bit codec 2 data,
-// ordered by control, frame and component, with one range and bias per component. Each value
-// comes back with the precision its storage promises.
+// never moves is one float sample in the static span. A moving track is codec 1 curves, or 16-bit
+// codec 2 data ordered by control, frame and component, with one range and bias per component.
+// Each value comes back with the precision its storage promises.
 fn emitted(bytes: &Payload, kind: usize, slot: u16, frame: usize) -> Result<Vec<(f32, f32)>> {
     let width = [1, 4, 3][kind];
     let fixed = bytes.array(0xA8 + kind * 16, 2, Some(0x8080000A))?;
@@ -187,13 +277,16 @@ fn emitted(bytes: &Payload, kind: usize, slot: u16, frame: usize) -> Result<Vec<
         .position(|&at| bytes.u16(at).ok() == Some(slot))
         .unwrap();
     let base = bytes.pointer(0x18)?;
-    ensure!(bytes.u32(base - 4)? == 0x80808F71 && bytes.u16(base)? == 2);
-    let frames = bytes.u32(base + 0x10)? as usize;
     let counts = [
         bytes.u16(base + 2)?,
         bytes.u16(base + 4)?,
         bytes.u16(base + 6)?,
     ];
+    if bytes.u32(base - 4)? == 0x80808F72 && bytes.u16(base)? == 1 {
+        return curve(bytes, base, counts.map(usize::from), (kind, track, frame));
+    }
+    ensure!(bytes.u32(base - 4)? == 0x80808F71 && bytes.u16(base)? == 2);
+    let frames = bytes.u32(base + 0x10)? as usize;
     let component = (0..kind)
         .map(|k| usize::from(counts[k]) * [1, 4, 3][k])
         .sum::<usize>()
@@ -247,8 +340,9 @@ fn curve_controls_survive_persisted_extension_and_translation() -> Result<()> {
             close(sampled[2][7], scale)?;
             let (value, tolerance) = emitted(&extended, 0, 2, frame)?[0];
             within(value, scale, tolerance)?;
-            let w = 2. * 16384. / 32767. - 1.;
-            let expected_rotation = [0., 0., -(1f32 - w * w).sqrt(), w];
+            // The key stores w, x and y. z is derived, positive because the stored x is even.
+            let y = -16384. / 32767.;
+            let expected_rotation = [0., y, (1f32 - y * y).sqrt(), 0.];
             for (actual, expected) in sampled[0][..4].iter().zip(expected_rotation) {
                 close(*actual, expected)?;
             }

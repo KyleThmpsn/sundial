@@ -37,7 +37,7 @@ fn stock_variant(hash: u32) -> WeaponSocketPlugVariantRecipe {
 
 /// A stock perk opened from its socket, named the way New from Perk names a copy.
 fn stock_copy(hash: u32, catalog: &InvestmentCatalog) -> PerkRecipe {
-    let mut recipe = templates::from_variant(&stock_variant(hash), catalog);
+    let mut recipe = crate::perk::PerkRecipe::from_variant(&stock_variant(hash), catalog);
     recipe.name = format!("Custom {}", recipe.name);
     recipe
 }
@@ -112,6 +112,11 @@ impl Target {
         self.stock_based
             .then(|| self.choices.get(self.choice).copied())
             .flatten()
+    }
+
+    /// Whether the socket offers an ornament, so a perk chosen for it is likely one too.
+    pub(super) fn holds_ornaments(&self, catalog: &InvestmentCatalog) -> bool {
+        self.choices.iter().any(|&hash| catalog.is_ornament(hash))
     }
 
     /// The socket role and the name of the perk in this choice.
@@ -347,7 +352,7 @@ impl Workbench {
             self.select_document(index);
         } else if let Some(&hash) = target.choices.get(target.choice) {
             let recipe = match &target.variant {
-                Some(variant) => templates::from_variant(variant, catalog),
+                Some(variant) => crate::perk::PerkRecipe::from_variant(variant, catalog),
                 None => stock_copy(hash, catalog),
             };
             let mut document = Document::new(recipe, None);
@@ -613,12 +618,7 @@ impl PackageAuthoringApp {
                     Ok(target) if matches!(request, Request::EditChoice { .. }) => {
                         workbench.open_target(target, catalog);
                     }
-                    Ok(target) => workbench.open_picker(
-                        target,
-                        catalog,
-                        self.recipe_library.as_ref(),
-                        &self.recipe,
-                    ),
+                    Ok(target) => workbench.open_picker(target, catalog, &self.recipe),
                     Err(error) => {
                         workbench.error = Some(error);
                         workbench.open = true;
@@ -640,6 +640,12 @@ impl PackageAuthoringApp {
         workbench.ability_places = self.subclass_places();
         let request = self.perk_request.take();
         self.open_perk_request(&mut workbench, request, donor.as_ref());
+        // The workbench and Select Custom Perk both list the saved recipes' perks.
+        if (workbench.open || workbench.picker.is_some())
+            && let Some(catalog) = &self.catalog
+        {
+            workbench.load_templates(ctx, self.recipe_library.as_ref(), &self.recipe, catalog);
+        }
         if workbench.picker.is_some() {
             if let (Some(donor), Some(catalog)) = (&donor, &self.catalog) {
                 if workbench.show_picker(ctx, &mut self.recipe, donor, catalog) {
@@ -650,12 +656,6 @@ impl PackageAuthoringApp {
             }
             self.perk_workbench = workbench;
             return;
-        }
-        if workbench.open
-            && workbench.authored_templates.is_none()
-            && let Some(catalog) = &self.catalog
-        {
-            workbench.load_authored_templates(self.recipe_library.as_ref(), &self.recipe, catalog);
         }
         workbench.recipe_unsaved = self.recipe_dirty && self.invalid_weapon_name.is_none();
         let change = workbench.show(

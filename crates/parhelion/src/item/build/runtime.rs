@@ -1,10 +1,15 @@
 use super::*;
+use std::borrow::Cow;
 
 #[cfg(feature = "d2-model-importer")]
 mod attachments;
 mod cache;
+mod composition;
 mod dependencies;
+#[cfg(feature = "d2-model-importer")]
+mod imported;
 mod plan;
+mod report;
 pub(super) use plan::{DependencyTimings, Payloads, author};
 
 /// Where imported runtime assets go: a group per item in the rolling asset packages, and
@@ -17,6 +22,84 @@ pub(super) struct RuntimeAssets<'a> {
     /// perk programs that name them.
     #[cfg(feature = "d2-model-importer")]
     pub particle_symbols: &'a mut BTreeMap<usize, BTreeMap<String, TagHash>>,
+    /// The HUD statuses bound on the imported groups weapon runtimes allocated, whose images
+    /// are authored with the attachment groups.
+    #[cfg(feature = "d2-model-importer")]
+    pub hud_statuses: &'a mut Vec<sundial::package_authoring::sandbox_perk::program::HudStatus>,
+}
+
+/// What one item's runtime work extends in [`RuntimeAssets`], recorded before it starts so a
+/// failed item can leave them as it found them while the other items still compile. The lists
+/// only grow, so their lengths are recorded rather than their payloads, and only the small map
+/// of shared clips is copied.
+struct Restore {
+    #[cfg(feature = "d2-model-importer")]
+    ordinal: usize,
+    packages: Vec<(usize, usize)>,
+    reservations: usize,
+    shared_clips: BTreeMap<
+        (
+            Option<sundial::package_authoring::mod_content::Importer>,
+            [u8; 32],
+        ),
+        TagHash,
+    >,
+    placed: usize,
+    impacts: usize,
+    #[cfg(feature = "d2-model-importer")]
+    statuses: usize,
+    #[cfg(feature = "d2-model-importer")]
+    symbols: Option<BTreeMap<String, TagHash>>,
+}
+
+impl Restore {
+    fn take(assets: &RuntimeAssets<'_>, ordinal: usize) -> Self {
+        #[cfg(not(feature = "d2-model-importer"))]
+        let _ = ordinal;
+        Self {
+            #[cfg(feature = "d2-model-importer")]
+            ordinal,
+            packages: assets
+                .packages
+                .packages
+                .iter()
+                .map(|package| (package.tags.len(), package.references.len()))
+                .collect(),
+            reservations: assets.packages.reservations.len(),
+            shared_clips: assets.packages.shared_clips.clone(),
+            placed: assets.placed.len(),
+            impacts: assets.impacts.len(),
+            #[cfg(feature = "d2-model-importer")]
+            statuses: assets.hud_statuses.len(),
+            #[cfg(feature = "d2-model-importer")]
+            symbols: assets.particle_symbols.get(&ordinal).cloned(),
+        }
+    }
+
+    fn apply(self, assets: &mut RuntimeAssets<'_>) {
+        let packages = &mut assets.packages;
+        packages.packages.truncate(self.packages.len());
+        for (package, (tags, references)) in packages.packages.iter_mut().zip(self.packages) {
+            package.tags.truncate(tags);
+            package.references.truncate(references);
+        }
+        packages.reservations.truncate(self.reservations);
+        packages.shared_clips = self.shared_clips;
+        assets.placed.truncate(self.placed);
+        assets.impacts.truncate(self.impacts);
+        #[cfg(feature = "d2-model-importer")]
+        {
+            assets.hud_statuses.truncate(self.statuses);
+            match self.symbols {
+                Some(symbols) => {
+                    assets.particle_symbols.insert(self.ordinal, symbols);
+                }
+                None => {
+                    assets.particle_symbols.remove(&self.ordinal);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -38,7 +121,12 @@ impl Cache {
     ) -> Self {
         let initialization = std::time::Instant::now();
         let session = cache::Session::open(manager, stock);
-        progress.diagnostic(format!(
+        if session.is_err() {
+            progress.diagnostic(
+                "Saved item resources are unavailable. The build will compile them again.".into(),
+            );
+        }
+        progress.runtime_detail(format!(
             "Runtime cache: {}. Initialization {:.3}s.",
             match &session {
                 Ok(_) => "available".to_owned(),
@@ -70,13 +158,15 @@ impl Cache {
         // A copy has no assignment row, imported inputs, shared animation or impacts of its own.
         let mut impacts = Vec::new();
         #[cfg(feature = "d2-model-importer")]
-        let mut particle_symbols = BTreeMap::new();
+        let (mut particle_symbols, mut hud_statuses) = (BTreeMap::new(), Vec::new());
         let mut assets = RuntimeAssets {
             packages,
             placed,
             impacts: &mut impacts,
             #[cfg(feature = "d2-model-importer")]
             particle_symbols: &mut particle_symbols,
+            #[cfg(feature = "d2-model-importer")]
+            hud_statuses: &mut hud_statuses,
         };
         let (mut assignments, mut animation) = (Vec::new(), cache::AnimationCache::new());
         let pending = self
@@ -90,20 +180,23 @@ impl Cache {
                     let copy = restored
                         .result
                         .ok_or_else(|| invalid(format!("The reused copy of {name} is lost")))?;
-                    progress.diagnostic(format!(
+                    progress.runtime_detail(format!(
                         "Runtime cache for {name}: hit. {}.",
                         pending.timings()
                     ));
-                    progress.start(&format!("Reusing Runtime for {name}"));
+                    progress.start(&format!("Reusing Cached Resources for {name}"));
                     return Ok(copy);
                 }
-                Err(reason) => progress.diagnostic(format!(
-                    "Runtime cache for {name}: miss {reason}. {}.",
-                    pending.timings()
-                )),
+                Err(reason) => {
+                    progress.diagnostic(report::cache_miss(name, &reason));
+                    progress.runtime_detail(format!(
+                        "Runtime cache for {name}: miss {reason}. {}.",
+                        pending.timings()
+                    ));
+                }
             }
         } else if let Err(reason) = &self.0 {
-            progress.diagnostic(format!("Runtime cache for {name}: bypass {reason}."));
+            progress.runtime_detail(format!("Runtime cache for {name}: bypass {reason}."));
         }
         let trace = pending.as_ref().and_then(|_| manager.trace_reads());
         let compiling = std::time::Instant::now();
@@ -126,10 +219,20 @@ impl Cache {
                 Some(custom_runtime::imports::Fingerprints::new()),
             )
         });
-        progress.diagnostic(format!(
+        let write_time = writing.elapsed();
+        let cache_saved = matches!(&saved, Some(Ok(())));
+        if let Some(Err(reason)) = &saved {
+            progress.diagnostic(report::cache_not_saved(name, reason));
+        }
+        progress.diagnostic(report::compiled(
+            name,
+            compile_time,
+            cache_saved.then_some(write_time),
+        ));
+        progress.runtime_detail(format!(
             "Runtime timings for {name}: compilation {:.3}s, cache save {:.3}s. {}.",
             compile_time.as_secs_f64(),
-            writing.elapsed().as_secs_f64(),
+            write_time.as_secs_f64(),
             match saved {
                 Some(Ok(())) => "Cache saved".to_owned(),
                 Some(Err(reason)) => format!("Cache not saved: {reason}"),
@@ -151,6 +254,44 @@ struct EntityAuthoring<'s, 'r, 'a> {
     entity_assignments: &'a mut Vec<u8>,
     weapon_runtime_new_tags: &'a mut Vec<NewTagSpec>,
     animation_cache: &'a mut cache::AnimationCache,
+    stages: &'a mut Stages,
+}
+
+/// Where one weapon's runtime compile spent its time, by stage in authoring order, for the build
+/// log. A stage the weapon never reached is left out.
+struct Stages {
+    last: std::time::Instant,
+    laps: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl Stages {
+    fn start() -> Self {
+        Self {
+            last: std::time::Instant::now(),
+            laps: Vec::new(),
+        }
+    }
+
+    /// Ends `stage` now, counting the time since the previous stage ended.
+    fn lap(&mut self, stage: &'static str) {
+        let now = std::time::Instant::now();
+        self.laps.push((stage, now - self.last));
+        self.last = now;
+    }
+}
+
+impl std::fmt::Display for Stages {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut laps = self.laps.iter();
+        let Some((stage, time)) = laps.next() else {
+            return Ok(());
+        };
+        write!(f, " ({stage} {:.3}s", time.as_secs_f64())?;
+        for (stage, time) in laps {
+            write!(f, ", {stage} {:.3}s", time.as_secs_f64())?;
+        }
+        write!(f, ")")
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -163,6 +304,7 @@ pub(super) fn author_entities(
     mut assets: RuntimeAssets<'_>,
     entity_assignments: &mut Vec<u8>,
     weapon_runtime_new_tags: &mut Vec<NewTagSpec>,
+    failed: &mut BTreeMap<usize, crate::AuthoringError>,
     progress: &mut Progress<'_>,
 ) -> AuthoringResult<Vec<Option<u32>>> {
     let (mut hits, mut misses, mut bypassed, mut saved, mut skipped) = (0, 0, 0, 0, 0);
@@ -171,31 +313,23 @@ pub(super) fn author_entities(
     let mut authored_pattern_global_ids = Vec::with_capacity(resolved.len());
     let mut animation_cache = cache::AnimationCache::new();
     for donor in resolved {
-        progress.start(&format!("Checking Runtime for {}", donor.weapon.text.name));
-        // A cached runtime keeps no particle symbols, so a weapon whose private perks name its
-        // imported particles is always authored here.
-        let names_particles = donor
-            .weapon
-            .overrides
-            .socket_plug_variants
-            .iter()
-            .flat_map(|variant| &variant.sandbox_perks)
-            .filter_map(|perk| perk.program.as_ref())
-            .any(crate::item::custom_runtime::program_names_imported_particles);
-        let pending = runtime_cache
-            .as_ref()
-            .ok()
-            .filter(|_| !names_particles)
-            .map(|cache| {
-                cache.prepare(
-                    donor,
-                    weapon_runtime_tag_allocator,
-                    weapon_runtime_new_tags,
-                    &assets,
-                    entity_assignments,
-                    &animation_cache,
-                )
-            });
+        progress.start(&format!(
+            "Checking Runtime Cache for {}",
+            donor.weapon.text.name
+        ));
+        let placed_from = (weapon_runtime_new_tags.len(), assets.placed.len());
+        // A fragment keeps the item's imported particle symbols and HUD statuses, so private
+        // perks that name them compile the same after a replay.
+        let pending = runtime_cache.as_ref().ok().map(|cache| {
+            cache.prepare(
+                (donor, authored_pattern_global_ids.len()),
+                weapon_runtime_tag_allocator,
+                weapon_runtime_new_tags,
+                &assets,
+                entity_assignments,
+                &animation_cache,
+            )
+        });
         if let Some(pending) = &pending {
             match pending.restore(
                 manager,
@@ -206,31 +340,37 @@ pub(super) fn author_entities(
             ) {
                 Ok(restored) => {
                     hits += 1;
-                    progress.diagnostic(format!(
+                    progress.runtime_detail(format!(
                         "Runtime cache for {}: hit. {}.",
                         donor.weapon.text.name,
                         pending.timings()
                     ));
                     authored_pattern_global_ids.push(restored.pattern);
-                    progress.finish(&format!("Reusing Runtime for {}", donor.weapon.text.name));
+                    progress.runtime_detail(report::placement(
+                        &donor.weapon.text.name,
+                        weapon_runtime_tag_allocator,
+                        placed_from.0..weapon_runtime_new_tags.len(),
+                        &assets.placed[placed_from.1..],
+                    ));
+                    progress.finish(&format!(
+                        "Reusing Cached Resources for {}",
+                        donor.weapon.text.name
+                    ));
                     continue;
                 }
                 Err(reason) => {
                     misses += 1;
-                    progress.diagnostic(format!(
+                    progress.diagnostic(report::cache_miss(&donor.weapon.text.name, &reason));
+                    progress.runtime_detail(format!(
                         "Runtime cache for {}: miss {reason}. {}.",
                         donor.weapon.text.name,
                         pending.timings()
                     ));
                 }
             }
-        } else {
+        } else if let Err(reason) = runtime_cache {
             bypassed += 1;
-            let reason = runtime_cache.as_ref().err().map_or_else(
-                || cache::Reason::ParticleSymbols.to_string(),
-                ToString::to_string,
-            );
-            progress.diagnostic(format!(
+            progress.runtime_detail(format!(
                 "Runtime cache for {}: bypass {reason}.",
                 donor.weapon.text.name
             ));
@@ -238,10 +378,18 @@ pub(super) fn author_entities(
         let trace = pending.as_ref().and_then(|_| manager.trace_reads());
         #[cfg(feature = "d2-model-importer")]
         let mut imported_reads = Some(custom_runtime::imports::Fingerprints::new());
-        let operation = format!("Compiling Runtime for {}", donor.weapon.text.name);
+        let operation = format!("Building Item Resources for {}", donor.weapon.text.name);
         progress.start(&operation);
         let compiling = std::time::Instant::now();
-        let authored_pattern_global_id = author_entity(
+        let mut stages = Stages::start();
+        // A failed item leaves everything it extended as it was, and the other items compile.
+        let ordinal = authored_pattern_global_ids.len();
+        let restore = Restore::take(&assets, ordinal);
+        let host_start = weapon_runtime_new_tags.len();
+        let (assignments_before, animation_before) =
+            (entity_assignments.clone(), animation_cache.clone());
+        let allocation = crate::appended_tags::checkpoint();
+        let authored = author_entity(
             EntityAuthoring {
                 manager,
                 stock_sandbox_patterns,
@@ -251,13 +399,34 @@ pub(super) fn author_entities(
                 entity_assignments: &mut *entity_assignments,
                 weapon_runtime_new_tags: &mut *weapon_runtime_new_tags,
                 animation_cache: &mut animation_cache,
+                stages: &mut stages,
             },
             donor,
-            authored_pattern_global_ids.len(),
+            ordinal,
             #[cfg(feature = "d2-model-importer")]
             &mut imported_reads,
-        )
-        .map_err(|error| donor.weapon.in_recipe(error))?;
+        );
+        let authored_pattern_global_id = match authored {
+            Ok(id) => {
+                allocation.commit();
+                id
+            }
+            Err(error) => {
+                drop(allocation);
+                restore.apply(&mut assets);
+                weapon_runtime_new_tags.truncate(host_start);
+                *entity_assignments = assignments_before;
+                animation_cache = animation_before;
+                progress.diagnostic(format!(
+                    "Runtime for {} failed. Compiling the other items before reporting it.",
+                    donor.weapon.text.name
+                ));
+                failed.insert(ordinal, donor.weapon.in_recipe(error));
+                authored_pattern_global_ids.push(None);
+                progress.finish(&operation);
+                continue;
+            }
+        };
         let compile_time = compiling.elapsed();
         let writing = std::time::Instant::now();
         let write_result = pending.as_ref().map(|pending| {
@@ -277,6 +446,7 @@ pub(super) fn author_entities(
             )
         });
         let write_time = writing.elapsed();
+        let cache_saved = matches!(&write_result, Some(Ok(())));
         let write_status = match write_result {
             Some(Ok(())) => {
                 saved += 1;
@@ -284,20 +454,32 @@ pub(super) fn author_entities(
             }
             Some(Err(reason)) => {
                 skipped += 1;
+                progress.diagnostic(report::cache_not_saved(&donor.weapon.text.name, &reason));
                 format!("Cache not saved: {reason}")
             }
             None => "No cache save requested".to_owned(),
         };
-        progress.diagnostic(format!(
-            "Runtime timings for {}: compilation {:.3}s, cache save {:.3}s. {write_status}.",
+        progress.diagnostic(report::compiled(
+            &donor.weapon.text.name,
+            compile_time,
+            cache_saved.then_some(write_time),
+        ));
+        progress.runtime_detail(format!(
+            "Runtime timings for {}: compilation {:.3}s{stages}, cache save {:.3}s. {write_status}.",
             donor.weapon.text.name,
             compile_time.as_secs_f64(),
             write_time.as_secs_f64()
         ));
         authored_pattern_global_ids.push(authored_pattern_global_id);
+        progress.runtime_detail(report::placement(
+            &donor.weapon.text.name,
+            weapon_runtime_tag_allocator,
+            placed_from.0..weapon_runtime_new_tags.len(),
+            &assets.placed[placed_from.1..],
+        ));
         progress.finish(&operation);
     }
-    progress.diagnostic(format!("Runtime cache summary: {hits} hits, {misses} misses, {bypassed} bypassed, {saved} saved, {skipped} saves skipped."));
+    progress.runtime_detail(format!("Runtime cache summary: {hits} hits, {misses} misses, {bypassed} bypassed, {saved} saved, {skipped} saves skipped."));
     Ok(authored_pattern_global_ids)
 }
 
@@ -314,19 +496,21 @@ fn recipe_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
 
 fn weapon_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
     let overrides = &donor.weapon.overrides;
-    donor.appearance_rig_donor.is_some()
-        || donor.animation_pattern_source.is_some()
-        || !donor.animation_action_sources.is_empty()
-        || donor.pinned_appearance.is_some()
-        || donor.type_marker_pattern_source.is_some()
-        || donor.behavior_pattern_source.is_some()
+    let donors = &donor.donors;
+    donors.appearance_rig.is_some()
+        || donors.animation.is_some()
+        || !donors.animation_actions.is_empty()
+        || donors.pinned_appearance.is_some()
+        || donors.type_marker.is_some()
+        || donors.behavior.is_some()
+        || overrides.content_variant.is_some()
         || overrides.ammo_type.is_some()
         || !overrides.runtime_values.is_empty()
         || overrides.fired_graph.is_some()
         || overrides.projectile.is_some()
         || overrides.barrel.is_some()
         || overrides.sword_profile.is_some()
-        || !donor.component_splice_sources.is_empty()
+        || !donors.component_splices.is_empty()
         || !overrides.runtime_resource_patches.is_empty()
         || !overrides.additional_behaviors.is_empty()
         || overrides
@@ -337,9 +521,13 @@ fn weapon_runtime_edits(donor: &resolve::ResolvedWeapon) -> bool {
 
 /// The authored runtime entity for one weapon, or `None` when its donor has no pattern row.
 /// Runtime edits are compiled onto the pattern donor's entity, and the entity is appended as a
-/// new tag with its assignment row.
-// The importer adds its own runtime parts to this one orchestration.
-#[cfg_attr(feature = "d2-model-importer", allow(clippy::cognitive_complexity))]
+/// new tag with its assignment row. A weapon without edits points at its donor's stock entity,
+/// and a complete imported vehicle keeps the entity its graph prepared.
+///
+/// Each stage reads what the stages before it wrote. Native donors compose the entity, imported
+/// particles take their asset group before the fired graph names them, the overrides gain the
+/// imported and stat translator patches, and the runtime edits are compiled before the imported
+/// callbacks, media and vehicle settings are authored onto the edited entity.
 fn author_entity(
     authoring: EntityAuthoring<'_, '_, '_>,
     donor: &resolve::ResolvedWeapon,
@@ -352,363 +540,213 @@ fn author_entity(
         manager,
         stock_sandbox_patterns,
         stock_entity_assignments,
-        weapon_runtime_tag_allocator,
+        weapon_runtime_tag_allocator: allocator,
         assets,
         entity_assignments,
-        weapon_runtime_new_tags,
+        weapon_runtime_new_tags: tags,
         animation_cache,
+        stages,
     } = authoring;
-    // These inputs are needed only when imported runtime attachments are enabled.
+    // This input is needed only when imported runtime attachments are enabled.
     #[cfg(not(feature = "d2-model-importer"))]
-    let _ = (weapon_ordinal, animation_cache);
-    let authored_pattern_source = donor
+    let _ = weapon_ordinal;
+    let Some(row) = donor
         .runtime_pattern_source
-        .as_ref()
-        .or(donor.gear_art_pattern_source.as_ref());
-    let Some(authored_pattern_source) = authored_pattern_source else {
+        .or(donor.gear_art_pattern_source)
+    else {
         return Ok(None);
     };
-    let pattern_source_hash = donor
-        .runtime_pattern_source
-        .as_ref()
-        .map(|source| source.item_hash);
-    let mut component_donors = donor
-        .runtime_component_donors
-        .iter()
-        .filter(|component| Some(component.pattern_item_hash) != pattern_source_hash)
-        .collect::<Vec<_>>();
-    component_donors.sort_by_key(|component| component.binding_hash);
+    let stock = composition::Stock {
+        manager,
+        patterns: stock_sandbox_patterns,
+        assignments: stock_entity_assignments,
+    };
+    let component_donors = composition::component_donors(donor);
     let hud_key = resolved_hud_key(
         manager,
         stock_sandbox_patterns,
         stock_entity_assignments,
         donor,
     )?;
+    stages.lap("HUD key");
     #[cfg(feature = "d2-model-importer")]
-    let imported = ImportedRuntime::load(donor, imported_reads)?;
+    let mut imported = imported::Runtime::load(donor, imported_reads)?;
+    #[cfg(feature = "d2-model-importer")]
+    stages.lap("import loading");
     #[cfg(feature = "d2-model-importer")]
     let imported_edits = imported.any();
     #[cfg(not(feature = "d2-model-importer"))]
     let imported_edits = false;
-    #[cfg(feature = "d2-model-importer")]
-    let ImportedRuntime {
-        animation: mut imported_animation,
-        character: imported_character,
-        audio: imported_audio,
-        extensions: imported_extensions,
-        particles: mut imported_particles,
-        equipment: equipment_animation,
-        crosshair: imported_crosshair,
-        zoom: imported_zoom,
-        inputs: imported_inputs,
-        timing: imported_timing,
-    } = imported;
-    let vehicle_settings = donor.weapon.overrides.sparrow.as_ref();
-    let has_runtime_edits = recipe_runtime_edits(donor)
+    if !(recipe_runtime_edits(donor)
         || imported_edits
         || !component_donors.is_empty()
-        || hud_key.is_some();
-    if !has_runtime_edits {
+        || hud_key.is_some())
+    {
         return reuse_stock_entity(
             stock_entity_assignments,
             entity_assignments,
-            authored_pattern_source.pattern_global_id_hash,
+            row.pattern_global_id_hash,
             donor.weapon.identity.pattern_global_id_hash,
         )
         .map(Some);
     }
     let pattern_source = donor
         .runtime_pattern_source
-        .as_ref()
         .ok_or_else(|| invalid("Runtime edits require an active item sandbox pattern"))?;
-    let (pattern_entity_tag, pattern_entity) = resolve_runtime_weapon_entity(
-        manager,
-        stock_sandbox_patterns,
-        stock_entity_assignments,
-        pattern_source.item_hash,
-        "weapon-pattern donor entity",
-    )?;
-    let (pattern_entity_tag, mut pattern_entity) = crate::vehicle::authoring::select(
-        manager,
-        vehicle_settings,
-        pattern_entity_tag,
-        pattern_entity,
-    )?;
-    // Before any component donor, so the appearance's rig is promoted onto exactly
-    // the entity the resolver tested. A donor that then conflicts with it is reported
-    // against that donor rather than silently dropping the appearance's animations.
-    let mut rig_markers = Vec::new();
-    if let Some(item_hash) = donor.appearance_rig_donor {
-        let (_, appearance_entity) = resolve_runtime_weapon_entity(
-            manager,
-            stock_sandbox_patterns,
-            stock_entity_assignments,
-            item_hash,
-            "appearance runtime entity",
-        )?;
-        let base_entity = pattern_entity.clone();
-        crate::weapon::rig::graft_presentation(&mut pattern_entity, &appearance_entity).map_err(
-            |error| {
-                invalid(format!(
-                    "Could not move the appearance's rig and animations onto this runtime: {error}"
-                ))
-            },
-        )?;
-        rig_markers =
-            crate::weapon::rig::marker_set_appends(manager, &base_entity, &pattern_entity)?;
-    }
-    let mut component_entities = Vec::with_capacity(component_donors.len());
-    for component in component_donors {
-        let (_, component_entity) = resolve_runtime_weapon_entity(
-            manager,
-            stock_sandbox_patterns,
-            stock_entity_assignments,
-            component.pattern_item_hash,
-            "runtime-component donor weapon entity",
-        )?;
-        component_entities.push((component.binding_hash, component_entity));
-    }
-    let component_grafts = component_entities
-        .iter()
-        .map(|(binding_hash, entity)| (*binding_hash, entity.as_slice()))
-        .collect::<Vec<_>>();
-    graft_weapon_component_bindings_or_rewire(&mut pattern_entity, &component_grafts, &|tag| {
-        manager.read_tag(tag)
-    })
-    .map_err(invalid)?;
-    // The pattern row selects the appearance's block when it supplies the row, and the
-    // base weapon's own block keeps its behavior there.
-    let groups = crate::weapon::behavior::ContentGroups {
-        selected: donor
-            .gear_art_pattern_source
-            .or(donor.runtime_pattern_source)
-            .map(|source| source.weapon_content_group_hash),
-        own: donor
-            .runtime_pattern_source
-            .map(|source| source.weapon_content_group_hash),
-        animations: donor
-            .animation_pattern_source
-            .map(|source| {
-                let (_, entity) = resolve_runtime_weapon_entity(
-                    manager,
-                    stock_sandbox_patterns,
-                    stock_entity_assignments,
-                    source.item_hash,
-                    "animation donor entity",
-                )?;
-                crate::weapon::animations::profile(
-                    manager,
-                    &entity,
-                    Some(source.weapon_content_group_hash),
-                )
-            })
-            .transpose()?,
-        kind: donor
-            .type_marker_pattern_source
-            .map(|source| source.weapon_content_group_hash),
-        // The pattern row's identity can differ from the investment item a runtime is loaded by.
-        behavior: donor
-            .behavior_pattern_source
-            .zip(donor.weapon.overrides.behavior_donor)
-            .map(|(source, item)| (source.weapon_content_group_hash, item)),
-        hold: donor
-            .pinned_appearance
-            .map(|source| {
-                let (_, entity) = resolve_runtime_weapon_entity(
-                    manager,
-                    stock_sandbox_patterns,
-                    stock_entity_assignments,
-                    source.item_hash,
-                    "pinned appearance entity",
-                )?;
-                crate::weapon::animations::hold(manager, &entity)
-            })
-            .transpose()?,
-        // A moved rig's attachment row is the appearance's, so the block takes its hold class.
-        stance: donor
-            .appearance_rig_donor
-            .map(|_| {
-                crate::weapon::animations::stance(
-                    manager,
-                    &pattern_entity,
-                    donor
-                        .gear_art_pattern_source
-                        .map(|source| source.weapon_content_group_hash),
-                )
-            })
-            .transpose()?,
-    };
+
+    // Native donors compose the entity the edits are compiled onto.
+    let (tag, mut entity) = composition::pattern_entity(&stock, donor, pattern_source)?;
+    let markers = composition::graft_rig(&stock, donor, &mut entity)?;
+    composition::graft_components(&stock, &component_donors, &mut entity)?;
+    let groups = composition::content_groups(&stock, donor, &entity)?;
+    stages.lap("composition");
+
+    // Imported particles take their asset group, and a complete imported vehicle ends here.
     #[cfg(feature = "d2-model-importer")]
-    crate::item::custom_runtime::extensions::author(
+    let symbols = imported.prepare(
         manager,
-        &imported_extensions,
-        &mut pattern_entity,
+        donor,
+        &mut entity,
+        groups,
+        assets,
+        &mut *animation_cache,
+        weapon_ordinal,
     )?;
-    let runtime_overrides = &donor.weapon.overrides;
-    // The fired graph names imported particle systems by symbol, so they take their
-    // own asset group before the graph is authored.
     #[cfg(feature = "d2-model-importer")]
-    let particle_symbols = match &mut imported_particles {
-        Some(particles) => {
-            particles.prepare_runtime(
-                manager,
-                runtime_overrides
-                    .fired_graph
-                    .as_ref()
-                    .and_then(|fired| fired.imported.as_deref()),
-                &pattern_entity,
-                groups.own.or(groups.selected).unwrap_or(0),
-                runtime_overrides
-                    .behavior_projectile_speed
-                    .unwrap_or(crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST),
-            )?;
-            let (symbols, eager) =
-                particles.author(manager, assets.packages, donor.weapon.identity.item_hash)?;
-            assets.placed.extend(eager);
-            assets
-                .particle_symbols
-                .insert(weapon_ordinal, symbols.clone());
-            symbols
-        }
-        None => BTreeMap::new(),
-    };
+    stages.lap("imported particles");
     #[cfg(feature = "d2-model-importer")]
-    let imported_runtime = if let Some(assets) = &imported_particles {
-        assets.apply_presentation(
-            manager,
-            pattern_entity_tag,
-            &mut pattern_entity,
-            &particle_symbols,
-        )?
-    } else {
-        None
-    };
+    let vehicle = imported.vehicle(
+        manager,
+        donor,
+        (tag, &mut entity),
+        &symbols,
+        !component_donors.is_empty(),
+    )?;
     #[cfg(not(feature = "d2-model-importer"))]
-    let imported_runtime: Option<TagHash> = None;
-    if let Some(tag) = imported_runtime {
-        if vehicle_settings.is_some_and(crate::vehicle::Sparrow::runtime_changes)
-            || weapon_runtime_edits(donor)
-            || runtime_overrides.fired_graph.is_some()
-            || runtime_overrides
-                .behavior_projectile_speed
-                .is_some_and(|speed| {
-                    speed != crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST
-                })
-            || !component_grafts.is_empty()
-        {
-            return Err(invalid(
-                "This imported vehicle supplies its own controls. Carrier driving, durability and weapon overrides cannot be applied to it.",
-            ));
-        }
-        #[cfg(feature = "d2-model-importer")]
-        if imported_animation.is_some()
-            || imported_audio.is_some()
-            || equipment_animation.is_some()
-            || imported_crosshair.is_some()
-            || !imported_extensions.is_empty()
-        {
-            return Err(invalid(
-                "A complete imported vehicle must include its animation, audio and component extensions in its prepared graph.",
-            ));
-        }
-        if let Some(key) = hud_key {
-            crate::hud_icon::runtime::write_prepared_key(assets.packages, &pattern_entity, key)?;
-        }
-        retain_imported_runtime(assets.packages, tag, &pattern_entity)?;
-        // The prepared root already owns every component and its replication
-        // record. Weapon composition cannot read those pending asset owners.
-        *entity_assignments = append_weapon_entity_assignment(
-            std::mem::take(entity_assignments),
+    let vehicle = None;
+    if let Some(prepared) = vehicle {
+        return complete_vehicle(
             donor.weapon.identity.pattern_global_id_hash,
-            tag.0,
+            (prepared, entity.as_slice()),
+            hud_key,
+            assets.packages,
+            entity_assignments,
         )
-        .map_err(invalid)?;
-        return Ok(Some(donor.weapon.identity.pattern_global_id_hash));
+        .map(Some);
     }
+
+    // The recipe's overrides gain the imported graph's patches before the projectile roots are
+    // chosen from them, and the stat translator patches last.
+    let overrides = Cow::Borrowed(&donor.weapon.overrides);
     #[cfg(feature = "d2-model-importer")]
-    let extended_overrides = {
-        let mut overrides = runtime_overrides.clone();
-        if let Some(particles) = &imported_particles {
-            overrides
-                .runtime_resource_patches
-                .extend(particles.sword_patches(
-                    manager,
-                    &pattern_entity,
-                    &particle_symbols,
-                    overrides.sword_profile.is_some(),
-                )?);
-        }
-        if let Some(character) = &imported_character {
-            character.apply(
-                manager,
-                &pattern_entity,
-                groups
-                    .selected
-                    .or(groups.own)
-                    .ok_or_else(|| invalid("Imported character has no selected weapon content"))?,
-                &mut overrides.runtime_resource_patches,
-            )?;
-        }
-        overrides.runtime_resource_patches.extend(
-            crate::item::custom_runtime::extensions::input_patches(
-                manager,
-                &imported_extensions,
-                &pattern_entity,
-            )?,
-        );
-        overrides.runtime_resource_patches.extend(
-            crate::item::custom_runtime::extensions::attachment_patches(
-                manager,
-                &imported_extensions,
-                &pattern_entity,
-            )?,
-        );
-        // The hip-fire crosshair follows the runtime content's keys, not the item strings.
-        if let Some(crosshair) = &imported_crosshair
-            && crosshair.replaces(&crate::weapon::crosshair::type_keys(
-                manager,
-                &pattern_entity,
-            )?)?
-        {
-            overrides
-                .runtime_resource_patches
-                .extend(crate::weapon::crosshair::content_patches(
-                    manager,
-                    &pattern_entity,
-                    crosshair.type_key,
-                )?);
-        }
-        if let Some(fired) = overrides.fired_graph.as_mut() {
-            fired.validate()?;
-            let patches = crate::item::custom_runtime::particles::fired_graph_patches(
-                fired,
-                &particle_symbols,
-            )?;
-            fired.patches.extend(patches);
-        }
-        overrides
-    };
+    let overrides = Cow::Owned(imported.overrides(
+        manager,
+        &overrides,
+        &entity,
+        pattern_source.weapon_content_group_hash,
+        groups,
+        &symbols,
+    )?);
     #[cfg(feature = "d2-model-importer")]
-    let runtime_overrides = &extended_overrides;
-    #[cfg(feature = "d2-model-importer")]
-    let imported_projectile = runtime_overrides
-        .fired_graph
-        .as_ref()
-        .and_then(|fired| fired.imported.as_deref())
-        .map(|symbol| {
-            imported_particles
-                .as_ref()
-                .ok_or_else(|| invalid("Imported projectile has no asset group"))?
-                .projectile(symbol)?;
-            particle_symbols
-                .get(symbol)
-                .copied()
-                .ok_or_else(|| invalid("Imported projectile root has not been allocated"))
-        })
-        .transpose()?;
+    let projectile = imported.projectile(&overrides, &symbols)?;
     #[cfg(not(feature = "d2-model-importer"))]
-    let imported_projectile = None;
-    let bundled_projectile = runtime_overrides
+    let projectile = ImportedProjectile::default();
+    let bundled = bundled_projectile(
+        manager,
+        &overrides,
+        &entity,
+        groups,
+        (assets, &mut *animation_cache),
+    )?;
+    let stat_patches = composition::stat_patches(manager, &entity, donor, pattern_source)?;
+    #[cfg(feature = "d2-model-importer")]
+    let stat_patches = {
+        let mut stat_patches = stat_patches;
+        stat_patches.extend(imported.stat_patches(
+            manager,
+            &entity,
+            pattern_source.weapon_translation_group_hash,
+        )?);
+        stat_patches
+    };
+    let overrides = with_stat_patches(overrides, stat_patches);
+    stages.lap("projectile and stats");
+
+    // The runtime edits, with the donors the recipe's splices and single actions name.
+    let splices = composition::splices(&stock, donor)?;
+    let actions = composition::actions(&stock, donor)?;
+    author_runtime_edits(
+        manager,
+        &mut entity,
+        &overrides,
+        hud_key,
+        crate::item::custom_runtime::Sources {
+            groups,
+            splices: &splices,
+            actions: &actions,
+            markers: &markers,
+            projectile: projectile.root.or(bundled),
+            trajectories: projectile.trajectories,
+            source_trajectory: projectile.source_trajectory,
+        },
+        allocator,
+        tags,
+    )?;
+    stages.lap("runtime edits");
+
+    // What is authored onto the edited entity before it is appended.
+    #[cfg(feature = "d2-model-importer")]
+    imported.callbacks(manager, &mut entity, allocator, tags)?;
+    #[cfg(feature = "d2-model-importer")]
+    imported.author_media(
+        manager,
+        (tag, &mut entity),
+        (allocator, &mut *tags),
+        assets,
+        animation_cache,
+        &symbols,
+    )?;
+    #[cfg(feature = "d2-model-importer")]
+    stages.lap("callbacks and media");
+    crate::vehicle::authoring::apply(
+        manager,
+        donor.weapon.overrides.sparrow.as_ref(),
+        tag,
+        &mut entity,
+        &allocator,
+        tags,
+    )?;
+    let appended = append_entity(
+        donor.weapon.identity.pattern_global_id_hash,
+        (tag, entity),
+        (allocator, tags),
+        entity_assignments,
+    )
+    .map(Some);
+    stages.lap("appending");
+    appended
+}
+
+/// The imported projectile root the fired graph names, with what its layout tells the runtime
+/// edits. Without the model importer there is none.
+#[derive(Default)]
+struct ImportedProjectile {
+    root: Option<TagHash>,
+    /// Rows in the root's trajectory pool, when its layout is known.
+    trajectories: Option<usize>,
+    source_trajectory: bool,
+}
+
+/// The bundled projectile preset the fired graph names, prepared for `entity` and authored into
+/// the asset packages, sharing entries other groups already hold. Returns its root.
+fn bundled_projectile(
+    manager: &PackageManager,
+    overrides: &WeaponCloneOverrides,
+    entity: &[u8],
+    groups: crate::weapon::behavior::ContentGroups,
+    (assets, shared): (&mut RuntimeAssets<'_>, &mut cache::AnimationCache),
+) -> AuthoringResult<Option<TagHash>> {
+    overrides
         .fired_graph
         .as_ref()
         .and_then(|fired| fired.bundled)
@@ -717,240 +755,75 @@ fn author_entity(
                 crate::item::custom_runtime::bundled::Projectile::load(manager, preset)?;
             projectile.prepare(
                 manager,
-                &pattern_entity,
+                entity,
                 groups.own.or(groups.selected).unwrap_or(0),
-                runtime_overrides
+                overrides
                     .behavior_projectile_speed
                     .unwrap_or(crate::weapon::behavior::DEFAULT_PROJECTILE_SPEED_BOOST),
             )?;
-            let (root, eager) = projectile.author(manager, assets.packages)?;
+            let (root, eager) = projectile.author(manager, assets.packages, shared)?;
             assets.placed.extend(eager);
             Ok::<_, crate::AuthoringError>(root)
         })
-        .transpose()?;
-    // A moved rig makes the pattern row name the appearance's weapon type, and the stat
-    // translator converts by that type. The base weapon's conversion is put back, so the
-    // appearance changes how the weapon looks and not its fire rate.
-    let mut stat_patches = match (
-        donor.appearance_rig_donor,
-        donor.gear_art_pattern_source,
-        donor.runtime_pattern_source,
-    ) {
-        (Some(_), Some(row), Some(own)) => crate::weapon::rig::stat_table_patches(
-            manager,
-            &pattern_entity,
-            row.weapon_translation_group_hash,
-            own.weapon_translation_group_hash,
-        )?,
-        _ => Vec::new(),
-    };
-    // Bullets per Shot is the translator column every Barrel bullet input copies, in the gameplay
-    // pattern's table, whose arrays a moved rig's row is pointed at too.
-    if let Some(bullets) = donor
-        .weapon
-        .overrides
-        .barrel
-        .as_ref()
-        .and_then(|barrel| barrel.bullets_per_shot)
-    {
-        stat_patches.extend(crate::weapon::burst::patches(
-            manager,
-            &pattern_entity,
-            pattern_source.weapon_translation_group_hash,
-            bullets,
-        )?);
+        .transpose()
+}
+
+/// `overrides` with the stat translator `patches` appended, cloned only when there are any.
+fn with_stat_patches(
+    mut overrides: Cow<'_, WeaponCloneOverrides>,
+    patches: Vec<WeaponRuntimeResourcePatch>,
+) -> Cow<'_, WeaponCloneOverrides> {
+    if !patches.is_empty() {
+        overrides.to_mut().runtime_resource_patches.extend(patches);
     }
-    let with_stats;
-    #[cfg(feature = "d2-model-importer")]
-    if let Some(timing) = imported_timing {
-        stat_patches.extend(timing.patches(
-            manager,
-            &pattern_entity,
-            pattern_source.weapon_translation_group_hash,
-        )?);
+    overrides
+}
+
+/// Points `pattern` at a complete imported vehicle's prepared entity `tag`, after giving it the
+/// recipe's HUD key, and returns `pattern`. The prepared root already owns every component and
+/// its replication record. Weapon composition cannot read those pending asset owners.
+fn complete_vehicle(
+    pattern: u32,
+    (tag, entity): (TagHash, &[u8]),
+    hud_key: Option<u32>,
+    packages: &mut crate::asset_packages::AssetPackages,
+    entity_assignments: &mut Vec<u8>,
+) -> AuthoringResult<u32> {
+    if let Some(key) = hud_key {
+        crate::hud_icon::runtime::write_prepared_key(packages, entity, key)?;
     }
-    #[cfg(feature = "d2-model-importer")]
-    stat_patches.extend(crate::weapon::input::patches(
-        manager,
-        &pattern_entity,
-        pattern_source.weapon_translation_group_hash,
-        &imported_inputs,
-    )?);
-    #[cfg(feature = "d2-model-importer")]
-    if let Some(magnification) = imported_zoom {
-        stat_patches.extend(crate::weapon::zoom::patches(
-            manager,
-            &pattern_entity,
-            pattern_source.weapon_translation_group_hash,
-            magnification,
-        )?);
-    }
-    let runtime_overrides = if stat_patches.is_empty() {
-        runtime_overrides
-    } else {
-        with_stats = {
-            let mut overrides = runtime_overrides.clone();
-            overrides.runtime_resource_patches.extend(stat_patches);
-            overrides
-        };
-        &with_stats
-    };
-    // A donor item's selector can name a shared pattern with a different item identity.
-    let splices = donor
-        .component_splice_sources
-        .iter()
-        .map(|(binding, source)| {
-            let (_, entity) = resolve_runtime_weapon_entity(
-                manager,
-                stock_sandbox_patterns,
-                stock_entity_assignments,
-                source.item_hash,
-                "component donor entity",
-            )?;
-            Ok((*binding, entity))
-        })
-        .collect::<AuthoringResult<Vec<_>>>()?;
-    // Each single action's donor, read as the animation profile its own row plays.
-    let actions = donor
-        .animation_action_sources
-        .iter()
-        .map(|(action, source)| {
-            let (_, entity) = resolve_runtime_weapon_entity(
-                manager,
-                stock_sandbox_patterns,
-                stock_entity_assignments,
-                source.item_hash,
-                "animation action donor entity",
-            )?;
-            Ok((
-                *action,
-                crate::weapon::animations::profile(
-                    manager,
-                    &entity,
-                    Some(source.weapon_content_group_hash),
-                )?,
-            ))
-        })
-        .collect::<AuthoringResult<Vec<_>>>()?;
-    #[cfg(feature = "d2-model-importer")]
-    let source_trajectory = imported_projectile.is_some()
-        && imported_particles
-            .as_ref()
-            .is_some_and(|p| p.source_trajectory);
-    #[cfg(not(feature = "d2-model-importer"))]
-    let source_trajectory = false;
-    author_runtime_edits(
-        manager,
-        &mut pattern_entity,
-        runtime_overrides,
-        hud_key,
-        crate::item::custom_runtime::Sources {
-            groups,
-            splices: &splices,
-            actions: &actions,
-            markers: &rig_markers,
-            projectile: imported_projectile.or(bundled_projectile),
-            source_trajectory,
-        },
-        weapon_runtime_tag_allocator,
-        weapon_runtime_new_tags,
-    )?;
-    #[cfg(feature = "d2-model-importer")]
-    crate::item::custom_runtime::extensions::input_callbacks(
-        manager,
-        &imported_extensions,
-        &mut pattern_entity,
-        weapon_runtime_tag_allocator,
-        weapon_runtime_new_tags,
-    )?;
-    // Clips and audio media grow with every imported weapon, so they take a group in
-    // the asset packages. Only the owners that route them stay in the host package.
-    #[cfg(feature = "d2-model-importer")]
-    let mut asset_stream = crate::asset_packages::stream::Stream::new(assets.packages)?;
-    #[cfg(feature = "d2-model-importer")]
-    if let (Some(audio), Some(animation)) = (&imported_audio, &mut imported_animation) {
-        let (allocator, tags) = asset_stream.target();
-        crate::item::custom_runtime::audio::author_clip_events(
-            manager, audio, animation, allocator, tags,
-        )?;
-    }
-    #[cfg(feature = "d2-model-importer")]
-    let private_animation_owner = match &imported_animation {
-        Some(animation) => {
-            let (_, owner) = crate::item::custom_runtime::animation::author(
-                manager,
-                animation,
-                pattern_entity_tag,
-                &mut pattern_entity,
-                weapon_runtime_tag_allocator,
-                weapon_runtime_new_tags,
-                asset_stream.target(),
-                animation_cache,
-            )?;
-            Some(owner)
-        }
-        _ => None,
-    };
-    #[cfg(feature = "d2-model-importer")]
-    if let Some(animation) = &equipment_animation {
-        crate::item::custom_runtime::animation::equipment::author(
-            manager,
-            animation,
-            pattern_entity_tag,
-            &mut pattern_entity,
-            weapon_runtime_tag_allocator,
-            weapon_runtime_new_tags,
-            asset_stream.target(),
-            animation_cache,
-            &particle_symbols,
-        )?;
-    }
-    #[cfg(feature = "d2-model-importer")]
-    if let Some(audio) = &imported_audio {
-        let (allocator, tags) = asset_stream.target();
-        if let Some(impact) =
-            crate::item::custom_runtime::audio::author_impacts(manager, audio, allocator, tags)?
-        {
-            assets.impacts.push(impact);
-        }
-        crate::item::custom_runtime::audio::author(
-            manager,
-            audio,
-            pattern_entity_tag,
-            &mut pattern_entity,
-            private_animation_owner,
-            weapon_runtime_tag_allocator,
-            weapon_runtime_new_tags,
-            asset_stream.target(),
-        )?;
-    }
-    #[cfg(feature = "d2-model-importer")]
-    assets.placed.extend(asset_stream.finish(assets.packages)?);
-    crate::vehicle::authoring::apply(
-        manager,
-        vehicle_settings,
-        pattern_entity_tag,
-        &mut pattern_entity,
-        &weapon_runtime_tag_allocator,
-        weapon_runtime_new_tags,
-    )?;
-    let authored_entity_tag = weapon_runtime_tag_allocator.assigned_tag(
-        weapon_runtime_new_tags.len(),
+    retain_imported_runtime(packages, tag, entity)?;
+    *entity_assignments =
+        append_weapon_entity_assignment(std::mem::take(entity_assignments), pattern, tag.0)
+            .map_err(invalid)?;
+    Ok(pattern)
+}
+
+/// Appends the authored `entity` as a new tag that inherits the `template` entity's storage, and
+/// points `pattern` at it. Returns `pattern`.
+fn append_entity(
+    pattern: u32,
+    (template, entity): (TagHash, Vec<u8>),
+    (allocator, tags): (AppendedTagAllocator, &mut Vec<NewTagSpec>),
+    entity_assignments: &mut Vec<u8>,
+) -> AuthoringResult<u32> {
+    let authored_entity_tag = allocator.assigned_tag(
+        tags.len(),
         "Authored runtime weapon entity",
         "runtime weapon entity",
     )?;
-    weapon_runtime_new_tags.push(NewTagSpec {
-        template_tag: pattern_entity_tag,
-        payload: pattern_entity,
+    tags.push(NewTagSpec {
+        template_tag: template,
+        payload: entity,
         storage: crate::NewTagStorageMode::InheritTemplate,
     });
     *entity_assignments = append_weapon_entity_assignment(
         std::mem::take(entity_assignments),
-        donor.weapon.identity.pattern_global_id_hash,
+        pattern,
         authored_entity_tag.0,
     )
     .map_err(invalid)?;
-    Ok(Some(donor.weapon.identity.pattern_global_id_hash))
+    Ok(pattern)
 }
 
 fn retain_imported_runtime(
@@ -998,104 +871,6 @@ fn reuse_stock_entity(
     Ok(authored_pattern)
 }
 
-/// What an imported model brings to its runtime, read from its asset graph.
-#[cfg(feature = "d2-model-importer")]
-struct ImportedRuntime {
-    animation: Option<crate::item::custom_runtime::animation::ImportedAnimation>,
-    character: Option<crate::item::custom_runtime::animation::character::Binding>,
-    audio: Option<crate::item::custom_runtime::audio::ImportedAudio>,
-    extensions: Vec<crate::item::custom_runtime::extensions::Extension>,
-    particles: Option<crate::item::custom_runtime::particles::ImportedParticles>,
-    equipment: Option<crate::item::custom_runtime::animation::equipment::EquipmentAnimation>,
-    crosshair: Option<crate::item::custom_runtime::crosshair::Crosshair>,
-    zoom: Option<f32>,
-    inputs: Vec<crate::weapon::input::Input>,
-    timing: Option<crate::weapon::input::timing::Timing>,
-}
-
-#[cfg(feature = "d2-model-importer")]
-impl ImportedRuntime {
-    /// Whether the recipe imports anything onto the runtime entity.
-    fn any(&self) -> bool {
-        self.animation.is_some()
-            || self.character.is_some()
-            || self.audio.is_some()
-            || self.equipment.is_some()
-            || self.particles.is_some()
-            || !self.extensions.is_empty()
-            || self.crosshair.is_some()
-            || self.zoom.is_some()
-            || !self.inputs.is_empty()
-            || self.timing.is_some()
-    }
-
-    /// Reads each part from `donor`'s imported graph, all empty for a weapon without one.
-    fn load(
-        donor: &resolve::ResolvedWeapon,
-        reads: &mut Option<custom_runtime::imports::Fingerprints>,
-    ) -> AuthoringResult<Self> {
-        use crate::item::custom_runtime::{animation, audio, crosshair, extensions, particles};
-        let mut loaded = Self {
-            animation: None,
-            character: None,
-            audio: None,
-            extensions: Vec::new(),
-            particles: None,
-            equipment: None,
-            crosshair: None,
-            zoom: None,
-            inputs: Vec::new(),
-            timing: None,
-        };
-        let mut directories = BTreeSet::new();
-        if let Some(reference) = donor.weapon.overrides.imported_graph.as_ref() {
-            let inputs = custom_runtime::imports::Inputs::open(reference)?;
-            let graph = &inputs;
-            loaded = Self {
-                animation: animation::load(graph)?,
-                character: animation::character::load(graph)?,
-                audio: audio::load(graph).map_err(|error| {
-                    error.context(format!(
-                        "Loading prepared audio from {}",
-                        reference.directory.display()
-                    ))
-                })?,
-                extensions: extensions::load(graph)?,
-                particles: particles::load(graph)?,
-                equipment: animation::equipment::load(graph)?,
-                crosshair: crosshair::load(graph)?,
-                zoom: crate::weapon::zoom::imported(graph.value())?,
-                inputs: crate::weapon::input::imported(graph.value())?,
-                timing: crate::weapon::input::timing::imported(graph.value())?,
-            };
-            if let Some(audio) = loaded.audio.as_mut() {
-                audio.set_item(donor.weapon.identity.item_hash);
-            }
-            directories.insert(
-                fs::canonicalize(&reference.directory)
-                    .map_err(|error| invalid(error.to_string()))?,
-            );
-            *reads = inputs.fingerprints();
-        }
-        for imported in donor
-            .weapon
-            .overrides
-            .socket_plug_variants
-            .iter()
-            .flat_map(|variant| &variant.sandbox_perks)
-            .filter_map(|perk| perk.program.as_ref())
-            .flat_map(sundial::package_authoring::sandbox_perk::program::Program::owned_programs)
-            .flat_map(|program| &program.imported_assets)
-        {
-            attachments::load(imported, &mut directories, &mut loaded.particles)?;
-            // These additional directories participate in the live symbol allocation.
-            // Programs naming them bypass persistent runtime reuse above.
-            *reads = None;
-        }
-        Ok(loaded)
-    }
-}
-
 fn resolved_hud_key(
     manager: &PackageManager,
     patterns: &[u8],
@@ -1113,7 +888,7 @@ fn resolved_hud_key(
     if !donor.weapon.kind.is_weapon() {
         return Ok(None);
     }
-    let content_graft = donor.runtime_component_donors.iter().any(|component| {
+    let content_graft = donor.donors.runtime_components.iter().any(|component| {
         component.binding_hash == 0x5F0DD954
             && Some(component.pattern_item_hash)
                 != donor.gear_art_pattern_source.map(|source| source.item_hash)
@@ -1128,10 +903,14 @@ fn resolved_hud_key(
             .map(|_| donor.weapon.identity.type_hash),
         donor.runtime_pattern_source == donor.gear_art_pattern_source
             && !content_graft
-            && donor.pinned_appearance.is_none(),
+            && donor.donors.pinned_appearance.is_none(),
         || {
             // A pinned model keeps the base's rig and row, yet the HUD shows the model it wears.
-            let Some(appearance) = donor.pinned_appearance.or(donor.gear_art_pattern_source) else {
+            let Some(appearance) = donor
+                .donors
+                .pinned_appearance
+                .or(donor.gear_art_pattern_source)
+            else {
                 return Ok(None);
             };
             let (_, entity) = resolve_runtime_weapon_entity(
@@ -1206,6 +985,7 @@ mod tests {
         let mut report = |_: Event<'_>| {};
         let mut progress = Progress::new(donors.len(), &mut report);
         let cache = Cache::open(&sources.manager, &stock, &mut progress);
+        let mut failed = BTreeMap::new();
         author_entities(
             &sources.manager,
             stock,
@@ -1218,12 +998,16 @@ mod tests {
                 impacts: &mut vec![],
                 #[cfg(feature = "d2-model-importer")]
                 particle_symbols: &mut BTreeMap::new(),
+                #[cfg(feature = "d2-model-importer")]
+                hud_statuses: &mut vec![],
             },
             &mut assignments,
             &mut tags,
+            &mut failed,
             &mut progress,
         )
         .unwrap();
+        assert!(failed.is_empty(), "{failed:?}");
         let entity = &tags.last().unwrap().payload;
         let binding = weapon_component_bindings(entity, 0x5F0DD954).unwrap()[0];
         let owner = tags

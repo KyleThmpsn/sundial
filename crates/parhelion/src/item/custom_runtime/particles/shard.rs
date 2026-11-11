@@ -1,6 +1,6 @@
 //! Namespace target-owned collectors after the authored item receives its identity.
 use super::*;
-use parhelion_import::d2_mot::payload::Payload;
+use parhelion_import::tiger::payload::Payload;
 
 pub(super) fn bind(
     manager: &PackageManager,

@@ -5,9 +5,12 @@ fn pending_audio_can_be_canceled_without_playing_a_late_result() {
     let ctx = egui::Context::default();
     let (sender, receiver) = mpsc::channel();
     let mut preview = Preview {
-        audio_pending: Some(receiver),
-        audio_tag: Some(42),
-        audio_status: Some("Decoding audio".into()),
+        audio: Audio {
+            pending: Some(receiver),
+            tag: Some(42),
+            status: Some("Decoding audio".into()),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut model = Model::default();
@@ -60,9 +63,9 @@ fn pending_audio_can_be_canceled_without_playing_a_late_result() {
             crate::test_support::primary_press(cancel, pressed),
         );
     }
-    assert!(preview.audio_pending.is_none());
-    assert!(preview.audio_tag.is_none());
-    assert!(preview.audio_status.is_none());
+    assert!(preview.audio.pending.is_none());
+    assert!(preview.audio.tag.is_none());
+    assert!(preview.audio.status.is_none());
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_owned();
     let late = sender.send(Ok((file, std::time::Duration::from_secs(1))));
@@ -70,14 +73,14 @@ fn pending_audio_can_be_canceled_without_playing_a_late_result() {
     drop(late);
     assert!(!path.exists());
     preview.poll_audio(&ctx);
-    assert!(preview.playback.is_none());
+    assert!(preview.audio.playback.is_none());
     let (next, receiver) = mpsc::channel();
-    preview.audio_pending = Some(receiver);
-    preview.audio_tag = Some(43);
+    preview.audio.pending = Some(receiver);
+    preview.audio.tag = Some(43);
     next.send(Err("A later decode completed".into())).unwrap();
     preview.poll_audio(&ctx);
     assert_eq!(
-        preview.audio_status.as_deref(),
+        preview.audio.status.as_deref(),
         Some("A later decode completed")
     );
     crate::test_support::artifact(

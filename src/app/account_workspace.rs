@@ -413,8 +413,11 @@ impl WorkspaceDocument {
         // Dawn's account source is decided by detecting the installed runtime, and its account
         // lives in player-state.db whatever settings.json says. The test below is Sunrise's own
         // move from JSON accounts to data/investment.sqlite3 at settings v18, which never applied
-        // to Dawn: running it against a Dawn workspace refused every save.
-        if matches!(self.account, AccountDocument::Dawn(_)) {
+        // to Dawn: running it against a Dawn workspace refused every save. That includes a Dawn
+        // database that is missing, empty, unreadable or incompatible. Its account stays blocked,
+        // since every account write goes through the loaded document, but settings.json repairs
+        // still save.
+        if self.account_is_dawn() {
             return Ok(());
         }
         if self.uses_json_account() == requires_sqlite(&self.json) {

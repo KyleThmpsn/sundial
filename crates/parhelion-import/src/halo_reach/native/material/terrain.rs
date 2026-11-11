@@ -120,14 +120,18 @@ pub(super) fn reflection(
     } else {
         "float3(0,0,0)".into()
     };
-    // The selected light's Phong highlight at the blended exponent, as two-lobe Phong surfaces
-    // take theirs ([`reflection`]).
+    // The selected light's Phong highlight at the blended exponent, as Reach's terrain program
+    // forms it (`calc_phong_outgoing_light` in `terrain_new.fx`): the light times
+    // `pow(L.R, p) * (p + 1) / (2 pi)`, and none unless the normal faces both the light and the
+    // camera. Per unit of the highlight's intensity over pi that is half of
+    // `reachPhongHighlight`. On strongly bumped rock a crevice texel whose normal turns away
+    // takes no highlight, where the albedo is near black and the specular tint would show alone.
     let direct = light
         .map(|light| {
             let [r, g, b] = light.intensity;
+            let l = &light.direction;
             format!(
-                "+3.141592654*reachPhongHighlight(n,normalize(v5.xyz),{},terrainSpecPower)*float3({r:e},{g:e},{b:e})*{BAKED_VISIBILITY}*terrainAnalytical",
-                light.direction
+                "+(dot(n,{l})>0&&dot(n,normalize(v5.xyz))>0?0.5*reachPhongHighlight(n,normalize(v5.xyz),{l},terrainSpecPower):0)*float3({r:e},{g:e},{b:e})*{BAKED_VISIBILITY}*terrainAnalytical"
             )
         })
         .unwrap_or_default();

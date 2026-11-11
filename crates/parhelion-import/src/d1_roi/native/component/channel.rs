@@ -15,8 +15,16 @@ struct Bank {
     callbacks: BTreeMap<usize, callback::Callback>,
     programs: BTreeMap<usize, program::Program>,
     inputs: Vec<incoming::Input>,
+    /// Incoming channels that the public lookup also names. Other components read only public
+    /// names, and an incoming channel may stay private to its bank.
+    public: BTreeSet<usize>,
     dependencies: Vec<Vec<u8>>,
     history: Vec<u8>,
+    /// Native carrier declarations appended after the source's own, by name.
+    retained: Vec<u32>,
+    /// Nonzero declared value types at `+4A` of plain rows, those without code or a callback.
+    /// Procedure rows keep theirs in their program.
+    types: BTreeMap<usize, u16>,
 }
 
 impl Bank {
@@ -27,11 +35,332 @@ impl Bank {
             .keys()
             .chain(self.callbacks.keys())
             .chain(self.programs.keys())
-            .chain(self.inputs.iter().map(|input| &input.ordinal))
+            .chain(self.public.iter())
             .map(|&i| (0x811C9DC5, self.names[i], i))
             .collect::<Vec<_>>();
         locals.sort_unstable();
         locals
+    }
+
+    /// Append a native carrier's declarations that the source lacks, keeping their native
+    /// producers, so the carrier's own consumers still find every name they read. Shared names
+    /// keep their source producers, which must be of the same kind apart from the `crossed`
+    /// names the caller has qualified, and invalidate the union of what each bank invalidates by
+    /// name.
+    #[allow(clippy::cognitive_complexity)]
+    fn retain(
+        &mut self,
+        carrier: &Payload,
+        omit: &BTreeSet<u32>,
+        crossed: &BTreeSet<u32>,
+        extra: &[(u32, u32, usize)],
+    ) -> Result<()> {
+        let schema = carrier.pointer(24)?;
+        ensure!(
+            carrier.u64(carrier.pointer(16)? + 0x70)? == 0,
+            "Native carrier bank has callback history"
+        );
+        let rows = carrier.array(schema + 0xD8, 112, Some(0x808097A1))?;
+        let names = rows
+            .iter()
+            .map(|at| carrier.u32(*at))
+            .collect::<Result<Vec<_>>>()?;
+        let lookup = |field| -> Result<Vec<(u32, u32, usize)>> {
+            carrier
+                .array(schema + field, 12, None)?
+                .into_iter()
+                .map(|at| {
+                    let ordinal = usize::try_from(carrier.u32(at + 8)?)?;
+                    ensure!(
+                        ordinal < names.len(),
+                        "Native carrier lookup addresses no declaration"
+                    );
+                    Ok((carrier.u32(at)?, carrier.u32(at + 4)?, ordinal))
+                })
+                .collect()
+        };
+        let (public, inherited, incoming) = (lookup(0xF8)?, lookup(0x108)?, lookup(0x118)?);
+        let getters = carrier.array(schema + 0xC8, 32, Some(0x808097A8))?;
+        let carrier_owner = carrier.u32(carrier.pointer(16)?)?;
+        let source_count = self.names.len();
+        // Carrier ordinal to merged ordinal, and whether the source declares the same name.
+        // An omitted carrier declaration takes no ordinal. Nothing kept may depend on it.
+        let mut ordinals = Vec::with_capacity(names.len());
+        for &name in &names {
+            if omit.contains(&name) {
+                ensure!(
+                    !self.names.contains(&name),
+                    "An omitted carrier channel is also the source's"
+                );
+                ordinals.push((usize::MAX, false));
+                continue;
+            }
+            ordinals.push(match self.names.iter().position(|&v| v == name) {
+                Some(ordinal) => (ordinal, true),
+                None => {
+                    self.names.push(name);
+                    self.retained.push(name);
+                    (self.names.len() - 1, false)
+                }
+            });
+        }
+        // A name another carrier component publishes and neither bank declares becomes an
+        // incoming channel that component's getter feeds.
+        for &(name, _, _) in extra {
+            ensure!(
+                !self.names.contains(&name),
+                "An added incoming channel is already declared"
+            );
+            self.names.push(name);
+            self.retained.push(name);
+        }
+        ensure!(
+            self.names.len() < usize::from(u16::MAX),
+            "Retained channel count exceeds the bank capacity"
+        );
+        let mut dependents = vec![BTreeSet::new(); self.names.len()];
+        for (ordinal, bytes) in self.dependencies.iter().enumerate() {
+            for (word, chunk) in bytes.chunks_exact(4).enumerate() {
+                let bits = u32::from_le_bytes(chunk.try_into()?);
+                dependents[ordinal].extend(
+                    (0..32)
+                        .filter(|bit| bits & (1 << bit) != 0)
+                        .map(|bit| word * 32 + bit),
+                );
+            }
+        }
+        for (index, &row) in rows.iter().enumerate() {
+            let (ordinal, shared) = ordinals[index];
+            if ordinal == usize::MAX {
+                continue;
+            }
+            ensure!(
+                carrier.u64(row + 96)? == 0 && carrier.bytes::<2>(row + 104)? == [255, 254],
+                "Native carrier channel has callbacks or interpolation"
+            );
+            for (word, at) in carrier
+                .array(row + 80, 4, Some(0x8080000B))?
+                .into_iter()
+                .enumerate()
+            {
+                let bits = carrier.u32(at)?;
+                for bit in (0..32).filter(|bit| bits & (1 << bit) != 0) {
+                    let (dependent, _) = *ordinals
+                        .get(word * 32 + bit)
+                        .context("Native dependency exceeds channel declarations")?;
+                    ensure!(
+                        dependent != usize::MAX,
+                        "An omitted carrier channel has dependents"
+                    );
+                    dependents[ordinal].insert(dependent);
+                }
+            }
+            let parents = inherited
+                .iter()
+                .filter(|entry| entry.2 == index)
+                .map(|entry| (entry.0, entry.1))
+                .collect::<Vec<_>>();
+            let input = incoming.iter().any(|entry| entry.2 == index);
+            let local = carrier.u64(row + 8)? != 0;
+            if shared {
+                let source_parents = self
+                    .inherited
+                    .iter()
+                    .filter(|entry| entry.2 == ordinal)
+                    .map(|entry| (entry.0, entry.1))
+                    .collect::<Vec<_>>();
+                let source_input = self.inputs.iter().any(|i| i.ordinal == ordinal);
+                let source_local = self.constants.contains_key(&ordinal)
+                    || self.callbacks.contains_key(&ordinal)
+                    || self.programs.contains_key(&ordinal);
+                // A crossed name keeps its source producer, an input where the carrier inherits or
+                // the reverse, as a replaced projectile receiver row moves it.
+                let crossed = crossed.contains(&names[index])
+                    && !local
+                    && !source_local
+                    && input != source_input
+                    && parents.is_empty() == input
+                    && source_parents.is_empty() == source_input;
+                ensure!(
+                    crossed
+                        || (parents == source_parents
+                            && input == source_input
+                            && local == source_local),
+                    "Shared channel {:08X} has another producer kind in the carrier",
+                    names[index]
+                );
+                // A name the carrier publishes stays public for its native readers.
+                if input && public.iter().any(|entry| entry.2 == index) {
+                    self.public.insert(ordinal);
+                }
+                continue;
+            }
+            if input {
+                // The getter is rebuilt from the native template like the source's. Its carrier
+                // definition identifies the connection that feeds it, such as a named-parameter
+                // context's creation value.
+                let definition = *getters
+                    .get(index)
+                    .context("Native incoming getter is not its declaration's")?;
+                let kind = carrier.u16(row + 74)?;
+                ensure!(
+                    !local
+                        && parents.is_empty()
+                        && carrier.0[row + 16..row + 72].iter().all(|v| *v == 0)
+                        && kind <= 5
+                        && carrier.u32(definition + 4)? == 0x808097A7
+                        && carrier.u64(definition + 16)? == 0
+                        && carrier.u64(definition + 24)? == 0x80809AE2,
+                    "Native incoming channel has another producer or getter envelope"
+                );
+                self.inputs.push(incoming::Input {
+                    ordinal,
+                    name: names[index],
+                    definition,
+                    owner: carrier_owner,
+                });
+                if kind != 0 {
+                    self.types.insert(ordinal, kind);
+                }
+                if public.iter().any(|entry| entry.2 == index) {
+                    self.public.insert(ordinal);
+                }
+                continue;
+            }
+            if local {
+                ensure!(
+                    public
+                        .iter()
+                        .any(|entry| entry.2 == index && entry.0 == 0x811C9DC5),
+                    "Native carrier procedure is not public"
+                );
+                let mut program = program::read(carrier, row, names.len())?;
+                for input in &mut program.inputs {
+                    *input = u32::try_from(ordinals[*input as usize].0)?;
+                }
+                self.programs.insert(ordinal, program);
+            } else {
+                let kind = carrier.u16(row + 74)?;
+                ensure!(
+                    carrier.0[row + 16..row + 72].iter().all(|v| *v == 0) && kind <= 5,
+                    "Native carrier channel has unsupported defaults or forwarding"
+                );
+                if kind != 0 {
+                    self.types.insert(ordinal, kind);
+                }
+                self.inherited.extend(
+                    parents
+                        .into_iter()
+                        .map(|(namespace, parent)| (namespace, parent, ordinal)),
+                );
+            }
+        }
+        for &(name, owner, definition) in extra {
+            let ordinal = self
+                .names
+                .iter()
+                .position(|&value| value == name)
+                .context("Added incoming channel")?;
+            self.inputs.push(incoming::Input {
+                ordinal,
+                name,
+                definition,
+                owner,
+            });
+        }
+        let dependents = self.lead_inputs(source_count, dependents)?;
+        self.settle(dependents)
+    }
+
+    /// Native refresh treats declarations below the getter count as imported inputs, so the
+    /// carrier's incoming channels move ahead of every derived declaration.
+    fn lead_inputs(
+        &mut self,
+        source_count: usize,
+        mut dependents: Vec<BTreeSet<usize>>,
+    ) -> Result<Vec<BTreeSet<usize>>> {
+        let inputs = self
+            .inputs
+            .iter()
+            .map(|input| input.ordinal)
+            .collect::<BTreeSet<_>>();
+        let mut order = Vec::with_capacity(self.names.len());
+        for leading in [true, false] {
+            for range in [0..source_count, source_count..self.names.len()] {
+                order.extend(range.filter(|ordinal| inputs.contains(ordinal) == leading));
+            }
+        }
+        let mut place = vec![0; order.len()];
+        for (new, &old) in order.iter().enumerate() {
+            place[old] = new;
+        }
+        if order.iter().enumerate().any(|(new, &old)| new != old) {
+            ensure!(
+                self.callbacks.is_empty() && self.history.is_empty(),
+                "Reordered channel bank has callbacks"
+            );
+            let names = order.iter().map(|&old| self.names[old]).collect();
+            self.names = names;
+            for entry in &mut self.inherited {
+                entry.2 = place[entry.2];
+            }
+            self.constants = std::mem::take(&mut self.constants)
+                .into_iter()
+                .map(|(ordinal, value)| (place[ordinal], value))
+                .collect();
+            let mut programs = BTreeMap::new();
+            for (ordinal, mut program) in std::mem::take(&mut self.programs) {
+                for input in &mut program.inputs {
+                    *input = u32::try_from(place[*input as usize])?;
+                }
+                programs.insert(place[ordinal], program);
+            }
+            self.programs = programs;
+            for input in &mut self.inputs {
+                input.ordinal = place[input.ordinal];
+            }
+            self.public = self.public.iter().map(|&ordinal| place[ordinal]).collect();
+            self.types = std::mem::take(&mut self.types)
+                .into_iter()
+                .map(|(ordinal, kind)| (place[ordinal], kind))
+                .collect();
+            let mut moved = vec![BTreeSet::new(); dependents.len()];
+            for (old, set) in dependents.into_iter().enumerate() {
+                moved[place[old]] = set.into_iter().map(|ordinal| place[ordinal]).collect();
+            }
+            dependents = moved;
+        }
+        self.inputs.sort_by_key(|input| input.ordinal);
+        Ok(dependents)
+    }
+
+    /// Sort the merged inherited lookup and write dependency masks over the merged ordinals.
+    fn settle(&mut self, dependents: Vec<BTreeSet<usize>>) -> Result<()> {
+        self.inherited.sort_unstable();
+        ensure!(
+            self.inherited
+                .windows(2)
+                .all(|pair| (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1)),
+            "Retained inherited channel names collide"
+        );
+        self.span = crate::tiger::channel::inherited::default_span(
+            self.inherited.iter().map(|(namespace, _, _)| *namespace),
+        )?;
+        let width = self.names.len().div_ceil(32);
+        self.dependencies = dependents
+            .into_iter()
+            .map(|set| {
+                if set.is_empty() {
+                    return Vec::new();
+                }
+                let mut words = vec![0u32; width];
+                for bit in set {
+                    words[bit / 32] |= 1 << (bit % 32);
+                }
+                words.into_iter().flat_map(u32::to_le_bytes).collect()
+            })
+            .collect();
+        program::validate_graph(&self.programs)
     }
 }
 
@@ -39,8 +368,10 @@ impl Bank {
     fn read(source: &Payload) -> Result<Self> {
         let schema = source.pointer(24)?;
         let rows = source.array(schema + 0xD8, 112, Some(0x80800883))?;
+        // 342 Shadowkeep stock banks hold more than 64 declarations, one 255, so 64 is not a
+        // native capacity. Slots and lookup positions are UInt16 with FFFF as their sentinel.
         ensure!(
-            !rows.is_empty() && rows.len() <= 64,
+            !rows.is_empty() && rows.len() < usize::from(u16::MAX),
             "Source channel count differs"
         );
         let names = rows
@@ -74,12 +405,13 @@ impl Bank {
             );
             inherited.push((namespace, parent, ordinal));
         }
+        // A bank may inherit nothing, as many source body and projectile banks do. Its span is
+        // then FFFF, which native inherited lookup 00579880 answers at once with no match.
         ensure!(
-            !inherited.is_empty()
-                && inherited
-                    .windows(2)
-                    .all(|pair| (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1)),
-            "Source inherited names are absent or unsorted"
+            inherited
+                .windows(2)
+                .all(|pair| (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1)),
+            "Source inherited names are unsorted"
         );
         let span = crate::tiger::channel::inherited::default_span(
             inherited.iter().map(|(namespace, _, _)| *namespace),
@@ -100,6 +432,8 @@ impl Bank {
         let mut constants = BTreeMap::new();
         let mut callbacks = BTreeMap::new();
         let mut programs = BTreeMap::new();
+        let mut public = BTreeSet::new();
+        let mut types = BTreeMap::new();
         let mut dependencies = Vec::new();
         for (ordinal, &row) in rows.iter().enumerate() {
             if let Some(found) = callback::read(source, row, rows.len())? {
@@ -121,13 +455,24 @@ impl Bank {
                 .map(|at| source.u8(*at))
                 .collect::<Result<Vec<_>>>()?;
             if code.is_empty() {
+                // Only incoming channels have a public index here. Projectile bank `80AA2D90`
+                // keeps its incoming `49FCE899` private, with no index and no lookup row.
+                let indexed = source.u16(row + 106)? != u16::MAX;
+                // The declared value type stays with the row. Shadowkeep's stock plain rows store
+                // 0 to 5, and no native refresh, dispatch or interpreter path reads it.
+                let kind = source.u16(row + 74)?;
                 ensure!(
                     source.0[row + 16..row + 72].iter().all(|v| *v == 0)
-                        && source.u16(row + 74)? == 0
-                        && (source.u16(row + 106)? != u16::MAX)
-                            == input_ordinals.contains(&ordinal),
+                        && kind <= 5
+                        && (!indexed || input_ordinals.contains(&ordinal)),
                     "Source channel has unsupported defaults or forwarding"
                 );
+                if kind != 0 {
+                    types.insert(ordinal, kind);
+                }
+                if indexed {
+                    public.insert(ordinal);
+                }
                 ensure!(
                     inherited_ordinals.contains(&ordinal) == (source.u16(row + 72)? != u16::MAX),
                     "Source channel inherited slot lacks a name"
@@ -197,7 +542,7 @@ impl Bank {
         program::validate_graph(&programs)?;
         let local = source.array(schema + 0xF8, 12, None)?;
         ensure!(
-            local.len() == constants.len() + callbacks.len() + programs.len() + inputs.len(),
+            local.len() == constants.len() + callbacks.len() + programs.len() + public.len(),
             "Source channel local names differ"
         );
         let mut local_ordinals = BTreeSet::new();
@@ -213,7 +558,7 @@ impl Bank {
                 (constants.contains_key(&ordinal)
                     || callbacks.contains_key(&ordinal)
                     || programs.contains_key(&ordinal)
-                    || input_ordinals.contains(&ordinal))
+                    || public.contains(&ordinal))
                     && index < count
                     && local_indices.insert(index)
                     && local_ordinals.insert(ordinal)
@@ -249,8 +594,11 @@ impl Bank {
             callbacks,
             programs,
             inputs,
+            public,
             dependencies,
             history,
+            retained: Vec::new(),
+            types,
         })
     }
 }
@@ -270,14 +618,41 @@ fn lookup(rows: &[(u32, u32, usize)]) -> Result<Vec<u8>> {
 }
 
 impl Assembly<'_> {
-    #[allow(clippy::cognitive_complexity)]
-    pub(super) fn channel_bank(
+    pub(in crate::d1_roi::native) fn channel_bank(
         &mut self,
         source: &Payload,
         symbol: &str,
         index: usize,
     ) -> Result<(Component, Vec<u32>)> {
-        let bank = Bank::read(source)?;
+        self.write_bank(Bank::read(source)?, source, symbol, index)
+    }
+
+    /// A source bank followed by the declarations only `carrier` has, for a native carrier
+    /// whose own consumers stay connected to the bank by name. Declarations in `omit` are left
+    /// out, as those only a left-out component supplies. Names in `crossed` keep source producers
+    /// of another kind. Each `extra` name, owner and getter becomes an incoming channel, and the
+    /// owner and getter key its emitted getter in `Component::incoming`.
+    pub(in crate::d1_roi::native) fn retained_bank(
+        &mut self,
+        source: &Payload,
+        (carrier, omit, crossed): (&Payload, &BTreeSet<u32>, &BTreeSet<u32>),
+        extra: &[(u32, u32, usize)],
+        symbol: &str,
+        index: usize,
+    ) -> Result<(Component, Vec<u32>)> {
+        let mut bank = Bank::read(source)?;
+        bank.retain(carrier, omit, crossed, extra)?;
+        self.write_bank(bank, source, symbol, index)
+    }
+
+    #[allow(clippy::cognitive_complexity)]
+    fn write_bank(
+        &mut self,
+        bank: Bank,
+        source: &Payload,
+        symbol: &str,
+        index: usize,
+    ) -> Result<(Component, Vec<u32>)> {
         let locals = bank.locals();
         let (template, entity) = if locals.is_empty() {
             (0x80F56FA1, 0x80BC358D)
@@ -340,6 +715,8 @@ impl Assembly<'_> {
             let mut row = if bank.constants.contains_key(&ordinal) {
                 let mut row = constant_template.context("Native local channel template")?;
                 row[8..40].fill(0);
+                // A source constant row always declares value type 1.
+                put(&mut row, 74, &1u16.to_le_bytes())?;
                 put(&mut row, 106, &position(ordinal)?.to_le_bytes())?;
                 row
             } else if let Some(program) = bank.programs.get(&ordinal).or_else(|| {
@@ -356,8 +733,10 @@ impl Assembly<'_> {
                 row
             } else {
                 let mut row = [0; 112];
+                let kind = bank.types.get(&ordinal).copied().unwrap_or(0);
+                put(&mut row, 74, &kind.to_le_bytes())?;
                 row[104..108].copy_from_slice(&[255, 254, 255, 255]);
-                if bank.inputs.iter().any(|input| input.ordinal == ordinal) {
+                if bank.public.contains(&ordinal) {
                     put(&mut row, 106, &position(ordinal)?.to_le_bytes())?;
                 }
                 row
@@ -413,6 +792,13 @@ impl Assembly<'_> {
         )?;
         array(
             &mut p.0,
+            instance + 0xA0,
+            0x8080000B,
+            &vec![0; bank.inherited.len().div_ceil(32) * 4],
+            4,
+        )?;
+        array(
+            &mut p.0,
             instance + 0x90,
             0x8080979C,
             &vec![255; bank.inherited.len() * 16],
@@ -439,7 +825,7 @@ impl Assembly<'_> {
             Some(self.native.tag(0x80FF0240, Some(0x80809C36))?)
         };
         if let Some(template) = &input_template {
-            incoming::write(&bank.inputs, source, &mut component, template)?;
+            incoming::write(&bank.inputs, &mut component, template)?;
         }
         let p = &mut component.payload;
         array(&mut p.0, instance + 0x60, 0x80800090, &bank.history, 16)?;
@@ -457,7 +843,14 @@ impl Assembly<'_> {
         }
         let tag = p.u32(0x44)?;
         let mut allocation = (*self.native.tag(tag, None)?).clone();
+        let mut emptied = BTreeSet::new();
         for (name, class, before, after) in [
+            (
+                0x083C8E12,
+                0x8080000B,
+                original.u64(instance + 0xA0)? as usize,
+                bank.inherited.len().div_ceil(32),
+            ),
             (
                 0x4A423762,
                 0x8080000B,
@@ -502,6 +895,21 @@ impl Assembly<'_> {
                 row + 20,
                 &u32::try_from(after)?.to_le_bytes(),
             )?;
+            if after == 0 {
+                emptied.insert(name);
+            }
+        }
+        // Stock banks without inherited names or locals have no allocation row for that storage,
+        // such as 80B38443 and 80B4C2B4, so a member the merged bank no longer uses is removed
+        // rather than kept with a zero count.
+        if !emptied.is_empty() {
+            let mut rows = Vec::new();
+            for at in allocation.array(0x20, 40, Some(0x80808852))? {
+                if !emptied.contains(&allocation.u32(at)?) {
+                    rows.extend(allocation.bytes::<40>(at)?);
+                }
+            }
+            array(&mut allocation.0, 0x20, 0x80808852, &rows, 40)?;
         }
         if let Some(template) = &input_template {
             let input_allocation = self.native.tag(template.u32(0x44)?, None)?;
@@ -520,7 +928,9 @@ impl Assembly<'_> {
             "spring_policy":"Source stiffness and damping become native frequency and damping ratio. Shadowkeep uses its analytic solver, not the source bounded integration steps.",
             "local_programs":bank.programs.len(),
             "incoming_values":bank.inputs.len(),
-            "unbound_zero":bank.names.len()-bank.inherited.len()-locals.len()}));
+            "public_incoming":bank.public.len(),
+            "retained_native":bank.retained,
+            "unbound_zero":bank.names.len()-bank.inherited.len()-locals.len()-(bank.inputs.len()-bank.public.len())}));
         Ok((component, bank.names))
     }
 }

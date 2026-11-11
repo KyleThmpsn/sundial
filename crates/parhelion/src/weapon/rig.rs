@@ -72,8 +72,138 @@ pub(crate) fn presentation_graft_applies(target: &[u8], donor: &[u8]) -> bool {
 const MARKER_DESCRIPTOR: usize = 0xB0;
 const MARKER_ROW_CLASS: u32 = 0x8080_8513;
 const MARKER_ROW_SIZE: usize = 64;
+#[cfg(feature = "d2-model-importer")]
+const MARKER_TRANSFORM: usize = 0x10;
 const MARKER_POSITION: usize = 0x20;
 const MARKER_NAME: usize = 0x30;
+
+/// An imported weapon's row for a marker its runtime marker set also names. Consumers read the
+/// runtime set as well as the part markers, so the runtime row must hold the source's transform
+/// rather than the donor's. Rise of Iron first-person clips move the hands onto their hand-target
+/// markers, casings start at the runtime `fx_ejection` row, and aimed fire follows the runtime
+/// rear aim point beside the optic's.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) struct RuntimeMarker {
+    name: u32,
+    /// Rotation then position, as a row stores them from `+0x10`.
+    transform: [u8; 32],
+}
+
+/// The runtime marker rows an imported graph carries: Rise of Iron hand targets and casing
+/// ejection, and Halo: Reach converted markers and rear aim point.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn imported_runtime_markers(
+    graph: &serde_json::Value,
+) -> AuthoringResult<Vec<RuntimeMarker>> {
+    let mut rows = Vec::new();
+    for path in [
+        "/animation/first_person/hand_targets/runtime_rows",
+        "/runtime_markers/rows",
+    ] {
+        if let Some(list) = graph.pointer(path) {
+            rows.extend(
+                list.as_array()
+                    .ok_or_else(|| invalid("Imported runtime marker rows are not a list"))?,
+            );
+        }
+    }
+    rows.into_iter()
+        .map(|row| {
+            let name = row["name"]
+                .as_str()
+                .and_then(|name| u32::from_str_radix(name, 16).ok())
+                .ok_or_else(|| invalid("Imported runtime marker has no name"))?;
+            let lanes = |key: &str| -> AuthoringResult<[f32; 4]> {
+                let values = row[key]
+                    .as_array()
+                    .filter(|values| values.len() == 4)
+                    .ok_or_else(|| {
+                        invalid(format!("Imported runtime marker {name:08X} has no {key}"))
+                    })?;
+                let mut lanes = [0.0; 4];
+                for (lane, value) in lanes.iter_mut().zip(values) {
+                    *lane = value
+                        .as_f64()
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| {
+                            invalid(format!("Imported runtime marker {name:08X} {key}"))
+                        })? as f32;
+                }
+                Ok(lanes)
+            };
+            let (orientation, position) = (lanes("orientation")?, lanes("position")?);
+            let norm = orientation.iter().map(|lane| lane * lane).sum::<f32>();
+            if (norm - 1.0).abs() > 1e-2 || position[3] <= 0.0 {
+                return Err(invalid(format!(
+                    "Imported runtime marker {name:08X} is not a marker transform"
+                )));
+            }
+            let mut transform = [0; 32];
+            for (index, lane) in orientation.iter().chain(&position).enumerate() {
+                transform[index * 4..index * 4 + 4].copy_from_slice(&lane.to_le_bytes());
+            }
+            Ok(RuntimeMarker { name, transform })
+        })
+        .collect()
+}
+
+/// Writes each imported runtime marker over the runtime marker set's row of the same name. A set
+/// that does not name the marker has no row to place. A name the set repeats, such as a stock
+/// rifle's four `76BCE859` rows facing different ways, is left as the set holds it rather than
+/// guessed between.
+#[cfg(feature = "d2-model-importer")]
+pub(crate) fn runtime_marker_patches(
+    manager: &PackageManager,
+    entity: &[u8],
+    targets: &[RuntimeMarker],
+) -> AuthoringResult<Vec<WeaponRuntimeResourcePatch>> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bindings = weapon_component_bindings(entity, MARKER_SET).map_err(invalid)?;
+    let [binding] = bindings.as_slice() else {
+        return Err(invalid(
+            "Imported runtime marker rows require one runtime marker set",
+        ));
+    };
+    let owner = manager
+        .read_tag(TagHash(binding.owner_tag))
+        .map_err(|error| invalid(error.to_string()))?;
+    let resource = usize::try_from(binding.resource_offset)
+        .map_err(|_| invalid("Marker set offset overflow"))?;
+    let data = crate::tag_payload::relative_target(&owner, 0x18)?;
+    let (count, _, first, class) = array_at(&owner, data + MARKER_DESCRIPTOR)?;
+    if count != 0 && class != MARKER_ROW_CLASS {
+        return Err(invalid(format!("Marker rows have class {class:08X}")));
+    }
+    let mut patches = Vec::new();
+    for target in targets {
+        let mut rows = Vec::new();
+        for row in (0..count).map(|index| first + index * MARKER_ROW_SIZE) {
+            if read_u32(&owner, row + MARKER_NAME)? == target.name {
+                rows.push(row);
+            }
+        }
+        let [row] = rows.as_slice() else {
+            continue;
+        };
+        let row = *row;
+        let offset = (row + MARKER_TRANSFORM)
+            .checked_sub(resource)
+            .and_then(|offset| u32::try_from(offset).ok())
+            .ok_or_else(|| invalid("Marker row lies before its resource"))?;
+        patches.push(WeaponRuntimeResourcePatch {
+            binding_hash: MARKER_SET,
+            resource_index: 0,
+            offset,
+            bytes: target.transform.to_vec(),
+            graph_values: Vec::new(),
+            graph_removals: Vec::new(),
+            graph_trajectories: None,
+        });
+    }
+    Ok(patches)
+}
 
 /// The moved marker set, given every marker only the base's own set names.
 ///

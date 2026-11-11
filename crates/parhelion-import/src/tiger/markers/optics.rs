@@ -63,10 +63,13 @@ struct Source {
     parents: [u32; 2],
 }
 
-/// Source optics by native placement.
-fn source_parts(source: &Path, selector: Selector) -> Result<BTreeMap<(u64, u64), Source>> {
+/// Source optics by native placement, and the source optics whose aim inputs have no
+/// translation. Those keep the native optic, as bows do, since the refusal depends on the
+/// source alone and every native base would meet it again.
+fn source_parts(source: &Path, selector: Selector) -> Result<(SourceMarkers, Vec<Value>)> {
     let report: Value = serde_json::from_slice(&fs::read(source.join("report.json"))?)?;
     let mut result = BTreeMap::new();
+    let mut refused = Vec::new();
     for part in report["art_parts"].as_array().into_iter().flatten() {
         if part["missing"] == true {
             continue;
@@ -94,8 +97,14 @@ fn source_parts(source: &Path, selector: Selector) -> Result<BTreeMap<(u64, u64)
             if owner.u64(data + 0x1B0)? == 0 && owner.u64(data + 0x250)? == 0 {
                 continue;
             }
-            let parents = connections::source(&entity, entity.u32(row)?, &owner)
-                .with_context(|| format!("source optic on entity {tag}"))?;
+            let parents = match connections::source(&entity, entity.u32(row)?, &owner) {
+                Ok(parents) => parents,
+                Err(error) => {
+                    refused.push(json!({"source_entity":tag,"source_optics":format!("{:08X}", entity.u32(row)?),
+                        "status":"native_optic_kept","reason":format!("{error:#}")}));
+                    continue;
+                }
+            };
             let source = Source { owner, parents };
             for placement in part["placements"].as_array().context("optic placements")? {
                 let Some(key) = native_placement(placement, selector)? else {
@@ -110,7 +119,7 @@ fn source_parts(source: &Path, selector: Selector) -> Result<BTreeMap<(u64, u64)
             }
         }
     }
-    Ok(result)
+    Ok((result, refused))
 }
 
 fn convert(source: &Payload, native: &Payload) -> Result<Payload> {
@@ -405,8 +414,7 @@ pub(super) fn author(
     parts: &[(String, Value)],
     selector: Selector,
 ) -> Result<()> {
-    let sources = source_parts(source, selector)?;
-    let mut report = Vec::new();
+    let (sources, mut report) = source_parts(source, selector)?;
     for (entity_symbol, placement) in parts {
         let (Some(selector), Some(position)) = (
             placement["selector"].as_u64(),
@@ -576,3 +584,5 @@ pub(super) fn author(
     graph["source_optics"] = json!(report);
     Ok(())
 }
+
+type SourceMarkers = BTreeMap<(u64, u64), Source>;

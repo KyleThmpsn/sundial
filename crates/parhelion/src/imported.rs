@@ -94,10 +94,13 @@ pub(crate) fn ornament_icons<'a>(
                 .flat_map(|worker| worker.join().unwrap_or_default())
                 .collect::<Vec<_>>()
         });
-        LINKED
+        let mut read = LINKED
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(found);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // New graphs follow reimports, whose replaced conversions the import sweep removes. A
+        // removed folder's graph is never read again, so its icon goes.
+        read.retain(|(directory, _), _| directory.is_dir());
+        read.extend(found);
     }
     let read = LINKED
         .lock()

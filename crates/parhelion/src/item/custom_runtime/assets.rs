@@ -5,8 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(in crate::item) mod audio;
 pub(in crate::item) mod projectile;
 pub(in crate::item) mod replication;
-mod texture;
+pub(in crate::item) mod streaming;
+mod structure;
+pub(in crate::item) use structure::Shared;
 
+#[derive(Clone)]
 pub(in crate::item) struct Node<M = ()> {
     pub(in crate::item) symbol: String,
     pub(in crate::item) template: u32,
@@ -18,29 +21,41 @@ pub(in crate::item) struct Node<M = ()> {
     pub(in crate::item) metadata: M,
 }
 
-pub(in crate::item) fn author<M>(
+/// Allocate and append one private resource group. Structurally identical nodes share one
+/// identity unless `shareable` refuses one, as it must for any node `bind` rewrites by more
+/// than its own content. A node whose final bytes match an entry another group recorded in
+/// `shared` takes that entry instead of a copy, and the group records its own shareable entries.
+/// Large textures stream, and their large buffers are left out of the eager resources.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::item) fn author<M: Clone + Default>(
     nodes: &[Node<M>],
     roots: &[&str],
     entities: &BTreeSet<String>,
     manager: &PackageManager,
     packages: &mut crate::asset_packages::AssetPackages,
+    (shareable, shared): (impl Fn(&Node<M>) -> bool, &mut structure::Shared),
     bind: impl FnOnce(&BTreeMap<String, TagHash>) -> AuthoringResult<BTreeMap<String, Vec<u8>>>,
     validate: impl Fn(&Node<M>, &[u8], bool) -> AuthoringResult<()>,
 ) -> AuthoringResult<(BTreeMap<String, TagHash>, Vec<TagHash>)> {
+    let (nodes, streamed) = streaming::split(nodes, manager)?;
+    let nodes: &[Node<M>] = &nodes;
     let required = replication::requirements(nodes, manager)?;
     let loading = replication::Loading::all(nodes, manager, roots, &required)?;
-    let aliases = texture::aliases(nodes, manager);
+    let aliases = structure::aliases(nodes, manager, &shareable);
+    let portable = structure::portable(nodes, manager, &shareable);
+    let borrowed = structure::borrowed(nodes, manager, &aliases, &portable, shared);
+    let allocated = |index: usize| aliases[index] == index && borrowed[index].is_none();
     let mut bounds = nodes
         .iter()
         .enumerate()
-        .filter(|(index, _)| aliases[*index] == *index)
+        .filter(|(index, _)| allocated(*index))
         .map(|(_, node)| node.payload.len())
         .collect::<Vec<_>>();
     let mut ordinals = vec![0; nodes.len()];
     let mut next = 0;
-    for (index, canonical) in aliases.iter().enumerate() {
-        if index == *canonical {
-            ordinals[index] = next;
+    for (index, ordinal) in ordinals.iter_mut().enumerate() {
+        if allocated(index) {
+            *ordinal = next;
             next += 1;
         }
     }
@@ -60,25 +75,36 @@ pub(in crate::item) fn author<M>(
     let plan = packages.plan_graph(bounds, &together)?;
     let mut symbols = BTreeMap::new();
     for (index, node) in nodes.iter().enumerate() {
-        symbols.insert(node.symbol.clone(), plan.tag(ordinals[aliases[index]])?);
+        let canonical = aliases[index];
+        let tag = match borrowed[canonical] {
+            Some(tag) => tag,
+            None => plan.tag(ordinals[canonical])?,
+        };
+        symbols.insert(node.symbol.clone(), tag);
     }
     let mut replacements = bind(&symbols)?;
-    // Bind-time edits cannot change a texture whose identity is shared. Audio
-    // replacements retain their own identities and are unaffected.
+    // A node whose identity is shared must bind as its canonical node does, and a node another
+    // group holds must not bind at all. Audio nodes keep their own identities, and other
+    // bind-time edits follow the payload alone.
     for (index, canonical) in aliases.iter().enumerate() {
-        if index != *canonical {
-            for node in [&nodes[index], &nodes[*canonical]] {
-                if replacements
-                    .get(&node.symbol)
-                    .is_some_and(|bytes| *bytes != node.payload)
-                {
-                    return Err(invalid("A shared resident texture changed during binding"));
-                }
-            }
+        if index != *canonical
+            && replacements.get(&nodes[index].symbol) != replacements.get(&nodes[*canonical].symbol)
+        {
+            return Err(invalid(format!(
+                "Shared private asset {} bound differently from {}",
+                nodes[index].symbol, nodes[*canonical].symbol
+            )));
+        }
+        if borrowed[*canonical].is_some() && replacements.contains_key(&nodes[index].symbol) {
+            return Err(invalid(format!(
+                "Private asset {} matched another group's entry but binding changed it",
+                nodes[index].symbol
+            )));
         }
     }
     let mut tags = Vec::new();
     let mut references = Vec::new();
+    let mut recorded = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
         if node.storage != crate::NewTagStorageMode::InheritTemplate
             && (node.reference.is_some()
@@ -123,8 +149,16 @@ pub(in crate::item) fn author<M>(
             );
         }
         validate(node, &payload, entity)?;
-        if aliases[index] != index {
+        if !allocated(index) {
             continue;
+        }
+        if portable[index] {
+            let class = manager
+                .get_entry(TagHash(node.template))
+                .ok_or_else(|| invalid("Private asset template is unavailable"))?
+                .reference;
+            use sha2::Digest;
+            recorded.push(((class, sha2::Sha256::digest(&payload).into()), tags.len()));
         }
         if let Some(target) = &node.reference {
             references.push(crate::NewTagReferenceOverride {
@@ -145,11 +179,17 @@ pub(in crate::item) fn author<M>(
     for (index, loading) in loading.iter().enumerate() {
         tags.push(loading.materialize(nodes, &symbols, plan.tag(loading_start + index)?)?);
     }
+    for (key, ordinal) in recorded {
+        let tag = plan.tag(ordinal)?;
+        shared.entry(key).or_insert(tag.0);
+    }
     packages.commit_graph(plan, tags, references)?;
     // Native replication allocations and their root are eager. The companion
-    // is reached through package enrollment rather than the global index.
+    // is reached through package enrollment rather than the global index. The client streams
+    // large buffers on demand, so no loading index lists them.
     let eager = nodes
         .iter()
+        .filter(|node| !streamed.contains(&node.symbol))
         .map(|node| symbols[&node.symbol])
         .chain(required)
         .collect::<BTreeSet<_>>()

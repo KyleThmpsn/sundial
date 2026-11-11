@@ -31,6 +31,7 @@ pub(super) fn save(
         .into_iter()
         .map(|reward| (reward.id, reward))
         .collect();
+    let preserved = super::Preserved::new(preserved, &["id"]);
     let mut ids = std::collections::BTreeSet::new();
     for reward in rewards {
         if reward.id <= 0 || !ids.insert(reward.id) {
@@ -57,7 +58,7 @@ pub(super) fn save(
                 .map_err(sql)?;
             }
         } else {
-            let mut row = super::matching(preserved, &[("id", reward.id)]);
+            let mut row = preserved.get(&[reward.id]);
             for (key, value) in [
                 ("id", reward.id),
                 ("character_slot", reward.character_slot as i64),

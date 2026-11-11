@@ -26,6 +26,21 @@ pub(super) fn compact(code: &[u8]) -> Result<Vec<u8>> {
     dxbc::rebuild(code, &tokens(code)?, None)
 }
 
+/// The most a scene pixel feeds bloom in the source, per RGB channel. Every Rise of Iron bloom
+/// entry program (`bloom_initial_downsample_*` in build 56578) clamps each scene sample to this
+/// literal before its brightness curve. Shadowkeep's entry programs clamp to frame row 5 Z, which
+/// held 512 in a live 86657 frame, and its film curve already shows any channel above about 6 at
+/// full output.
+const BLOOM_INPUT_LIMIT: f32 = 8.0;
+
+/// Limit a source transparent program's color to the source bloom input range. The displayed
+/// color is unchanged, because the film curve is saturated over the removed range, and native
+/// bloom receives what the source bloom did. Source emitters authored far above the limit, such
+/// as gains of 100, otherwise feed native bloom up to 64 times the source's input.
+pub(super) fn bloom_limit(code: &[u8]) -> Result<Vec<u8>> {
+    dxbc::limit_output(code, 0, BLOOM_INPUT_LIMIT)
+}
+
 /// Translate checked depth and ambient irradiance vectors in the named transparent scope.
 /// A declaration can include unused rows. Every actual read must have a qualified producer.
 pub(super) fn depth(code: &[u8], binding: &super::expression::Depth) -> Result<Vec<u8>> {
@@ -70,6 +85,92 @@ pub(super) fn depth(code: &[u8], binding: &super::expression::Depth) -> Result<V
         },
     )?
     .bytecode)
+}
+
+/// Readdress the light-sample results to the native region. Rise of Iron requests three 32 by 32
+/// results and its particle programs read them at `(u, v)`. Shadowkeep's are 32 by 64, and each
+/// of its 5,267 particle reads of textures 12 to 14 is preceded by a `mad` to `(u, 0.5 v + 0.5)`,
+/// the lower region. Both builds read with point clamp samplers and explicit LOD zero, so a
+/// source texel `(r, q)` becomes native texel `(r, q + 32)`. Each source read gets the same `mad`
+/// into one added temporary, written immediately before it.
+pub(super) fn light_samples(code: &[u8], slots: &[u32]) -> Result<Vec<u8>> {
+    let words = tokens(code)?;
+    let instructions = dxbc::walk(&words)?;
+    let reads = |instruction: &dxbc::Instruction| {
+        instruction.operands.iter().any(|operand| {
+            operand.kind == 7
+                && operand
+                    .indices
+                    .first()
+                    .copied()
+                    .flatten()
+                    .is_some_and(|at| slots.contains(&words[at]))
+        })
+    };
+    if !instructions
+        .iter()
+        .any(|i| reads(i) && !(0x58..=0x6A).contains(&i.opcode))
+    {
+        return Ok(code.to_vec());
+    }
+    let temps = instructions
+        .iter()
+        .filter(|i| i.opcode == 0x68)
+        .collect::<Vec<_>>();
+    let [temps] = temps.as_slice() else {
+        anyhow::bail!("Light-sample program temporary declaration differs");
+    };
+    ensure!(
+        temps.end - temps.start == 2,
+        "Light-sample temporary declaration width differs"
+    );
+    let register = words[temps.start + 1];
+    ensure!(
+        register < 4095,
+        "Light-sample program exceeds temporary capacity"
+    );
+    let mut output = words[..2].to_vec();
+    for instruction in &instructions {
+        let body = &words[instruction.start..instruction.end];
+        if instruction.start == temps.start {
+            output.extend([body[0], register + 1]);
+            continue;
+        }
+        if !reads(instruction) || (0x58..=0x6A).contains(&instruction.opcode) {
+            output.extend_from_slice(body);
+            continue;
+        }
+        let operands = &instruction.operands;
+        ensure!(
+            instruction.opcode == 0x48
+                && operands.len() == 5
+                && operands[2].kind == 7
+                && operands[3].kind == 6
+                && operands.windows(2).all(|v| v[0].token_at < v[1].token_at),
+            "Light-sample read is not a direct explicit-LOD sample"
+        );
+        let coordinate = operands[1].token_at..operands[2].token_at;
+        // mad r[register].xy, coordinate, l(1, 0.5, 1, 1), l(0, 0.5, 0, 0)
+        let mut mad = vec![0x32, 0x00100032, register];
+        mad.extend_from_slice(&words[coordinate.clone()]);
+        mad.extend([0x00004002, 1f32.to_bits(), 0.5f32.to_bits(), 1f32.to_bits()]);
+        mad.extend([1f32.to_bits(), 0x00004002, 0, 0.5f32.to_bits(), 0, 0]);
+        ensure!(
+            mad.len() <= 127,
+            "Light-sample coordinate exceeds SM5 length"
+        );
+        mad[0] |= (mad.len() as u32) << 24;
+        output.extend(mad);
+        // The sample then reads r[register].xyxx.
+        let mut sample = words[instruction.start..coordinate.start].to_vec();
+        sample.extend([0x00100046, register]);
+        sample.extend_from_slice(&words[coordinate.end..instruction.end]);
+        ensure!(sample.len() <= 127, "Light-sample read exceeds SM5 length");
+        sample[0] = (sample[0] & !(127 << 24)) | ((sample.len() as u32) << 24);
+        output.extend(sample);
+    }
+    output[1] = u32::try_from(output.len())?;
+    dxbc::rebuild(code, &output, None)
 }
 
 /// A mapped rigid vertex can change only the packed bone selector in POSITION0.w.

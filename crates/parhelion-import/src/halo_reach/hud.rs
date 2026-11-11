@@ -1,9 +1,8 @@
 //! Source-labelled HUD silhouettes from the bounded MCC icon font format.
 use super::{Scene, cache::Cache, resource::Pages};
 use anyhow::{Context, Result, ensure};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::{fs, io::Cursor, path::Path};
+use std::{fs, path::Path};
 mod font;
 pub(super) mod scope;
 
@@ -59,30 +58,14 @@ pub(super) fn prepare(
         .join("fonts/font_package_icon_x3.bin");
     pages.record(&path)?;
     let (glyph, offset) = font::read(&fs::read(&path)?, code as u16)?;
-    let scale = (137.0 / f64::from(glyph.width())).min(76.0 / f64::from(glyph.height()));
-    let width = (f64::from(glyph.width()) * scale).round().max(1.0) as u32;
-    let height = (f64::from(glyph.height()) * scale).round().max(1.0) as u32;
-    let resized =
-        image::imageops::resize(&glyph, width, height, image::imageops::FilterType::Lanczos3);
-    let mut canvas = image::RgbaImage::new(137, 76);
-    image::imageops::replace(
-        &mut canvas,
-        &resized,
-        i64::from((137 - width) / 2),
-        i64::from((76 - height) / 2),
-    );
-    let mut png = Cursor::new(Vec::new());
-    canvas.write_to(&mut png, image::ImageFormat::Png)?;
-    fs::write(source.join("hud.png"), png.get_ref())?;
+    let png = crate::hud_icon::fit(&glyph)?;
+    fs::write(source.join("hud.png"), &png)?;
     glyph.save(source.join("hud-source.png"))?;
-    if recipe["overrides"].is_null() {
-        recipe["overrides"] = json!({});
-    }
-    recipe["overrides"]["hud_icon"] = json!({"png_base64":STANDARD.encode(png.into_inner())});
+    crate::hud_icon::apply(recipe, &png);
     Ok(
         json!({"status":"translated", "label":label, "owner":owner, "glyph":format!("{code:04X}"),
         "font":"icon_x3\\fixedsys_hud-15", "font_file":path, "record_offset":offset,
-        "source_dimensions":[glyph.width(),glyph.height()], "dimensions":[137,76],
+        "source_dimensions":[glyph.width(),glyph.height()], "dimensions":crate::hud_icon::SIZE,
         "method":"Source glyph uniformly fitted and centered on a transparent canvas"}),
     )
 }

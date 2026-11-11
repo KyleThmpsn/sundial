@@ -270,6 +270,6 @@ pub(super) fn build(
         "-- Source evidence: {evidence}\nlocal ACTIVITY={:?}\nlocal PHASES={{{}}}\n{}",
         recipe.name.to_ascii_uppercase(),
         phases.join(",\n"),
-        include_str!("progression.lua")
+        include_str!("controller/progression.lua")
     ))
 }

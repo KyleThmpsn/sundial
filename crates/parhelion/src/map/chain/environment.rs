@@ -79,9 +79,19 @@ const BYTECODE_CLASS: u32 = 0x8080_0009;
 const CONSTANT_CLASS: u32 = 0x8080_0090;
 /// Push the first constant, then end.
 const CONSTANT_EXPRESSION: [u8; 4] = [0x34, 0x00, 0x3E, 0x00];
+/// The automatic exposure's lower and upper bounds, in base-2 stops of the frame's exposure scale.
+/// The exposure update (`0123E600` in the captured Shadowkeep image) clamps its target and the
+/// adapted exposure to them, and the stock channel table defaults them to -3 and 3.
+const EXPOSURE_MINIMUM: u32 = 5;
+const EXPOSURE_MAXIMUM: u32 = 6;
 /// The sun's intensity and color channels.
 const SUN_INTENSITY: u32 = 8;
 const SUN_COLOR: u32 = 9;
+/// The sky reflection generator's blend from the atmosphere's volume to its second volume
+/// (`Atmosphere+0x94`), `lerp(t0, t1, cb0[43].x)` in its pixel program `80B35F97`.
+const SKY_REFLECTION_BLEND: u32 = 43;
+/// Native cubemap grid modulation amplitude, multiplied by each volume's +0x150 value.
+const CUBEMAP_GRID: u32 = 134;
 /// How far the map's volume reaches past its pieces, sideways, below and above, in meters.
 const SIDE_MARGIN: f32 = 512.;
 const BELOW_MARGIN: f32 = 256.;
@@ -90,12 +100,15 @@ const ABOVE_MARGIN: f32 = 1024.;
 const INTERIOR_FADE: f32 = 2.;
 const INTERIOR_PRIORITY: u32 = 1;
 
-/// What the map's environment sets: the native sun's intensity and color at unit luminance, and
-/// the interior boxes where the sun is off.
+/// What the map's environment sets: the native sun's intensity and color at unit luminance, the
+/// automatic exposure's bounds in stops, the interior boxes where the sun is off, and whether the
+/// map's atmosphere names an interior volume, which the sky reflection blends to inside them.
 #[derive(Clone, Debug)]
 pub(in crate::map) struct Environment {
     pub sun_intensity: f32,
     pub sun_color: [f32; 3],
+    pub exposure: Option<[f32; 2]>,
+    pub interior_sky: bool,
     pub interiors: Vec<([f32; 3], [f32; 3])>,
 }
 
@@ -233,6 +246,7 @@ impl Template {
     pub(super) fn tags(
         &self,
         environment: &Environment,
+        color_grade: Option<TagHash>,
         bounds: ([f32; 3], [f32; 3]),
         at: &dyn Fn(usize) -> AuthoringResult<TagHash>,
     ) -> AuthoringResult<Vec<(TagHash, Vec<u8>, TagHash)>> {
@@ -259,6 +273,11 @@ impl Template {
             fade: 0.,
             priority: 0,
         }];
+        if let Some(grade) = color_grade {
+            // Type 6 retains a screen effect with this volume's native weight. The global volume
+            // covers every interior, so adding it to interior rows would apply the grade twice.
+            planned[0].rows.push((6, grade.0));
+        }
         if let Some(interior) = interior {
             planned.extend(environment.interiors.iter().map(|&(low, high)| Planned {
                 low,
@@ -309,20 +328,37 @@ impl Template {
         .map_err(|error| invalid(format!("Environment volume shapes: {error:#}")))?;
         tags.push((self.packfile, shapes, packfile));
         let color = environment.sun_color;
-        tags.push((
-            self.record,
-            self.modifier(&[
-                (SUN_INTENSITY, [environment.sun_intensity; 4]),
-                (SUN_COLOR, [color[0], color[1], color[2], 1.]),
-            ])?,
-            record,
-        ));
+        // An interior names the exposure bounds as well, so the camera's exposure keeps them
+        // inside an interior volume.
+        let exposure = environment
+            .exposure
+            .map_or_else(Vec::new, |[minimum, maximum]| {
+                vec![
+                    (EXPOSURE_MINIMUM, [minimum; 4]),
+                    (EXPOSURE_MAXIMUM, [maximum; 4]),
+                ]
+            });
+        // With an interior atmosphere volume, the sky reflection takes the outdoor volume across
+        // the map and the interior one inside interiors. Without one, channel 43 keeps its default.
+        let reflection = |blend: f32| {
+            environment
+                .interior_sky
+                .then_some((SKY_REFLECTION_BLEND, [blend; 4]))
+        };
+        let mut channels = exposure.clone();
+        channels.extend([
+            (SUN_INTENSITY, [environment.sun_intensity; 4]),
+            (SUN_COLOR, [color[0], color[1], color[2], 1.]),
+        ]);
+        channels.extend(reflection(0.));
+        channels.push((CUBEMAP_GRID, [1.; 4]));
+        tags.push((self.record, self.modifier(&channels)?, record));
         if let Some(interior) = interior {
-            tags.push((
-                self.record,
-                self.modifier(&[(SUN_INTENSITY, [0.; 4])])?,
-                interior,
-            ));
+            let mut channels = exposure;
+            channels.push((SUN_INTENSITY, [0.; 4]));
+            channels.extend(reflection(1.));
+            channels.push((CUBEMAP_GRID, [1.; 4]));
+            tags.push((self.record, self.modifier(&channels)?, interior));
         }
         Ok(tags)
     }

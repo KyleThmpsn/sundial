@@ -110,23 +110,17 @@ pub(crate) fn replace_file_if_unchanged(
             }
             Ok(())
         },
+        replace_path,
     )
 }
 
 /// Copies a complete source file beside its destination, flushes it, and atomically replaces the
-/// destination. The temporary file always lives on the destination filesystem.
-pub(crate) fn replace_file_from_path(source: &Path, destination: &Path) -> io::Result<()> {
-    let temporary = replacement_temporary_path(destination)?;
-    write_replacement(destination, &temporary, |file| {
-        let mut source = File::open(source)?;
-        io::copy(&mut source, file)?;
-        Ok(())
-    })
-}
-
-/// Like [`replace_file_from_path`], but replaces the destination only while `before_replace`
-/// accepts it. The check runs after the copy is flushed, immediately before the rename, so an
-/// outside writer's window is the rename alone rather than the whole copy.
+/// destination while `before_replace` accepts it. The temporary file always lives on the
+/// destination filesystem. The check runs after the copy is flushed, immediately before the
+/// rename, so an outside writer's window is the rename alone rather than the whole copy.
+/// Package installs and their recovery publish this way. A reader that opened the destination
+/// with delete sharing, as every Sundial package reader does, keeps the bytes it opened rather
+/// than blocking the replace. See [`replace_open_path`].
 pub(crate) fn replace_file_from_path_if(
     source: &Path,
     destination: &Path,
@@ -142,6 +136,7 @@ pub(crate) fn replace_file_from_path_if(
             Ok(())
         },
         before_replace,
+        replace_open_path,
     )
 }
 
@@ -165,7 +160,13 @@ fn write_replacement(
     temporary: &Path,
     write_contents: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
-    write_replacement_guarded(destination, temporary, write_contents, || Ok(()))
+    write_replacement_guarded(
+        destination,
+        temporary,
+        write_contents,
+        || Ok(()),
+        replace_path,
+    )
 }
 
 fn write_replacement_guarded(
@@ -173,6 +174,7 @@ fn write_replacement_guarded(
     temporary: &Path,
     write_contents: impl FnOnce(&mut File) -> io::Result<()>,
     before_replace: impl FnOnce() -> io::Result<()>,
+    replace: fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -183,7 +185,7 @@ fn write_replacement_guarded(
         file.sync_all()?;
         drop(file);
         before_replace()?;
-        replace_path(temporary, destination)
+        replace(temporary, destination)
     })();
     finish_file_operation(temporary, result)
 }
@@ -274,6 +276,92 @@ pub(crate) fn replace_path(source: &Path, destination: &Path) -> io::Result<()> 
         )
     })?;
     File::open(parent)?.sync_all()
+}
+
+/// Replaces `destination` while readers that share delete access hold it open. The classic
+/// rename in [`replace_path`] refuses a destination with any open handle (os error 5), so a
+/// second Sundial window reading a package stopped the install of that package. A POSIX rename
+/// unlinks the old file instead. Each open reader keeps the bytes it opened until it closes
+/// them, and later opens see the new file. A handle without delete sharing, such as one from
+/// Python's `open`, still refuses the replace (os error 32). Volumes without POSIX renames use
+/// the classic rename.
+#[cfg(windows)]
+fn replace_open_path(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::{
+        Foundation::{
+            ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, GENERIC_WRITE,
+        },
+        Storage::FileSystem::{
+            DELETE, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FileRenameInfoEx, SetFileInformationByHandle,
+        },
+    };
+    // FILE_RENAME_FLAG_REPLACE_IF_EXISTS and FILE_RENAME_FLAG_POSIX_SEMANTICS from winbase.h.
+    const REPLACE_IF_EXISTS: u32 = 0x1;
+    const POSIX_SEMANTICS: u32 = 0x2;
+
+    // Write access lets the flush below stand in for MOVEFILE_WRITE_THROUGH, which this rename
+    // has no flag for.
+    let file = OpenOptions::new()
+        .access_mode(DELETE | GENERIC_WRITE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(source)?;
+    let name: Vec<u16> = destination.as_os_str().encode_wide().collect();
+    let name_bytes = name.len() * size_of::<u16>();
+    let name_length = u32::try_from(name_bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination path is too long"))?;
+    // The structure's own one-character name array and padding cover the terminator.
+    let size = size_of::<FILE_RENAME_INFO>() + name_bytes;
+    let byte_count = u32::try_from(size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination path is too long"))?;
+    // Zeroed u64 words keep the handle field aligned and terminate the name.
+    let mut buffer = vec![0_u64; size.div_ceil(size_of::<u64>())];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: The zeroed buffer is aligned for FILE_RENAME_INFO and spans its header plus the
+    // name and terminator. The name is copied to the FileName offset within that allocation.
+    unsafe {
+        (*info).Anonymous.Flags = REPLACE_IF_EXISTS | POSIX_SEMANTICS;
+        (*info).FileNameLength = name_length;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            buffer
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(std::mem::offset_of!(FILE_RENAME_INFO, FileName))
+                .cast::<u16>(),
+            name.len(),
+        );
+    }
+    // SAFETY: The handle is open with delete access and the buffer outlives the call.
+    let renamed = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileRenameInfoEx,
+            buffer.as_ptr().cast(),
+            byte_count,
+        )
+    };
+    if renamed == 0 {
+        let error = io::Error::last_os_error();
+        drop(file);
+        return match error
+            .raw_os_error()
+            .and_then(|code| u32::try_from(code).ok())
+        {
+            Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION) => {
+                replace_path(source, destination)
+            }
+            _ => Err(error),
+        };
+    }
+    file.sync_all()
+}
+
+/// A rename already unlinks the old file and leaves open readers on it.
+#[cfg(not(windows))]
+fn replace_open_path(source: &Path, destination: &Path) -> io::Result<()> {
+    replace_path(source, destination)
 }
 
 #[cfg(test)]
@@ -390,7 +478,7 @@ mod tests {
         fs::write(&source, b"complete package replacement").unwrap();
         fs::write(&destination, b"old package").unwrap();
 
-        replace_file_from_path(&source, &destination).unwrap();
+        replace_file_from_path_if(&source, &destination, || Ok(())).unwrap();
 
         assert_eq!(
             fs::read(&destination).unwrap(),
@@ -407,7 +495,7 @@ mod tests {
         let destination = directory.0.join("destination.pkg");
         fs::write(&destination, b"original package").unwrap();
 
-        let error = replace_file_from_path(&source, &destination).unwrap_err();
+        let error = replace_file_from_path_if(&source, &destination, || Ok(())).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(fs::read(&destination).unwrap(), b"original package");

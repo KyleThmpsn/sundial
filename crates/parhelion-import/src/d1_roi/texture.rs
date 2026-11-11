@@ -2,6 +2,7 @@
 use super::*;
 use serde::Deserialize;
 mod amd;
+mod native;
 pub use amd::{LICENSE, SOURCE_URL};
 
 /// Storage metadata from the Xbox One source descriptor. Multisampled render targets and
@@ -124,7 +125,45 @@ pub fn decode(descriptor: &Descriptor, source: &[u8]) -> Result<Vec<u8>> {
     if descriptor.tile_mode == 8 {
         return linear(descriptor, source, &levels, per_layer, length);
     }
-    tiled(descriptor, source, &levels, length)
+    // Untiling is the costly step, and every import of an item that shares a texture, such as
+    // the plates many armor pieces compose, would repeat it. The result is remembered by its whole
+    // input, so a later import takes it from the store.
+    let remembered = length as u64 >= crate::store::SMALLEST;
+    let input = remembered.then(|| untiling_input(descriptor, source));
+    if let Some(input) = &input
+        && let Some(bytes) = crate::store::recall(UNTILED, input)
+        && bytes.len() == length
+    {
+        return Ok(bytes);
+    }
+    let bytes = tiled(descriptor, source, &levels, length)?;
+    if let Some(input) = &input {
+        crate::store::remember(UNTILED, input, &bytes);
+    }
+    Ok(bytes)
+}
+
+/// The store recipe untiled textures are remembered under. Raise its number with any change to
+/// what untiling produces.
+const UNTILED: &str = "xbox-untiled-1";
+
+/// What untiling reads: the descriptor's fields, then the stored bytes.
+fn untiling_input(descriptor: &Descriptor, source: &[u8]) -> Vec<u8> {
+    let fields = [
+        descriptor.format,
+        descriptor.width,
+        descriptor.height,
+        descriptor.depth,
+        descriptor.layers,
+        descriptor.mips,
+        descriptor.tile_mode,
+    ];
+    let mut input = Vec::with_capacity(fields.len() * 4 + source.len());
+    for field in fields {
+        input.extend_from_slice(&field.to_le_bytes());
+    }
+    input.extend_from_slice(source);
+    input
 }
 
 fn linear(

@@ -59,6 +59,17 @@ enum Oodle {
     IfPresent,
 }
 
+/// Cache status is diagnostic data. Ordinary progress headings can be worded independently.
+fn cache_hit(activity: Option<&crate::BuildActivity>) -> Option<&str> {
+    let Some(crate::BuildActivity::RuntimeDetail(message)) = activity else {
+        return None;
+    };
+    let (name, _) = message
+        .strip_prefix("Runtime cache for ")?
+        .split_once(": hit.")?;
+    Some(name)
+}
+
 /// A temporary install on the stock packages' volume holding hard links of every clean stock
 /// package, and of the Oodle runtime as `oodle` asks. Returns the view and its packages folder,
 /// which takes a bundle create-new without writing through to the stock files.

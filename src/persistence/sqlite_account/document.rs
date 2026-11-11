@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod appearance;
 mod inventory;
 mod metadata;
 mod rewards;
@@ -46,6 +47,7 @@ struct ProfilePersistence {
 struct CharacterPersistence {
     next_inventory_serial: u32,
     appearance_identity: Option<(u8, u8)>,
+    appearance_header: Option<[u8; 36]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +74,7 @@ pub(crate) struct SqliteAccountDocument {
     character_persistence: BTreeMap<EntityId, CharacterPersistence>,
     item_persistence: BTreeMap<EntityId, ItemPersistence>,
     pending_item_abilities: BTreeMap<EntityId, CharacterAbilities>,
+    pending_appearances: BTreeMap<EntityId, crate::character::Appearance>,
     profile_positions: BTreeMap<EntityId, usize>,
     reward_positions: BTreeMap<EntityId, usize>,
 }
@@ -95,6 +98,11 @@ impl SqliteAccountDocument {
             .get(index)
             .and_then(|character| self.character_persistence.get(&character.id))
             .is_some_and(|persistence| persistence.appearance_identity.is_none())
+            && self
+                .characters
+                .characters()
+                .get(index)
+                .is_some_and(|c| !self.pending_appearances.contains_key(&c.id))
     }
 
     pub(super) fn preserved_rows(&self, table: &str) -> &[super::writer::NativeRow] {
@@ -120,11 +128,12 @@ impl SqliteAccountDocument {
 
     pub(super) fn validate_native_edits(&self, db: &Connection) -> Result<(), SqliteAccountError> {
         for character in self.characters.characters() {
-            if let Some(identity) = self
-                .character_persistence
-                .get(&character.id)
-                .and_then(|p| p.appearance_identity)
-                && character.metadata.map(|m| (m.race, m.gender)) != Some(identity)
+            if let Some(identity) = self.character_persistence.get(&character.id).and_then(|p| {
+                self.pending_appearances
+                    .get(&character.id)
+                    .map(|a| (a.race, a.gender))
+                    .or(p.appearance_identity)
+            }) && character.metadata.map(|m| (m.race, m.gender)) != Some(identity)
             {
                 return Err(SqliteAccountError::invalid_data(
                     "characters.appearance_header",
@@ -595,6 +604,7 @@ fn load_in_transaction(
             character_persistence,
             item_persistence,
             pending_item_abilities: BTreeMap::new(),
+            pending_appearances: BTreeMap::new(),
         },
     )))
 }

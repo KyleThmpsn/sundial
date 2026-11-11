@@ -13,7 +13,7 @@ mod sequence;
 pub(super) use bank::revival_keys;
 pub use bank::{
     Built as PreparedBank, build as prepare_bank, resources as required_resources,
-    selected as prepare_selected_bank,
+    selected as prepare_selected_bank, selected_resources,
 };
 pub use lifecycle::initialize;
 pub use sequence::{Sequences, Written as WrittenSequenceInputs};

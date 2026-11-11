@@ -504,6 +504,11 @@ fn fire_sounds(behavior: &Value) -> Result<(Vec<&Value>, Option<Value>)> {
     Ok((sounds, barrels))
 }
 
+/// Every firing sound the effects in `queue` reach, the layers a firing effect plays together.
+pub(super) fn fire_sound_layers(behavior: &Value, queue: Vec<u64>) -> Result<Vec<&Value>> {
+    fire_sounds_from(behavior, queue)
+}
+
 pub(super) fn fire_sound_from(behavior: &Value, queue: Vec<u64>) -> Result<Option<&Value>> {
     let mut sounds = fire_sounds_from(behavior, queue)?;
     ensure!(
@@ -670,6 +675,11 @@ pub(super) fn native(
     }
     if let Some(barrels) = barrels {
         report["source_barrels"] = barrels;
+    }
+    // A loop route returns above, so a source loop reaching here has no native loop to carry it.
+    if selection::has_firing_loop(behavior)? {
+        report["omitted"] = json!([{"part":"attached firing loop",
+            "reason":"The native donor has no firing loop to carry the source loop"}]);
     }
     Ok(report)
 }

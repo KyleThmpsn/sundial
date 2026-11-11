@@ -37,13 +37,14 @@ pub(super) fn with_row(
     input: u8,
     value: f32,
     multiply: bool,
+    selection: Option<FixedSelection>,
 ) -> Result<Vec<u8>, String> {
     if property_rows(payload)?.iter().any(|row| row.key == key) {
         return Err(format!(
             "The bank already has a property row for key {key:08X}"
         ));
     }
-    with_row_under(payload, key, input, value, multiply)
+    with_row_under(payload, key, input, value, multiply, selection)
 }
 
 /// Whether the bank shows a priority-storage index for numeric property rows.
@@ -52,6 +53,7 @@ pub(super) fn has_handler(payload: &[u8]) -> Result<bool, String> {
         input: 0,
         value: 1.0,
         multiply: true,
+        selection: None,
     };
     Ok(handler_slot_in(
         &property_rows(payload)?,
@@ -68,15 +70,20 @@ pub(super) fn with_row_under(
     input: u8,
     value: f32,
     multiply: bool,
+    selection: Option<FixedSelection>,
 ) -> Result<Vec<u8>, String> {
     // Base ability initialization and property dispatch both expose exactly seven inputs.
     if input >= 7 || !value.is_finite() || (multiply && value < 0.0) {
         return Err("Invalid base ability input adjustment".into());
     }
+    if selection.is_some_and(|s| [u32::MAX, write::NO_NAME].contains(&s.required_key)) {
+        return Err("Numeric property row has an invalid gate".into());
+    }
     let modifier = Modifier::Scalar {
         input,
         value,
         multiply,
+        selection,
     };
     with_inputs(payload, key, modifier, &[(input, value, multiply)])
 }
@@ -192,6 +199,14 @@ fn with_inputs(
         _ => return Err("Unsupported numeric declaration".into()),
     };
     let input_definitions = array(&mut out, definitions.count + values.len(), INPUT_TWIN, 48);
+    let selection = match modifier {
+        Modifier::Scalar { selection, .. } => selection,
+        _ => None,
+    };
+    let gate = selection
+        .map(|s| s.required_key)
+        .filter(|&key| key != 0)
+        .map(|key| append_gate(&mut out, key));
     out.resize(out.len().next_multiple_of(16), 0);
 
     let placement = Placement {
@@ -201,12 +216,12 @@ fn with_inputs(
     let added = [Added {
         key,
         before: count,
-        gate: None,
+        gate,
         handler,
         classes,
         modifier_instance,
         modifier_definition,
-        body: Body::Own,
+        body: Body::Own(selection),
     }];
     write_rows(payload, &mut out, &layout, count, &placement, shift, &added)?;
     pair(

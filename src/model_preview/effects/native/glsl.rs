@@ -190,6 +190,12 @@ impl Program {
                 ),
                 30 => format!("{}+{}", b(1), b(2)),
                 35 => format!("{}*{}+{}", b(1), b(2), b(3)),
+                code @ (36 | 37) => format!(
+                    "uvec4({}(ivec4({}),ivec4({})))",
+                    if code == 36 { "max" } else { "min" },
+                    b(1),
+                    b(2)
+                ),
                 38 => {
                     // Audited skinning uses only the low product. Reject a live high result
                     // during contract validation instead of relying on optional GLSL int64.

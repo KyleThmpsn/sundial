@@ -30,6 +30,9 @@ pub struct EntryEdits {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<EntryIcon>,
+    /// Artwork the ability's HUD tile draws in place of its glyph. The node keeps `icon`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hud_artwork: Option<Icon>,
     /// The tree node and existing HUD tile's sRGB color. None inherits the subclass theme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
@@ -37,7 +40,7 @@ pub struct EntryEdits {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attached_abilities: Vec<AttachedAbility>,
     /// A complete prepared native ability graph, equipped under this entry's private row.
-    /// The prepared group owns its controller, bank and presentation.
+    /// The prepared group owns gameplay. Entry artwork and colors use private HUD copies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_ability: Option<ImportedAbility>,
     /// Sandbox perks it grants beyond its source's.
@@ -104,6 +107,21 @@ pub struct ImportedAbility {
     pub directory: std::path::PathBuf,
     pub sha256: String,
     pub symbol: String,
+    /// The source game's ability this one imports. Perk conditions that name its Shadowkeep
+    /// version accept this ability too, in the same build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceAbility>,
+}
+
+/// An ability of an imported source game, by the source and its stable identity there.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAbility {
+    /// The source game, as its importer names it.
+    pub source: String,
+    /// The ability's definitions row key in that game.
+    #[serde(with = "super::hex_hash")]
+    pub identity: u32,
 }
 
 /// A traced lane of a property row of the ability's stock bank, by the row's key and place among
@@ -530,14 +548,14 @@ impl EntryEdits {
                 || !self.bank_values.is_empty()
                 || self.damage_type.is_some()
                 || !self.attached_abilities.is_empty()
-                || self.icon.is_some()
-                || self.color.is_some()
+                // Borrowing another ability's glyph still needs an explicit source mapping.
+                || matches!(self.icon, Some(EntryIcon::Ability { .. }))
                 || self.extra_charges != 0
                 || self.recharge().is_some()
                 || !self.parameters.is_empty()
             {
                 return Err(format!(
-                    "{context}: edit an imported ability's behavior and HUD in its prepared group"
+                    "{context}: edit an imported ability's behavior in its prepared group"
                 ));
             }
         }
@@ -558,6 +576,7 @@ impl EntryEdits {
         if (self.extra_charges > 0
             || self.recharge().is_some()
             || !self.parameters.is_empty()
+            || self.hud_artwork.is_some()
             || !self.keeps_entity())
             && !modifiers::holds_ability(source_entry)
         {
@@ -604,6 +623,11 @@ impl EntryEdits {
         }
         if let Some(icon) = &self.icon {
             icon.validate(context)?;
+        }
+        if let Some(artwork) = &self.hud_artwork {
+            artwork
+                .validate()
+                .map_err(|error| format!("{context}: {error}"))?;
         }
         let mut attached = BTreeSet::new();
         for edit in &self.attached_abilities {

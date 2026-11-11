@@ -398,18 +398,6 @@ fn base_roll(recipe: &WeaponRecipe, socket: &sundial::investment::WeaponSocket) 
     })
 }
 
-/// Whether a lane rolls from its own choices or its base rolls it, the sockets Randomized lists
-/// first.
-fn lane_rolls(recipe: &WeaponRecipe, socket: &sundial::investment::WeaponSocket) -> bool {
-    base_roll(recipe, socket).is_some()
-        || recipe
-            .overrides
-            .socket_columns
-            .get(socket.index)
-            .and_then(Option::as_ref)
-            .is_some_and(|column| column.reusable_choices.is_some())
-}
-
 pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContext<'_>) {
     let SocketPickerContext {
         catalog,
@@ -476,14 +464,14 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
         })
         .map(|socket| socket.index)
         .collect::<BTreeSet<_>>();
-    // Randomized lists the sockets that roll and folds the rest, where a roll can still start.
-    let (rows, others): (Vec<_>, Vec<_>) = effective_donor
+    // Keep the same socket rows in both views so a roll can start on a reusable-only socket
+    // without moving that socket or hiding its controls.
+    let rows = effective_donor
         .sockets
         .iter()
         .filter(|socket| !unused.contains(&socket.index))
-        .partition(|socket| view == SocketView::Reusable || lane_rolls(recipe, socket));
-    let rows = rows.iter().map(|socket| socket.index).collect::<Vec<_>>();
-    let others = others.iter().map(|socket| socket.index).collect::<Vec<_>>();
+        .map(|socket| socket.index)
+        .collect::<Vec<_>>();
     let preview = crate::app::donor_view::preview::loadout(catalog, recipe);
     let mut draw_row = |ui: &mut egui::Ui, socket_index: usize| {
         draw_socket_picker_row(
@@ -511,17 +499,6 @@ pub(super) fn draw_socket_pickers(ui: &mut egui::Ui, context: SocketPickerContex
     };
     for &socket_index in &rows {
         draw_row(ui, socket_index);
-    }
-    if !others.is_empty() {
-        egui::CollapsingHeader::new(format!("Other Sockets · {}", others.len()))
-            .id_salt("randomized-other-sockets")
-            .show(ui, |ui| {
-                for &socket_index in &others {
-                    draw_row(ui, socket_index);
-                }
-            })
-            .header_response
-            .on_hover_text("Sockets that do not roll. Adding a choice here starts a roll.");
     }
     if gear {
         draw_add_socket(ui, catalog, recipe, donor);
@@ -1729,35 +1706,46 @@ pub(super) fn set_choice_reusable(
 }
 
 /// Rolls a lane from its choices and `randomized`, the base's other randomized plugs, which join
-/// after them as randomized choices. The current choices stay reusable.
+/// after them as randomized choices. The current choices stay reusable. A socket rolls from at
+/// most [`crate::item::MAX_ROLLED_CHOICES`] choices, so only the base plugs that fit are added, in
+/// the base's order. Returns how many were added and how many stayed out for lack of room. A
+/// full socket adds none and says so.
 pub(super) fn roll_from_base(
     recipe: &mut WeaponRecipe,
     socket_count: usize,
     socket_index: usize,
     inherited: &[u32],
     randomized: &[u32],
-) -> Result<(), String> {
+) -> Result<(usize, usize), String> {
     let mut choices = recipe_socket_choices(recipe, socket_index, inherited)?;
     let reusable = choices.len();
     if reusable == 0 {
         return Err("Set a plug before rolling this socket.".into());
     }
-    let added = randomized
+    let mut added = randomized
         .iter()
         .copied()
         .filter(|plug| !choices.contains(plug))
         .collect::<Vec<_>>();
-    choices.extend(added);
-    choices.truncate(crate::item::MAX_ROLLED_CHOICES);
-    if choices.len() <= reusable {
-        return Ok(());
+    if added.is_empty() {
+        return Ok((0, 0));
     }
+    let room = crate::item::MAX_ROLLED_CHOICES.saturating_sub(reusable);
+    if room == 0 {
+        return Err(format!(
+            "This socket already has {reusable} choices, the most a socket can roll from. Remove choices to make room for the base roll."
+        ));
+    }
+    let left = added.len().saturating_sub(room);
+    added.truncate(room);
+    let count = added.len();
+    choices.extend(added);
     let lead = u16::try_from(reusable).unwrap_or(u16::MAX);
     set_recipe_socket_column(recipe, socket_count, socket_index, inherited, choices);
     if let Some(Some(column)) = recipe.overrides.socket_columns.get_mut(socket_index) {
         column.reusable_choices = Some(lead);
     }
-    Ok(())
+    Ok((count, left))
 }
 
 /// The reusable lead after choice `from` of a column whose first `lead` choices are reusable

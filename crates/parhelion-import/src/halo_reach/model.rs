@@ -79,11 +79,20 @@ pub struct Model {
 
 impl Model {
     pub(super) fn marker_selected(&self, marker: &Marker) -> Result<bool> {
+        self.marker_selected_in(marker, &self.selected)
+    }
+
+    /// Whether `marker` is present when `selection` names each region's permutation.
+    pub(super) fn marker_selected_in(
+        &self,
+        marker: &Marker,
+        selection: &BTreeMap<String, String>,
+    ) -> Result<bool> {
         let Some(region) = marker.region else {
             return Ok(true);
         };
         let region = self.regions.get(region).context("Marker region")?;
-        let selected = self.selected.get(&region.name);
+        let selected = selection.get(&region.name);
         if let Some(permutation) = marker.permutation {
             let permutation = region
                 .permutations
@@ -315,10 +324,14 @@ fn decode_vertices(
         } else {
             let normal = rig::normalize([snorm(20), snorm(22), snorm(24)])?;
             let t = rig::normalize([snorm(28), snorm(30), snorm(32)])?;
-            (
-                normal,
-                [t[0], t[1], t[2], if snorm(34) < 0. { -1. } else { 1. }],
-            )
+            // Reach's world, rigid and skinned vertex consumers reconstruct the bitangent
+            // from POSITION.w. The fourth packed tangent component is not its sign.
+            let handedness = f(12);
+            ensure!(
+                handedness == 0. || handedness == 1.,
+                "Invalid source tangent handedness"
+            );
+            (normal, [t[0], t[1], t[2], 2. * handedness - 1.])
         };
         let mut joints = [u16::try_from(rigid)?; 4];
         let mut weights = [1., 0., 0., 0.];
@@ -770,6 +783,9 @@ fn decode(
                 let part = *parts
                     .get(part_index)
                     .context("Instance material part outside table")?;
+                if shield_part(cache, part)? {
+                    continue;
+                }
                 let mut primitive = draw(
                     cache,
                     si,
@@ -789,6 +805,9 @@ fn decode(
             }
         } else {
             for (pi, &part) in parts.iter().enumerate() {
+                if shield_part(cache, part)? {
+                    continue;
+                }
                 let primitive = draw(
                     cache,
                     si,
@@ -820,6 +839,15 @@ fn decode(
         materials,
         primitives,
     })
+}
+
+/// Whether a mesh part (rows of 24 bytes) draws only in Reach's shield pass, its specialized render
+/// byte at `+0x11` being 5 (Assembly Reach `mode.xml`). The Sabre's and Seraph's `shield` regions
+/// are such parts, a hull-sized shell with an unlit constant grey shader that Reach shows only when
+/// the shield is hit. Drawn as ordinary geometry it covered both craft in white (Dawn 1.7.2,
+/// 2026-11-06), and Shadowkeep has no shield pass for vehicle geometry, so these parts are not drawn.
+fn shield_part(cache: &Cache, part: usize) -> Result<bool> {
+    Ok(cache.u8(part + 0x11)? == 5)
 }
 
 fn place_instance(

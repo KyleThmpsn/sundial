@@ -55,12 +55,12 @@ fn prefix(rig: &Value) -> Option<Vec<Value>> {
 }
 
 pub(super) fn inspect(r: &mut Reader, modern: bool) -> Result<Value> {
-    let patterns = patterns(r, modern)?;
-    let entities = entities(r, modern, &patterns.iter().map(|(key, _)| *key).collect())?;
+    let patterns = pattern::rows(r, modern)?;
+    let entities = entities(r, modern, &patterns.iter().map(|p| p.key).collect())?;
     let mut visited = BTreeSet::new();
     let mut inspected = Vec::new();
     let mut shared = None;
-    for &(key, content) in &patterns {
+    for &pattern::Pattern { key, content, .. } in &patterns {
         let Some(targets) = entities.get(&key).filter(|e| e.len() == 1) else {
             continue;
         };

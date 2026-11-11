@@ -21,7 +21,7 @@ impl Owner {
     /// Continue construction on a native envelope whose callback and lifecycle tables have
     /// been cleared. The caller must supply every retained private identity before sealing.
     pub fn adopt(payload: Payload, symbol: &str) -> Result<Self> {
-        crate::d1_roi::ability::dependency::symbol(symbol)?;
+        crate::d1_roi::dependency::symbol(symbol)?;
         let runtime = payload.pointer(16)?;
         let definition = payload.pointer(24)?;
         let id = payload.u32(runtime)?;

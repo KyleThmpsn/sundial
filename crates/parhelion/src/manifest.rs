@@ -78,10 +78,12 @@ impl ManifestDocument {
         validate_artifact_metadata("merge data", &self.merge_data)?;
         validate_merge_data(&self.artifacts, &self.merge_data)?;
         validate_artifact_metadata("mission controller", &self.mission_scripts)?;
+        // Another family member's files are staged as `<member id>/<native name>`, which the
+        // family check below confirms.
         let mut scripts = BTreeSet::new();
         for artifact in &self.mission_scripts {
             use sundial::package_authoring::mod_content::mission_script;
-            if mission_script::path(&artifact.file_name).is_none()
+            if mission_script::path(crate::mod_family::native_name(&artifact.file_name)).is_none()
                 || artifact.byte_length > mission_script::BYTE_LIMIT
                 || !scripts.insert(&artifact.file_name)
             {
@@ -97,7 +99,7 @@ impl ManifestDocument {
         )?;
         if let Some(artifact) = &self.map_diagnostics {
             use sundial::package_authoring::mod_content::map_diagnostics;
-            if artifact.file_name != map_diagnostics::FILE_NAME
+            if crate::mod_family::native_name(&artifact.file_name) != map_diagnostics::FILE_NAME
                 || artifact.byte_length == 0
                 || artifact.byte_length > map_diagnostics::BYTE_LIMIT
             {
@@ -105,7 +107,23 @@ impl ManifestDocument {
             }
             validate_sha256("map diagnostics", &artifact.sha256)?;
         }
-        self.project.validate()
+        // Each member builds against stock, so its item and collectible indexes count on from
+        // the stock tables' ends like another member's until Sunrise's merge renumbers them. A
+        // weapon's member is the one whose receipt holds its records package.
+        let members = self
+            .mods
+            .iter()
+            .flat_map(|member| {
+                member.receipt.artifacts.iter().filter_map(|artifact| {
+                    let name = artifact.path.rsplit('/').next()?;
+                    let profile = crate::package_profile::authored_package_for_file_name(name)?;
+                    (!profile.stock_overlay)
+                        .then_some((profile.package_id, member.manifest.id.as_str()))
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        self.project
+            .validate(&|tag| members.get(&TagHash(tag).pkg_id()).copied())
     }
 }
 
@@ -233,12 +251,15 @@ impl ManifestProject {
                         hash: ManifestHash::new(collection.collectible_hash),
                         index: collection.collectible_index,
                     }),
-                    unlock: plan.collection.map(|collection| ManifestUnlockIdentity {
-                        hash: ManifestHash::new(collection.unlock_hash),
-                        definition_index: collection.unlock_definition_index,
-                        bank: collection.unlock_bank,
-                        slot: collection.unlock_slot,
-                    }),
+                    unlock: plan
+                        .collection
+                        .and_then(|collection| collection.unlock)
+                        .map(|unlock| ManifestUnlockIdentity {
+                            hash: ManifestHash::new(unlock.hash),
+                            definition_index: unlock.definition_index,
+                            bank: unlock.bank,
+                            slot: unlock.slot,
+                        }),
                     donor: ManifestDonorIdentity {
                         item_hash: ManifestHash::new(plan.template_item_hash),
                         definition_tag: ManifestHash::new(plan.template_definition_tag.0),
@@ -278,7 +299,9 @@ impl ManifestProject {
         })
     }
 
-    fn validate(&self) -> Result<(), String> {
+    /// `member` names the family member whose package holds a record tag, `None` outside a
+    /// family. Indexes repeat only across members.
+    fn validate<'a>(&self, member: &dyn Fn(u32) -> Option<&'a str>) -> Result<(), String> {
         let mut namespaces = BTreeSet::new();
         let mut item_hashes = BTreeSet::new();
         let mut item_indices = BTreeSet::new();
@@ -298,18 +321,25 @@ impl ManifestProject {
                 ));
             }
             insert_unique(&mut item_hashes, weapon.item.hash.get(), "item hash")?;
-            insert_unique(&mut item_indices, weapon.item.index, "item index")?;
+            let owner = member(weapon.item.definition_tag.get());
+            if !item_indices.insert((owner, weapon.item.index)) {
+                return Err(format!(
+                    "The manifest repeats item index {}",
+                    weapon.item.index
+                ));
+            }
             if let Some(collectible) = &weapon.collectible {
                 insert_unique(
                     &mut collectible_hashes,
                     collectible.hash.get(),
                     "collectible hash",
                 )?;
-                insert_unique(
-                    &mut collectible_indices,
-                    collectible.index,
-                    "collectible index",
-                )?;
+                if !collectible_indices.insert((owner, collectible.index)) {
+                    return Err(format!(
+                        "The manifest repeats collectible index {}",
+                        collectible.index
+                    ));
+                }
             }
             if let Some(unlock) = &weapon.unlock {
                 insert_unique(&mut unlock_hashes, unlock.hash.get(), "unlock hash")?;
@@ -410,8 +440,10 @@ impl ManifestWeapon {
         } else {
             self.kind.has_collections()
         };
-        if collected == (self.collectible.is_none() && self.unlock.is_none())
-            || self.collectible.is_none() != self.unlock.is_none()
+        // An entry acquired unconditionally, as every entry of a mod loader build is, has no
+        // unlock. An unlock always belongs to an entry.
+        if collected == self.collectible.is_none()
+            || (self.collectible.is_none() && self.unlock.is_some())
         {
             return Err(format!(
                 "Manifest {} {} has {} Collections entry",

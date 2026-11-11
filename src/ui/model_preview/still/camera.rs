@@ -6,9 +6,15 @@ const MAX_ZOOM: f32 = 8.0;
 const ZOOM_STEP: f32 = 1.25;
 
 impl Still {
+    pub(super) fn home_camera(&self) -> Camera {
+        self.wanted
+            .as_ref()
+            .map_or_else(Camera::default, |wanted| wanted.1.camera())
+    }
+
     pub(super) fn interact(&mut self, ui: &egui::Ui, response: &egui::Response) {
         if response.double_clicked() {
-            self.camera = Camera::default();
+            self.camera = self.home_camera();
         } else if response.dragged() {
             let delta = response.drag_delta();
             let panning = ui.input(|input| {
@@ -72,11 +78,14 @@ pub fn zoom_controls(ui: &mut egui::Ui, id: egui::Id) {
                 still.zoom(ZOOM_STEP, [0.5; 2]);
             }
             if ui
-                .add_enabled(still.camera != Camera::default(), egui::Button::new("Fit"))
+                .add_enabled(
+                    still.camera != still.home_camera(),
+                    egui::Button::new("Fit"),
+                )
                 .on_hover_text("Restore the starting view.")
                 .clicked()
             {
-                still.camera = Camera::default();
+                still.camera = still.home_camera();
             }
         });
     });

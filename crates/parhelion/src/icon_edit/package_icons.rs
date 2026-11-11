@@ -206,9 +206,49 @@ pub(crate) fn author(
     manager: &PackageManager,
     icon: &crate::perk::Icon,
     template: TagHash,
+    destination: (u16, usize),
+    nodes: &mut Vec<NewTagSpec>,
+    references: &mut Vec<crate::NewTagReferenceOverride>,
+) -> AuthoringResult<TagHash> {
+    author_fitted(
+        manager,
+        icon,
+        template,
+        destination,
+        nodes,
+        references,
+        true,
+    )
+}
+
+/// Artwork drawn to the canvas edge, as the HUD's glyphs are, without a perk glyph's inset.
+pub(crate) fn author_exact(
+    manager: &PackageManager,
+    icon: &crate::perk::Icon,
+    template: TagHash,
+    destination: (u16, usize),
+    nodes: &mut Vec<NewTagSpec>,
+    references: &mut Vec<crate::NewTagReferenceOverride>,
+) -> AuthoringResult<TagHash> {
+    author_fitted(
+        manager,
+        icon,
+        template,
+        destination,
+        nodes,
+        references,
+        false,
+    )
+}
+
+fn author_fitted(
+    manager: &PackageManager,
+    icon: &crate::perk::Icon,
+    template: TagHash,
     (package, first): (u16, usize),
     nodes: &mut Vec<NewTagSpec>,
     references: &mut Vec<crate::NewTagReferenceOverride>,
+    inset: bool,
 ) -> AuthoringResult<TagHash> {
     let allocator = crate::appended_tags::AppendedTagAllocator::new(package, first);
     let pixels = match icon {
@@ -225,7 +265,8 @@ pub(crate) fn author(
                 image::Rgba(image[(x as usize, y as usize)].to_srgba_unmultiplied())
             })
         }
-        crate::perk::Icon::Image { image, .. } => super::glyph::fit(&image.fit_to(96, 96)),
+        crate::perk::Icon::Image { image, .. } if inset => super::glyph::fit(&image.fit_to(96, 96)),
+        crate::perk::Icon::Image { image, .. } => image.fit_to(96, 96),
     };
     let edit = super::WeaponIconEdit {
         imported_image: Some(super::ImportedIcon::from_normalized(pixels).map_err(invalid)?),

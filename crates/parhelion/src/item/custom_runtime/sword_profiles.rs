@@ -50,6 +50,13 @@ pub(super) struct Imported {
     powered: String,
     depleted: String,
     effect: String,
+    /// The contacts' private surface impact table and the stock table it copies.
+    surface: Option<(String, u32)>,
+    /// False when every trajectory and the row's lunge distance move zero metres and the
+    /// reach ends at the contact distance.
+    lunge: bool,
+    /// The native air action the airborne rows take in place of the donor's.
+    aerial: Option<(u32, u32)>,
 }
 
 #[cfg(feature = "d2-model-importer")]
@@ -77,6 +84,29 @@ impl Imported {
             powered: text("powered_contact")?,
             depleted: text("depleted_contact")?,
             effect: text("root")?,
+            surface: match value.get("surface") {
+                None => None,
+                Some(_) => Some((
+                    text("surface")?,
+                    value["source_surface"]
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .ok_or_else(|| invalid("Imported sword surface lacks its source"))?,
+                )),
+            },
+            lunge: value["lunge"].as_bool().unwrap_or(true),
+            aerial: match value.get("aerial_action") {
+                None => None,
+                Some(aerial) => {
+                    let word = |key: &str| {
+                        aerial[key]
+                            .as_u64()
+                            .and_then(|v| u32::try_from(v).ok())
+                            .ok_or_else(|| invalid("Imported sword aerial action is invalid"))
+                    };
+                    Some((word("replaces")?, word("action")?))
+                }
+            },
         }))
     }
 
@@ -115,6 +145,9 @@ impl Imported {
                     "Imported sword contact is not an absolute damage profile",
                 ));
             }
+        }
+        if let Some((surface, _)) = &self.surface {
+            node(surface)?;
         }
         let root = node(&self.effect)?;
         if crate::tag_payload::read_u16(&root.payload, 0x96)? != 17 {
@@ -158,6 +191,10 @@ impl Imported {
         let powered = resolve(&self.powered)?;
         let depleted = resolve(&self.depleted)?;
         let effect = resolve(&self.effect)?;
+        let surface = match &self.surface {
+            Some((symbol, source)) => Some((resolve(symbol)?, *source)),
+            None => None,
+        };
         let resource = usize::try_from(binding.resource_offset)
             .map_err(|_| invalid("Sword resource offset overflows"))?;
         if resource < 4
@@ -170,10 +207,22 @@ impl Imported {
         }
         let mut values = BTreeMap::new();
         let mut counts = [0usize; 2];
+        let mut aerial_rows = 0;
         for bank in profile_banks(&owner, resource)? {
             for index in 0..bank.count {
                 let row = bank.rows + index * PROFILE_SIZE;
                 let powered_row = powered_row(&owner, row)?;
+                if let Some((replaces, action)) = self.aerial
+                    && read_u32(&owner, row)? == replaces
+                    && read_u32(&owner, row + 4)? == replaces
+                {
+                    // The selected air action and the row's forward lane at +1B4, which the
+                    // stock slam rows leave zero.
+                    values.insert(row, action);
+                    values.insert(row + 4, action);
+                    values.insert(row + 0x1B4, 0);
+                    aerial_rows += 1;
+                }
                 let strike = f32::from_bits(read_u32(&owner, row + 0x1A0)?);
                 if powered_row && (!strike.is_finite() || strike < 0.) {
                     return Err(invalid("Powered sword attack has no timed strike"));
@@ -182,6 +231,34 @@ impl Imported {
                 let contact = relative_target(&owner, row + 0x1A8)?;
                 if read_u32(&owner, contact.saturating_sub(4))? != 0x8080_4455 {
                     return Err(invalid("Imported sword requires a native contact attack"));
+                }
+                if !self.lunge {
+                    // Stock grounded rows that strike in place, such as the relic slams, keep
+                    // their trajectory block with distance zero at +20 and store zero at +204.
+                    // A row with no trajectory still moves the player, as the air lunge does.
+                    values.insert(row + 0x204, 0);
+                    for block in trajectory_blocks(&owner, row)? {
+                        values.insert(block + 0x20, 0);
+                    }
+                    // The reach at +2C exceeds the contact distance at +8 on most stock rows.
+                    // Holding it to the contact distance leaves no target beyond the strike to
+                    // close on.
+                    let reach = f32::from_bits(read_u32(&owner, row + 0x2C)?);
+                    let distance = f32::from_bits(read_u32(&owner, contact + 8)?);
+                    if !distance.is_finite() || distance <= 0. || !reach.is_finite() {
+                        return Err(invalid("Imported sword contact has no strike distance"));
+                    }
+                    if reach > distance {
+                        values.insert(row + 0x2C, distance.to_bits());
+                    }
+                }
+                if let Some((table, source)) = surface {
+                    if read_u32(&owner, contact + 0x38)? != source {
+                        return Err(invalid(
+                            "Imported sword contact names another surface table",
+                        ));
+                    }
+                    values.insert(contact + 0x38, table.0);
                 }
                 for (at, value) in [
                     (row + 0x198, if powered_row { effect.0 } else { u32::MAX }),
@@ -201,6 +278,11 @@ impl Imported {
         if counts.contains(&0) {
             return Err(invalid(
                 "Imported sword requires powered and depleted attacks",
+            ));
+        }
+        if self.aerial.is_some() && aerial_rows == 0 {
+            return Err(invalid(
+                "Imported sword donor has no aerial attack to replace",
             ));
         }
         values
@@ -341,6 +423,27 @@ fn profile_banks(owner: &[u8], resource: usize) -> AuthoringResult<Vec<Bank>> {
         )));
     }
     Ok(banks)
+}
+
+/// The `80804444` trajectory blocks a profile row references. The +118 array holds one
+/// relative pointer per block.
+#[cfg(feature = "d2-model-importer")]
+fn trajectory_blocks(owner: &[u8], row: usize) -> AuthoringResult<Vec<usize>> {
+    if read_u64(owner, row + 0x118)? == 0 {
+        return Ok(Vec::new());
+    }
+    let (count, entries) = checked_array(owner, row + 0x118, 0x8080_4446, 8)?;
+    (0..count)
+        .map(|index| {
+            let block = relative_target(owner, entries + index * 8)?;
+            if read_u32(owner, block.saturating_sub(4))? != 0x8080_4444
+                || block + 0x24 > owner.len()
+            {
+                return Err(invalid("Sword attack has an unsupported trajectory block"));
+            }
+            Ok(block)
+        })
+        .collect()
 }
 
 fn profile_pointers(owner: &[u8], row: usize) -> AuthoringResult<Vec<(usize, usize)>> {

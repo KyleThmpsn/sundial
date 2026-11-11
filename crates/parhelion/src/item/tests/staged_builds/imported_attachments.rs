@@ -89,6 +89,7 @@ fn persisted_attachment_groups_bind_private_actions_and_owners() {
             sha256: parhelion_import::d2_mot::native::attachment::fingerprint(&graph_directory)
                 .unwrap(),
             symbol: "attachment-fixture-root".into(),
+            graph: None,
         }],
         ..Default::default()
     });

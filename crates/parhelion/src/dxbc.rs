@@ -1,8 +1,8 @@
 //! Bounded SM5 operands and container rebuilding for edits of native pixel programs: gear
 //! material glow and effect color grades.
 use crate::{AuthoringResult, error::invalid};
+use sundial::package_authoring::dxbc::checksum;
 
-mod checksum;
 pub(crate) mod grade;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,7 +163,7 @@ impl Program {
         {
             return Err(invalid("Unsupported shader container"));
         }
-        if bytes.get(4..20) != Some(checksum::compute(bytes)?.as_slice()) {
+        if bytes.get(4..20) != Some(checksum(bytes).map_err(invalid)?.as_slice()) {
             return Err(invalid("Shader program checksum differs"));
         }
         let count = word(bytes, 28)? as usize;
@@ -293,7 +293,7 @@ impl Program {
         }
         let len = result.len() as u32;
         result[24..28].copy_from_slice(&len.to_le_bytes());
-        let hash = checksum::compute(&result)?;
+        let hash = checksum(&result).map_err(invalid)?;
         result[4..20].copy_from_slice(&hash);
         Ok(result)
     }

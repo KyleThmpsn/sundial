@@ -1,4 +1,6 @@
-//! One applied Jump key owns all its ordered fixed rows and their shared reference lifetime.
+//! One applied Jump or Glide key owns all its ordered fixed rows and their shared reference
+//! lifetime.
+use super::fixed::{FIXED_WORDS, GLIDE_CLASS, program, wide_words};
 use super::write::NO_NAME;
 use super::*;
 
@@ -8,7 +10,8 @@ use super::*;
 pub struct FixedWitness {
     pub key: u32,
     pub selection: FixedSelection,
-    pub words: [u32; 8],
+    #[serde(with = "wide_words")]
+    pub words: [u32; FIXED_WORDS],
 }
 
 /// The template establishes the native storage and priority slot. The emitted selection is
@@ -17,25 +20,35 @@ pub struct FixedWitness {
 #[serde(deny_unknown_fields)]
 pub struct FixedRow {
     pub class: u32,
-    pub words: [u32; 8],
+    #[serde(with = "wide_words")]
+    pub words: [u32; FIXED_WORDS],
     pub selection: FixedSelection,
     pub witness: FixedWitness,
 }
 
+/// The bank pairs whose ordered rows the writer takes, definition and instance markers: Jump and
+/// Glide, which share their bases, sizes and priority storage.
+const MOVEMENT_BANKS: [(u32, u32); 2] = [(0x8080429E, 0x8080429F), (0x80804251, 0x80804252)];
+
 fn word_count(class: u32) -> Result<usize, String> {
     match class {
-        0x808044D2 | 0x808042A5 => Ok(1),
+        0x808044D2 | 0x808042A5 | program::CLASS => Ok(1),
         0x808044D4 => Ok(2),
         0x808044D6 => Ok(4),
-        _ => Err("Ordered ability rows require a qualified Jump modifier".into()),
+        GLIDE_CLASS => Ok(15),
+        _ => Err("Ordered ability rows require a qualified movement modifier".into()),
     }
 }
 
-fn valid_words(class: u32, words: &[u32; 8]) -> Result<(), String> {
+fn valid_words(class: u32, words: &[u32; FIXED_WORDS]) -> Result<(), String> {
     let count = word_count(class)?;
     let valid = match class {
         0x808044D2 => words[0] <= 1,
         0x808042A5 => (1..=16).contains(&words[0]),
+        // Glide factors and a program's constant may be negative, as stock glide rows are.
+        GLIDE_CLASS | program::CLASS => words[..count]
+            .iter()
+            .all(|&word| f32::from_bits(word).is_finite()),
         _ => words[..count]
             .iter()
             .all(|&word| f32::from_bits(word).is_finite() && f32::from_bits(word) >= 0.0),
@@ -56,11 +69,12 @@ impl FixedRow {
     pub fn validate(&self) -> Result<(), String> {
         valid_words(self.class, &self.words)?;
         valid_words(self.class, &self.witness.words)?;
+        // The witness supplies storage, body class and handler slot. Its priority selects it
+        // among stock rows. The emitted row keeps its source priority, which may differ.
         if [0, u32::MAX, NO_NAME].contains(&self.witness.key)
             || !valid_selection(self.class, self.selection)
             || !valid_selection(self.class, self.witness.selection)
             || self.selection.name != self.witness.selection.name
-            || self.selection.priority != self.witness.selection.priority
         {
             return Err("Ordered Jump row has an unqualified selection or witness".into());
         }
@@ -123,8 +137,12 @@ fn selection(payload: &[u8], at: usize) -> Result<FixedSelection, String> {
     })
 }
 
-fn words(payload: &[u8], modifier: usize, class: u32) -> Result<[u32; 8], String> {
-    let mut words = [0; 8];
+fn words(payload: &[u8], modifier: usize, class: u32) -> Result<[u32; FIXED_WORDS], String> {
+    let mut words = [0; FIXED_WORDS];
+    if class == program::CLASS {
+        words[0] = program::constant(payload, modifier)?;
+        return Ok(words);
+    }
     for (index, word) in words[..word_count(class)?].iter_mut().enumerate() {
         *word = u32_at(payload, modifier + 16 + 4 * index)?;
     }
@@ -148,14 +166,15 @@ fn check_body(payload: &[u8], layout: &Layout, modifier: usize, class: u32) -> R
     words(payload, modifier, class).map(|_| ())
 }
 
-fn jump_layout(payload: &[u8]) -> Result<Layout, String> {
+fn movement_layout(payload: &[u8]) -> Result<Layout, String> {
     let layout = layout(payload)?;
-    if u32_at(payload, layout.definition - 4)? != 0x8080429E
-        || u32_at(payload, layout.instance - 4)? != 0x8080429F
-        || u32_at(payload, layout.definition + BLOCK_CLASS)? != 0x8080429F
-        || u32_at(payload, layout.instance + BLOCK_CLASS)? != 0x8080429E
+    let definition = u32_at(payload, layout.definition - 4)?;
+    let instance = u32_at(payload, layout.instance - 4)?;
+    if !MOVEMENT_BANKS.contains(&(definition, instance))
+        || u32_at(payload, layout.definition + BLOCK_CLASS)? != instance
+        || u32_at(payload, layout.instance + BLOCK_CLASS)? != definition
     {
-        return Err("Ordered fixed rows require a qualified Jump bank".into());
+        return Err("Ordered fixed rows require a qualified Jump or Glide bank".into());
     }
     let priorities = rows(
         payload,
@@ -182,7 +201,7 @@ fn jump_layout(payload: &[u8]) -> Result<Layout, String> {
 /// Compares the entire group through its live row and modifier references. A partial group or
 /// different order is a conflict, including when a private bank already carries the same key.
 pub fn ordered_rows_match(payload: &[u8], key: u32, members: &[FixedRow]) -> Result<bool, String> {
-    let layout = jump_layout(payload)?;
+    let layout = movement_layout(payload)?;
     let rows = (0..layout.definition_rows.count)
         .map(|index| layout.definition_rows.first + index * DEFINITION_ROW_SIZE)
         .filter(|&at| u32_at(payload, at + ROW_KEY).ok() == Some(key))
@@ -217,7 +236,7 @@ pub fn with_ordered_rows(
     if members.is_empty() || [0, u32::MAX, NO_NAME].contains(&key) {
         return Err("Ordered ability property has no members or valid identity".into());
     }
-    let layout = jump_layout(payload)?;
+    let layout = movement_layout(payload)?;
     let before = property_rows(payload)?;
     if before.iter().any(|row| row.key == key) {
         return Err(format!(

@@ -20,6 +20,7 @@ use crate::{
 
 use super::{MapRecipe, Picture, activity, picture, private_match, world};
 
+mod donor;
 mod sharing;
 
 const INVESTMENT_ROOT_CLASS: u32 = 0x8080_7D84;
@@ -346,8 +347,17 @@ impl Plan {
                 return Err(invalid(format!("Private match table {tag} moved")));
             }
         }
-        let activities = read_tag(manager, activity_tag, "activity table")?;
-        let displays = read_tag(manager, display_tag, "activity display table")?;
+        // An importer whose maps join the main mod's builds on the main mod's activity tables,
+        // so its own hold both and Sunrise serves them from it while it loads.
+        let base = |tag: TagHash, label: &str| {
+            crate::mod_family::build::shared_payload(
+                crate::mod_family::build::Shared::Activities,
+                tag.0,
+            )
+            .map_or_else(|| read_tag(manager, tag, label), Ok)
+        };
+        let activities = base(activity_tag, "activity table")?;
+        let displays = base(display_tag, "activity display table")?;
         let rows = activity::Rows::read(&activities)?;
         let mut taken = rows.hashes(&activities)?;
         let mut strings = BTreeSet::new();
@@ -413,14 +423,10 @@ impl Plan {
         }
         report("Planning Maps: Preparing Activity and Display Rows");
         let (activities, displays, copies) = activity::append(&activities, &displays, &maps)?;
-        let private_table = read_tag(manager, private_match_tag, "private match table")?;
-        let private_displays = read_tag(
-            manager,
-            private_match_display_tag,
-            "private match display table",
-        )?;
+        let private_table = base(private_match_tag, "private match table")?;
+        let private_displays = base(private_match_display_tag, "private match display table")?;
         let image_rows = private_match::image_rows(&activities, &private_table, &private_displays)?;
-        let bank = u32::try_from(crate::package_profile::LOCALIZATION_DONOR_TABLE_INDEX)
+        let bank = u32::try_from(crate::package_profile::localization_table())
             .map_err(|_| invalid("Localized bank index does not fit 32 bits"))?;
         let (private_matches, mut private_match_displays, picture_displays) =
             private_match::append(&private_table, &private_displays, &maps, &copies, bank)?;
@@ -566,6 +572,7 @@ impl Plan {
         index: usize,
         part: Part,
         native: u16,
+        manager: &PackageManager,
     ) -> AuthoringResult<Option<SplitWorld>> {
         if part != Part::World || !crate::package_profile::host().is_standalone() {
             return Ok(None);
@@ -593,6 +600,16 @@ impl Plan {
             return Err(invalid("Split map entry counts differ"));
         }
         flatten_at(&addresses, &mut tags)?;
+        // The activity's own records and lists, at any address, show what it still names.
+        let (activity, _) = world.activity_tags(manager, TagHash::new(native, 0))?;
+        donor::trim(
+            &addresses,
+            &mut tags,
+            &references,
+            &activity,
+            &world.donor_packages(),
+            manager,
+        )?;
         Ok(Some(SplitWorld {
             native_entries,
             resource_ids,
@@ -708,13 +725,15 @@ impl Plan {
     }
 
     /// The entries and names of map `index`'s `part`, allocated across `ids`. The activity package
-    /// also holds the names the map shares with its donor's world.
+    /// also holds the names the map shares with its donor's world. The world's companions list
+    /// none of the donor's records that nothing still loaded names ([`donor::trim`]).
     #[allow(clippy::type_complexity)]
     pub(crate) fn package(
         &self,
         index: usize,
         part: Part,
         ids: &[u16],
+        manager: &PackageManager,
     ) -> AuthoringResult<(
         Vec<NewTagSpec>,
         Vec<NamedTag>,
@@ -725,10 +744,23 @@ impl Plan {
             Part::World => {
                 let (mut tags, named, references) = world.world_tags(ids)?;
                 flatten(ids, &mut tags)?;
+                let addresses = (0..tags.len())
+                    .map(|entry| entry_tag(ids, entry))
+                    .collect::<AuthoringResult<Vec<_>>>()?;
+                // The activity's own records and lists, at any address, show what it still names.
+                let (activity, _) = world.activity_tags(manager, entry_tag(ids, 0)?)?;
+                donor::trim(
+                    &addresses,
+                    &mut tags,
+                    &references,
+                    &activity,
+                    &world.donor_packages(),
+                    manager,
+                )?;
                 Ok((tags, named, references))
             }
             Part::Activity => {
-                let (mut tags, names) = world.activity_tags(entry_tag(ids, 0)?)?;
+                let (mut tags, names) = world.activity_tags(manager, entry_tag(ids, 0)?)?;
                 if tags.len() > MAX_PACKAGE_ENTRY_COUNT {
                     return Err(invalid("The map activity exceeds one package"));
                 }
@@ -763,6 +795,12 @@ impl Plan {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.maps.is_empty()
+    }
+
+    /// The activity, activity display, private match and private match display tables the plan
+    /// replaces, which Sunrise can't merge.
+    pub(crate) fn activity_tables(&self) -> &[ReplacementSpec] {
+        &self.replacements[..self.replacements.len().min(PRIVATE_MATCH_DISPLAYS + 1)]
     }
 
     /// The maps' own private match pictures.

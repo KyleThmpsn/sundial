@@ -22,6 +22,14 @@ pub(super) fn read(
             native.context("Source external duration events need native stock publishers")?,
             key,
         )?;
+    } else if let Some(&(_, from, to)) = SHARED.iter().find(|row| row.0 == key) {
+        shared(
+            source,
+            native.context("Source external duration events need native stock publishers")?,
+            key,
+            from,
+            to,
+        )?;
     } else {
         ensure!(
             kind == 31,
@@ -39,6 +47,52 @@ pub(super) fn read(
         kind: kind - 1,
         bytes,
     })
+}
+
+/// Duration identities a source status and its Shadowkeep port both publish, as key, source
+/// status and native status. Each pair holds the same Duration policy words (flags, key, match
+/// count, priority, competition) and the same HUD identity, so the native status starts and ends
+/// the Duration a source perk listens for. Run for Your Life's `4E640E15` is published by
+/// `8127B4EF` and `815A199D` with flags `0A`, priority 90 and HUD `85F4E481`, In Your Element's
+/// `472AFB76` by `816E6703` and `815B39F4`, and Buddy System's `AAB4E62C` by `80AA9EAC` and
+/// `815B54BA`. A scan of every structured tag in both builds for each key found these statuses.
+const SHARED: [(u32, u32, u32); 3] = [
+    (0x4E64_0E15, 0x8127_B4EF, 0x815A_199D),
+    (0x472A_FB76, 0x816E_6703, 0x815B_39F4),
+    (0xAAB4_E62C, 0x80AA_9EAC, 0x815B_54BA),
+];
+
+fn shared(source: &Source, native: &mut Reader, key: u32, from: u32, to: u32) -> Result<()> {
+    ensure!(
+        source.reference(from)? == 0x80800861,
+        "Source shared duration publisher class differs"
+    );
+    let source_owner = source.read(from)?;
+    let native_owner = native.tag(to, Some(0x80809C36))?;
+    let read = |p: &Payload, tag: u32, source: bool| -> Result<([u32; 5], u32)> {
+        let settings = p.pointer(24)?;
+        let live = p.pointer(16)?;
+        ensure!(
+            p.u32(settings - 4)? == if source { 0x80802698 } else { 0x80804205 }
+                && p.u32(live - 4)? == if source { 0x80802A75 } else { 0x80804209 }
+                && p.u32(settings)? == tag
+                && p.u32(live)? == tag,
+            "Shared duration publisher has another root pair"
+        );
+        let policy = settings + if source { 0x250 + 0xA0 } else { 0x228 + 0x98 };
+        let mut words = [0; 5];
+        for (index, word) in words.iter_mut().enumerate() {
+            *word = p.u32(policy + index * 4)?;
+        }
+        Ok((words, p.u32(settings + if source { 0x178 } else { 0x160 })?))
+    };
+    let (source_policy, source_hud) = read(&source_owner, from, true)?;
+    let (native_policy, native_hud) = read(&native_owner, to, false)?;
+    ensure!(
+        source_policy[1] == key && source_policy == native_policy && source_hud == native_hud,
+        "Shared duration publishers differ in policy or status identity"
+    );
+    Ok(())
 }
 
 fn stock(source: &Source, native: &mut Reader, key: u32) -> Result<()> {

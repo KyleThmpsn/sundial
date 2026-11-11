@@ -12,6 +12,19 @@ pub(crate) fn collection_unlock_index(data: &[u8], row: usize) -> AuthoringResul
     Ok(usize::from(*flag))
 }
 
+/// Whether the collectible row at `row` acquires through `acquisition` alone.
+pub(crate) fn acquires_by(
+    data: &[u8],
+    row: usize,
+    acquisition: Acquisition,
+) -> AuthoringResult<bool> {
+    let descriptor = row + COLLECTIBLE_CONDITION_OFFSET;
+    if read_u64(data, descriptor)? == 0 && read_u64(data, descriptor + 8)? == 0 {
+        return Ok(false);
+    }
+    Ok(numeric_program_layout(data, descriptor)?.tokens == [acquisition.token()])
+}
+
 fn collection_unlock_flags(data: &[u8], row: usize) -> AuthoringResult<BTreeSet<u16>> {
     let descriptor = row + COLLECTIBLE_CONDITION_OFFSET;
     if read_u64(data, descriptor)? == 0 && read_u64(data, descriptor + 8)? == 0 {
@@ -422,7 +435,7 @@ pub(super) fn collectible_nested_clones(
     rows_end: usize,
     template_row: usize,
     source_unlock_index: usize,
-    unlock_index: u16,
+    acquisition: Acquisition,
 ) -> AuthoringResult<Vec<CollectibleNestedClone>> {
     let source_unlock_index = u16::try_from(source_unlock_index)
         .map_err(|_| invalid("Donor acquired-flag index does not fit 16 bits"))?;
@@ -468,7 +481,7 @@ pub(super) fn collectible_nested_clones(
                 &bytes,
                 nested_count,
                 source_unlock_index,
-                unlock_index,
+                acquisition,
             )?;
             retargeted_source_flags = 1;
         }
@@ -498,7 +511,7 @@ pub(crate) fn validate_authored_collectible_nested_isolation(
     data: &[u8],
     authored_collectible_index: usize,
     source_unlock_index: usize,
-    unlock_index: u16,
+    acquisition: Acquisition,
 ) -> AuthoringResult<()> {
     let (count, _, rows, class) = array_at(data, 8)?;
     if class != COLLECTIBLE_DEFINITION_ROW_CLASS || authored_collectible_index >= count {
@@ -567,7 +580,7 @@ pub(crate) fn validate_authored_collectible_nested_isolation(
             )));
         }
         if field == COLLECTIBLE_CONDITION_OFFSET {
-            acquired_flag_is_private = layout.tokens == [(NUMERIC_FLAG_INSTRUCTION, unlock_index)];
+            acquired_flag_is_private = layout.tokens == [acquisition.token()];
         }
     }
     if !acquired_flag_is_private {
@@ -593,7 +606,7 @@ pub(crate) fn append_collectible(
     } = spec;
     let CollectibleUnlockClone {
         source_index: source_unlock_index,
-        authored_index: unlock_index,
+        acquisition,
     } = unlock;
     let (count, header, rows, class) = array_at(&data, 8)?;
     if class != COLLECTIBLE_DEFINITION_ROW_CLASS || template_index >= count {
@@ -656,7 +669,7 @@ pub(crate) fn append_collectible(
         rows_end,
         template_row,
         source_unlock_index,
-        unlock_index,
+        acquisition,
     )?;
     let retargeted_source_flags = nested_clones
         .iter()
@@ -753,12 +766,7 @@ pub(crate) fn append_collectible(
         }
     }
     set_array_count(&mut data, 8, header, count + 1)?;
-    validate_authored_collectible_nested_isolation(
-        &data,
-        count,
-        source_unlock_index,
-        unlock_index,
-    )?;
+    validate_authored_collectible_nested_isolation(&data, count, source_unlock_index, acquisition)?;
     Ok(data)
 }
 

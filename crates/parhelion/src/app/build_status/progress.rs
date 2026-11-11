@@ -1,108 +1,129 @@
 use super::*;
 use crate::install::{InstallPhase, InstallProgress};
-use std::collections::{BTreeMap, VecDeque};
+mod activity;
+mod view;
 
-mod events;
-
-const MAX_EVENTS: usize = 2_000;
-const BUILD_STAGES: [BuildPhase; 12] = [
-    BuildPhase::InspectingSource,
-    BuildPhase::LoadingCatalog,
-    BuildPhase::CheckingRecipes,
-    BuildPhase::PreparingSource,
-    BuildPhase::HashingSource,
-    BuildPhase::CompilingProject,
-    BuildPhase::BuildingPayloads,
-    BuildPhase::RecheckingSource,
-    BuildPhase::WritingPackages,
-    BuildPhase::ValidatingPackages,
-    BuildPhase::StagingRecipes,
-    BuildPhase::WritingManifest,
+pub(in crate::app) use activity::Activity;
+pub(super) use view::draw_build;
+use view::{ProgressView, draw_progress, install_detail};
+/// Each build stage's share of step 1, in the build's order. Compiling items and building their
+/// packages take most of a build, so they take most of the bar.
+const BUILD_STAGES: [(BuildPhase, f32); 13] = [
+    (BuildPhase::ReadingRecipes, 1.0),
+    (BuildPhase::InspectingSource, 1.0),
+    (BuildPhase::LoadingCatalog, 2.0),
+    (BuildPhase::CheckingRecipes, 2.0),
+    (BuildPhase::PreparingSource, 1.0),
+    (BuildPhase::HashingSource, 2.0),
+    (BuildPhase::CompilingProject, 60.0),
+    (BuildPhase::BuildingPayloads, 20.0),
+    (BuildPhase::RecheckingSource, 1.0),
+    (BuildPhase::WritingPackages, 4.0),
+    (BuildPhase::ValidatingPackages, 3.0),
+    (BuildPhase::StagingRecipes, 1.0),
+    (BuildPhase::WritingManifest, 1.0),
 ];
 
+/// The share of what remains of the compile stages that a family pass leaves for the passes after
+/// it. Whether another pass follows is known only once a pass ends.
+const LATER_PASSES: f32 = 0.15;
+
+/// How far step 1 is, which only moves forward. A family build compiles its mods in turn, each
+/// with counters of its own, and can compile them again in a later pass. Each mod's compile fills
+/// its share of its pass, by its recipes and maps, and a later pass fills part of what the pass
+/// before left of the compile stages.
 #[derive(Default)]
-pub(in crate::app) struct Activity {
-    lines: VecDeque<String>,
-    operation: Option<events::Entry>,
-    first_line: u64,
-    packages: BTreeMap<(u16, u32), (u64, crate::workflow::OperationStatus)>,
+pub(in crate::app) struct BuildFraction {
+    value: f32,
+    /// The pass compiling, and how far through the compile stages the bar was when it started.
+    pass: Option<(usize, f32)>,
 }
 
-impl Activity {
-    fn update(&mut self, id: u64, elapsed: Duration, message: String) {
-        if let Some(line) = id
-            .checked_sub(self.first_line)
-            .and_then(|index| self.lines.get_mut(index as usize))
+impl BuildFraction {
+    pub(in crate::app) fn value(&self) -> f32 {
+        self.value
+    }
+
+    pub(in crate::app) fn advance(&mut self, progress: &TimedBuildProgress) {
+        let estimate = if progress.phase == BuildPhase::Complete {
+            1.0
+        } else if let Some(member) = progress.member
+            && let Some(within) =
+                compile_fraction(progress.phase, progress.completed, progress.total)
         {
-            *line = format!("[{}] {message}", format_elapsed(elapsed));
-        }
+            let start = match self.pass.filter(|(pass, _)| *pass == member.pass) {
+                Some((_, start)) => start,
+                None => {
+                    let start = self.compiled();
+                    self.pass = Some((member.pass, start));
+                    start
+                }
+            };
+            let share = (1.0 - start) * (1.0 - LATER_PASSES);
+            compile_overall(start + share * member.pass_fraction(within))
+        } else {
+            // Catalog loading has its own changing substeps, so its local counters cannot
+            // estimate the fraction of the entire catalog load.
+            let total = if progress.phase == BuildPhase::LoadingCatalog {
+                0
+            } else {
+                progress.total
+            };
+            step_fraction(progress.phase, progress.completed, total)
+        };
+        self.value = self.value.max(estimate);
     }
 
-    pub(in crate::app) fn push(&mut self, elapsed: Duration, message: String) {
-        self.operation = None;
-        self.append(elapsed, message);
-    }
-
-    fn append(&mut self, elapsed: Duration, message: String) -> u64 {
-        if self.lines.len() == MAX_EVENTS {
-            self.lines.pop_front();
-            self.first_line += 1;
-            self.packages
-                .retain(|_, (line, _)| *line >= self.first_line);
-        }
-        let line = self.first_line + self.lines.len() as u64;
-        self.lines
-            .push_back(format!("[{}] {message}", format_elapsed(elapsed)));
-        line
-    }
-
-    /// Active operations fill the window above their footer. Completed activity stays compact.
-    pub(super) fn draw(&self, ui: &mut egui::Ui, id: &'static str, footer_height: Option<f32>) {
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Activity");
-            ui.weak(format!("{} recent events", self.lines.len()));
-            if ui
-                .add_enabled(!self.lines.is_empty(), egui::Button::new("Copy Progress"))
-                .clicked()
-            {
-                ui.ctx()
-                    .copy_text(self.lines.iter().cloned().collect::<Vec<_>>().join("\n"));
-            }
-        });
-        egui::Frame::group(ui.style())
-            .inner_margin(10)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                egui::ScrollArea::vertical()
-                    .id_salt(id)
-                    .max_height(
-                        footer_height
-                            .map_or(180.0, |footer| (ui.available_height() - footer).max(40.0)),
-                    )
-                    .auto_shrink([false, footer_height.is_none()])
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        if self.lines.is_empty() {
-                            ui.weak("Waiting for the worker to report its first operation.");
-                        }
-                        for line in &self.lines {
-                            ui.add(egui::Label::new(line).wrap());
-                        }
-                    });
-            });
+    /// How far through the compile stages the bar is, from 0 to 1.
+    fn compiled(&self) -> f32 {
+        let (start, span) = compile_span();
+        ((self.value - start) / span).clamp(0.0, 1.0)
     }
 }
 
-fn message(label: &str, item: Option<&str>, completed: usize, total: usize) -> String {
-    let count = if total > 0 {
-        format!(" ({completed}/{total} complete)")
-    } else {
-        String::new()
-    };
-    format!(
-        "{label}{count}{}",
-        item.map_or_else(String::new, |item| format!(": {item}"))
+/// Where step 1 is when `completed` of `total` of `phase` is done.
+fn step_fraction(phase: BuildPhase, completed: usize, total: usize) -> f32 {
+    let all = BUILD_STAGES.iter().map(|(_, weight)| weight).sum::<f32>();
+    let mut before = 0.0;
+    for (stage, weight) in BUILD_STAGES {
+        if stage == phase {
+            let within = if total == 0 {
+                0.0
+            } else {
+                completed.min(total) as f32 / total as f32
+            };
+            return (before + weight * within) / all;
+        }
+        before += weight;
+    }
+    0.0
+}
+
+/// Where the compile stages start in step 1, and their share of it.
+fn compile_span() -> (f32, f32) {
+    let start = step_fraction(BuildPhase::CompilingProject, 0, 0);
+    (
+        start,
+        step_fraction(BuildPhase::RecheckingSource, 0, 0) - start,
     )
+}
+
+/// How far one mod's compile is through the compile stages, from 0 to 1, or `None` outside them.
+fn compile_fraction(phase: BuildPhase, completed: usize, total: usize) -> Option<f32> {
+    matches!(
+        phase,
+        BuildPhase::CompilingProject | BuildPhase::BuildingPayloads
+    )
+    .then(|| {
+        let (start, span) = compile_span();
+        (step_fraction(phase, completed, total) - start) / span
+    })
+}
+
+/// Where step 1 is when the compile stages are `compiled` of the way through.
+fn compile_overall(compiled: f32) -> f32 {
+    let (start, span) = compile_span();
+    start + span * compiled.clamp(0.0, 1.0)
 }
 
 #[derive(Default)]
@@ -123,7 +144,7 @@ impl InstallStatus {
                     elapsed,
                     progress.phase.label(),
                     progress.current_artifact.as_deref(),
-                    (progress.completed, progress.total),
+                    (progress.completed, progress.total, "operations"),
                     matches!(
                         progress.phase,
                         InstallPhase::Checking
@@ -169,6 +190,7 @@ impl InstallStatus {
                 complete,
                 completed: progress.completed,
                 total: progress.total,
+                unit: "operations",
                 fraction: if progress.total == 0 {
                     0.0
                 } else {
@@ -189,149 +211,6 @@ impl InstallStatus {
         ui.add_space(12.0);
         self.activity
             .draw(ui, "install-progress-activity", Some(0.0));
-    }
-}
-
-pub(super) fn draw_build(
-    ui: &mut egui::Ui,
-    progress: &TimedBuildProgress,
-    elapsed: Duration,
-    running: bool,
-) {
-    let complete = progress.phase == BuildPhase::Complete;
-    draw_progress(
-        ui,
-        &ProgressView {
-            title: build_title(progress.phase),
-            detail: build_detail(progress.phase),
-            complete,
-            completed: progress.completed,
-            total: progress.total,
-            fraction: progress.fraction(),
-            item: progress.current_artifact.as_deref(),
-            elapsed,
-        },
-        running,
-    );
-}
-
-struct ProgressView<'a> {
-    title: &'a str,
-    detail: &'a str,
-    complete: bool,
-    completed: usize,
-    total: usize,
-    fraction: f32,
-    item: Option<&'a str>,
-    elapsed: Duration,
-}
-
-fn draw_progress(ui: &mut egui::Ui, info: &ProgressView<'_>, running: bool) {
-    ui.heading(info.title);
-    ui.label(info.detail);
-    ui.add_space(10.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.strong("Current Operation");
-        ui.weak(format!("Elapsed {}", format_elapsed(info.elapsed)));
-    });
-    if !info.complete {
-        if let Some(item) = info.item {
-            ui.add(egui::Label::new(item).wrap());
-        }
-        let text = if info.total <= 1 {
-            if running { "Working…" } else { "Stopped" }.to_owned()
-        } else {
-            format!("{} of {} operations complete", info.completed, info.total)
-        };
-        ui.add(
-            sundial::investment::progress_bar(info.fraction)
-                .animate(running)
-                .text(text),
-        );
-    }
-    if running {
-        ui.ctx().request_repaint_after(Duration::from_millis(100));
-    }
-}
-
-fn build_title(phase: BuildPhase) -> &'static str {
-    phase.label()
-}
-
-fn build_detail(phase: BuildPhase) -> &'static str {
-    match phase {
-        BuildPhase::InspectingSource => "Checking the source packages and the selected recipes.",
-        BuildPhase::LoadingCatalog => "Loading the installed item and perk definitions.",
-        BuildPhase::CheckingRecipes => {
-            "Checking recipes that need donor compatibility checks. Recipes without catalog overrides skip this phase."
-        }
-        BuildPhase::PreparingSource => "Preparing the stock package set for compilation.",
-        BuildPhase::HashingSource => "Recording the original package checksums.",
-        BuildPhase::RecheckingSource => {
-            "Confirming the source packages did not change during compilation."
-        }
-        BuildPhase::CompilingProject => {
-            "Compiling item definitions, perks, artwork, Collections entries, and text."
-        }
-        BuildPhase::BuildingPayloads => "Preparing, encoding, and validating each package payload.",
-        BuildPhase::WritingPackages => {
-            "Writing the compiled package set to a separate staging folder."
-        }
-        BuildPhase::ValidatingPackages => {
-            "Checking each package and recording its verified size and checksum."
-        }
-        BuildPhase::StagingRecipes => "Saving the exact recipes used for this build.",
-        BuildPhase::WritingManifest => {
-            "Recording the package set and build selection for installation review."
-        }
-        BuildPhase::Complete => "Packages are staged and ready for installation review.",
-    }
-}
-
-fn install_detail(phase: InstallPhase) -> &'static str {
-    match phase {
-        InstallPhase::Checking => {
-            "Checking Destiny 2, recovery state, runtime support, and staged package integrity."
-        }
-        InstallPhase::ReviewingAccount => {
-            "Comparing installed and incoming items, sockets, equipment slots, and account references."
-        }
-        InstallPhase::BackingUp => {
-            "Saving existing packages, game caches, and recipe snapshots before replacement."
-        }
-        InstallPhase::Preparing => {
-            "Copying and verifying temporary files beside the installation target."
-        }
-        InstallPhase::Rechecking => {
-            "Checking for concurrent changes and saving the recovery record before installation."
-        }
-        InstallPhase::UpdatingAccount => {
-            "Applying only the account changes shown in your installation review."
-        }
-        InstallPhase::Installing => {
-            "Replacing the reviewed package set and removing obsolete authored packages."
-        }
-        InstallPhase::Verifying => {
-            "Comparing installed file sizes and checksums with the verified build."
-        }
-        InstallPhase::RefreshingCaches => {
-            "Refreshing game caches and verifying the account transaction."
-        }
-        InstallPhase::Finalizing => {
-            "Saving the committed transaction so recovery can recognize the installed set."
-        }
-        InstallPhase::SyncingCollections => {
-            "Synchronizing authored item unlocks with the selected account."
-        }
-        InstallPhase::CleaningUp => {
-            "Finalizing the recovery backup and applying automatic backup retention."
-        }
-        InstallPhase::Complete => {
-            "The package transaction finished. See the result for any account or cleanup warnings."
-        }
-        InstallPhase::RollingBack => {
-            "An operation failed. Restoring the previous files and account from the recovery backup."
-        }
     }
 }
 
@@ -359,14 +238,7 @@ pub(super) fn draw_steps(ui: &mut egui::Ui, app: &PackageAuthoringApp) {
         if built || progress.phase == BuildPhase::Complete {
             1.0
         } else {
-            // Catalog loading has its own changing substeps, so its local counters cannot
-            // estimate the fraction of the entire catalog load.
-            let total = if progress.phase == BuildPhase::LoadingCatalog {
-                0
-            } else {
-                progress.total
-            };
-            stage_fraction(progress.phase, &BUILD_STAGES, progress.completed, total)
+            app.build_fraction.value()
         }
     });
     let install_fraction = app

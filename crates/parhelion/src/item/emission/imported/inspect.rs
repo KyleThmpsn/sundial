@@ -255,7 +255,7 @@ fn copies(
     scene: &Scene,
     object: [u32; 2],
     rigs: &[Rig],
-    renumbering: &rig::Renumbering,
+    renumbering: Result<&rig::Renumbering, &String>,
 ) -> AuthoringResult<Copies> {
     let natives = rigs.iter().map(|rig| rig.native).collect::<Vec<_>>();
     let mut stand_ins = STAND_INS;
@@ -305,6 +305,11 @@ fn copies(
                     "Inspect scene controls have no single converted counterpart",
                 ));
             };
+            let renumbering = renumbering.map_err(|error| {
+                invalid(format!(
+                    "Inspect scene controls need the converted skeleton to keep every native bone: {error}"
+                ))
+            })?;
             let extended = checked(
                 rig::extend_controls_like(
                     &stock,
@@ -427,10 +432,11 @@ pub(super) fn apply(
     let [style] = current.subs.as_slice() else {
         return Ok(None);
     };
-    let renumbering = checked(
-        rig::renumbering(&skeleton.original, &Payload(skeleton.converted.clone())),
-        "skeleton renumbering",
-    )?;
+    // A converted skeleton that keeps every native bone says where each moved, which a scene that
+    // poses the weapon through controls needs. A source rig that replaces native bones has no such
+    // renumbering, so only scenes without those controls can take it.
+    let renumbering = rig::renumbering(&skeleton.original, &Payload(skeleton.converted.clone()))
+        .map_err(|error| format!("{error:#}"));
     // The item's scene, then the scenes of its bucket and the rest. A stock scene of another
     // layout, or whose weapon object cannot take the converted rigs, is no candidate.
     let rows = stock.rows();
@@ -453,7 +459,7 @@ pub(super) fn apply(
         let Some(object) = weapon_object(manager, &candidate, shown, skeleton.native)? else {
             continue;
         };
-        match copies(manager, &candidate, object, &rigs, &renumbering) {
+        match copies(manager, &candidate, object, &rigs, renumbering.as_ref()) {
             Ok(copies) => {
                 source = Some((candidate, shown, copies));
                 break;
